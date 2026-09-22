@@ -1088,7 +1088,10 @@ def _apply_qwen35_projection_fusions(model, *, prism=False, optimize_prism=True)
     mtp = getattr(model, "mtp", None)
     if mtp is not None:
         blocks.append(mtp.block)
+    use_optimized = not bool(getattr(model.config, "_prompt_enhancer_safe_legacy", False)) and torch.version.hip is None
     for block in blocks:
+        block.ffn_down._fuse_silu_mul = use_optimized and not prism and isinstance(block.ffn_down.weight, GGUFWeightTensor)
+
         if getattr(block, "ffn_gate_up", None) is None and all(
             getattr(block, name, None) is not None for name in ("ffn_gate", "ffn_up")
         ):
@@ -1119,6 +1122,10 @@ def _apply_qwen35_projection_fusions(model, *, prism=False, optimize_prism=True)
             block.attn_gate = None
             block.ssm_alpha = None
             block.ssm_beta = None
+
+    for projection in model.modules():
+        if isinstance(getattr(projection, "weight", None), GGUFWeightTensor):
+            projection._use_optimized_kernels = use_optimized
 
 def load_qwen35_text_prompt_enhancer(
     model_path: str | None = None,

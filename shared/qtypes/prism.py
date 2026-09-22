@@ -54,7 +54,9 @@ def _decode_fake(x, raw, signs, bias, rows, grouped_shape, row_tile):
 
 
 def install_prism_decode(model):
-    if torch.version.hip is not None or torch.cuda.get_device_capability(0) != (12, 0):
+    # The native fusion is architecture-generic. Selection checks exact results
+    # and benchmarks each launch before capture; Ampere+ also supports BF16.
+    if torch.version.hip is not None or torch.cuda.get_device_capability(0)[0] < 8:
         return
     native = _gguf_cuda_module()
     if not callable(getattr(native, "has_prism_decode", None)) or not native.has_prism_decode():

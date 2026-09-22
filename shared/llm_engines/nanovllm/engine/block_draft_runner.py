@@ -70,6 +70,12 @@ class BlockDraftRunner(ModelRunner):
         hidden, unary = drafter.propose(seq.last_token, start_position, self.model.token_embd, self.model.output)
         if drafter.method == "dflash2":
             return self._build_dflash_drafts(seq, sample_params, draft_count, hidden, unary, profile)
+        from .speculative_sampling import can_batch_acceptance
+        processor = self._speculative_logits_processor(seq, True)
+        if (seq.top_k == 1 and hidden.is_cuda and can_batch_acceptance(self, seq) and not getattr(self, "_disable_dspark_gpu_draft", False)
+                and (processor is None or getattr(processor, "_is_token_mask", False))
+                and (not seq.predictive_penalty or seq.repetition_penalty in (None, 1.0))):
+            return self._build_dspark_gpu_chain(seq, draft_count, hidden, unary)
         tokens, distributions = [], [] if seq.top_k != 1 else None
         previous = seq.last_token
         penalty = 1.0 if sample_params[-1] is None else float(sample_params[-1][0].item())
@@ -90,6 +96,61 @@ class BlockDraftRunner(ModelRunner):
             tokens.append(token)
             previous = token
         return tokens, drafter.get_cache_length(), distributions
+
+    def _dspark_proposal(self, hidden, unary, anchor, bias, threshold):
+        scores, confidence = self.model.mtp.proposal_logits(hidden, unary, anchor)
+        scores = scores + bias
+        valid = torch.isfinite(scores).any()
+        if threshold > 0:
+            # Match the original confidence.item() comparison with a Python
+            # float, including thresholds just above a representable score.
+            valid = valid & (confidence.double().reshape(()) >= threshold)
+        return scores.argmax().reshape(1), valid
+
+    def _build_dspark_gpu_chain(self, seq, draft_count, hidden, unary):
+        threshold = float(self.model._prompt_enhancer_speculative_confidence)
+        graphs = getattr(self, "_dspark_sampling_graphs", None)
+        if graphs is None:
+            graphs = self._dspark_sampling_graphs = {}
+        bias = self._get_logits_bias(seq, unary)
+        processor = self._speculative_logits_processor(seq, True)
+        if processor is not None:
+            rule_bias = torch.zeros_like(unary[:1])
+            if bias is not None:
+                rule_bias.copy_(bias)
+            bias = processor(None, rule_bias)[0]
+        blocks = []
+        # Preserve confidence's early exit and keep greedy IDs on the GPU
+        # between Markov heads. Sampled decoding retains its original path.
+        for start in range(draft_count):
+            key = (start, threshold)
+            state = graphs.get(key)
+            if state is None:
+                if len(graphs) >= 8:
+                    graphs.pop(next(iter(graphs)))
+                inputs, logits = hidden[start].clone(), unary[start].clone()
+                anchor = torch.tensor(seq.last_token, dtype=torch.long, device=hidden.device)
+                fixed_bias = torch.zeros_like(unary[0])
+                if bias is not None:
+                    fixed_bias.copy_(bias.reshape(-1))
+                cutoff = threshold if start else 0.
+                self._dspark_proposal(inputs, logits, anchor, fixed_bias, cutoff)
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph):
+                    proposal, valid = self._dspark_proposal(inputs, logits, anchor, fixed_bias, cutoff)
+                state = (graph, inputs, logits, anchor, fixed_bias, proposal, valid)
+                graphs[key] = state
+            graph, inputs, logits, anchor, fixed_bias, proposal, valid = state
+            inputs.copy_(hidden[start])
+            logits.copy_(unary[start])
+            anchor.fill_(seq.last_token) if start == 0 else anchor.copy_(blocks[-1][-1])
+            fixed_bias.zero_() if bias is None else fixed_bias.copy_(bias.reshape(-1))
+            graph.replay()
+            if not bool(valid.item()):
+                break
+            blocks.append(proposal)
+        tokens = torch.cat(blocks) if blocks else torch.empty(0, dtype=torch.long, device=hidden.device)
+        return tokens, self.model.mtp.get_cache_length(), None
 
     def _compact_draft_distribution(self, seq, scores, temperature):
         """Filter only the candidate support, including top-k boundary ties."""
@@ -216,6 +277,10 @@ class BlockDraftRunner(ModelRunner):
         return tokens[:count], self.model.mtp.get_cache_length(), probabilities[:count] if seq.top_k != 1 else None
 
     def _sample_verified_block(self, seq, logits, draft_tokens, draft_distributions, sample_params, profile=None):
+        if self.model.mtp.method == "dspark" and torch.is_tensor(draft_tokens) and logits.is_cuda:
+            from .speculative_sampling import can_batch_acceptance, sample_verified_block
+            if seq.top_k == 1 and can_batch_acceptance(self, seq) and not getattr(self, "_disable_dspark_gpu_acceptance", False):
+                return sample_verified_block(self, seq, logits, draft_tokens, draft_distributions, sample_params, profile, method="dspark")
         if not (torch.is_tensor(draft_tokens) and logits.is_cuda and self._can_batch_dflash_acceptance(seq)):
             return self._sample_verified_block_reference(seq, logits, draft_tokens, draft_distributions, sample_params, profile)
         from .speculative_sampling import sample_verified_block
@@ -225,5 +290,6 @@ class BlockDraftRunner(ModelRunner):
     def reset_runtime_state(self):
         super().reset_runtime_state()
         self._dflash_sampling_graphs = {}
+        self._dspark_sampling_graphs = {}
         self._dflash_valid_length = None
         self.model._draft_features = None

@@ -17,7 +17,10 @@ class TextModel(nn.Module):
         self.norm = Qwen3VLTextRMSNorm(config.hidden_size, config.rms_norm_eps)
         self.rotary_emb = Qwen3VLTextRotaryEmbedding(config)
 
-    def forward(self, hidden, position_ids, visual_mask, deepstack):
+    def forward(self, input_ids, position_ids, visual_mask, deepstack, image_embeds=None):
+        hidden = self.embed_tokens(input_ids)
+        if image_embeds is not None:
+            hidden = hidden.masked_scatter(visual_mask.unsqueeze(-1), image_embeds.to(hidden.dtype))
         positions = self.rotary_emb(hidden, position_ids)
         for i, layer in enumerate(self.layers):
             check_abort()
@@ -46,14 +49,15 @@ class Qwen3VLForConditionalGeneration(nn.Module, Qwen3VLModel):
         self.model.language_model = TextModel(text)
 
     def forward(self, input_ids, attention_mask, pixel_values=None, image_grid_thw=None, **kwargs):
-        hidden = self.model.language_model.embed_tokens(input_ids)
         image_mask = input_ids == self.config.image_token_id
         types = image_mask.to(torch.int32)
         positions, _ = self.get_rope_index(input_ids, types, image_grid_thw=image_grid_thw, attention_mask=attention_mask)
         deepstack = []
+        image_embeds = None
         if pixel_values is not None:
-            vision = self.model.visual(pixel_values.to(dtype=hidden.dtype), image_grid_thw)
-            hidden = hidden.masked_scatter(image_mask.unsqueeze(-1), vision.pooler_output.to(hidden.dtype))
+            vision = self.model.visual(pixel_values, image_grid_thw)
+            image_embeds = vision.pooler_output
             deepstack = vision.deepstack_features
-        hidden = self.model.language_model(hidden, positions, image_mask, deepstack)
+        check_abort()
+        hidden = self.model.language_model(input_ids, positions, image_mask, deepstack, image_embeds)
         return SimpleNamespace(hidden_states=(hidden,))

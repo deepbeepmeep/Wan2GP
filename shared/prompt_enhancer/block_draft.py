@@ -22,10 +22,24 @@ def ensure_block_draft_assets(process_files_def, method, variant, backend):
     process_files_def(repoId="DeepBeepMeep/Wan2.1", sourceFolderList=[spec["folder"]], fileList=[["config.json", spec["weights"]]])
 
 
+def _load_draft_config(config_path):
+    from transformers import Qwen3Config
+
+    with open(config_path, encoding="utf-8") as f:
+        values = json.load(f)
+    # Recent exports put RoPE in rope_parameters. Supported Transformers
+    # versions also include Qwen3 implementations that read only these legacy
+    # fields; otherwise DFlash2 silently uses theta=10,000 instead of 10,000,000.
+    if "rope_parameters" in values:
+        rope = values["rope_parameters"]
+        values["rope_theta"] = rope["rope_theta"]
+        values["rope_scaling"] = {key: value for key, value in rope.items() if key != "rope_theta"}
+    return Qwen3Config.from_dict(values)
+
+
 def install_block_draft(model, method, engine_name, *, bonsai=False):
     import torch
     from mmgp import offload
-    from transformers import Qwen3Config
     from shared.utils import files_locator
     from shared.qtypes.prism import preserve_checkpoint_dtypes
     from shared.llm_engines.nanovllm.models.block_draft import BlockDraft
@@ -34,8 +48,7 @@ def install_block_draft(model, method, engine_name, *, bonsai=False):
         raise ValueError("DSpark and DFlash2 require the vLLM decoder engine; select Auto or vLLM.")
     spec = block_draft_spec(method, bonsai=bonsai)
     config_path = files_locator.locate_file(f"{spec['folder']}/config.json")
-    with open(config_path, encoding="utf-8") as f:
-        config = Qwen3Config.from_dict(json.load(f))
+    config = _load_draft_config(config_path)
     if config.hidden_size != model.config.hidden_size or config.vocab_size != model.config.vocab_size:
         raise ValueError("Draft checkpoint hidden size/vocabulary does not match the target model.")
     label = "DSpark" if method == "dspark" else "DFlash2"

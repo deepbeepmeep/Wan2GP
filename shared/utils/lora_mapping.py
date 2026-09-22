@@ -6,7 +6,7 @@ inside names such as ``transformer_blocks`` or ``to_out``.
 """
 
 
-def convert_lora_keys(state_dict, module_names, target="wangp", fused_split_map=None):
+def convert_lora_keys(state_dict, module_names, target="wangp", fused_split_map=None, split_linear_modules_map=None):
     if target not in ("wangp", "diffusers", "kohya"):
         raise ValueError(f"Unknown LoRA naming format: {target}")
     module_names = set(module_names)
@@ -15,6 +15,12 @@ def convert_lora_keys(state_dict, module_names, target="wangp", fused_split_map=
             if name == fused or name.endswith("." + fused):
                 prefix = name[:-len(fused)]
                 module_names.update(prefix + alias for alias in spec["mapped_modules"])
+        # LoRAs can also target a fused source projection when the model keeps
+        # its outputs separate. MMGP applies this map to the adapter tensors.
+        for fused, spec in (split_linear_modules_map or {}).items():
+            for split in spec["mapped_modules"]:
+                if name == split or name.endswith("." + split):
+                    module_names.add(name[:-len(split)] + fused)
     encoded = {}
     for name in module_names:
         key = name.replace(".", "_")

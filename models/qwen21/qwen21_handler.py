@@ -1,9 +1,12 @@
 import os
+from functools import lru_cache
+from urllib.parse import urlsplit
 
 import torch
 
 from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
+from shared.utils.gguf_mapping import has_standard_gguf_tensor_names, remap_state_dict_triplet
 from .enhancer import GENERATION, EDITING
 
 
@@ -11,15 +14,45 @@ ENCODER = "Qwen3-VL-8B-Instruct"
 PROJECT = "qwen_image_21"
 REPO = "DeepBeepMeep/Qwen_image_2"
 ENCODER_REPO = "DeepBeepMeep/Ideogram4"
+VISION_FILE = ENCODER + "_vision_bf16.safetensors"
 PROCESSOR_FILES = ["config_legacy.json", "tokenizer_legacy.json", "tokenizer_config_legacy.json", "preprocessor_config.json", "chat_template.jinja", "merges.txt", "vocab.json", "added_tokens.json", "special_tokens_map.json", "video_preprocessor_config.json"]
 
 
+@lru_cache(maxsize=1)
+def encoder_gguf_name_map():
+    import json
+    from accelerate import init_empty_weights
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+    from transformers.modeling_gguf_pytorch_utils import get_gguf_hf_weights_map
+
+    with open(fl.locate_file(os.path.join(ENCODER, "config_legacy.json")), encoding="utf-8") as reader:
+        text_config = json.load(reader)["text_config"]
+    # Qwen3-VL's text layers use Qwen3's GGUF names and tensor layout.
+    config = Qwen3Config(**{key: text_config[key] for key in (
+        "vocab_size", "hidden_size", "intermediate_size", "num_hidden_layers",
+        "num_attention_heads", "num_key_value_heads", "head_dim")})
+    with torch.device("cpu"), init_empty_weights():
+        model = Qwen3ForCausalLM(config)
+    return {name: target.replace("model.", "model.language_model.", 1)
+            for name, target in get_gguf_hf_weights_map(model).items()}
+
+
 def encoder_state_dict(state_dict, quantization_map=None, tied_weights_map=None):
-    """Accept shared encoder-only and original conditional-generation layouts."""
+    """Accept GGUF, shared encoder-only and conditional-generation layouts."""
+    if has_standard_gguf_tensor_names(state_dict):
+        state_dict, quantization_map, tied_weights_map = remap_state_dict_triplet(
+            state_dict, quantization_map, tied_weights_map, encoder_gguf_name_map())
+
+    def model_name(key):
+        key = key.removeprefix("model.")
+        if key.partition(".")[0] in ("embed_tokens", "layers", "norm"):
+            key = "language_model." + key
+        return "model." + key
+
     def remap(mapping):
         if mapping is None:
             return None
-        return {(key if key.startswith("model.") else "model." + key): value
+        return {model_name(key): ([model_name(item) for item in value if item != "lm_head.weight"] if isinstance(value, list) else value)
                 for key, value in mapping.items() if key != "lm_head.weight" and key != "lm_head"}
     return remap(state_dict), remap(quantization_map), remap(tied_weights_map)
 
@@ -105,8 +138,12 @@ class family_handler:
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
+        encoder_files = PROCESSOR_FILES.copy()
+        if model_def is not None and any(urlsplit(url.split("|", 1)[0]).path.lower().endswith(".gguf")
+                                         for url in model_def.get("text_encoder_URLs", [])):
+            encoder_files.append(VISION_FILE)
         return [{"repoId": REPO, "sourceFolderList": [PROJECT], "fileList": [["qwen_image_21_vae.safetensors", "vae_config.json", "scheduler_config.json"]]},
-                {"repoId": ENCODER_REPO, "sourceFolderList": [ENCODER], "fileList": [PROCESSOR_FILES]}]
+                {"repoId": ENCODER_REPO, "sourceFolderList": [ENCODER], "fileList": [encoder_files]}]
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
@@ -124,7 +161,7 @@ class family_handler:
 
     @staticmethod
     def load_model(model_filename, model_type, base_model_type, model_def, text_encoder_filename=None, save_quantized=False, quantizeTransformer=False, **kwargs):
-        from mmgp import offload
+        from mmgp import offload, quant_router
         from .text_encoder import Qwen3VLForConditionalGeneration
         from .pipeline import Qwen21Pipeline, load_processor
         from .transformer import QwenImage21Transformer2DModel
@@ -142,18 +179,25 @@ class family_handler:
         from accelerate import init_empty_weights
         with open(processor_paths["config_legacy.json"], encoding="utf-8") as reader:
             encoder_config = json.load(reader)
-        with init_empty_weights():
+        with torch.device("cpu"), init_empty_weights():
             text_encoder = Qwen3VLForConditionalGeneration(encoder_config)
         text_encoder._config = encoder_config
-        offload.load_model_data(text_encoder, text_encoder_filename, writable_tensors=False, preprocess_sd=encoder_state_dict)
+        encoder_files = [text_encoder_filename]
+        encoder_keys, _ = quant_router.load_metadata_state_dict(text_encoder_filename)
+        if not any(key.startswith(("visual.", "model.visual.")) for key in encoder_keys):
+            encoder_files.append(fl.locate_file(os.path.join(ENCODER, VISION_FILE)))
+        offload.load_model_data(text_encoder, encoder_files, writable_tensors=False, preprocess_sd=encoder_state_dict)
         vae = offload.fast_load_transformers_model(fl.locate_file(PROJECT + "/qwen_image_21_vae.safetensors"), writable_tensors=False, modelClass=AutoencoderKLQwenImage21, defaultConfigPath=fl.locate_file(PROJECT + "/vae_config.json"), default_dtype=torch.float32)
-        pipe = {"transformer": transformer, "text_encoder": text_encoder, "vae": vae}
+        text_encoder.eval().requires_grad_(False)
+        pipe = {"transformer": transformer, "text_encoder": text_encoder.model.language_model,
+                "vision_encoder": text_encoder.model.visual, "vae": vae}
         for component in pipe.values():
             component.eval().requires_grad_(False)
             component._convertWeightsFloatTo = None
             component._model_dtype = next(component.parameters()).dtype
             for module in component.modules():
                 module._lock_dtype = None
+        text_encoder._model_dtype = pipe["text_encoder"]._model_dtype
         if kwargs.get("VAE_dtype", torch.float32) != torch.float32:
             # User-requested 16-bit execution: BF16 is validated; FP16
             # overflows on real image latents. MMGP owns the conversion.

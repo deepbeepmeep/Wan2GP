@@ -6,6 +6,7 @@ import sys
 import numpy as np
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import List, Optional
 
 import torch
 from torch.utils import _pytree as pytree
@@ -1630,6 +1631,16 @@ class GGUFFirstRowsLinear(torch.nn.Module):
         return self._cached_weight.linear(input)
 
 
+@torch.library.custom_op("wangp_gguf::linear_fused", mutates_args=())
+def linear_fused(x: torch.Tensor, raw: torch.Tensor, qtype: str, shape: List[int], bias: Optional[torch.Tensor], dtype: torch.dtype, silu_mul: bool) -> torch.Tensor:
+    return _gguf_cuda_module().linear(raw, qtype, shape, x, bias, dtype, fused_output=True, silu_mul=silu_mul)
+
+
+@linear_fused.register_fake
+def _linear_fake(x, raw, qtype, shape, bias, dtype, silu_mul):
+    return x.new_empty((*x.shape[:-1], shape[0]), dtype=dtype)
+
+
 class QLinearGGUF(QModuleMixin, torch.nn.Linear):
     def __init__(
         self,
@@ -1685,8 +1696,27 @@ class QLinearGGUF(QModuleMixin, torch.nn.Linear):
             return self.weight
         return super().qweight
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor | list[torch.Tensor]) -> torch.Tensor:
+        # The existing list handoff carries pre-activation FFN input. Keep the
+        # normal module call so MMGP loads this projection before using weights.
+        silu_mul = isinstance(input, list)
+        if silu_mul:
+            handoff = input
+            input = handoff[0]
+            handoff.clear()
         qweight = self.qweight
+        optimized = getattr(self, "_use_optimized_kernels", False)
+        # Typed MMVQ stores help single-token decode; keep the established
+        # multi-token kernels for prefill and speculative verification.
+        if optimized and input.numel() == input.shape[-1] and input.is_cuda and torch.version.hip is None and isinstance(qweight, GGUFWeightTensor):
+            native = _gguf_cuda_module()
+            supports = getattr(native, "supports_linear_fusions", None)
+            if callable(supports) and supports(qweight._tensor_type.name, input.numel() // input.shape[-1], input.device.index):
+                dtype = _resolve_default_dtype(qweight._gguf_default_dtype, fallback=input.dtype)
+                return linear_fused(input, qweight._data, qweight._tensor_type.name, list(qweight._tensor_shape), self.bias, dtype, silu_mul)
+        if silu_mul:
+            from shared.llm_engines.nanovllm.layers.activation import silu_mul as apply_silu_mul
+            input = apply_silu_mul(input, use_triton=optimized)
         if isinstance(qweight, GGUFWeightTensor):
             return qweight.linear(input, bias=self.bias)
         return torch.nn.functional.linear(input, qweight, bias=self.bias)

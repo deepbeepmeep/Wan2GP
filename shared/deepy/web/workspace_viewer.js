@@ -16,7 +16,7 @@
       this.dialog.innerHTML = `<header><div class="wv-heading"><div class="wv-workspace-picker"><select data-workspace aria-label="Workspace"></select><button data-create aria-label="Add workspace" title="Add workspace">${svg('create')}</button></div><span data-summary></span></div><div class="wv-header-actions"><button data-retention aria-label="Automatic workspace archiving" title="Automatic workspace archiving">${svg('broom')}</button><button data-close aria-label="Close workspace viewer" title="Close (Esc)">${svg('close')}</button></div></header>
         <div class="wv-toolbar"><div role="tablist" aria-label="Workspace media"><button role="tab" data-source="video">Images / Videos</button><button role="tab" data-source="audio">Audio</button></div><span class="wv-spacer"></span><span data-activity></span><button data-protect aria-label="Protect workspace from automatic archiving" aria-pressed="false">${svg('unlock')}</button><button data-import>${svg('import')}Import</button><button data-refresh>Refresh</button><input data-files type="file" accept="image/*,video/*,audio/*" multiple hidden></div>
         <div class="wv-selection"><span data-count></span><button data-page-select>Select page</button><button data-clear>Clear selection</button><div data-actions hidden><button data-action="eject">${svg('eject')}Eject</button><button data-action="delete">${svg('delete')}Delete files</button><button data-action="copy">${svg('copy')}Copy to workspace</button><button data-action="move">${svg('move')}Move to workspace</button><button data-action="archive">${svg('archive')}ZIP</button><button data-action="first" title="Move selected media to the oldest end">Move to start</button><button data-action="last" title="Move selected media to the newest end">Move to end</button></div></div>
-        <p class="wv-notice" role="status" hidden></p><div class="wv-content"><section class="wv-browser" aria-label="Workspace media grid"><div class="wv-grid" role="listbox" aria-multiselectable="true" aria-label="Media"></div><div class="wv-empty" hidden>No media in this gallery. Import files to get started.</div><div class="wv-rubber" hidden></div></section><aside><h3>Media details</h3><div class="wv-preview"></div><iframe title="Generation properties" sandbox=""></iframe></aside></div>
+        <p class="wv-notice" role="status" hidden></p><div class="wv-content"><section class="wv-browser" aria-label="Workspace media grid"><div class="wv-grid" role="listbox" aria-multiselectable="true" aria-label="Media"></div><div class="wv-empty" hidden>No media in this gallery. Import files to get started.</div><div class="wv-rubber" hidden></div></section><aside><h3>Media details</h3><div class="wv-preview"></div><iframe title="Generation properties" sandbox=""></iframe><button data-extract-settings disabled title="Load the selected media's generation settings and close the workspace manager">Extract Settings</button></aside></div>
         <footer><span>Oldest → newest · Ctrl/⌘ click or drag on empty space to select · Drag tiles to reorder</span><button data-prev aria-label="Older page">←</button><label>Page <input data-page type="number" min="1" aria-label="Page number"></label><span data-pages></span><button data-next aria-label="Newer page">→</button></footer>`;
       document.body.append(this.dialog);
       this.grid = this.dialog.querySelector('.wv-grid'); this.browser = this.dialog.querySelector('.wv-browser');
@@ -27,6 +27,11 @@
       this.modal.querySelector('[data-cancel]').onclick = () => this.modal.close();
       this.modal.querySelector('form').onsubmit = event => {event.preventDefault(); this.confirm();};
       this.dialog.querySelector('[data-close]').onclick = () => this.dialog.close();
+      this.dialog.querySelector('[data-extract-settings]').onclick = () => {
+        if (this.busy || this.loading || this.selected.size !== 1) return;
+        window.__wangpAssistantChatNS.setBridgeValue('#wangp-workspace-extract-settings textarea', JSON.stringify({workspace: this.workspace, source: this.source, revision: this.state.revision, keys: [...this.selected], request: Date.now()}));
+        this.dialog.close();
+      };
       this.dialog.querySelector('[data-workspace]').onchange = event => this.changeWorkspace(event.target.value);
       this.dialog.querySelector('[data-create]').onclick = () => this.picker.open('create');
       this.picker.dialog.addEventListener('close', () => this.invalidate());
@@ -63,6 +68,7 @@
       this.dialog.querySelector('[data-next]').disabled = this.busy || this.loading || !this.state || this.state.page + 1 === this.state.pages;
       this.dialog.querySelector('[data-page]').disabled = this.busy || this.loading || !this.state;
       this.dialog.querySelector('[data-protect]').disabled = this.busy || this.loading || !this.state;
+      this.dialog.querySelector('[data-extract-settings]').disabled = this.busy || this.loading || !this.state || this.selected.size !== 1;
     }
     setBusy(value) {
       this.busy = value;
@@ -175,6 +181,7 @@
       this.anchor = key; this.selectionChanged(); this.showDetails(key);
     }
     selectionChanged() {
+      this.navigation();
       this.grid.querySelectorAll('[data-key]').forEach(tile => tile.setAttribute('aria-selected', String(this.selected.has(tile.dataset.key))));
       this.dialog.querySelector('[data-count]').textContent = `${this.selected.size} selected`;
       this.dialog.querySelector('[data-actions]').hidden = !this.selected.size;

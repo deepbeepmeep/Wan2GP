@@ -394,7 +394,7 @@ class QwenImage21Transformer2DModel(ModelMixin, ConfigMixin):
 
     def preprocess_loras(self, model_type, state_dict):
         from shared.utils.lora_mapping import convert_lora_keys
-        return convert_lora_keys(state_dict, dict(self.named_modules()))
+        return convert_lora_keys(state_dict, dict(self.named_modules()), split_linear_modules_map=self.split_linear_modules_map)
     _supports_gradient_checkpointing = True
     _no_split_modules = ['QwenImage21TransformerBlock']
     _skip_layerwise_casting_patterns = ['pos_embed', 'norm']
@@ -406,6 +406,11 @@ class QwenImage21Transformer2DModel(ModelMixin, ConfigMixin):
         super().__init__()
         self.out_channels = out_channels or in_channels
         self.inner_dim = num_attention_heads * attention_head_dim
+        # AI Toolkit / ComfyUI pack SwiGLU output rows as [gate_layer; proj].
+        # MMGP splits LoRA B and shares A, preserving the original rank/scaling.
+        self.split_linear_modules_map = {
+            "gate_up": {"mapped_modules": ("gate_layer", "proj"), "split_sizes": (self.inner_dim * mlp_ratio,) * 2},
+        }
         self.pos_embed = QwenImage21Rope(theta=10000, axes_dim=list(axes_dims_rope))
         self.time_text_embed = QwenImage21TimestepProjEmbeddings(embedding_dim=self.inner_dim)
         self.txt_in = QwenImage21TextProjection(context_in_dim, self.inner_dim, eps=eps)

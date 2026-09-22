@@ -1,5 +1,11 @@
 # Third-party code notices
 
+Optional instrumental mode uses Mothersuperior's YuE2 instrumental AR adapter:
+https://huggingface.co/Mothersuperior/YuE2-instrumental-cot-full-loras
+Upstream revision: 947f2f4. File: ar_lora_inst_v3abc.bf16.safetensors.
+Weights are CC BY-NC 4.0, derived from m-a-p/YuE2-3B. The adapter is
+downloaded only when requested and is not included in this source tree.
+
 The Oobleck decoder and SnakeBeta implementation in `vae.py` is derived
 from stable-audio-tools commit `a6ae0cdf8b2eb1567a4b42ceadddec3712d99d45`.
 The decoder retains the original activation equations and module hierarchy.

@@ -46,8 +46,13 @@ gradio-app {
     display: none;
 }
 
-/* The preview overlays a taller thumbnail grid. Its outer hidden-overflow
-   wrapper must not scroll when Chrome reveals a focused thumbnail. */
+/* The preview has its own thumbnail strip; no background grid or blur layer. */
+.gallery-container > .preview {
+    background: var(--background-fill-primary);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+/* The outer wrapper must not scroll when Chrome reveals a focused thumbnail. */
 .block:has(> .gallery-container) {
     overflow: clip;
 }
@@ -475,6 +480,26 @@ overflow-wrap: anywhere;
 user-select: text;
 }
 .compact_text {padding: calc(1px * var(--wangp-ui-scale))}
+/* Keep the compact settings label beside the prompt without shrinking the drop target. */
+.wangp-settings-upload > button[aria-dropeffect] {
+    padding-left: 50%;
+}
+.wangp-settings-upload > button[aria-dropeffect] > .wrap {
+    margin-inline: 0;
+    max-width: 100%;
+    white-space: nowrap;
+}
+.wangp-settings-upload > label.float {
+    display: block;
+    max-width: calc(50% - var(--block-label-margin));
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.wangp-settings-upload > label.float > span {
+    display: inline-block;
+    vertical-align: middle;
+}
 #video_input .video-container .container {
     flex-direction: row !important;
     display: flex !important;

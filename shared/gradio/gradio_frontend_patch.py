@@ -265,6 +265,10 @@ _PATCHES = {
         ('W[s]?.focus();', 'W[s]?.focus({preventScroll:true});'),
         # The selected image is wanted now; only offscreen thumbnails are lazy.
         ('class:n[22].caption&&"with-caption",loading:"lazy"', 'class:n[22].caption&&"with-caption",loading:"eager"'),
+        # Preview already has a thumbnail strip. Do not mount a second full
+        # media grid behind it; retain the empty wrapper's height for layout.
+        ('b=te(n[16]),u=[];', 'b=te(n[22]&&n[7]?[]:n[16]),u=[];'),
+        ('_[0]&8454274){b=te(a[16]);', '_[0]&12648706){b=te(a[22]&&a[7]?[]:a[16]);'),
         # Do not animate the strip when the selected thumbnail is already visible.
         ('Q=x-S+X/2-H/2+A.scrollLeft;A&&', 'Q=x-S+X/2-H/2+A.scrollLeft;if(x>=S&&x+X<=S+H)return;A&&'),
         ('function Re(s){switch(s.code){', 'function Re(s){if(["Escape","ArrowLeft","ArrowRight"].includes(s.code))wangpGalleryUser=true;switch(s.code){'),

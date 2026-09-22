@@ -568,10 +568,10 @@ class Attention(nn.Module):
         self.k_scale = self.v_scale = torch.tensor([])
         self._q8_speculative_metadata = {}
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, *, cache_written=False):
         context = get_context()
         k_cache, v_cache = self.k_cache, self.v_cache
-        if k_cache.numel() and v_cache.numel():
+        if not cache_written and k_cache.numel() and v_cache.numel():
             store_kvcache(k, v, k_cache, v_cache, context.slot_mapping, self.k_scale, self.v_scale, use_triton_kv_cache=self.use_triton_kv_cache)
         quantized_cache = k_cache.dtype == torch.int8
         reads_cache = context.speculative_verify or not context.is_prefill or context.block_tables is not None
@@ -680,10 +680,10 @@ class Attention(nn.Module):
                 )
         return o
 
-    def forward_list(self, qkv_list: list[torch.Tensor]):
+    def forward_list(self, qkv_list: list[torch.Tensor], *, cache_written=False):
         q, k, v = qkv_list
         qkv_list.clear()
-        return self.forward(q, k, v)
+        return self.forward(q, k, v, cache_written=cache_written)
 
 
 # Register after definitions to preserve Triton's line-number-sensitive cache keys.

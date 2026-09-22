@@ -136,7 +136,9 @@ def _autotune_is_blocked() -> bool:
 
 def _use_cg_autotune(device_index: int) -> bool:
     props = torch.cuda.get_device_properties(device_index)
-    return props.major == 12 and "RTX 50" in props.name
+    # Benchmark the same graph-replay regime on all supported NVIDIA tensor-core
+    # targets. The device fingerprint separates these results from event timing.
+    return torch.version.hip is None and props.major >= 8
 
 
 def _env_int(name: str, default: int) -> int:

@@ -18,6 +18,7 @@ from .sampling import YuE2LogitsProcessor
 from .tokenization_yue2 import YuE2TextTokenizer
 from .transformer import YuE2AR, YuE2Acoustic
 from .vae import YuE2VAE, YuE2VAEConfig
+from .loras import YuE2LoraTarget, ar_lora_signature
 
 
 class YuE2Pipeline:
@@ -61,6 +62,8 @@ class YuE2Pipeline:
         self._vae_abort_handles = [block.register_forward_hook(self._abort_after_block) for block in self.vae.decoder.layers]
         self.tokenizer = YuE2TextTokenizer(tokenizer_path)
         self.engine = TokenGenerationEngine(self.text_encoder, ar_weights, self.tokenizer, enforce_eager=lm_decoder_engine == "legacy")
+        self.lora_target = YuE2LoraTarget(self.text_encoder, self.transformer)
+        self._ar_lora_signature = None
         print(f"[YuE2] AR LM engine: {lm_decoder_engine} (CUDA graphs: {'off' if lm_decoder_engine == 'legacy' else 'on'}; Triton decoder kernels: {'on' if lm_decoder_engine == 'vllm' else 'off'}; attention: {'FlashAttention 2' if lm_decoder_engine == 'vllm' else 'PyTorch SDPA'}).")
         print(f"[YuE2] Acoustic flow: PyTorch midpoint solver; attention: {'FlashAttention 2' if lm_decoder_engine == 'vllm' else 'PyTorch SDPA'}; CUDA graphs: off.")
         self.generation_config = GenerationConfig()
@@ -78,6 +81,24 @@ class YuE2Pipeline:
 
     def _abort_requested(self):
         return self._interrupt
+
+    def get_trans_lora(self):
+        # Called before the shared loader replaces user/system adapter tensors.
+        self.engine.release_runtime_allocations()
+        self._ar_lora_signature = None
+        self.lora_target.bind()
+        return self.lora_target, None
+
+    def get_loras_transformer(self, _get_model_recursive_prop, model_def, model_mode, activated_loras, **kwargs):
+        if self.hum is not None or model_mode != 3:
+            return [], []
+        url = model_def["yue2_lora_instrumental"]
+        filenames = {"ar_lora_inst_v3abc.safetensors", "ar_lora_inst_v3abc.bf16.safetensors", "ar_lora_inst_v3abc_comfyui.safetensors"}
+        filenames.add(url.split("|", 1)[0].rsplit("/", 1)[-1].lower())
+        if any(Path(lora.split("|", 1)[0]).name.lower() in filenames for lora in activated_loras):
+            print("[YuE2] Using the selected instrumental AR LoRA and its user multiplier.")
+            return [], []
+        return [url], [1.0]
 
     def request_early_stop(self):
         self._early_stop = True
@@ -101,6 +122,10 @@ class YuE2Pipeline:
             raise ValueError(f"YuE2 {phase} prompt and generation budget exceed its {CONTEXT}-token context. Shorten the lyrics, score or duration.")
         # Trigger MMGP before the engine allocates persistent GPU state.
         self.text_encoder.model.embed_tokens(torch.tensor([prefix[0]], device="cuda"))
+        signature = ar_lora_signature(self.text_encoder)
+        if signature != self._ar_lora_signature:
+            self.engine.release_runtime_allocations()
+            self._ar_lora_signature = signature
         tokens, truncated = self.engine.generate_tokens(prefix, end_token=ABC_END if phase == "abc" else MUSIC_END, max_tokens=sampling.max_tokens, seed=seed, logits_processor=YuE2LogitsProcessor(sampling, phase, direct), negative=negative, cfg_scale=cfg_scale, callback=callback, abort_fn=self._abort_requested, stop_fn=self._early_stop_requested if phase == "semantic" else None, stop_min_tokens=sampling.min_tokens if self._early_stop else 0, progress_label="YuE2 score" if phase == "abc" else "YuE2 semantic audio", initial_cache_tokens=60 * self.frame_rate if phase == "semantic" else 0)
         self.last_truncated[phase] = truncated
         if self._early_stop and phase == "semantic":
@@ -116,7 +141,7 @@ class YuE2Pipeline:
         self._interrupt = self._early_stop = False
         self.last_plan = self.last_latents = None
         self.last_truncated = {}
-        mode = "melody" if self.hum is not None else ("full", "melody", "off")[model_mode]
+        mode = "melody" if self.hum is not None else ("full", "melody", "off", "full")[model_mode]
         carrier = None
         midi = None
         side_files = {}
@@ -128,6 +153,8 @@ class YuE2Pipeline:
         maximum = int(duration_seconds * self.frame_rate)
         sampling = replace(self.generation_config.semantic, max_tokens=maximum, min_tokens=min(200, maximum - 1), temperature=temperature, top_k=top_k, top_p=top_p)
         try:
+            if loras_slists is not None:
+                self.lora_target.validate_ar_scaling(loras_slists)
             if self.hum is not None:
                 from .hum import prosody_carrier
                 import time

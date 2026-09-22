@@ -13,6 +13,33 @@ from shared.utils.form_sync import Saved
 from shared.utils.gallery_view import gallery_offset, gallery_window
 
 
+def bind_workspace_extract(service, state, validate_prompt, prompt_inputs, save_inputs, save_values, use_settings, outputs):
+    from shared.deepy.workspace_viewer_api import ViewerAction
+
+    trigger = gr.Textbox(visible=False, elem_id='wangp-workspace-extract-settings')
+
+    def extract(payload, state_value):
+        try:
+            selection = ViewerAction.model_validate_json(payload)
+            if len(selection.keys) != 1:
+                raise ValueError('Select one media item to extract its settings.')
+            with service._mutation_lock:
+                with service.gallery_lock:
+                    viewer = service.workspace_viewer
+                    entry = viewer._entry(selection.workspace, selection.source, selection.keys[0])
+                    if selection.revision != viewer._catalog(selection.source)['revision']:
+                        raise ValueError('The gallery changed. Reopen the workspace manager and select the media again.')
+                # use_settings acquires the same non-reentrant gallery lock itself.
+                # The original action reads the full lists from state; audio still needs a packed input.
+                return use_settings(state_value, '[]' if selection.source == 'audio' else [], entry['index'], selection.source)
+        except ValueError as exc:
+            raise gr.Error(str(exc)) from exc
+
+    trigger.input(validate_prompt, inputs=prompt_inputs, outputs=[prompt_inputs[3]], show_progress='hidden').then(
+        save_inputs, inputs=save_values, outputs=None, show_progress='hidden',
+    ).then(extract, inputs=[trigger, state], outputs=outputs, show_progress='hidden')
+
+
 def bind_gallery_sync(service, state, render_gallery, outputs, *, gallery, main):
     bind_gallery_frames(service)
     gr.HTML('<span data-deepy-hybrid="/deepy/"></span>', visible=False)

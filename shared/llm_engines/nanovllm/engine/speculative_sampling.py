@@ -56,9 +56,12 @@ def sample_verified_block(runner, seq, logits, draft_tokens, draft_distributions
     graphs = getattr(self, "_speculative_acceptance_graphs", None)
     if graphs is None:
         graphs = self._speculative_acceptance_graphs = {}
-    state = graphs.get(key)
+    state = graphs.pop(key, None)
     if state is None:
-        if len(graphs) >= 4:
+        # Confidence exits and KV page boundaries can exercise every supported
+        # draft length in one request. Keep those eight shapes resident, or
+        # short blocks repeatedly evict and recapture the common full block.
+        if len(graphs) >= 8:
             graphs.pop(next(iter(graphs)))
         def mask(ids):
             value = torch.zeros(vocab, dtype=torch.bool, device=logits.device)
@@ -89,7 +92,7 @@ def sample_verified_block(runner, seq, logits, draft_tokens, draft_distributions
         with torch.cuda.graph(graph):
             packed = compute()
         state.update(graph=graph, packed=packed)
-        graphs[key] = state
+    graphs[key] = state
     state["logits"].copy_(logits)
     state["drafts"].copy_(draft_tokens)
     state["length"].fill_(n) if valid_length is None else state["length"].copy_(valid_length)
@@ -128,7 +131,7 @@ def sample_verified_block(runner, seq, logits, draft_tokens, draft_distributions
     rounds = getattr(self, counter, 0) + 1
     setattr(self, counter, rounds)
     if rounds == 1:
-        label = "MTP" if method == "mtp" else "DFlash2"
+        label = {"mtp": "MTP", "dflash": "DFlash2", "dspark": "DSpark"}[method]
         print(f"[Deepy][{label}] GPU block acceptance active (one completed-block readback).")
     emitted = tokens[:count]
     for i in range(visited):

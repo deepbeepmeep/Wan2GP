@@ -74,8 +74,8 @@ def speculative_decoding_ui_state(enhancer_enabled, quantization, engine, value,
     methods = ["auto", "disabled"]
     if prompt_enhancer_supports_speculative_decoding(enhancer_enabled):
         methods.append("mtp")
-    # Block drafters remain loadable for diagnostics, but local measurements
-    # do not justify offering them in the configuration dropdown.
+    if int(enhancer_enabled or 0) == 5 and quantization in ("gguf", "gguf_q3", "gguf_q2", "gguf_ptq1") and engine in ("", "vllm"):
+        methods.extend(BLOCK_DRAFT_METHODS)
     if isinstance(value, str) and value in SPECULATIVE_METHOD_LABELS:
         method, count = value, tokens
     else:
@@ -83,6 +83,9 @@ def speculative_decoding_ui_state(enhancer_enabled, quantization, engine, value,
     if method not in methods:
         method = "auto"
     maximum = SPECULATIVE_MAX_TOKENS.get(method, 0)
+    if method in BLOCK_DRAFT_METHODS:
+        from .block_draft import block_draft_spec
+        maximum = min(maximum, block_draft_spec(method, bonsai=quantization == "gguf_ptq1")["drafts"])
     count = min(maximum, max(1, int(count or SPECULATIVE_DEFAULT_TOKENS[method]))) if maximum else None
     # Additional residency near 32K context, including draft weights/cache/state.
     # These are approximate ranges, not a capacity check (see BONSAI_VRAM.md).
@@ -90,6 +93,8 @@ def speculative_decoding_ui_state(enhancer_enabled, quantization, engine, value,
         "auto": "0 to ~1 GiB" if "mtp" in methods else "0 GiB",
         "disabled": "0 GiB",
         "mtp": "~0.5–1 GiB",
+        "dspark": "~4–5 GiB",
+        "dflash2": "~4–5 GiB",
     }
     return [(f"{SPECULATIVE_METHOD_LABELS[item]} [+{costs[item]} VRAM]", item) for item in methods], method, list(range(1, maximum + 1)), count
 

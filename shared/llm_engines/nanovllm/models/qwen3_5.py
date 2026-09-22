@@ -946,9 +946,17 @@ class Qwen3_5Block(nn.Module):
         hidden_states = None
 
         cos, sin = position_embeddings
-        qk_list = [query_states, key_states]
-        query_states = key_states = None
-        query_states, key_states = apply_rotary_pos_emb(qk_list, cos, sin)
+        cache_written = False
+        fused_rope = False
+        if past_key_values is None and self.attn.use_triton_kv_cache and is_cuda and torch.version.hip is None:
+            from shared.kernels.qwen_rope_cache import apply_rope_cache, supported
+            fused_rope = supported(query_states, key_states, value_states, cos, sin)
+            if fused_rope:
+                cache_written = apply_rope_cache(query_states, key_states, value_states, cos, sin, self.attn, get_context().slot_mapping)
+        if not fused_rope:
+            qk_list = [query_states, key_states]
+            query_states = key_states = None
+            query_states, key_states = apply_rotary_pos_emb(qk_list, cos, sin)
 
         if isinstance(past_key_values, Qwen3_5StaticCache) and self.attn.flash_attn_with_kvcache is not None and is_cuda:
             attn_output = self.attn.flash_attn_with_kvcache(
@@ -986,7 +994,7 @@ class Qwen3_5Block(nn.Module):
                 value_states.reshape(-1, self.num_kv_heads, self.head_dim),
             ]
             query_states = key_states = value_states = None
-            attn_output = self.attn.forward_list(qkv_list).reshape(batch_size, seq_len, -1)
+            attn_output = self.attn.forward_list(qkv_list, cache_written=cache_written).reshape(batch_size, seq_len, -1)
         query_states = key_states = value_states = None
         gate.sigmoid_()
         attn_output.mul_(gate)
@@ -1018,6 +1026,9 @@ class Qwen3_5Block(nn.Module):
             has_previous_state = bool(getattr(context, "has_previous_state", False)) if context.is_prefill else True
         use_precomputed_states = has_previous_state and seq_len == 1
         speculative_verify = context.speculative_verify and cache_params is None and has_previous_state and seq_len > 1
+        use_raw_recurrent = (self._gdn_recurrent_raw is not None and is_cuda
+                             and cache_params is None and (use_precomputed_states or speculative_verify))
+        direct_recurrent_layout = use_raw_recurrent and getattr(self, "_gdn_direct_layout", True)
         if speculative_verify:
             if self.speculative_conv_state_buffer.shape[0] < seq_len - 1 or self.speculative_recurrent_state_buffer.shape[0] < seq_len - 1:
                 raise RuntimeError(f"Predictive state buffers do not cover a {seq_len}-token verification pass.")
@@ -1040,14 +1051,14 @@ class Qwen3_5Block(nn.Module):
             gate_proj, a, b = torch.split(gate_ab, [self.value_dim, self.num_v_heads, self.num_v_heads], dim=-1)
             z = gate_proj.reshape(batch_size, seq_len, -1, self.head_v_dim)
         hidden_states = None
-        if self._gguf_v_head_reordered:
+        if self._gguf_v_head_reordered and not direct_recurrent_layout:
             z = _reorder_v_head_axis_tiled_to_grouped(
                 z,
                 dim=2,
                 num_k_heads=self.num_k_heads,
                 num_v_heads=self.num_v_heads,
             )
-        if self._gguf_v_head_reordered:
+        if self._gguf_v_head_reordered and not direct_recurrent_layout:
             b = _reorder_v_heads_tiled_to_grouped(
                 b,
                 dim=-1,
@@ -1062,7 +1073,7 @@ class Qwen3_5Block(nn.Module):
                 num_v_heads=self.num_v_heads,
                 head_dim=1,
             )
-        elif self._gguf_interleave_ssm_ab:
+        elif self._gguf_interleave_ssm_ab and not direct_recurrent_layout:
             b = _interleave_axis_halves(b, dim=-1)
             a = _interleave_axis_halves(a, dim=-1)
 
@@ -1176,7 +1187,7 @@ class Qwen3_5Block(nn.Module):
         query = query.reshape(batch_size, seq_len, -1, self.head_k_dim)
         key = key.reshape(batch_size, seq_len, -1, self.head_k_dim)
         value = value.reshape(batch_size, seq_len, -1, self.head_v_dim)
-        if self._gguf_v_head_reordered:
+        if self._gguf_v_head_reordered and not direct_recurrent_layout:
             value = _reorder_v_head_axis_tiled_to_grouped(
                 value,
                 dim=2,
@@ -1184,10 +1195,9 @@ class Qwen3_5Block(nn.Module):
                 num_v_heads=self.num_v_heads,
             )
 
-        # Both decode implementations consume parameters in execution head
-        # order. Ordinary GGUF checkpoints still need these permutations;
-        # Bonsai has already prepared their order during loading.
-        ssm_a = _maybe_reorder_gguf_ssm_param(
+        # The raw recurrence addresses checkpoint heads directly. Other paths
+        # retain the established materialized execution order.
+        ssm_a = self.ssm_a if direct_recurrent_layout else _maybe_reorder_gguf_ssm_param(
             self.ssm_a,
             interleave_halves=self._gguf_interleave_ssm_ab,
             tiled_to_grouped=self._gguf_ssm_param_reordered,
@@ -1195,19 +1205,20 @@ class Qwen3_5Block(nn.Module):
             num_v_heads=self.num_v_heads,
         )
         ssm_a = -torch.exp(ssm_a.float()) if self._log_ssm_a else ssm_a
-        ssm_dt = _maybe_reorder_gguf_ssm_param(
+        ssm_dt = self.ssm_dt if direct_recurrent_layout else _maybe_reorder_gguf_ssm_param(
             self.ssm_dt,
             interleave_halves=self._gguf_interleave_ssm_ab,
             tiled_to_grouped=self._gguf_ssm_param_reordered,
             num_k_heads=self.num_k_heads,
             num_v_heads=self.num_v_heads,
         )
-        use_raw_recurrent = (self._gdn_recurrent_raw is not None and is_cuda
-                             and cache_params is None and (use_precomputed_states or speculative_verify))
         if use_raw_recurrent:
             core_attn_out, last_recurrent_state = self._gdn_recurrent_raw(
                 query, key, value, a, b, ssm_a, ssm_dt, recurrent_state,
                 self.speculative_recurrent_state_buffer if speculative_verify else None,
+                v_heads_tiled=direct_recurrent_layout and self._gguf_v_head_reordered,
+                ssm_params_tiled=direct_recurrent_layout and self._gguf_ssm_param_reordered,
+                interleave_ab=direct_recurrent_layout and self._gguf_interleave_ssm_ab,
             )
             g = beta = None
         elif self._gdn_prepare_decode is not None and use_precomputed_states and is_cuda:
@@ -1313,7 +1324,7 @@ class Qwen3_5Block(nn.Module):
         core_attn_out = z = None
         core_attn_out = _forward_gated_norm_list(self.ssm_norm, norm_state_list)
         core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
-        if self._gguf_v_head_reordered:
+        if self._gguf_v_head_reordered and not direct_recurrent_layout:
             core_attn_out = _reorder_v_heads_grouped_to_tiled(
                 core_attn_out,
                 dim=-1,
@@ -1357,7 +1368,10 @@ class Qwen3_5Block(nn.Module):
         hidden_states = None
         gate_up_list = [gate_up]
         gate_up = None
-        hidden_states = self.ffn_down(self.mlp_act_fn.forward_list(gate_up_list))
+        if self.mlp_act_fn.use_triton and getattr(self.ffn_down, "_fuse_silu_mul", False) and gate_up_list[0].numel() == gate_up_list[0].shape[-1]:
+            hidden_states = self.ffn_down(gate_up_list)
+        else:
+            hidden_states = self.ffn_down(self.mlp_act_fn.forward_list(gate_up_list))
         return hidden_states, residual
 
 

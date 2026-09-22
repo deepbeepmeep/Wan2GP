@@ -8,5 +8,6 @@
     "base_model_type": "ltx2_22B",
 	"guidance_phases": 2,
 	"settings_version": 2.58,
-    "model_type": "ltx2_22B_distilled"
+    "model_type": "ltx2_22B_distilled",
+    "prompt_enhancer": "T"
 }

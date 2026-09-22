@@ -15,6 +15,7 @@
     "type": "MiniMax H3 Ref2VA Pruned Turbo Lightx2v 8 Steps",
     "settings_version": 2.73,
     "model_type": "minimax_h3_ref2va_pruned",
+    "prompt_enhancer": "TI",
     "video_prompt_type": "I",
     "remove_background_images_ref": 0
 }

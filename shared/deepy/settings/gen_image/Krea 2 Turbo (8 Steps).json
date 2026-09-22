@@ -1,6 +1,7 @@
 {
     "settings_version": 2.73,
     "model_type": "krea2_turbo",
+    "prompt_enhancer": "T",
     "prompt": "",
     "image_mode": 1,
     "resolution": "1024x1024",

@@ -9,7 +9,7 @@
     "guidance_scale": 4.0,
     "batch_size": 1,
     "video_prompt_type": "KI",
-    "prompt_enhancer": "",
+    "prompt_enhancer": "TI",
     "activated_loras": [],
     "loras_multipliers": "",
     "remove_background_images_ref": 0,

@@ -66,5 +66,6 @@
     "type": "WanGP v11 by DeepBeepMeep - Infinitetalk Single Speaker 480p 14B",
     "settings_version": 2.55,
     "model_filename": "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_image2video_480p_14B_quanto_mbf16_int8.safetensors",
-    "model_type": "infinitetalk"
+    "model_type": "infinitetalk",
+    "prompt_enhancer": "T"
 }

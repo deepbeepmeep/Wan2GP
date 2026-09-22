@@ -30,5 +30,6 @@
     "mode": "",
     "activated_loras": [],
     "settings_version": 2.55,
-    "model_type": "index_tts2"
+    "model_type": "index_tts2",
+    "prompt_enhancer": "T"
 }

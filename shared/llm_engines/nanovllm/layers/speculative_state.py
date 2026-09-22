@@ -64,7 +64,8 @@ def conv_verify(x, state, weight, bias, snapshots):
 @triton.jit(do_not_specialize=("B", "T"), do_not_specialize_on_alignment=("B", "T"))
 def recurrent_verify_kernel(q, k, v, g, beta, initial, output, snapshots,
                             B, T, H: tl.constexpr, HV: tl.constexpr,
-                            K: tl.constexpr, V: tl.constexpr, BK: tl.constexpr, BV: tl.constexpr):
+                            K: tl.constexpr, V: tl.constexpr, BK: tl.constexpr, BV: tl.constexpr,
+                            SAVE_PREFIX: tl.constexpr):
     vblock, batch_head = tl.program_id(0), tl.program_id(1)
     batch, head_v = batch_head // HV, batch_head % HV
     head_k = head_v // (HV // H)
@@ -89,10 +90,12 @@ def recurrent_verify_kernel(q, k, v, g, beta, initial, output, snapshots,
         state += key[:, None] * value
         result = tl.sum(state * query[:, None], 0)
         tl.store(output + offset_v, result, mask=values < V)
-        if token + 1 < T:
-            tl.store(snapshots + token * B * HV * K * V + state_offset, state, mask=mask)
-        else:
-            tl.store(initial + state_offset, state, mask=mask)
+        # Triton type-checks the dynamic loop branch even for T == 1, so the
+        # optional pointer must be guarded by a compile-time condition.
+        if SAVE_PREFIX:
+            if token + 1 < T:
+                tl.store(snapshots + token * B * HV * K * V + state_offset, state, mask=mask)
+    tl.store(initial + state_offset, state, mask=mask)
 
 
 def recurrent_verify(q, k, v, g, beta, initial, snapshots):
@@ -101,7 +104,7 @@ def recurrent_verify(q, k, v, g, beta, initial, snapshots):
     b, t, h, dim_k = q.shape
     hv, dim_v = v.shape[-2:]
     output = torch.empty_like(v)
-    recurrent_verify_kernel[(triton.cdiv(dim_v, 8), b * hv)](q, k, v, g, beta, initial, output, snapshots, b, t, h, hv, dim_k, dim_v, triton.next_power_of_2(dim_k), 8, num_warps=1, num_stages=3)
+    recurrent_verify_kernel[(triton.cdiv(dim_v, 8), b * hv)](q, k, v, g, beta, initial, output, snapshots, b, t, h, hv, dim_k, dim_v, triton.next_power_of_2(dim_k), 8, snapshots is not None, num_warps=1, num_stages=3)
     return output, initial
 
 

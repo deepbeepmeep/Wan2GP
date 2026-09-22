@@ -87,6 +87,9 @@ class YuE2Pipeline:
         self.engine.release_runtime_allocations()
         self._ar_lora_signature = None
         self.lora_target.bind()
+        # Profiling only creates LoRA slots. Initialize both stages even when
+        # the shared loader skips loading because no adapters were selected.
+        offload.activate_loras(self.lora_target, [], [])
         return self.lora_target, None
 
     def get_loras_transformer(self, _get_model_recursive_prop, model_def, model_mode, activated_loras, **kwargs):

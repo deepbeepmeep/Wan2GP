@@ -267,8 +267,9 @@ class Qwen21Pipeline(QwenImage21Pipeline):
             del branch, embeds, mask, slots
             # Terminal stretching needs at least two sigma values. A single
             # step must go directly from full noise to zero without 0/0.
+            disable_terminal_shift = (custom_settings or {}).get("qwen21_shift_terminal") == "Disabled"
             scheduler = FlowMatchEulerDiscreteScheduler.from_config(
-                self.scheduler_config, **({"shift_terminal": None} if sampling_steps == 1 else {}))
+                self.scheduler_config, **({"shift_terminal": None} if sampling_steps == 1 or disable_terminal_shift else {}))
             cfg = scheduler.config
             slope = (cfg.max_shift - cfg.base_shift) / (cfg.max_image_seq_len - cfg.base_image_seq_len)
             mu = latents.shape[1] * slope + cfg.base_shift - slope * cfg.base_image_seq_len

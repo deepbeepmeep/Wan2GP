@@ -117,7 +117,7 @@ class LanPaint():
             return predict_std, predict_big
         
         if len(sigma.shape) == 0:
-            sigma = torch.tensor([sigma.item()])
+            sigma = torch.tensor([sigma.item()], device=sigma.device)
         latent_mask = 1 - latent_mask
         if IS_FLUX or IS_FLOW:
             Flow_t = sigma

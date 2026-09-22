@@ -15,6 +15,6 @@
     "loras_multipliers": "1",
     "remove_background_images_ref": 0,
     "custom_settings": {
-        "qwen21_kv_cache": "Disabled", "qwen21_shift_terminal": "Disabled", "rgba": "Disabled"
+        "qwen21_kv_cache": "Disabled", "rgba": "Disabled"
     }
 }

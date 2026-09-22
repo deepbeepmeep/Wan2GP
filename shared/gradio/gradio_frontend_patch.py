@@ -292,6 +292,9 @@ _PATCHES = {
         ('R.inputs.map(W=>No(W,J,K))', 'R.inputs.map((W,index)=>wangpMetadata&&index===1?wangpMetadata:No(W,J,K))'),
         ('else if(ne.stage==="error"){', 'else if(ne.stage==="error"){wangpMetadataSent.delete(S);'),
         ('if(d.closed)return;t(21,ce=[st("Error",String(ae)', 'wangpMetadataSent.delete(S);if(d.closed)return;t(21,ce=[st("Error",String(ae)'),
+        # Gradio already shows its lost-connection status. A failed request for
+        # each pending event would otherwise add the same error toast again.
+        ('if(ne.message){const ge=ne.message.replace(rf,', 'if(ne.message&&!ne.message.startsWith("Connection errored out.")){const ge=ne.message.replace(rf,'),
         ('function Jt(S,J=null,K=null){', 'function Jt(S,J=null,K=null){if(window.__wangpGradioStale)return;'),
         # Hide the API footer fragment (including its divider), not the API.
         ('y=l[5]&&Qi(l);', 'y=false;'),

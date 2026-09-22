@@ -240,9 +240,20 @@ class QwenImage21AttentionBlock(nn.Module):
         qkv = qkv.reshape(batch_size * time, 1, channels * 3, -1)
         qkv = qkv.permute(0, 1, 3, 2).contiguous()
         q, k, v = qkv.chunk(3, dim=-1)
-        qkv_list = [q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)]
-        del q, k, v, qkv, x
-        x = pay_attention(qkv_list, force_attention="sdpa").transpose(1, 2)
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        del qkv, x
+        if q.shape[1] > 8192:
+            # The encoder attends over the assembled bottleneck. Bound the
+            # attention matrix at 4K without changing its global key/value set.
+            attended = torch.empty_like(q)
+            for start in range(0, q.shape[1], 256):
+                check_abort()
+                stop = min(start + 256, q.shape[1])
+                attended[:, start:stop] = pay_attention([q[:, start:stop], k, v], force_attention="sdpa")
+            x = attended.transpose(1, 2)
+        else:
+            x = pay_attention([q, k, v], force_attention="sdpa").transpose(1, 2)
+        del q, k, v
         x = x.squeeze(1).permute(0, 2, 1).reshape(batch_size * time, channels, height, width)
         x = self.proj(x)
         x = x.view(batch_size, time, channels, height, width)
@@ -672,54 +683,45 @@ class AutoencoderKLQwenImage21(ModelMixin, ConfigMixin, AutoencoderMixin):
     def blend_h(self, a, b, blend_extent):
         return self._blend(a, b, blend_extent, 4)
 
-    def tiled_encode(self, x: torch.Tensor) -> AutoencoderKLOutput:
+    def tiled_encode(self, x: torch.Tensor) -> torch.Tensor:
         _, _, num_frames, height, width = x.shape
-        # Larger presets were validated for decoding. Keep encoding at the
-        # established working size until its activation budgets are measured.
-        tile_height, tile_width = min(self.tile_sample_min_height, 256), min(self.tile_sample_min_width, 256)
-        stride_height, stride_width = min(self.tile_sample_stride_height, 192), min(self.tile_sample_stride_width, 192)
-        encode_spatial_compression_ratio = self.spatial_compression_ratio
-        if self.config.patch_size is not None:
-            assert encode_spatial_compression_ratio % self.config.patch_size == 0
-            encode_spatial_compression_ratio = self.spatial_compression_ratio // self.config.patch_size
-        latent_height = height // encode_spatial_compression_ratio
-        latent_width = width // encode_spatial_compression_ratio
-        tile_latent_min_height = tile_height // encode_spatial_compression_ratio
-        tile_latent_min_width = tile_width // encode_spatial_compression_ratio
-        tile_latent_stride_height = stride_height // encode_spatial_compression_ratio
-        tile_latent_stride_width = stride_width // encode_spatial_compression_ratio
-        blend_height = tile_latent_min_height - tile_latent_stride_height
-        blend_width = tile_latent_min_width - tile_latent_stride_width
-        rows = []
-        for i in range(0, height, stride_height):
-            row = []
-            for j in range(0, width, stride_width):
-                self.clear_cache()
-                time = []
-                frame_range = 1 + (num_frames - 1) // 4
-                for k in range(frame_range):
-                    self._enc_conv_idx = [0]
-                    if k == 0:
-                        tile = x[:, :, :1, i:i + tile_height, j:j + tile_width]
-                    else:
-                        tile = x[:, :, 1 + 4 * (k - 1):1 + 4 * k, i:i + tile_height, j:j + tile_width]
-                    tile = self.encoder(tile, feat_cache=None, feat_idx=self._enc_conv_idx)
-                    tile = self.quant_conv(tile)
-                    time.append(tile)
-                row.append(torch.cat(time, dim=2))
-            rows.append(row)
+        if num_frames != 1 or self.config.patch_size is not None:
+            raise ValueError("Qwen Image 2.1 tiled VAE encoding expects one unpatched image.")
+        ratio = self.spatial_compression_ratio
+        core_height = self.tile_sample_min_height
+        core_width = self.tile_sample_min_width
+        if any(size % ratio for size in (height, width, core_height, core_width)):
+            raise ValueError("Qwen Image 2.1 tiled VAE encoding requires dimensions aligned to its spatial compression ratio.")
+        # The down path has a 281-pixel receptive field. The 160-pixel halo
+        # gives every retained feature its full local context.
+        halo = 160
+        features = None
+        for top in range(0, height, core_height):
+            for left in range(0, width, core_width):
+                patch_top = max(0, top - halo)
+                patch_left = max(0, left - halo)
+                patch_bottom = min(height, top + core_height + halo)
+                patch_right = min(width, left + core_width + halo)
+                patch = x[:, :, :, patch_top:patch_bottom, patch_left:patch_right]
+                local = self.encoder.conv_in(patch)
+                for block in self.encoder.down_blocks:
+                    local = block(local)
+                if features is None:
+                    features = local.new_empty((local.shape[0], local.shape[1], local.shape[2], height // ratio, width // ratio))
+                output_height = min(core_height, height - top) // ratio
+                output_width = min(core_width, width - left) // ratio
+                local_top = (top - patch_top) // ratio
+                local_left = (left - patch_left) // ratio
+                features[:, :, :, top // ratio:top // ratio + output_height, left // ratio:left // ratio + output_width] = (
+                    local[:, :, :, local_top:local_top + output_height, local_left:local_left + output_width]
+                )
+                del patch, local
+        # The bottleneck attention must see the entire image, not one tile.
+        features = self.encoder.mid_block(features)
+        features = self.encoder.norm_out(features)
+        features = self.encoder.nonlinearity(features)
+        enc = self.quant_conv(self.encoder.conv_out(features))
         self.clear_cache()
-        result_rows = []
-        for i, row in enumerate(rows):
-            result_row = []
-            for j, tile in enumerate(row):
-                if i > 0:
-                    tile = self.blend_v(rows[i - 1][j], tile, blend_height)
-                if j > 0:
-                    tile = self.blend_h(row[j - 1], tile, blend_width)
-                result_row.append(tile[:, :, :, :tile_latent_stride_height, :tile_latent_stride_width])
-            result_rows.append(torch.cat(result_row, dim=-1))
-        enc = torch.cat(result_rows, dim=3)[:, :, :, :latent_height, :latent_width]
         return enc
 
     def tiled_decode(self, z: torch.Tensor, return_dict: bool=True) -> DecoderOutput | torch.Tensor:

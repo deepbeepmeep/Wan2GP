@@ -9,7 +9,7 @@
         ]
     },
     "image_mode": 1,
-    "custom_settings": {"qwen21_kv_cache": "Disabled", "qwen21_shift_terminal": "Base", "rgba": "Disabled"},
+    "custom_settings": {"qwen21_kv_cache": "Disabled", "rgba": "Disabled"},
     "prompt": "A red ceramic teapot on a wooden table, soft window light, detailed product photograph.",
     "negative_prompt": " ",
     "num_inference_steps": 40,

@@ -24,6 +24,24 @@ OUTPAINTING_METHOD = "Red Canvas"  # Alternative: "Overlap Blend".
 RED_OUTPAINTING_PROMPT = "Remove the red paddings on the sides and show what's behind them."
 
 
+def viggle_turbo_lora_active(transformer, filename):
+    if not filename:
+        return False
+    filename = str(filename).replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    adapters = getattr(transformer, "_loras_adapters", None) or {}
+    scales = getattr(transformer, "_loras_scaling", None) or {}
+    for slot in getattr(transformer, "_loras_active_adapters", ()) or ():
+        path = adapters.get(str(slot), "")
+        if str(path).replace("\\", "/").rsplit("/", 1)[-1].casefold() != filename:
+            continue
+        scale = scales.get(str(slot), 0)
+        if isinstance(scale, (list, tuple)):
+            scale = any(value != 0 for value in scale)
+        if scale != 0:
+            return True
+    return False
+
+
 def red_outpainting_canvas(source, width, height, location):
     from PIL import Image
     _, _, top, left = location
@@ -137,9 +155,10 @@ def source_latent_canvas(source, width, height, location):
 
 
 class Qwen21Pipeline(QwenImage21Pipeline):
-    def __init__(self, transformer, text_encoder, vae, processor, scheduler_config):
+    def __init__(self, transformer, text_encoder, vae, processor, scheduler_config, viggle_turbo_lora_filename):
         self.transformer, self.text_encoder, self.vae = transformer, text_encoder, vae
         self.processor, self.tokenizer = processor, processor.tokenizer
+        self.viggle_turbo_lora_filename = viggle_turbo_lora_filename
         self._interrupt = False
         self.text_encoder_cache = TextEncoderCache()
         self.vae_scale_factor = 16
@@ -267,9 +286,15 @@ class Qwen21Pipeline(QwenImage21Pipeline):
             del branch, embeds, mask, slots
             # Terminal stretching needs at least two sigma values. A single
             # step must go directly from full noise to zero without 0/0.
-            disable_terminal_shift = (custom_settings or {}).get("qwen21_shift_terminal") == "Disabled"
+            from mmgp import offload
+            if loras_slists is not None:
+                from shared.utils.loras_mutipliers import update_loras_slists
+                update_loras_slists(self.transformer, loras_slists, sampling_steps)
+            viggle_active = viggle_turbo_lora_active(self.transformer, self.viggle_turbo_lora_filename)
             scheduler = FlowMatchEulerDiscreteScheduler.from_config(
-                self.scheduler_config, **({"shift_terminal": None} if sampling_steps == 1 or disable_terminal_shift else {}))
+                self.scheduler_config, **({"shift_terminal": None} if sampling_steps == 1 or viggle_active else {}))
+            if viggle_active:
+                print(f"Viggle Turbo LoRA Detected - Scheduler Terminal Shift Set To {scheduler.config.shift_terminal}")
             cfg = scheduler.config
             slope = (cfg.max_shift - cfg.base_shift) / (cfg.max_image_seq_len - cfg.base_image_seq_len)
             mu = latents.shape[1] * slope + cfg.base_shift - slope * cfg.base_image_seq_len
@@ -292,10 +317,6 @@ class Qwen21Pipeline(QwenImage21Pipeline):
             scheduler.set_begin_index(step_offset)
             timesteps = scheduler.timesteps[step_offset:]
             masked_steps = math.ceil((len(scheduler.timesteps) - first_step) * masking_strength)
-            from mmgp import offload
-            if loras_slists is not None:
-                from shared.utils.loras_mutipliers import update_loras_slists
-                update_loras_slists(self.transformer, loras_slists, sampling_steps)
             # Prefix activations depend on adapter weights, even though their timestep is zero.
             dynamic_loras = loras_slists is not None and any(isinstance(value, list) for key in ("phase1", "phase2", "phase3") for value in loras_slists.get(key, []))
             set_phase_status("Denoising")

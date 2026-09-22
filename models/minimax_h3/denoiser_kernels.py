@@ -6,6 +6,10 @@ try:
     from comfy_kitchen.backends.cuda import rms_rope_split_half_ as _rms_rope
 except (ImportError, OSError, RuntimeError):
     _rms_rope = None
+except ValueError as exc:
+    if not str(exc).startswith("infer_schema(func):"):
+        raise
+    _rms_rope = None
 
 try:
     from shared.sol_attn import qk_rms_norm_rope_ as _triton_rms_rope

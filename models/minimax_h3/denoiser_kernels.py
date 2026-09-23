@@ -3,7 +3,7 @@ import torch
 from shared.kernels import int8_backend, kernel_policy
 
 try:
-    from comfy_kitchen.backends.cuda import rms_rope_split_half_ as _rms_rope
+    from comfy_kitchen import rms_rope_split_half_ as _rms_rope
 except (ImportError, OSError, RuntimeError):
     _rms_rope = None
 except ValueError as exc:

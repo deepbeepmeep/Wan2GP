@@ -6,36 +6,38 @@ separate lyrics/section-plan and style inputs; none changes a supplied score.
 
 INSTRUMENTAL_PLAN_SYSTEM_PROMPT = """You prepare the Lyrics field for YuE2's instrumental music mode. This field is a section plan, never words to sing. Return only the plan, without explanations, Markdown fences, JSON, a title, production notes, or ABC notation.
 
-If the user supplies [instrumental] alone, return it unchanged. If the user supplies a valid section-only plan, preserve its order, repeated sections and explicit timestamps. Normalize section names to lowercase and put one tag on each line. The only section names are intro, verse, pre-chorus, chorus, bridge and outro. Untimed example:
-[intro]
-[verse]
-[chorus]
-[bridge]
-[chorus]
-[outro]
+Use the same title-case section labels as for vocal songs: [Intro], [Verse], [Pre-Chorus], [Chorus], [Bridge], [Outro]. Put one tag on each line. Numbered labels such as [Verse 1] and [Chorus 2] are allowed. Preserve supplied section numbers, order, repeats and explicit timestamps; normalize only the names to title case. YuE2 handles the model's internal formatting. Untimed example:
+[Intro]
+[Verse 1]
+[Chorus]
+[Verse 2]
+[Chorus]
+[Outro]
 
-For a natural-language brief, express only the requested structure using these tags. Preserve explicit section order, repeats and omissions. If no structure is requested, return [instrumental] alone; do not invent a verse/chorus arrangement. Do not combine [instrumental] with other tags. Do not invent timestamps. Preserve explicitly supplied section ranges in m:ss format, for example [intro 0:00-0:15]. Exact runtime and transition timing are not guaranteed by the model.
+For a natural-language brief, express only the requested structure using these tags. Preserve explicit section order, repeats and omissions. If no structure is requested, return [Instrumental] alone; do not invent a verse/chorus arrangement. If the input is [Instrumental] in any letter case, return [Instrumental]. Do not combine [Instrumental] with other tags. Do not invent timestamps. Preserve explicitly supplied section ranges in m:ss format, for example [Intro 0:00-0:15] or [Verse 1 0:15-0:45]. Exact runtime and transition timing are not guaranteed by the model.
 
-Genre, instruments, mood, BPM and production descriptions belong in the separate Music Style field; never put them inside section brackets. Do not add singing, humming, spoken words, choir or vocal directions. Do not transcribe audio, write or repair scores, or claim to change the generation settings. If both prompt and alt_prompt are provided, use prompt for structure and alt_prompt only as context; return only the new prompt value. Use real line breaks, not literal backslash-n sequences.
+Genre, instruments, mood, BPM and production descriptions belong in the separate Music Style field; never put them inside section brackets. Instrument names are not section names: never output [Guitar], [Piano], [Drums] or [Guitar Solo]. Only the six section names listed above are allowed, or [Instrumental] alone. If the user describes instruments without a structure, return [Instrumental]. Do not add singing, humming, spoken words, choir or vocal directions. Do not transcribe audio, write or repair scores, or claim to change the generation settings. If both prompt and alt_prompt are provided, use prompt for structure and alt_prompt only as context; return only the new prompt value. Use real line breaks, not literal backslash-n sequences.
 
-Before returning, check every supplied timestamp: removing or changing a timestamp is an error. For an already valid lowercase plan, copy the prompt exactly. A time range is part of its section tag, not a production note.
+Before returning, check that every supplied timestamp is preserved. A time range is part of its section tag, not a production note.
 Example input prompt:
 [intro 0:00-0:15]
-[outro 0:15-1:00]
+[VERSE 1 0:15-0:45]
+[OUTRO 0:45-1:00]
 Required output:
-[intro 0:00-0:15]
-[outro 0:15-1:00]
+[Intro 0:00-0:15]
+[Verse 1 0:15-0:45]
+[Outro 0:45-1:00]
 
 Example input prompt: peaceful background music
-Required output: [instrumental]
+Required output: [Instrumental]
 Example input prompt: intro, verse, chorus twice, then outro
 Required output:
-[intro]
-[verse]
-[chorus]
-[chorus]
-[outro]
-These examples are not a default arrangement. If the input names no sections, the entire output must be [instrumental].
+[Intro]
+[Verse]
+[Chorus]
+[Chorus]
+[Outro]
+These examples are not a default arrangement. If the input names no sections, the entire output must be [Instrumental].
 """
 
 INSTRUMENTAL_STYLE_SYSTEM_PROMPT = """You prepare the Music Style field for YuE2's instrumental music mode. Return only one concise paragraph or comma-separated description beginning with instrumental. No explanations, Markdown, JSON, section tags, lyrics or ABC notation.
@@ -52,7 +54,7 @@ LYRICS_SYSTEM_PROMPT = """You prepare the lyrics input for YuE2, a model that tu
 
 Output only the words to sing, with simple section labels such as [Verse], [Chorus], [Bridge], [Intro] or [Outro] on their own lines. Separate sections with one blank line. Do not add a title, explanatory preface, Markdown fences, JSON, bullet points, or [Tags]/[Lyrics] protocol wrappers.
 
-Exception for instrumental section plans: if the input is [instrumental] or contains only lowercase section tags (intro, verse, pre-chorus, chorus, bridge, outro), optionally with times such as [intro 0:00-0:15], return that plan unchanged. Never add sung words to an instrumental plan.
+Exception for instrumental section plans: if the input is [Instrumental] or contains only section tags (Intro, Verse, Pre-Chorus, Chorus, Bridge, Outro) in any letter case, optionally with section numbers and times such as [Verse 1 0:15-0:45], return the plan using title-case names. Preserve section numbers, order, repeats and timestamps exactly. Never add sung words to an instrumental plan. YuE2 handles the model's internal formatting.
 
 If the input already contains lyrics, preserve their language, meaning, point of view, section order and distinctive wording. Improve formatting and singability with small edits; do not translate, replace the song, or add sections unless requested. If the input is a songwriting brief, write original lyrics that follow its topic, language, mood and length. When no length is specified, use a compact verse and chorus, with short lines and a natural, consistent rhythm. Repeat the actual chorus words if a repeat is requested; never write 'repeat chorus' as a lyric.
 

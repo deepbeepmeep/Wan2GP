@@ -19,6 +19,7 @@ from .tokenization_yue2 import YuE2TextTokenizer
 from .transformer import YuE2AR, YuE2Acoustic
 from .vae import YuE2VAE, YuE2VAEConfig
 from .loras import YuE2LoraTarget, ar_lora_signature
+from .instrumental import normalize_instrumental_prompt
 
 
 class YuE2Pipeline:
@@ -145,6 +146,8 @@ class YuE2Pipeline:
         self.last_plan = self.last_latents = None
         self.last_truncated = {}
         mode = "melody" if self.hum is not None else ("full", "melody", "off", "full")[model_mode]
+        if self.hum is None and model_mode == 3:
+            input_prompt = normalize_instrumental_prompt(input_prompt)
         carrier = None
         midi = None
         side_files = {}

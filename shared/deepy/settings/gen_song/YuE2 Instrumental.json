@@ -1,7 +1,7 @@
 {
     "settings_version": 2.79,
     "model_type": "yue2",
-    "prompt": "[intro]\n[verse]\n[chorus]\n[bridge]\n[chorus]\n[outro]",
+    "prompt": "[Intro]\n[Verse]\n[Chorus]\n[Bridge]\n[Chorus]\n[Outro]",
     "alt_prompt": "instrumental, acoustic guitar, piano, gentle drums, reflective, 90 BPM",
     "image_mode": 0,
     "audio_prompt_type": "",

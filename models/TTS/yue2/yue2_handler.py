@@ -100,7 +100,7 @@ Change the seed for another performance, or keep the lyrics and change Music Sty
 
 ### Instrumental Music
 
-Select **Instrumental - Melody and Chords**, put `[instrumental]` in **Lyrics**, and describe the instruments and mood in **Music Style**, for example `instrumental, ambient, piano, soft strings, reflective`. For a chosen structure, use lowercase section tags as shown in Prompt Help. Leave source audio and the ABC file empty for automatic composition.
+Select **Instrumental - Melody and Chords**, put `[Instrumental]` in **Lyrics**, and describe the instruments and mood in **Music Style**, for example `instrumental, ambient, piano, soft strings, reflective`. For a chosen structure, use section tags such as `[Intro]`, `[Verse 1]` and `[Chorus]` as shown in Prompt Help. Leave source audio and the ABC file empty for automatic composition.
 
 The instrumental adapter downloads on first use and loads automatically at strength 1; no manual LoRA selection is needed. It plans melody and chords before composing audio. Section order and optional times guide the result but do not guarantee exact transitions. Use a short duration cap for previews or a larger cap to allow a longer piece and ending.
 
@@ -146,7 +146,7 @@ Classic modes (**Melody and chords**, **Melody only**, **Direct generation**) ac
 | `[Solo]` | Featured instrumental passage |
 | `[Outro]` | Closing section |
 
-Numbered labels such as `[Verse 1]` and `[Verse 2]`, and descriptive variants such as `[Final Chorus]` or `[saxophone solo]`, can also express structure. These are musical cues, not guaranteed controls; there is no exhaustive supported-label whitelist in classic mode. Leave instrumental passages without lyric lines and keep detailed sound instructions in Music Style. The stricter lowercase tags for the instrumental LoRA mode are listed separately below.
+Numbered labels such as `[Verse 1]` and `[Verse 2]`, and descriptive variants such as `[Final Chorus]` or `[Saxophone Solo]`, can also express structure. These are musical cues, not guaranteed controls; there is no exhaustive supported-label whitelist in classic mode. Leave instrumental passages without lyric lines and keep detailed sound instructions in Music Style. Instrumental mode uses the same capitalization and numbering conventions, with the restricted set of section names listed below. YuE2 handles its internal formatting automatically.
 
 Write the actual words to sing, not a request to write a song. Put labels on their own lines, use short singable lines, and leave a blank line between sections:
 
@@ -175,18 +175,18 @@ Use a few compatible ideas rather than conflicting styles. **Music Style** enhan
 
 ### Instrumental Prompts
 
-Only for **Instrumental - Melody and Chords**, replace sung lyrics with `[instrumental]` to let the model choose the structure, or use one lowercase section tag per line:
+Only for **Instrumental - Melody and Chords**, replace sung lyrics with `[Instrumental]` to let the model choose the structure, or use one section tag per line (the same title-case format as vocal songs):
 
 ```text
-[intro]
-[verse]
-[chorus]
-[bridge]
-[chorus]
-[outro]
+[Intro]
+[Verse]
+[Chorus]
+[Bridge]
+[Chorus]
+[Outro]
 ```
 
-Supported tags: `intro`, `verse`, `pre-chorus`, `chorus`, `bridge`, `outro`. Optional times go inside the tags, for example `[intro 0:00-0:15]` followed by `[verse 0:15-0:45]` on the next line. They guide structure without guaranteeing exact timing. Use real line breaks, no sung words or bracketed production notes, and do not combine `[instrumental]` with section tags.
+Supported tags: `[Intro]`, `[Verse]`, `[Pre-Chorus]`, `[Chorus]`, `[Bridge]`, `[Outro]`. Numbered sections such as `[Verse 1]` and `[Chorus 2]` are accepted. Capitalization is flexible; YuE2 handles it and removes section numbers internally without changing section order or repetition. Optional times go inside the tags, for example `[Intro 0:00-0:15]` followed by `[Verse 1 0:15-0:45]` on the next line. They guide structure without guaranteeing exact timing. Use real line breaks, no sung words or bracketed production notes, and do not combine `[Instrumental]` with section tags. Invalid plans report the faulty line number and its original content.
 
 Put the sound description in **Music Style**:
 
@@ -194,7 +194,7 @@ Put the sound description in **Music Style**:
 instrumental, ambient, piano, soft strings, reflective, 80 BPM
 ```
 
-Use **Instrumental Music Style** to enhance only that description. **Instrumental Section Plan** turns a structural brief such as “intro, verse, chorus twice, then outro” into tags; **Instrumental Plan then Music Style** prepares both fields. With no requested structure, plan enhancement returns `[instrumental]`. Select the instrumental option explicitly, click **Enhance**, and review the plan before generating.
+Use **Instrumental Music Style** to enhance only that description. **Instrumental Section Plan** turns a structural brief such as “intro, verse, chorus twice, then outro” into tags; **Instrumental Plan then Music Style** prepares both fields. With no requested structure, plan enhancement returns `[Instrumental]`. Select the instrumental option explicitly, click **Enhance**, and review the plan before generating.
 
 ### When Using Source Audio or a Score
 
@@ -208,7 +208,7 @@ DEEPY_INFOS = """### Classic YuE2 Songs
 `model_mode`: 0 = melody+chords (recommended); 1 = melody only/free accompaniment; 2 = direct generation without a score; 3 = instrumental planning. Mode 2 cannot use source audio/manual ABC or export a score. `duration_seconds` is an upper limit, not a target: songs may end earlier or be cut off; increase the cap or shorten lyrics if truncated. Remaining model context also limits length. More steps cost time; guidance 1 disables CFG, higher values strengthen text conditioning. Abort cancels without audio. Early Stop renders composed tokens after synthesis/decoding; during score planning it finishes the score then makes an approximately eight-second preview capped by duration.
 
 ### Instrumentals
-Mode 3 uses `[instrumental]` or a lowercase section-only plan in `prompt`, with instrumental `alt_prompt`. Its built-in AR LoRA downloads just in time at strength 1; no manual selection needed. Selecting the same adapter manually uses your multiplier instead. Times/order guide rather than guarantee transitions. Use short caps for previews or larger caps to allow longer pieces/endings.
+Mode 3 uses `[Instrumental]` or a section-only plan such as `[Intro]`, `[Verse 1]`, `[Chorus]` in `prompt`, with instrumental `alt_prompt`. Use title-case names as for classic songs; YuE2 normalizes case and removes section numbers internally while preserving times and repetition. Only the six section names listed in prompt help are allowed; instruments belong in `alt_prompt`. Its built-in AR LoRA downloads just in time at strength 1; no manual selection needed. Selecting the same adapter manually uses your multiplier instead. Times/order guide rather than guarantee transitions. Use short caps for previews or larger caps to allow longer pieces/endings.
 
 ### Source Audio and Scores
 `audio_prompt_type="A"` + `audio_guide` transcribes musical notes with SheetSage2/MERT2 in modes 0/1/3. Supply lyrics separately, aligned to the source, or a plan in mode 3. Mode 0 retains harmony; mode 1 allows freer accompaniment. Transcription can make mistakes; regeneration does not preserve waveforms or clone a singer. With no source audio, optional `custom_guide` = compatible UTF-8 `.abc` file replaces automatic planning; use Vocal/Ins voices, omit chord symbols for mode 1. Source audio hides/overrides manual ABC. Old `custom_settings.abc` text is ignored. `custom_settings.save_score=1` exports ABC/MIDI (default 0): the conditioning composition, not a transcription of final audio, possibly longer than an early-stopped result. API artifacts expose side files in memory.
@@ -219,13 +219,13 @@ Mode 3 uses `[instrumental]` or a lowercase section-only plan in `prompt`, with 
 DEEPY_PROMPT_INFOS = """Prepare generation-ready `prompt` and `alt_prompt` directly from the user's request using the rules below.
 
 ### Classic Lyrics (Modes 0/1/2)
-Use actual short, singable lines, one bracketed section label per line, and blank lines between sections. Standard sections: `[Intro]`, `[Verse]`, `[Pre-Chorus]`, `[Chorus]`, `[Post-Chorus]`, `[Bridge]`, `[Interlude]`, `[Solo]`, `[Outro]`. Numbered `[Verse 1]`/`[Verse 2]` and descriptive `[Final Chorus]`/`[saxophone solo]` are also text cues. Classic mode has no exhaustive label whitelist; labels do not guarantee behavior. Leave instrumental passages without sung lines. Repeat chorus words explicitly; keep production notes out of lyrics. When the user supplies a songwriting brief, write the finished lyrics yourself before submitting `prompt`; never submit the brief as sung text. Preserve supplied lyrics, language, meaning and section order unless the user asks for revisions. Return only lyrics and section labels in this field, without a title, explanations, Markdown fences or JSON.
+Use actual short, singable lines, one bracketed section label per line, and blank lines between sections. Standard sections: `[Intro]`, `[Verse]`, `[Pre-Chorus]`, `[Chorus]`, `[Post-Chorus]`, `[Bridge]`, `[Interlude]`, `[Solo]`, `[Outro]`. Numbered `[Verse 1]`/`[Verse 2]` and descriptive `[Final Chorus]`/`[Saxophone Solo]` are also text cues. Classic mode has no exhaustive label whitelist; labels do not guarantee behavior. Leave instrumental passages without sung lines. Repeat chorus words explicitly; keep production notes out of lyrics. When the user supplies a songwriting brief, write the finished lyrics yourself before submitting `prompt`; never submit the brief as sung text. Preserve supplied lyrics, language, meaning and section order unless the user asks for revisions. Return only lyrics and section labels in this field, without a title, explanations, Markdown fences or JSON.
 
 ### Vocal Music Style
 `alt_prompt`: language + genre + instruments + vocal character + mood, optionally tempo. Example: `English acoustic pop, warm female vocal, fingerpicked guitar, gentle drums, hopeful, 90 BPM`. Write a concise style description yourself, using the lyrics as context. Preserve the user's instruments, language, mood, exclusions and supplied tempo; add only compatible details and do not invent an exact BPM, key or meter. Avoid conflicting styles and keep lyrics, section tags and ABC notation out of this field. Vocal character does not guarantee singer identity. Change style for a new arrangement, seed for a new take; increase duration or shorten lyrics if cut off.
 
 ### Instrumental Mode 3
-`prompt`: `[instrumental]` alone or lowercase `intro`, `verse`, `pre-chorus`, `chorus`, `bridge`, `outro` tags, one per real newline; optionally `[intro 0:00-0:15]`. Do not mix `[instrumental]` with tags, add sung words, or put production notes in brackets. Unlike classic mode, this plan has a strict whitelist. Times guide rather than guarantee transitions or duration. Example style: `instrumental, ambient, piano, soft strings, reflective, 80 BPM`. Convert a structural brief into valid tags yourself, preserving requested order, repetitions and explicit times. If no structure is requested, use `[instrumental]`; do not invent timestamps or an arrangement. Preserve an existing valid plan. Write `alt_prompt` beginning with instrumental, describing genre, instruments, mood and arrangement; preserve explicit constraints and never introduce singing, speech, humming, choir or backing vocals. The AR LoRA loads automatically.
+`prompt`: `[Instrumental]` alone or `[Intro]`, `[Verse]`, `[Pre-Chorus]`, `[Chorus]`, `[Bridge]`, `[Outro]`, one per real newline. Use the same title-case format as classic songs. Numbers and times are accepted, for example `[Verse 1 0:15-0:45]`. Do not mix `[Instrumental]` with tags, add sung words, or put production notes in brackets. Unlike classic mode, only these six section names are allowed: do not emit instrument tags such as `[Guitar]` or `[Piano]`, or classic-only variants such as `[Solo]` or `[Final Chorus]`. Put instruments in `alt_prompt`. YuE2 handles capitalization and removes section numbers internally, preserving order, repeated sections and times. Times guide rather than guarantee transitions or duration. Example style: `instrumental, ambient, piano, soft strings, reflective, 80 BPM`. Convert a structural brief into valid tags yourself, preserving requested order, repetitions and explicit times. If no structure is requested, use `[Instrumental]`; do not invent timestamps or an arrangement. Preserve an existing valid plan. Write `alt_prompt` beginning with instrumental, describing genre, instruments, mood and arrangement; preserve explicit constraints and never introduce singing, speech, humming, choir or backing vocals. The AR LoRA loads automatically. If validation fails, use the reported line number and original content to correct that line; do not remove valid times or rewrite unrelated sections.
 
 ### Source Audio and Scores
 Source audio supplies notes, not words: provide lyrics with matching section order/phrasing, or a plan for mode 3. Upload notation via `custom_guide`, never either text field; use No Audio for manual ABC (source audio overrides it). `custom_settings.save_score=1` retains the ABC/MIDI composition for editing/reuse, not a transcription of the final performance. See model help for modes and score constraints.

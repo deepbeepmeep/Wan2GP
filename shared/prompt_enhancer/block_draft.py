@@ -5,9 +5,9 @@ from .config import BLOCK_DRAFT_METHODS
 
 
 BLOCK_DRAFT_ASSETS = {
-    "dspark": {"folder": "Qwen3_8_27B_DSpark", "weights": "Qwen3_8_27B_DSpark_bf16.safetensors", "drafts": 7},
-    "dflash2": {"folder": "Qwen3_8_27B_DFlash2", "weights": "Qwen3_8_27B_DFlash2_bf16.safetensors", "drafts": 7},
-    "dflash2_bonsai": {"folder": "Bonsai_2_27B_DFlash2", "weights": "Bonsai_2_27B_DFlash2_bf16.safetensors", "drafts": 5},
+    "dspark": {"folder": "Qwen3_8_27B_Uncensored", "config": "Qwen3_8_27B_DSpark.config.json", "weights": "Qwen3_8_27B_DSpark_int8_convrot.safetensors", "drafts": 7},
+    "dflash2": {"folder": "Qwen3_8_27B_Uncensored", "config": "Qwen3_8_27B_DFlash2.config.json", "weights": "Qwen3_8_27B_DFlash2_int8_convrot.safetensors", "drafts": 7},
+    "dflash2_bonsai": {"folder": "Qwen3_8_27B_Uncensored", "config": "Bonsai_2_27B_DFlash2.config.json", "weights": "Bonsai_2_27B_DFlash2_int8_convrot.safetensors", "drafts": 5},
 }
 
 
@@ -19,7 +19,7 @@ def ensure_block_draft_assets(process_files_def, method, variant, backend):
     if variant != "27b":
         raise ValueError("Parallel draft models require Qwen3.8-27B or Bonsai 2 27B.")
     spec = block_draft_spec(method, bonsai=backend == "gguf_ptq1")
-    process_files_def(repoId="DeepBeepMeep/Wan2.1", sourceFolderList=[spec["folder"]], fileList=[["config.json", spec["weights"]]])
+    process_files_def(repoId="DeepBeepMeep/Wan2.1", sourceFolderList=[spec["folder"]], fileList=[[spec["config"], spec["weights"]]])
 
 
 def _load_draft_config(config_path):
@@ -39,7 +39,7 @@ def _load_draft_config(config_path):
 
 def install_block_draft(model, method, engine_name, *, bonsai=False):
     import torch
-    from mmgp import offload
+    from mmgp import offload, quant_router
     from shared.utils import files_locator
     from shared.qtypes.prism import preserve_checkpoint_dtypes
     from shared.llm_engines.nanovllm.models.block_draft import BlockDraft
@@ -47,12 +47,14 @@ def install_block_draft(model, method, engine_name, *, bonsai=False):
     if engine_name != "vllm":
         raise ValueError("DSpark and DFlash2 require the vLLM decoder engine; select Auto or vLLM.")
     spec = block_draft_spec(method, bonsai=bonsai)
-    config_path = files_locator.locate_file(f"{spec['folder']}/config.json")
+    config_path = files_locator.locate_file(f"{spec['folder']}/{spec['config']}")
     config = _load_draft_config(config_path)
     if config.hidden_size != model.config.hidden_size or config.vocab_size != model.config.vocab_size:
         raise ValueError("Draft checkpoint hidden size/vocabulary does not match the target model.")
     label = "DSpark" if method == "dspark" else "DFlash2"
     print(f"Loading - {label} {'Bonsai 2' if bonsai and method == 'dflash2' else 'Qwen3.8'} Draft Model")
+    if spec["weights"].endswith("_int8_convrot.safetensors"):
+        quant_router.register_handler("shared.qtypes.int8_convrot")
     with torch.device("meta"):
         draft = BlockDraft(config, method)
     from transformers.models.qwen3.modeling_qwen3 import Qwen3RotaryEmbedding

@@ -42,7 +42,7 @@ Read model capabilities and, when necessary, `wangp://docs/settings/prompt-flags
 
 Discover post-processing with a media type (`image`, `video`, `audio`), Gallery ID or authorized path. A type suffices to discover actions and contracts; execution requires actual media. Action without arguments describes; an arguments object executes. Disabled processors are omitted.
 
-The media toolbox inspects, compares, transcribes, extracts, trims, resizes/crops, mutes, replaces audio, composes side by side and merges media. Inspect Media handles explicitly selected visuals; Inspect Video samples a time range. Extract frames first only when saved Gallery images are needed. Outputs follow the normal Gallery publication path; `add_to_gallery` supports authorized existing files.
+The media toolbox inspects, compares, transcribes, extracts, trims, resizes/crops, mutes, removes vocals from audio, replaces audio, composes side by side and merges media. Inspect Media handles explicitly selected visuals; Inspect Video samples a time range. Extract frames first only when saved Gallery images are needed. Outputs follow the normal Gallery publication path; `add_to_gallery` supports authorized existing files.
 
 For a requested named processor, discover with the known media type before generation when availability affects the plan. Read that processor's contract, then reuse it with the generated media ID/path. Do not search the generation model catalog for a post-processor or generate an intermediate copy just to inspect its options.
 

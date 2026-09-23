@@ -364,14 +364,14 @@ class QwenImage21Rope(nn.Module):
         freqs = torch.outer(index, 1.0 / torch.pow(theta, torch.arange(0, dim, 2, device=index.device).to(torch.float32).div(dim)))
         return torch.polar(torch.ones_like(freqs), freqs)
 
-    def forward(self, img_shapes: list[tuple[int, int, int]], image_pad_mask: torch.Tensor, device: torch.device) -> torch.Tensor:
+    def forward(self, img_shapes: list[tuple[int, int, int]], image_pad_mask: torch.Tensor, device: torch.device, target_offset: tuple[int, int]=(0, 0)) -> torch.Tensor:
         self.freqs = [freq.to(device) for freq in self.freqs]
         frame_index, height_index, width_index = ([], [], [])
         image_height_index, image_width_index = ([], [])
         cursor, position = (0, 0)
         total_len = image_pad_mask.shape[-1]
         is_image_token = image_pad_mask.tolist()
-        for _, height, width in img_shapes:
+        for image_index, (_, height, width) in enumerate(img_shapes):
             block_start = is_image_token.index(True, cursor)
             text_len = block_start - cursor
             frame_index.extend(range(position, position + text_len))
@@ -379,8 +379,9 @@ class QwenImage21Rope(nn.Module):
             cursor = block_start + height * width
             frame_index.extend([position] * (height * width))
             position += max(height, width)
-            image_height_index.extend([h for h in range(-(height - height // 2), height // 2) for _ in range(width)])
-            image_width_index.extend([w for _ in range(height) for w in range(-(width - width // 2), width // 2)])
+            y_offset, x_offset = target_offset if image_index == len(img_shapes) - 1 else (0, 0)
+            image_height_index.extend([h + y_offset for h in range(-(height - height // 2), height // 2) for _ in range(width)])
+            image_width_index.extend([w + x_offset for _ in range(height) for w in range(-(width - width // 2), width // 2)])
         if cursor < total_len:
             frame_index.extend(range(position, position + total_len - cursor))
         frame_index = torch.tensor(frame_index, dtype=torch.long, device=device)
@@ -434,7 +435,7 @@ class QwenImage21Transformer2DModel(ModelMixin, ConfigMixin):
         target_token_mask[image_positions[-block_lengths[-1]:]] = True
         return (image_ids, target_token_mask)
 
-    def _prepare(self, hidden_states: torch.Tensor, encoder_hidden_states: torch.Tensor, timestep: torch.Tensor, img_shapes: list[list[tuple[int, int, int]]], img_mask: torch.Tensor, encoder_hidden_states_mask: torch.Tensor | None=None, attention_kwargs: dict[str, Any] | None=None, kv_cache: QwenImage21KVCache | None=None, kv_cache_mode: str | None=None, return_dict: bool=True) -> torch.Tensor | Transformer2DModelOutput:
+    def _prepare(self, hidden_states: torch.Tensor, encoder_hidden_states: torch.Tensor, timestep: torch.Tensor, img_shapes: list[list[tuple[int, int, int]]], img_mask: torch.Tensor, encoder_hidden_states_mask: torch.Tensor | None=None, attention_kwargs: dict[str, Any] | None=None, kv_cache: QwenImage21KVCache | None=None, kv_cache_mode: str | None=None, return_dict: bool=True, target_rope_offset: tuple[int, int]=(0, 0)) -> torch.Tensor | Transformer2DModelOutput:
         if kv_cache_mode == 'cached':
             rotary_emb, attention_mask, target_tokens = kv_cache.layout
             hidden_states = self.img_in(hidden_states[:, -target_tokens:])
@@ -455,7 +456,7 @@ class QwenImage21Transformer2DModel(ModelMixin, ConfigMixin):
         joint_hidden_states = torch.cat([encoder_hidden_states, encoder_hidden_states.new_zeros(batch_size, target_tokens // 4, encoder_hidden_states.shape[2])], dim=1)
         joint_hidden_states = joint_hidden_states.repeat_interleave(repeats, dim=1)
         joint_hidden_states[:, image_pad_mask] = hidden_states
-        rotary_emb = self.pos_embed(img_shapes[0], image_pad_mask, device=hidden_states.device)
+        rotary_emb = self.pos_embed(img_shapes[0], image_pad_mask, device=hidden_states.device, target_offset=target_rope_offset)
         image_ids, target_token_mask = self.build_token_metadata(image_pad_mask, img_shapes[0])
         timestep = timestep.to(hidden_states.dtype)
         if self.config.causal_condition:
@@ -488,8 +489,8 @@ class QwenImage21Transformer2DModel(ModelMixin, ConfigMixin):
             kv_cache.layout = (rotary_emb[prefix_len:].clone(), None if joint_key_valid is None else joint_key_valid[:, None, None, :], target_tokens)
         return dict(hidden_states=joint_hidden_states, modulation=modulation, rotary_emb=rotary_emb, attention_mask=attention_mask, target_token_mask=modulation_mask, target_start=prefix_len if modulation_mask is not None else None, kv_cache=kv_cache, kv_cache_mode=kv_cache_mode, cache_write_slice=cache_write_slice, segments=block_segments, key_valid=block_key_valid), temb
 
-    def forward(self, hidden_states=None, encoder_hidden_states=None, timestep=None, img_shapes=None, img_mask=None, encoder_hidden_states_mask=None, attention_kwargs=None, kv_cache=None, kv_cache_mode=None, return_dict=True, branches=None, nag_parameters=None):
-        inputs = branches if branches is not None else [dict(hidden_states=hidden_states, encoder_hidden_states=encoder_hidden_states, timestep=timestep, img_shapes=img_shapes, img_mask=img_mask, encoder_hidden_states_mask=encoder_hidden_states_mask, attention_kwargs=attention_kwargs, kv_cache=kv_cache, kv_cache_mode=kv_cache_mode)]
+    def forward(self, hidden_states=None, encoder_hidden_states=None, timestep=None, img_shapes=None, img_mask=None, encoder_hidden_states_mask=None, attention_kwargs=None, kv_cache=None, kv_cache_mode=None, return_dict=True, branches=None, nag_parameters=None, target_rope_offset=(0, 0)):
+        inputs = branches if branches is not None else [dict(hidden_states=hidden_states, encoder_hidden_states=encoder_hidden_states, timestep=timestep, img_shapes=img_shapes, img_mask=img_mask, encoder_hidden_states_mask=encoder_hidden_states_mask, attention_kwargs=attention_kwargs, kv_cache=kv_cache, kv_cache_mode=kv_cache_mode, target_rope_offset=target_rope_offset)]
         negative_state = None
         negative_cache = None
         temporary_negative_cache = False

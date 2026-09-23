@@ -17,11 +17,27 @@ from shared.utils.text_encoder_cache import TextEncoderCache
 
 
 OUTPAINTING_ALIGNMENT = 32
-# Developer-only fallback; generation settings cannot override this choice.
-OUTPAINTING_METHOD = "Red Canvas"  # Alternative: "Overlap Blend".
+# Developer-only choice; generation settings cannot override this choice.
+OUTPAINTING_METHOD = "Red Canvas"  # Alternative: "Reference".
 
 
 RED_OUTPAINTING_PROMPT = "Remove the red paddings on the sides and show what's behind them."
+
+
+def reference_outpainting_offset(location, width, height):
+    """Align the target RoPE grid with the source at its requested canvas position."""
+    source_height, source_width, top, left = location
+    target_height, target_width = height // 16, width // 16
+    source_height, source_width = source_height // 16, source_width // 16
+    return (target_height - target_height // 2 - top // 16 - (source_height - source_height // 2),
+            target_width - target_width // 2 - left // 16 - (source_width - source_width // 2))
+
+
+def reference_outpainting_instruction(location, width, height):
+    source_height, source_width, top, left = location
+    sides = [name for name, present in (("top", top > 0), ("bottom", top + source_height < height),
+                                       ("left", left > 0), ("right", left + source_width < width)) if present]
+    return f"Extend the scene in <image1> beyond its {', '.join(sides)} border{'s' if len(sides) > 1 else ''} to fill the larger canvas. Keep its existing content, lighting, and perspective."
 
 
 def viggle_turbo_lora_active(transformer, filename):
@@ -205,9 +221,8 @@ class Qwen21Pipeline(QwenImage21Pipeline):
         output_channels = 4 if (custom_settings or {}).get("rgba", "Disabled") == "Enabled" else 3
         use_kv_cache = (custom_settings or {}).get("qwen21_kv_cache", "Disabled") == "Enabled"
         border_method = OUTPAINTING_METHOD
-        if border_method not in ("Red Canvas", "Overlap Blend"):
+        if border_method not in ("Red Canvas", "Reference"):
             raise ValueError(f"Unknown outpainting border method: {border_method}")
-        use_overlap = border_method == "Overlap Blend"
         generator = torch.Generator(device=device).manual_seed(seed)
         images = list(input_ref_images) if input_ref_images else []
         if input_frames is not None:
@@ -217,12 +232,18 @@ class Qwen21Pipeline(QwenImage21Pipeline):
         if width % 32 or height % 32:
             raise ValueError("Qwen Image 2.1 dimensions must be multiples of 32.")
         images, source_location = crop_outpainting_source(images, width, height, outpainting_dims)
-        instruction_outpainting = source_location is not None and not use_overlap
+        instruction_outpainting = source_location is not None and border_method == "Red Canvas"
+        reference_outpainting = source_location is not None and border_method == "Reference"
+        target_rope_offset = reference_outpainting_offset(source_location, width, height) if reference_outpainting else (0, 0)
         if instruction_outpainting:
             images[0] = red_outpainting_canvas(images[0], width, height, source_location)
             input_masks = interior_edit_mask(input_masks, source_location)
             if RED_OUTPAINTING_PROMPT not in input_prompt:
                 input_prompt = input_prompt.rstrip().rstrip(".") + ". " + RED_OUTPAINTING_PROMPT
+        elif reference_outpainting:
+            if input_masks is not None:
+                raise ValueError("Reference outpainting cannot combine an edit mask; use Red Canvas for masked edits.")
+            input_prompt = input_prompt.rstrip().rstrip(".") + ". " + reference_outpainting_instruction(source_location, width, height)
         reference_pixels = max((image.width * image.height for image in images), default=0)
         self.vae.configure_tiling(VAE_tile_size, width, height, batch_size,
                                   reference_pixels=reference_pixels)
@@ -243,8 +264,9 @@ class Qwen21Pipeline(QwenImage21Pipeline):
                 encoded = self.vae.encode(pixels).latent_dist.mode()
                 mean, std = self._vae_stats(encoded)
                 encoded = (encoded - mean) / std
-                if image_index == 0 and (input_masks is not None or (source_location is not None and not instruction_outpainting)):
-                    original = source_latent_canvas(encoded, width, height, source_location if use_overlap else None).flatten(2).transpose(1, 2).expand(batch_size, -1, -1)
+                if image_index == 0 and (input_masks is not None or reference_outpainting):
+                    source_latents = source_latent_canvas(encoded, width, height, source_location if reference_outpainting else None)
+                    original = source_latents.flatten(2).transpose(1, 2).expand(batch_size, -1, -1)
                 shapes.append((1, encoded.shape[-2], encoded.shape[-1]))
                 condition_latents.append(encoded.flatten(2).transpose(1, 2).expand(batch_size, -1, -1))
                 del encoded, pixels, mean, std
@@ -252,33 +274,28 @@ class Qwen21Pipeline(QwenImage21Pipeline):
             latents = torch.randn((batch_size, 64, height // 16, width // 16), device=device, dtype=dtype, generator=generator).flatten(2).transpose(1, 2)
             condition = torch.cat(condition_latents, dim=1).to(dtype) if condition_latents else None
             original = original.to(dtype) if original is not None else None
-            latent_mask = noise_source = outpainting_mask = user_mask = None
-            source_edit_mask = None
+            latent_mask = noise_source = user_mask = reference_anchor_mask = None
             if input_masks is not None:
                 from PIL import Image
                 mask_image = convert_tensor_to_image(input_masks, mask_levels=True).convert("L")
-                source_edit_mask = mask_image
                 mask_image = mask_image.resize((width // 16, height // 16), Image.Resampling.LANCZOS)
                 latent_mask = torch.from_numpy(np.array(mask_image, copy=True)).to(device=device).gt(64).to(dtype).reshape(1, -1, 1)
                 user_mask = latent_mask
-            if source_location is not None and not instruction_outpainting:
+            if reference_outpainting:
                 source_height, source_width, top, left = source_location
-                outpainting_mask = latents.new_ones(1, height // 16, width // 16)
-                overlap = outpainting_overlap(source_location, width, height) if use_overlap else (0, 0, 0, 0)
-                upper, lower, leading, trailing = overlap
-                keep_top = top + upper
-                keep_left = left + leading
-                keep_bottom = top + source_height - lower
-                keep_right = left + source_width - trailing
-                outpainting_mask[:, keep_top // 16:keep_bottom // 16, keep_left // 16:keep_right // 16] = 0
-                outpainting_mask = outpainting_mask.reshape(1, -1, 1)
-                latent_mask = outpainting_mask if latent_mask is None else torch.maximum(latent_mask, outpainting_mask)
+                upper, lower, leading, trailing = outpainting_overlap(source_location, width, height)
+                reference_anchor_mask = latents.new_ones(1, height // 16, width // 16)
+                reference_anchor_mask[:, (top + upper) // 16:(top + source_height - lower) // 16,
+                                      (left + leading) // 16:(left + source_width - trailing) // 16] = 0
+                reference_anchor_mask = reference_anchor_mask.reshape(1, -1, 1)
+                noise_source = latents.clone()
             del condition_latents
             shapes.append((1, height // 16, width // 16))
             for branch in branches:
                 slots = branch["img_mask"]
                 branch["img_mask"] = torch.cat([slots, slots.new_ones(slots.shape[0], latents.shape[1] // 4)], dim=1)
                 branch["img_shapes"] = [shapes] * batch_size
+                branch["target_rope_offset"] = target_rope_offset
                 cache = QwenImage21KVCache(len(self.transformer.transformer_blocks)) if use_kv_cache else None
                 branch["kv_cache"] = cache
                 if cache is not None:
@@ -308,12 +325,12 @@ class Qwen21Pipeline(QwenImage21Pipeline):
                     denoising_strength = masking_strength = 1.0
                 first_step = min(int(sampling_steps * (1 - denoising_strength)), sampling_steps - 1)
                 noise_source = latents.clone()
-                if outpainting_mask is None and not instruction_outpainting:
+                if not instruction_outpainting:
                     sigma = scheduler.sigmas[first_step]
                     latents = original * (1 - sigma) + noise_source * sigma
             # New margins always start from full noise, even when an inner
             # masked edit uses a lower denoising strength (as in Krea2).
-            step_offset = 0 if outpainting_mask is not None or instruction_outpainting else first_step
+            step_offset = 0 if instruction_outpainting else first_step
             scheduler.set_begin_index(step_offset)
             timesteps = scheduler.timesteps[step_offset:]
             masked_steps = math.ceil((len(scheduler.timesteps) - first_step) * masking_strength)
@@ -349,30 +366,27 @@ class Qwen21Pipeline(QwenImage21Pipeline):
                 noise = combine(positive, negative, guide_scale, timestep)
                 latents = scheduler.step(noise, timestep, latents, return_dict=False)[0]
                 absolute_step = step_offset + i
-                step_mask = outpainting_mask if absolute_step < first_step else latent_mask
+                step_mask = latent_mask
                 if instruction_outpainting:
                     # Delay only painted interior pixels until their requested
                     # noise level. The red margins always run the full schedule.
                     step_mask = 1 - user_mask if user_mask is not None and absolute_step < first_step else None
-                if step_mask is not None and absolute_step < first_step + masked_steps:
+                if reference_anchor_mask is not None:
                     sigma = scheduler.sigmas[absolute_step + 1]
-                    if source_location is not None and use_overlap:
-                        # Anchor composition while noise is high. Releasing a wide
-                        # band immediately can relocate subjects and create ghosts.
-                        step_mask = step_mask.reshape(1, height // 16, width // 16).clone()
-                        region = step_mask[:, top // 16:(top + source_height) // 16, left // 16:(left + source_width) // 16]
-                        band = outpainting_mask.reshape(1, height // 16, width // 16)[:, top // 16:(top + source_height) // 16, left // 16:(left + source_width) // 16]
-                        region.mul_(1 - band * (1 - (1 - sigma).pow(4)))
-                        # The crop's VAE edge needs full regeneration throughout;
-                        # otherwise its padding artifacts become a dotted outline.
-                        if upper: region[:, :2, :] = 1
-                        if lower: region[:, -2:, :] = 1
-                        if leading: region[:, :, :2] = 1
-                        if trailing: region[:, :, -2:] = 1
-                        if source_edit_mask is not None and absolute_step >= first_step:
-                            # Painted edits retain the user's normal noise schedule.
-                            step_mask = torch.maximum(step_mask, user_mask.reshape(1, height // 16, width // 16))
-                        step_mask = step_mask.reshape(1, -1, 1)
+                    # Keep the source core on the same fixed-noise trajectory.
+                    # Release a wide border band gradually for a coherent join.
+                    step_mask = reference_anchor_mask.reshape(1, height // 16, width // 16).clone()
+                    region = step_mask[:, top // 16:(top + source_height) // 16, left // 16:(left + source_width) // 16]
+                    region.mul_((1 - sigma).pow(4))
+                    # Cropped VAE edge features must be regenerated at every step.
+                    if upper: region[:, :2, :] = 1
+                    if lower: region[:, -2:, :] = 1
+                    if leading: region[:, :, :2] = 1
+                    if trailing: region[:, :, -2:] = 1
+                    step_mask = step_mask.reshape(1, -1, 1)
+                if step_mask is not None and (reference_anchor_mask is not None or absolute_step < first_step + masked_steps):
+                    if reference_anchor_mask is None:
+                        sigma = scheduler.sigmas[absolute_step + 1]
                     known = original * (1 - sigma) + noise_source * sigma
                     latents = known * (1 - step_mask) + latents * step_mask
                 if callback:
@@ -390,12 +404,9 @@ class Qwen21Pipeline(QwenImage21Pipeline):
                 tile_count = math.ceil((height // 16) / (self.vae.tile_sample_stride_height // 16)) * math.ceil((width // 16) / (self.vae.tile_sample_stride_width // 16))
             print(f"VAE Decoding - {batch_size * tile_count} {'Tiles' if tile_count > 1 else 'Images'}")
             latent_holder = [latents]
-            del latents, condition, positive, negative, noise, original, latent_mask, noise_source, outpainting_mask, step_mask, user_mask
+            del latents, condition, positive, negative, noise, original, latent_mask, noise_source, reference_anchor_mask, step_mask, user_mask
             with vae_decoding_progress(batch_size * tile_count, self.vae.decoder, cleanup=self.vae.clear_cache):
                 output = self.vae.decode_to_cpu_uint8(latent_holder, output_channels=output_channels)[:, :, 0]
-            if source_location is not None and use_overlap:
-                set_phase_status("Blending Outpainting Borders")
-                restore_outpainting_source(output, images[0], source_location, overlap, source_edit_mask)
             return output.transpose(0, 1)
         finally:
             for cache in caches:

@@ -24,12 +24,14 @@ def _prepare_separator_input(src_path: str, min_seconds: float):
     duration = librosa.get_duration(path=src_path)
     use_path = src_path
     temp_path = None
+    original_duration = None
 
     if duration < min_seconds:
         # Load (resample) and pad in memory
         y, sr = librosa.load(src_path, sr=None, mono=False)
         if y.ndim == 1:  # ensure shape (channels, samples)
             y = y[np.newaxis, :]
+        original_duration = y.shape[1] / sr
         target_len = int(min_seconds * sr)
         pad = max(0, target_len - y.shape[1])
         if pad:
@@ -41,7 +43,7 @@ def _prepare_separator_input(src_path: str, min_seconds: float):
         sf.write(temp_path, y.T, sr)  # soundfile expects (frames, channels)
         use_path = temp_path
 
-    return use_path, temp_path
+    return use_path, temp_path, original_duration
 
 
 def extract_vocal_and_background_stems(src_path: str, vocals_dst_path: str, background_dst_path: str, min_seconds: float = 8) -> tuple[str, str]:
@@ -57,7 +59,7 @@ def extract_vocal_and_background_stems(src_path: str, vocals_dst_path: str, back
     sep = None
     temp_path = None
     try:
-        use_path, temp_path = _prepare_separator_input(src_path, min_seconds)
+        use_path, temp_path, _ = _prepare_separator_input(src_path, min_seconds)
         sep = Separator(
             output_dir=str(vocals_dst.parent),
             output_format=(vocals_dst.suffix.lstrip(".") or "wav"),
@@ -79,12 +81,8 @@ def extract_vocal_and_background_stems(src_path: str, vocals_dst_path: str, back
         torch.set_default_device(default_device)
 
 
-def get_vocals(src_path: str, dst_path: str, min_seconds: float = 8) -> str:
-    """
-    If the source audio is shorter than `min_seconds`, pad with trailing silence
-    in a temporary file, then run separation and save only the vocals to dst_path.
-    Returns the full path to the vocals file.
-    """
+def _get_single_stem(src_path: str, dst_path: str, stem: str, min_seconds: float = 8) -> str:
+    """Separate audio and save only the requested stem to ``dst_path``."""
 
     process_files_def_if_needed(query_download_def())
     default_device = torch.get_default_device()
@@ -96,18 +94,24 @@ def get_vocals(src_path: str, dst_path: str, min_seconds: float = 8) -> str:
     sep = None
     temp_path = None
     try:
-        use_path, temp_path = _prepare_separator_input(src_path, min_seconds)
-        # Run separation: emit only the vocals, with your exact filename
+        use_path, temp_path, original_duration = _prepare_separator_input(src_path, min_seconds)
+        # Run separation: emit only the selected stem with the requested filename.
         sep = Separator(
             output_dir=str(dst.parent),
             output_format=(dst.suffix.lstrip(".") or "wav"),
-            output_single_stem="Vocals",
+            output_single_stem=stem,
             model_file_dir=fl.locate_folder("roformer")
         )
         sep.load_model()
-        out_files = sep.separate(use_path, {"Vocals": dst.stem})
+        out_files = sep.separate(use_path, {stem: dst.stem})
 
-        return str(_resolve_separator_output(out_files[0], dst.parent))
+        output_path = _resolve_separator_output(out_files[0], dst.parent)
+        if original_duration is not None:
+            output_info = sf.info(output_path)
+            output_frames = min(output_info.frames, round(original_duration * output_info.samplerate))
+            samples, _ = sf.read(output_path, frames=output_frames, always_2d=True)
+            sf.write(output_path, samples, output_info.samplerate, subtype=output_info.subtype)
+        return str(output_path)
     finally:
         if sep is not None:
             del sep
@@ -117,6 +121,16 @@ def get_vocals(src_path: str, dst_path: str, min_seconds: float = 8) -> str:
         torch.cuda.empty_cache()
         gc.collect()
         torch.set_default_device(default_device)
+
+
+def get_vocals(src_path: str, dst_path: str, min_seconds: float = 8) -> str:
+    """Save the vocal stem, padding short inputs for the separator if needed."""
+    return _get_single_stem(src_path, dst_path, "Vocals", min_seconds)
+
+
+def get_instrumental(src_path: str, dst_path: str, min_seconds: float = 8) -> str:
+    """Save the instrumental stem, removing the separated vocals."""
+    return _get_single_stem(src_path, dst_path, "Instrumental", min_seconds)
 
 # Example:
 # final = extract_vocals("in/clip.mp3", "out/vocals.wav")

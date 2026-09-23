@@ -3105,6 +3105,21 @@ class DeepyZeroTools:
         return result
 
     @assistant_tool(
+        display_name="Remove Vocals",
+        description="Create an instrumental audio copy of a previously resolved audio item by separating and removing its vocal stem.",
+        parameters={
+            "media_id": {
+                "type": "string",
+                "description": "The media id for the source audio returned by Resolve Media.",
+            },
+        },
+    )
+    def remove_vocals(self, media_id: str) -> dict[str, Any]:
+        from postprocessing.audio_processors import REMOVE_VOCALS_METHOD
+
+        return self.postprocessing(media_id, REMOVE_VOCALS_METHOD)
+
+    @assistant_tool(
         display_name="Generate Image",
         description="Queue and generate an image from a text prompt inside WanGP, then wait until the output image is available.",
         parameters={

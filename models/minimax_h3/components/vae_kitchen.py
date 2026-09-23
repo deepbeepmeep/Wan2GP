@@ -3,7 +3,7 @@ import torch
 from shared.kernels import kernel_policy
 
 try:
-    from comfy_kitchen.backends.cuda import group_norm_silu_pad3d as _group_norm_silu_pad3d
+    from comfy_kitchen import group_norm_silu_pad3d as _group_norm_silu_pad3d
 except (ImportError, OSError, RuntimeError):
     _group_norm_silu_pad3d = None
 except ValueError as exc:
@@ -12,7 +12,7 @@ except ValueError as exc:
     _group_norm_silu_pad3d = None
 
 try:
-    from comfy_kitchen.backends.cuda import rms_rope_split_half_ as _rms_rope
+    from comfy_kitchen import rms_rope_split_half_ as _rms_rope
 except (ImportError, OSError, RuntimeError):
     _rms_rope = None
 except ValueError as exc:

@@ -7,6 +7,10 @@
   icons.unlock = '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0M12 14v3"/>';
   icons.create = '<path d="M12 5v14M5 12h14"/>';
   icons.move = '<path d="M14 3H3v18h11M9 12h12m-5-5 5 5-5 5"/>';
+  icons.first = '<path d="m11 19-9-7 9-7v14Zm10 0-9-7 9-7v14Z"/>';
+  icons.last = '<path d="m13 5 9 7-9 7V5ZM3 5l9 7-9 7V5Z"/>';
+  icons.fullscreen = '<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>';
+  icons.minimize = '<path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>';
   class WorkspaceViewer {
     constructor(picker, transport) {
       this.picker = picker; this.transport = transport; this.source = 'video'; this.selections = {video: new Set(), audio: new Set()}; this.requestId = 0;
@@ -15,7 +19,7 @@
       this.dialog = document.createElement('dialog'); this.dialog.className = 'wangp-workspace-viewer'; this.dialog.ariaLabel = 'Workspace media viewer';
       this.dialog.innerHTML = `<header><div class="wv-heading"><div class="wv-workspace-picker"><select data-workspace aria-label="Workspace"></select><button data-create aria-label="Add workspace" title="Add workspace">${svg('create')}</button></div><span data-summary></span></div><div class="wv-header-actions"><button data-retention aria-label="Automatic workspace archiving" title="Automatic workspace archiving">${svg('broom')}</button><button data-close aria-label="Close workspace viewer" title="Close (Esc)">${svg('close')}</button></div></header>
         <div class="wv-toolbar"><div role="tablist" aria-label="Workspace media"><button role="tab" data-source="video">Images / Videos</button><button role="tab" data-source="audio">Audio</button></div><span class="wv-spacer"></span><span data-activity></span><button data-protect aria-label="Protect workspace from automatic archiving" aria-pressed="false">${svg('unlock')}</button><button data-import>${svg('import')}Import</button><button data-refresh>Refresh</button><input data-files type="file" accept="image/*,video/*,audio/*" multiple hidden></div>
-        <div class="wv-selection"><span data-count></span><button data-page-select>Select page</button><button data-clear>Clear selection</button><div data-actions hidden><button data-action="eject">${svg('eject')}Eject</button><button data-action="delete">${svg('delete')}Delete files</button><button data-action="copy">${svg('copy')}Copy to workspace</button><button data-action="move">${svg('move')}Move to workspace</button><button data-action="archive">${svg('archive')}ZIP</button><button data-action="first" title="Move selected media to the oldest end">Move to start</button><button data-action="last" title="Move selected media to the newest end">Move to end</button></div></div>
+        <div class="wv-selection"><span data-count></span><button data-page-select>Select page</button><button data-clear>Clear selection</button><div data-actions hidden><button data-action="eject">${svg('eject')}Eject</button><button data-action="delete">${svg('delete')}Delete files</button><button data-action="copy">${svg('copy')}Copy to workspace</button><button data-action="move">${svg('move')}Move to workspace</button><button data-action="archive">${svg('archive')}ZIP</button><button data-action="first" title="Move selected media to the oldest end">${svg('first')}Move to start</button><button data-action="last" title="Move selected media to the newest end">${svg('last')}Move to end</button></div></div>
         <p class="wv-notice" role="status" hidden></p><div class="wv-content"><section class="wv-browser" aria-label="Workspace media grid"><div class="wv-grid" role="listbox" aria-multiselectable="true" aria-label="Media"></div><div class="wv-empty" hidden>No media in this gallery. Import files to get started.</div><div class="wv-rubber" hidden></div></section><aside><h3>Media details</h3><div class="wv-preview"></div><iframe title="Generation properties" sandbox=""></iframe><button data-extract-settings disabled title="Load the selected media's generation settings and close the workspace manager">Extract Settings</button></aside></div>
         <footer><span>Oldest → newest · Ctrl/⌘ click or drag on empty space to select · Drag tiles to reorder</span><button data-prev aria-label="Older page">←</button><label>Page <input data-page type="number" min="1" aria-label="Page number"></label><span data-pages></span><button data-next aria-label="Newer page">→</button></footer>`;
       document.body.append(this.dialog);
@@ -195,18 +199,53 @@
       const request = this.detailRequest = new AbortController();
       this.preview.replaceChildren();
       if (item.url) {
-        const open = document.createElement('button'); open.type = 'button'; open.className = 'wv-open';
-        open.append(WanGPMediaView.thumbnail(item));
-        const label = document.createElement('span'); label.textContent = item.kind === 'image' ? 'Open image' : '▶ Play'; open.append(label);
-        open.onclick = () => this.play(item);
-        this.preview.append(open);
+        let preview = WanGPMediaView.thumbnail(item);
+        if (item.kind !== 'image') {
+          const play = document.createElement('button'); play.type = 'button'; play.className = 'wv-open';
+          const label = document.createElement('span'); label.textContent = '▶ Play';
+          play.append(preview, label); play.onclick = () => this.play(item); preview = play;
+        }
+        this.preview.append(preview, this.previewActions(item));
       }
       this.info.srcdoc = WanGPMediaView.documentHtml('Loading media information…');
       try {const result = await this.transport.request(this.query('workspace_viewer/info', {key}), undefined, request.signal); if (!request.signal.aborted && this.detailKey === identity) this.info.srcdoc = WanGPMediaView.documentHtml(result.html);}
       catch (error) {if (!request.signal.aborted && this.detailKey === identity) this.notice(error.message);}
     }
+    previewActions(item) {
+      const actions = document.createElement('div'); actions.className = 'wv-preview-actions'; actions.setAttribute('role', 'group'); actions.setAttribute('aria-label', 'Preview actions');
+      const link = document.createElement('a'), url = new URL(item.url, location.href);
+      url.searchParams.set('download', 'true');
+      link.href = url.href; link.download = item.name; link.title = 'Download'; link.setAttribute('aria-label', 'Download ' + item.name);
+      // Match the download icon in Gradio's gallery; download the original file.
+      link.innerHTML = '<svg viewBox="0 0 32 32" aria-hidden="true"><path fill="currentColor" stroke="none" d="M26 24v4H6v-4H4v4a2 2 0 0 0 2 2h20a2 2 0 0 0 2-2v-4zm0-10l-1.41-1.41L17 20.17V2h-2v18.17l-7.59-7.58L6 14l10 10l10-10z"/></svg>';
+      actions.append(link);
+      if (item.kind === 'image' || item.kind === 'video') {
+        const button = document.createElement('button'); button.type = 'button';
+        const update = () => {
+          const fullscreen = document.fullscreenElement === this.preview;
+          button.title = button.ariaLabel = fullscreen ? 'Exit full screen' : 'View in full screen';
+          button.innerHTML = svg(fullscreen ? 'minimize' : 'fullscreen');
+        };
+        this.preview.onfullscreenchange = update; update();
+        button.onclick = () => {
+          if (document.fullscreenElement === this.preview) document.exitFullscreen().catch(error => this.notice(error.message));
+          else {this.loadPreview(item); this.preview.requestFullscreen().catch(error => this.notice(error.message));}
+        };
+        actions.append(button);
+      }
+      return actions;
+    }
+    loadPreview(item) {
+      let media = this.preview.firstElementChild;
+      if (!media.classList.contains('wv-media')) {
+        const original = WanGPMediaView.media(item); original.className = 'wv-media';
+        if (item.kind === 'image') original.loading = 'eager';
+        media.replaceWith(original); media = original;
+      }
+      return media;
+    }
     play(item) {
-      const media = WanGPMediaView.media(item); this.preview.replaceChildren(media);
+      const media = this.loadPreview(item);
       if (item.kind !== 'image') media.play().catch(() => {});
     }
     async run(action, extra = {}) {

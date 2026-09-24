@@ -5182,6 +5182,9 @@ def format_media_info(file_name, configs):
             if model_def.get("top_k_slider", False) and video_top_k is not None:
                 values += [video_top_k]
                 labels += ["Top-k"]
+            if model_def.get("planner", None) and configs.get("planner_temperature", None) is not None:
+                values += [", ".join(f"{label} {configs.get(key)}" for key, label in (("planner_temperature", "Temperature"), ("planner_top_p", "Top-p"), ("planner_top_k", "Top-k"), ("planner_repetition_penalty", "Repetition Penalty"), ("planner_penalty_window", "Window"), ("planner_min_tokens", "Min Tokens"), ("planner_max_tokens", "Max Tokens")) if configs.get(key, None) is not None)]
+                labels += ["Planner"]
             if is_audio and model_def.get("pause_between_sentences", False):
                 values += [configs.get("pause_seconds", 0.0)]
                 labels += ["Pause (s)"]
@@ -6911,6 +6914,13 @@ def generate_media(
     custom_settings,
     top_p,
     top_k,
+    planner_temperature,
+    planner_top_p,
+    planner_top_k,
+    planner_repetition_penalty,
+    planner_penalty_window,
+    planner_min_tokens,
+    planner_max_tokens,
     self_refiner_setting,
     self_refiner_plan,
     self_refiner_f_uncertainty,
@@ -8140,6 +8150,13 @@ def generate_media(
                     pause_seconds=pause_seconds,
                     top_p=top_p,
                     top_k=top_k,
+                    planner_temperature=planner_temperature,
+                    planner_top_p=planner_top_p,
+                    planner_top_k=planner_top_k,
+                    planner_repetition_penalty=planner_repetition_penalty,
+                    planner_penalty_window=planner_penalty_window,
+                    planner_min_tokens=planner_min_tokens,
+                    planner_max_tokens=planner_max_tokens,
                     set_progress_status=set_progress_status,
                     loras_selected=loras_selected,
                     frames_relative_positions_list = frames_relative_positions_list,
@@ -10610,6 +10627,13 @@ def save_inputs(
             custom_setting_dropdown_5,
             top_p,
             top_k,
+            planner_temperature,
+            planner_top_p,
+            planner_top_k,
+            planner_repetition_penalty,
+            planner_penalty_window,
+            planner_min_tokens,
+            planner_max_tokens,
             self_refiner_setting,
             self_refiner_plan,            
             self_refiner_f_uncertainty,
@@ -12428,6 +12452,27 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                 label= "How to Process each Line of the Text Prompt"
                             )
 
+                planner_defaults = model_def.get("planner", None) or {}
+                with gr.Tab("Planner", visible=bool(planner_defaults)) as planner_tab:
+                    with gr.Column():
+                        gr.Markdown("<B>Sampling of the autoregressive planner stage that writes the composition before the media is generated. Defaults are provided by the model.</B>")
+                        def planner_slider(name):
+                            key = f"planner_{name}"
+                            value = ui_get(key, None)
+                            if value is None or value == "":
+                                value = planner_defaults.get(name, get_setting_def(key).min)
+                            return setting_slider(key, value=value, label=get_setting_def(key).label.removeprefix("Planner "))
+                        planner_temperature = planner_slider("temperature")
+                        with gr.Row():
+                            planner_top_p = planner_slider("top_p")
+                            planner_top_k = planner_slider("top_k")
+                        with gr.Row():
+                            planner_repetition_penalty = planner_slider("repetition_penalty")
+                            planner_penalty_window = planner_slider("penalty_window")
+                        with gr.Row():
+                            planner_min_tokens = planner_slider("min_tokens")
+                            planner_max_tokens = planner_slider("max_tokens")
+
                 with gr.Tab("LoRAs", visible= not audio_only or model_def.get("enabled_audio_lora", False)) as loras_tab:
                     with gr.Column(visible = True): #as loras_column:
                         gr.Markdown("<B>LoRAs can be used to create special effects on the video by mentioning a trigger word in the Prompt. You can save Loras combinations in presets.</B>")
@@ -12996,7 +13041,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                                       audio_buttons_row, deleted_audio_buttons_row, video_info_extract_audio_settings_btn, video_info_to_audio_guide_btn, video_info_to_audio_guide2_btn, video_info_to_audio_source_btn, video_info_audio_postprocessing_btn, video_info_eject_audio_btn, video_info_eject_audio2_btn,
                                       video_info_to_start_image_btn, video_info_to_end_image_btn, video_info_to_reference_image_btn, video_info_to_image_guide_btn, video_info_to_image_mask_btn,
                                       NAG_col, audio_options_row, remove_background_sound, normalize_audio_volumes, audio_prompt_type_custom_option, speakers_locations_row, embedded_guidance_row, guidance_phases_row, guidance_row, resolution_group, cfg_free_guidance_col, control_net_weights_row, guide_selection_row, image_mode_tabs, prompt_enhancer_mode_dropdown, prompt_enhancer_think, force_control_video_trim,
-                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temporal_upsampling_method, temporal_upsampling_multiplier, spatial_upsampling_method, spatial_upsampling_ratio, temperature_row, *spatial_upsampler_extra, *PP_spatial_upsampler_extra, *custom_settings_rows, *custom_setting_extra_inputs, top_pk_row,
+                                      min_frames_if_references_col, motion_amplitude_col, video_prompt_type_alignment, prompt_enhancer_btn, tab_inpaint, tab_t2v, resolution_row, loras_tab, post_processing_tab, temporal_upsampling_method, temporal_upsampling_multiplier, spatial_upsampling_method, spatial_upsampling_ratio, temperature_row, *spatial_upsampler_extra, *PP_spatial_upsampler_extra, *custom_settings_rows, *custom_setting_extra_inputs, top_pk_row, planner_tab,
                                       number_frames_row, negative_prompt_row, config_column, *config_group_dropdowns,
                                       self_refiner_col, self_refiner_rules_ui, pause_row]+\
                                       image_start_extra + image_end_extra + image_refs_extra #  presets_column,

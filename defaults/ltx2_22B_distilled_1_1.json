@@ -2,6 +2,12 @@
     "model": {
         "name": "LTX-2 2.3 Distilled 1.1 22B",
         "architecture": "ltx2_22B",
+        "capabilities": {
+            "live_preview": {
+                "modes": ["off", "rgb", "tae"],
+                "decoders": ["taeltx2_3"]
+            }
+        },
         "description": "LTX-2.3 distilled 1.1 checkpoint (22B) with faster generation. Please note Ic Loras Union (for Pose/Depth/Edges), HDR and Outpainting are automatically added when needed. You can override their lora multipliers per phase by adding manually the corresponding lora.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-distilled-1.1_diffusion_model_bf16.safetensors",

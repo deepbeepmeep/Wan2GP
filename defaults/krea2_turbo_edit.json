@@ -2,6 +2,7 @@
     "model": {
         "name": "Krea 2 Turbo Identity Edit v1.2",
         "architecture": "krea2_turbo_edit",
+        "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taew2_1_image"]}},
         "description": "Fast instruction-based image editing with identity preservation using Krea 2 Turbo and the full-rank Identity Edit v1.2 LoRA. Up to two Reference Images can be provided.",
         "URLs": "krea2_turbo",
         "loras": ["https://huggingface.co/DeepBeepMeep/krea-2/resolve/main/krea2_identity_edit_v1_2.safetensors"],

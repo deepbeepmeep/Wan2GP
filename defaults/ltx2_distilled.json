@@ -2,6 +2,7 @@
     "model": {
         "name": "LTX-2 2.0 Distilled 19B",
         "architecture": "ltx2_19B",
+        "capabilities": {"live_preview": {"modes": ["off", "rgb", "tae"], "decoders": ["taeltx_2"]}},
         "description": "LTX-2 distilled checkpoint with faster generation.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2-19b-distilled_diffusion_model.safetensors",

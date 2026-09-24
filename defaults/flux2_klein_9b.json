@@ -3,6 +3,7 @@
         "accelerated": "native",
         "name": "Flux 2 Klein 9B",
         "architecture": "flux2_klein_9b",
+        "capabilities": {"live_preview": {"modes": ["tae"], "decoders": ["taef2"]}},
         "description": "FLUX.2 Klein 9B is a balanced rectified flow transformer for image generation and editing. This version is Cfg & Steps Distilled for very fast generations.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/Flux2/resolve/main/flux-2-klein-9b.safetensors",

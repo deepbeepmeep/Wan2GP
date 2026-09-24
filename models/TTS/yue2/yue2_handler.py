@@ -1,7 +1,9 @@
 import os
+from dataclasses import asdict
 from pathlib import Path
 
 from shared.utils import files_locator as fl
+from .protocol import GenerationConfig
 from .prompt_enhancers import LYRICS_SYSTEM_PROMPT, STYLE_SYSTEM_PROMPT, INSTRUMENTAL_PLAN_SYSTEM_PROMPT, INSTRUMENTAL_STYLE_SYSTEM_PROMPT
 
 
@@ -259,7 +261,7 @@ class family_handler:
             "group": "music", "audio_only": True, "image_outputs": False, "sliding_window": False, "supports_early_stop": True,
             "enabled_audio_lora": True,
             "guidance_max_phases": 1, "no_negative_prompt": True, "inference_steps": True,
-            "temperature": True, "top_k_slider": True, "top_p_slider": True, "embedded_guidance": False,
+            "temperature": True, "top_k_slider": True, "top_p_slider": True, "embedded_guidance": False, "planner": asdict(GenerationConfig().abc),
             "image_prompt_types_allowed": "", "profiles_dir": [ARCHITECTURE], "compile": False,
             "lm_engines": ["cg", "vllm"], "prompt_class": "Lyrics", "prompt_enhancer_button_label": "Enhance",
             "text_encoder_URLs": [f"https://huggingface.co/{REPO_ID}/resolve/main/{TEXT_ENCODER_FOLDER}/YuE2_AR_{precision}.safetensors" for precision in ("bf16", "int8_convrot")],
@@ -337,6 +339,7 @@ class family_handler:
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
         ui_defaults.update({"prompt": PROMPT, "alt_prompt": STYLE, "audio_prompt_type": "", "duration_seconds": 120, "video_length": 0, "num_inference_steps": 32, "guidance_scale": 1.0, "temperature": 1.0, "top_k": 100, "top_p": 0.95, "model_mode": 0, "custom_guide": None, "custom_settings": {"save_score": 0}, "prompt_enhancer": "", "negative_prompt": "", "repeat_generation": 1, "multi_prompts_gen_type": "FG"})
+        ui_defaults.update({f"planner_{key}": value for key, value in asdict(GenerationConfig().abc).items()})
         if base_model_type == HUM_ARCHITECTURE:
             ui_defaults["audio_prompt_type"] = "A"
 

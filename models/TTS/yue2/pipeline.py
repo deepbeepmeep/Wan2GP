@@ -1,7 +1,7 @@
 """Lyrics/style/score to stereo music using WanGP's shared AR engine and MMGP."""
 
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import torch
@@ -155,6 +155,8 @@ class YuE2Pipeline:
                 raise ValueError("The ABC score file is empty.")
         maximum = int(duration_seconds * self.frame_rate)
         sampling = replace(self.generation_config.semantic, max_tokens=maximum, min_tokens=min(200, maximum - 1), temperature=temperature, top_k=top_k, top_p=top_p)
+        planner = self.generation_config.abc
+        planner = replace(planner, **{key: type(default)(kwargs[f"planner_{key}"]) for key, default in asdict(planner).items() if kwargs.get(f"planner_{key}") is not None})
         try:
             if loras_slists is not None:
                 self.lora_target.validate_ar_scaling(loras_slists)
@@ -193,7 +195,7 @@ class YuE2Pipeline:
                 from .hum import open_hum_score
                 partial = self.tokenizer.encode(open_hum_score(abc))
                 request = replace(request, abc=None)
-                continuation = self._tokens(token_prefixes(request, self.tokenizer) + partial, self.generation_config.abc, seed, "abc", callback)
+                continuation = self._tokens(token_prefixes(request, self.tokenizer) + partial, planner, seed, "abc", callback)
                 abc_ids = partial + continuation
                 abc = self.tokenizer.decode(abc_ids)
                 midi = None
@@ -203,7 +205,7 @@ class YuE2Pipeline:
             elif abc:
                 abc_ids = self.tokenizer.encode(abc)
             else:
-                abc_ids = self._tokens(token_prefixes(request, self.tokenizer), self.generation_config.abc, seed, "abc", callback)
+                abc_ids = self._tokens(token_prefixes(request, self.tokenizer), planner, seed, "abc", callback)
                 abc = self.tokenizer.decode(abc_ids)
             self.last_plan = {"abc": abc, "abc_ids": abc_ids, "request": request.to_dict()}
             if abc and custom_settings is not None and custom_settings.get("save_score", 0):

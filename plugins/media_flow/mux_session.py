@@ -57,8 +57,11 @@ class MuxSession:
             return video.write_hdr_video_chunk(self.mux_process, video_tensor_hdr, start_frame=start_frame, frame_count=frame_count)
         return video.write_video_chunk(self.mux_process, video_tensor_uint8, start_frame=start_frame, frame_count=frame_count)
 
-    def finalize(self) -> tuple[int, str, bool]:
-        return_code, stderr, forced_termination = media.finalize_mux_process(self.mux_process)
+    def finalize(self, *, timeout_seconds: float | None = None, label: str = "") -> tuple[int, str, bool]:
+        kwargs = {"label": label}
+        if timeout_seconds is not None:
+            kwargs["timeout_seconds"] = timeout_seconds
+        return_code, stderr, forced_termination = media.finalize_mux_process(self.mux_process, **kwargs)
         self.mux_finished = True
         return return_code, stderr, forced_termination
 

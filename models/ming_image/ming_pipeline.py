@@ -378,30 +378,48 @@ class MingImagePipeline:
             if callback is not None:
                 callback(int(step), self.prepare_preview_payload(payload["latents"]), False)
             return payload
+        frames_per_image = num_layers + 1 if task == "layer-decompose" else 1
+        # The pipeline creates latents in frame-major order for layer sets.
+        # Separate generators give each output a stable, distinct noise seed.
+        generator = torch.Generator(device=device).manual_seed(int(seed))
+        if batch_size > 1:
+            generator = [
+                torch.Generator(device=device).manual_seed(int(seed) + index)
+                for index in range(batch_size * frames_per_image)
+            ]
         result = self.diffusion(
             prompt_embeds=positive, negative_prompt_embeds=negative,
             prompt_embeds_2=direct, negative_prompt_embeds_2=negative_direct,
             guidance_scale=guide_scale, num_inference_steps=sampling_steps,
-            generator=torch.Generator(device=device).manual_seed(int(seed)),
+            num_images_per_prompt=batch_size,
+            generator=generator,
             height=generated_h, width=generated_w, device=device,
             ref_hidden_states=ref_pixels, sample_mode="argmax",
-            num_frames_per_prompt=num_layers + 1 if task == "layer-decompose" else 1,
+            num_frames_per_prompt=frames_per_image,
             callback_on_denoising_start=on_denoising_start,
             callback_on_step_end=on_step_end,
         ).images
         if task == "layer-decompose":
-            if len(result) != num_layers + 1:
-                raise RuntimeError(f"Design-Layer returned {len(result)} images for {num_layers} requested layers")
+            expected = batch_size * (num_layers + 1)
+            if len(result) != expected:
+                raise RuntimeError(f"Design-Layer returned {len(result)} images; expected {expected}")
             layers = []
             with BytesIO() as archive_buffer:
                 with ZipFile(archive_buffer, "w", compression=ZIP_DEFLATED) as archive:
-                    for index, image in enumerate(result[1:], 1):
-                        check_abort()
-                        image = image.resize((width, height), Image.Resampling.LANCZOS).convert("RGBA")
-                        layers.append(torch.from_numpy(np.array(image, copy=True)).permute(2, 0, 1))
-                        with BytesIO() as image_buffer:
-                            image.save(image_buffer, format="PNG")
-                            archive.writestr(f"layer_{index:02d}.png", image_buffer.getvalue())
+                    # Diffusion returns all batch composites, then each layer's
+                    # batch. Present complete layer sets in gallery order.
+                    for batch_index in range(batch_size):
+                        for index in range(1, num_layers + 1):
+                            check_abort()
+                            image = result[index * batch_size + batch_index]
+                            image = image.resize((width, height), Image.Resampling.LANCZOS).convert("RGBA")
+                            layers.append(torch.from_numpy(np.array(image, copy=True)).permute(2, 0, 1))
+                            with BytesIO() as image_buffer:
+                                image.save(image_buffer, format="PNG")
+                                name = f"layer_{index:02d}.png"
+                                if batch_size > 1:
+                                    name = f"set_{batch_index + 1:02d}/{name}"
+                                archive.writestr(name, image_buffer.getvalue())
                 return {"x": torch.stack(layers, dim=1), "side_files": {".zip": archive_buffer.getvalue()}}
         keep_alpha = (custom_settings or {}).get("rgba", "Disabled") == "Enabled"
         output = []

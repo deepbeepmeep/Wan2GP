@@ -9,6 +9,7 @@ import sys
 
 from ..config import Config
 from .sequence import Sequence
+from .speculative_sampling import bounded_support, draft_probabilities
 from ..layers.sampler import Sampler, _REPETITION_INCREMENT_LIMIT, apply_min_p_mask_, apply_sparse_repetition_penalty_
 from ..utils.context import set_context, get_context, reset_context
 
@@ -1113,8 +1114,7 @@ class ModelRunner:
         if (predictive and logits.is_cuda and self.use_triton_sampling and not self.enforce_eager
                 and not getattr(self.model, "_block_draft", False)
                 and not getattr(self, "_disable_mtp_gpu_draft", False)
-                and seq.top_k is not None and 1 < seq.top_k <= 128):
-            from .speculative_sampling import draft_probabilities
+                and seq.top_k != 1 and bounded_support(seq)):
             return draft_probabilities(self, seq, logits)
         logits = logits.float().div_(temperatures[0])
         top_k = int(seq.top_k) if seq.top_k is not None and 0 < int(seq.top_k) < logits.numel() else None

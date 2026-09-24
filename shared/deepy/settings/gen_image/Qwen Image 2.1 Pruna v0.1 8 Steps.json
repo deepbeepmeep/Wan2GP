@@ -1,0 +1,21 @@
+{
+    "settings_version": 2.79,
+    "type": "Qwen Image 2.1 Pruna v0.1 8 Steps",
+    "model_type": "qwen_image_21_7B",
+    "prompt": "",
+    "negative_prompt": "",
+    "image_mode": 1,
+    "resolution": "1024x1024",
+    "num_inference_steps": 8,
+    "sample_solver": "pruna",
+    "guidance_scale": 1.0,
+    "batch_size": 1,
+    "video_prompt_type": "",
+    "prompt_enhancer": "",
+    "activated_loras": ["https://huggingface.co/DeepBeepMeep/Qwen_image_2/resolve/main/loras/p_qwen_image_2.1_8step_v0.1.safetensors"],
+    "loras_multipliers": "1",
+    "remove_background_images_ref": 0,
+    "custom_settings": {
+        "qwen21_kv_cache": "Disabled", "rgba": "Disabled"
+    }
+}

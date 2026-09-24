@@ -27,6 +27,10 @@ VIGGLE_SIGMAS = {
     5: (1.0, 0.875, 0.75, 0.5, 0.25),
     6: (1.0, 0.9375, 0.875, 0.75, 0.5, 0.25),
 }
+PRUNA_SIGMAS = {
+    5: (1.0, 0.94, 6 / 7, 2 / 3, 0.4),
+    8: (1.0, 14 / 15, 6 / 7, 10 / 13, 2 / 3, 6 / 11, 0.4, 2 / 9),
+}
 
 
 def reference_outpainting_offset(location, width, height):
@@ -294,17 +298,28 @@ class Qwen21Pipeline(QwenImage21Pipeline):
                 from shared.utils.loras_mutipliers import update_loras_slists
                 update_loras_slists(self.transformer, loras_slists, sampling_steps)
             viggle = sample_solver == "viggle_v02"
+            pruna = sample_solver == "pruna"
             if viggle and sampling_steps not in VIGGLE_SIGMAS:
                 raise ValueError("Viggle Turbo scheduler supports 4, 5 or 6 inference steps.")
+            if pruna and sampling_steps not in PRUNA_SIGMAS:
+                raise ValueError("Pruna scheduler supports 5 or 8 inference steps.")
+            scheduler_overrides = ({"use_dynamic_shifting": False, "shift": 1.0, "shift_terminal": None} if pruna
+                                   else {"shift_terminal": None} if sampling_steps == 1 or viggle else {})
             scheduler = FlowMatchEulerDiscreteScheduler.from_config(
-                self.scheduler_config, **({"shift_terminal": None} if sampling_steps == 1 or viggle else {}))
+                self.scheduler_config, **scheduler_overrides)
             cfg = scheduler.config
-            slope = (cfg.max_shift - cfg.base_shift) / (cfg.max_image_seq_len - cfg.base_image_seq_len)
-            mu = latents.shape[1] * slope + cfg.base_shift - slope * cfg.base_image_seq_len
-            sigmas = VIGGLE_SIGMAS[sampling_steps] if viggle else np.linspace(1, 1 / sampling_steps, sampling_steps)
-            scheduler.set_timesteps(sampling_steps, device=device, sigmas=sigmas, mu=mu)
+            sigmas = (PRUNA_SIGMAS[sampling_steps] if pruna else VIGGLE_SIGMAS[sampling_steps] if viggle
+                      else np.linspace(1, 1 / sampling_steps, sampling_steps))
+            if cfg.use_dynamic_shifting:
+                slope = (cfg.max_shift - cfg.base_shift) / (cfg.max_image_seq_len - cfg.base_image_seq_len)
+                mu = latents.shape[1] * slope + cfg.base_shift - slope * cfg.base_image_seq_len
+                scheduler.set_timesteps(sampling_steps, device=device, sigmas=sigmas, mu=mu)
+            else:
+                scheduler.set_timesteps(sampling_steps, device=device, sigmas=sigmas)
             if viggle:
                 print(f"Viggle Turbo Scheduler - Raw Sigmas: {list(sigmas)}; Applied Sigmas: {[round(value, 6) for value in scheduler.sigmas.tolist()]}; Terminal Shift: {scheduler.config.shift_terminal}")
+            elif pruna:
+                print(f"Pruna Scheduler - Sigmas: {[round(value, 6) for value in scheduler.sigmas.tolist()]}; Dynamic Shift: {cfg.use_dynamic_shifting}; Shift: {cfg.shift}; Terminal Shift: {cfg.shift_terminal}")
             first_step = 0
             lanpaint = None
             if latent_mask is not None:

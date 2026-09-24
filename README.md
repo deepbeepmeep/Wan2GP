@@ -63,13 +63,13 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-## 24th of September 2026: WanGP v13.1314 — It's Your Lucky Day^$\pi$!
+## 24th of September 2026: WanGP v13.1314 — It's Your Lucky Day^?!
 
 - **Qwen Image 2.1**: A new Qwen Image model with out-of-the-box editing capabilities and strong text rendering. 
 
 WanGP supports *VRAM Optimization*, *Pose/Depth/Edge Transfer*, *Inpainting*, *LanPaint*, *Outpainting*, *KV Cache Acceleration*, and *Enhanced Prompts* from day one.
 
-No distilled version is available yet.
+The base model works without an accelerator; optional LoRA profiles below offer faster 4- to 8-step generation.
 
 - **Full JIT Checkpoint Loading**: WanGP now downloads preprocessing and postprocessing checkpoints only when needed, instead of downloading them all on first use. This saves disk space if you use WanGP for a specific task, such as audio generation, or want to build a portable version of WanGP.
 
@@ -95,13 +95,15 @@ No distilled version is available yet.
 
 - **Ming Image 0.1 Design-Layer**: turn a finished poster, infographic, or other design into separate transparent image layers. Provide one reference image and a text prompt describing the layers from front to back. WanGP adds every RGBA layer to the image gallery and saves a ZIP of the complete layer set. Design and Design-Layer share their language encoder and vision tower checkpoints to reduce downloads and disk use.
 
-- **Qwen Image 2.1 Viggle Turbo LoRA Accelerators**: generate images faster with **Viggle Turbo v0.1 (4 steps)** or **v0.2 (5 steps)**. Select an acceleration profile to apply the matching LoRA and recommended generation settings.
+- **Qwen Image 2.1 Viggle Turbo LoRA Accelerators**: generate images faster with **v0.1 (4 steps)**, **v0.2 (5 steps)**, or **v0.2.1 (6 steps)**. Select an acceleration profile to apply the matching LoRA, scheduler, and recommended settings. The 6-step profile is the recommended Viggle starting point and is also available in Deepy for image generation and editing.
+
+- **Qwen Image 2.1 Pruna LoRA Accelerators**: choose **Pruna v0.1 (5 steps)** for speed or the recommended **8-step** profile for better quality. Each profile applies its matching LoRA and Pruna scheduler with the correct sigma sequence, guidance 1, and LoRA strength 1.; Pruna's adapters were trained for edits with up to three reference images.
 
 - **Remove Vocals Audio Postprocessing**: create an instrumental version of an audio track by removing its vocals. Available in **Post Processing**, **Late Post Processing**, and through **Deepy Prime**.
 
 
 *Update v13.1313*: YuE2 instrumental mode, YuE2 Hum to Song, AR LoRA support, and DFlash2 / DSpark acceleration\
-*Update v13.1314*: Ming Image 0.1 Design and Design-Layer, Qwen Image 2.1 Viggle Turbo LoRA accelerators, and Remove Vocals audio postprocessing
+*Update v13.1314*: Ming Image 0.1 Design and Design-Layer, Qwen Image 2.1 Viggle Turbo and Pruna LoRA accelerators, and Remove Vocals audio postprocessing
 
 ## 16th of September 2026: WanGP v13.10 — It's Your Lucky Day!
 

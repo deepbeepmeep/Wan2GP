@@ -1328,6 +1328,15 @@ class Qwen35AssistantRuntime:
             logits_processor_without_penalty._requires_input_ids = False
             logits_processor_without_penalty._supports_partial_vocab = logits_processor._supports_partial_vocab
 
+        if not presence_state.enabled():
+            # Only the thinking budget remains: the GPU verifier evaluates it
+            # for every hypothetical accepted prefix, as for prompt generation.
+            logits_processor._speculative_batch_rules = lambda: {
+                "suppressed": (),
+                "thinking_stops": thinking_state.stop_token_ids,
+                "thinking": (thinking_state.close_think_token_id, thinking_state.max_thinking_tokens - thinking_state.generated_thinking_tokens, int(thinking_state.in_thinking)),
+            }
+
         def update_state(token_id: int):
             presence_state.update(token_id)
             if thinking_state is not None:
@@ -1347,7 +1356,7 @@ class Qwen35AssistantRuntime:
         available_tokens = max(0, int(llm.config.max_model_len) - int(seq.num_tokens))
         if available_tokens < generation_limit:
             raise RuntimeError(f"Assistant {phase} action requires {generation_limit} reserved tokens but only {available_tokens} remain.")
-        temp, normalized_top_p, normalized_top_k = qwen35_text._normalize_vllm_sampling(do_sample=bool(do_sample), temperature=temperature, top_p=top_p, top_k=top_k)
+        temp, normalized_top_p, normalized_top_k = qwen35_text._normalize_vllm_sampling(do_sample=bool(do_sample), temperature=temperature, top_p=top_p, top_k=qwen35_text._resolve_prompt_top_k(self.model, top_k))
         existing_completion_tokens = int(seq.num_completion_tokens) if continuing_response else 0
         if not continuing_response:
             seq.num_prompt_tokens = seq.num_tokens

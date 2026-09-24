@@ -7,23 +7,40 @@ import math
 import torch
 
 
+# Without top-k, the nucleus is resolved inside this many highest logits. A
+# token's nucleus decision depends only on the mass ranked above it, so the
+# support is exact whenever the first excluded token is itself rejected.
+NUCLEUS_CAPACITY = 1024
+
+
 def target_probabilities(logits, top_k, top_p, min_p, temperature):
     rows, vocab = logits.shape
     logits = logits.float() / temperature
-    capacity = min(vocab, max(64, 2 * top_k))
+    capacity = min(vocab, NUCLEUS_CAPACITY if top_k is None else max(64, 2 * top_k))
     values, ids = logits.topk(min(vocab, capacity + 1), dim=-1)
-    threshold = values[:, top_k - 1:top_k]
-    unsafe = values[:, -1] >= threshold[:, 0] if capacity < vocab else torch.zeros(rows, dtype=torch.bool, device=logits.device)
+    nucleus = top_p is not None and 0 < top_p < 1
+    outside = values[:, capacity] if capacity < vocab else None
     values, ids = values[:, :capacity], ids[:, :capacity]
+    if top_k is None:
+        # The reference universe is the whole vocabulary.
+        normalizer = torch.logsumexp(logits, dim=-1, keepdim=True)
+        if outside is not None and min_p is not None and min_p > 0:
+            outside = outside.masked_fill(outside < values[:, 0] + math.log(min_p), -torch.inf)
+        unsafe = torch.zeros(rows, dtype=torch.bool, device=logits.device) if outside is None or nucleus else outside > -torch.inf
+    else:
+        threshold = values[:, top_k - 1:top_k]
+        unsafe = outside >= threshold[:, 0] if outside is not None else torch.zeros(rows, dtype=torch.bool, device=logits.device)
+        outside = None
     # Match the ascending vocabulary order of the reference's nonzero().
     order = ids.argsort(dim=-1)
     ids = ids.gather(1, order)
     values = values.gather(1, order)
-    values = values.masked_fill(values < threshold, -torch.inf)
-    normalizer = torch.logsumexp(values, dim=-1, keepdim=True)
+    if top_k is not None:
+        values = values.masked_fill(values < threshold, -torch.inf)
+        normalizer = torch.logsumexp(values, dim=-1, keepdim=True)
     if min_p is not None and min_p > 0:
         values = values.masked_fill(values < values.amax(dim=-1, keepdim=True) + math.log(min_p), -torch.inf)
-    if top_p is not None and 0 < top_p < 1:
+    if nucleus:
         excluded = 1 - torch.exp(values - normalizer).sum(dim=-1, keepdim=True)
         values, order = values.sort(dim=-1)
         ids = ids.gather(1, order)
@@ -34,6 +51,10 @@ def target_probabilities(logits, top_k, top_p, min_p, temperature):
         lowest_kept = values.masked_fill(~keep, torch.inf).amin(dim=-1)
         highest_removed = values.masked_fill(keep, -torch.inf).amax(dim=-1)
         unsafe = unsafe | (torch.isfinite(lowest_kept) & (lowest_kept == highest_removed))
+        if outside is not None:
+            # The first token beyond capacity joins the nucleus unless the
+            # mass ranked above it already reaches top-p; keep a rounding margin.
+            unsafe = unsafe | ((outside > -torch.inf) & ((1 - excluded[:, 0] < top_p + 1e-4) | (outside == lowest_kept)))
         values = values.masked_fill(~keep, -torch.inf)
     probabilities = torch.zeros_like(logits).scatter(1, ids, values.softmax(dim=-1))
     return probabilities, unsafe

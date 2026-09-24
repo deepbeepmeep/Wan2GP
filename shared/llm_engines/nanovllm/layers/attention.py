@@ -528,12 +528,18 @@ def _dequantize_kvcache(cache: torch.Tensor, scale: torch.Tensor, dtype: torch.d
 
 
 def _q8_paged_prefill(q: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, k_scale: torch.Tensor, v_scale: torch.Tensor, context, softmax_scale: float) -> torch.Tensor:
-    if _use_sm120_q8(q):
-        _log_kv_attention_backend_once("sm120_prefill_q8", f"[Deepy][KV cache] SM120 pipelined copies enabled for Q8 prefix prefill ({_SM120_Q8.__name__}).")
-        return _SM120_Q8.q8_paged_prefill(q, k_cache, v_cache, k_scale, v_scale, context, softmax_scale)
     output = torch.empty_like(q)
     query_lengths = context.cu_seqlens_q[1:] - context.cu_seqlens_q[:-1]
     grid = (query_lengths.numel(), q.shape[1], triton.cdiv(q.shape[0], 32))
+    if torch.version.hip is None:
+        _log_kv_attention_backend_once("exact_prefill_q8", "[Deepy][KV cache] Q8 prefix prefill uses exact INT8 tensor-core products with per-block scales.")
+        q8_prefill_exact_kernel[grid](
+            q, k_cache, v_cache, k_scale, v_scale, context.block_tables, context.cu_seqlens_q, context.cu_seqlens_k, output,
+            q.stride(0), q.stride(1), k_cache.stride(0), k_cache.stride(1), k_cache.stride(2),
+            k_scale.stride(0), k_scale.stride(1), k_scale.stride(2), context.block_tables.stride(0), output.stride(0), output.stride(1), softmax_scale,
+            q.shape[1], k_cache.shape[2], q.shape[2], k_cache.shape[1], BLOCK_M=32, BLOCK_N=32, num_warps=4, num_stages=2,
+        )
+        return output
     q8_paged_prefill_kernel[grid](
         q, k_cache, v_cache, k_scale, v_scale, context.block_tables, context.cu_seqlens_q, context.cu_seqlens_k, output,
         q.stride(0), q.stride(1), k_cache.stride(0), k_cache.stride(1), k_cache.stride(2),
@@ -700,3 +706,72 @@ if triton is not None:
 
 def _use_sm120_q8(q):
     return torch.version.hip is None and _SM120_Q8 is not None and q.shape[-1] == 256 and torch.cuda.get_device_capability(q.device) == (12, 0)
+
+
+if triton is not None and tl is not None:
+    # INT8 cache values are exact in FP16/BF16, so tensor cores multiply them
+    # without the high/low split used above; the per-32-dimension scales are
+    # applied to exact FP32-accumulated partial products instead:
+    #   QK[i, j] = sum_b ks[j, b] * (Q[i, b] . Kq[j, b])
+    #   O[i, b] = sum_j (P[i, j] * vs[j, b]) * Vq[j, b], with P * vs as a high/low pair.
+    # This halves the tensor-core work and removes the K/V rounding residual.
+    # P * vs is raised by an exact 2**6 so FP16 residuals stay normal; a scale
+    # from FP16 values is at most 65504 / 127, so the product cannot overflow.
+    @triton.jit(do_not_specialize=("bt_stride",), do_not_specialize_on_alignment=("bt_stride",))
+    def q8_prefill_exact_kernel(
+        q_ptr, k_ptr, v_ptr, ks_ptr, vs_ptr, block_tables_ptr, cu_q_ptr, cu_k_ptr, out_ptr,
+        q_stride_t: tl.constexpr, q_stride_h: tl.constexpr, cache_stride_block: tl.constexpr,
+        cache_stride_token: tl.constexpr, cache_stride_head: tl.constexpr, scale_stride_block: tl.constexpr,
+        scale_stride_token: tl.constexpr, scale_stride_head: tl.constexpr, bt_stride,
+        out_stride_t: tl.constexpr, out_stride_h: tl.constexpr, softmax_scale: tl.constexpr,
+        H_Q: tl.constexpr, H_KV: tl.constexpr, D: tl.constexpr, PAGE: tl.constexpr,
+        BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+    ):
+        NB: tl.constexpr = D // 32
+        sequence = tl.program_id(0)
+        query_head = tl.program_id(1)
+        query_block = tl.program_id(2)
+        q_start = tl.load(cu_q_ptr + sequence)
+        q_end = tl.load(cu_q_ptr + sequence + 1)
+        k_end = tl.load(cu_k_ptr + sequence + 1) - tl.load(cu_k_ptr + sequence)
+        q_len = q_end - q_start
+        prefix_len = k_end - q_len
+        rows = query_block * BLOCK_M + tl.arange(0, BLOCK_M)
+        row_mask = rows < q_len
+        blocks = tl.arange(0, NB)
+        lanes = tl.arange(0, 32)
+        q = tl.load(q_ptr + (q_start + rows[None, :, None]) * q_stride_t + query_head * q_stride_h + blocks[:, None, None] * 32 + lanes[None, None, :],
+                    mask=row_mask[None, :, None], other=0.0)
+        maximum = tl.full((BLOCK_M,), -float("inf"), tl.float32)
+        denominator = tl.zeros((BLOCK_M,), tl.float32)
+        accumulator = tl.zeros((NB, BLOCK_M, 32), tl.float32)
+        kv_head = query_head // (H_Q // H_KV)
+
+        for key_start in tl.range(0, tl.minimum(k_end, prefix_len + (query_block + 1) * BLOCK_M), BLOCK_N):
+            columns = key_start + tl.arange(0, BLOCK_N)
+            column_mask = columns < k_end
+            physical_block = tl.load(block_tables_ptr + sequence * bt_stride + columns // PAGE, mask=column_mask, other=0)
+            physical_token = columns % PAGE
+            cache_base = physical_block * cache_stride_block + physical_token * cache_stride_token + kv_head * cache_stride_head
+            scale_base = physical_block * scale_stride_block + physical_token * scale_stride_token + kv_head * scale_stride_head
+            k = tl.load(k_ptr + cache_base[None, None, :] + blocks[:, None, None] * 32 + lanes[None, :, None], mask=column_mask[None, None, :], other=0).to(q.dtype)
+            k_scale = tl.load(ks_ptr + scale_base[None, :] + blocks[:, None], mask=column_mask[None, :], other=0.0).to(tl.float32)
+            scores = tl.sum(tl.dot(q, k) * k_scale[:, None, :], axis=0) * softmax_scale
+            causal = columns[None, :] <= prefix_len + rows[:, None]
+            scores = tl.where(row_mask[:, None] & column_mask[None, :] & causal, scores, -float("inf"))
+            tile_maximum = tl.maximum(maximum, tl.max(scores, axis=1))
+            correction = tl.exp2((maximum - tile_maximum) * 1.4426950408889634)
+            probabilities = tl.exp2((scores - tile_maximum[:, None]) * 1.4426950408889634)
+            denominator = denominator * correction + tl.sum(probabilities, axis=1)
+            v = tl.load(v_ptr + cache_base[None, :, None] + blocks[:, None, None] * 32 + lanes[None, None, :], mask=column_mask[None, :, None], other=0).to(q.dtype)
+            v_scale = tl.load(vs_ptr + scale_base[None, :] + blocks[:, None], mask=column_mask[None, :], other=0.0).to(tl.float32)
+            weighted = probabilities[None, :, :] * (v_scale[:, None, :] * 64.0)
+            w_high = weighted.to(q.dtype)
+            w_low = (weighted - w_high.to(tl.float32)).to(q.dtype)
+            accumulator = accumulator * correction[None, :, None]
+            accumulator = tl.dot(w_high, v, accumulator)
+            accumulator = tl.dot(w_low, v, accumulator)
+            maximum = tile_maximum
+        output = accumulator / (denominator[None, :, None] * 64.0)
+        tl.store(out_ptr + (q_start + rows[None, :, None]) * out_stride_t + query_head * out_stride_h + blocks[:, None, None] * 32 + lanes[None, None, :],
+                 output, mask=row_mask[None, :, None])

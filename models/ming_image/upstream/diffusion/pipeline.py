@@ -524,6 +524,14 @@ class ImageGenerationPipeline(DiffusionPipeline):
                     negative_prompt_embeds_2 = [npe for npe in negative_prompt_embeds_2 for _ in range(num_images_per_prompt)]
 
         actual_batch_size = batch_size * num_images_per_prompt
+        if ref_hidden_states is not None:
+            if ref_hidden_states.shape[0] == 1:
+                ref_hidden_states = ref_hidden_states.expand(actual_batch_size, -1, -1, -1)
+            elif ref_hidden_states.shape[0] != actual_batch_size:
+                raise ValueError(
+                    f"Reference latent batch size {ref_hidden_states.shape[0]} does not match "
+                    f"the requested image count {actual_batch_size}"
+                )
         image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
 
         # 5. Prepare timesteps

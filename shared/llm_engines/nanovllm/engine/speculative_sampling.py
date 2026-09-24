@@ -3,10 +3,17 @@ import time
 import torch
 
 
+def bounded_support(seq):
+    """Whether fixed-capacity filtering can reproduce the sampler's support."""
+    if seq.top_k is None:
+        return seq.top_p is not None and 0 < seq.top_p < 1 or seq.min_p is not None and seq.min_p > 0
+    return 1 <= seq.top_k <= 128
+
+
 def can_batch_acceptance(runner, seq):
     processor = seq.logits_processor
     return (runner.use_triton_sampling and not getattr(runner, "enforce_eager", False)
-            and seq.top_k is not None and 1 <= seq.top_k <= 128
+            and bounded_support(seq)
             and (processor is None and seq.logits_processor_update_state is None
                  or callable(getattr(processor, "_speculative_batch_rules", None))))
 
@@ -22,10 +29,11 @@ def draft_probabilities(runner, seq, logits):
         if len(graphs) >= 8:
             graphs.pop(next(iter(graphs)))
         values = logits[None].clone()
-        target_probabilities(values, min(seq.top_k, logits.numel()), seq.top_p, seq.min_p, seq.temperature)
+        top_k = None if seq.top_k is None else min(seq.top_k, logits.numel())
+        target_probabilities(values, top_k, seq.top_p, seq.min_p, seq.temperature)
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
-            probabilities, _ = target_probabilities(values, min(seq.top_k, logits.numel()), seq.top_p, seq.min_p, seq.temperature)
+            probabilities, _ = target_probabilities(values, top_k, seq.top_p, seq.min_p, seq.temperature)
         state = graph, values, probabilities
     graphs[key] = state
     graph, values, probabilities = state
@@ -84,7 +92,7 @@ def sample_verified_block(runner, seq, logits, draft_tokens, draft_distributions
                 probabilities = scores
                 unsafe = torch.zeros(n + 1, dtype=torch.bool, device=logits.device)
             else:
-                probabilities, unsafe = target_probabilities(scores, min(seq.top_k, vocab), seq.top_p, seq.min_p, seq.temperature)
+                probabilities, unsafe = target_probabilities(scores, None if seq.top_k is None else min(seq.top_k, vocab), seq.top_p, seq.min_p, seq.temperature)
             return accept_block(probabilities, unsafe, state["drafts"], state["q"], state["length"],
                                 state["uniforms"], state["noise"], state["stops"], greedy=seq.top_k == 1)
         compute()

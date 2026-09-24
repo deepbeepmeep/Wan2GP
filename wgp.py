@@ -4963,7 +4963,7 @@ def format_media_info(file_name, configs):
                 if isinstance(custom_flags, dict):
                     for flag, label in custom_flags.items():
                         flag = str(flag or "")
-                        if len(flag) == 1 and flag in "0123456789" and isinstance(label, str) and len(label) > 0:
+                        if len(flag) == 1 and not flag.isspace() and flag not in map_audio_prompt and isinstance(label, str) and len(label) > 0:
                             map_audio_prompt[flag] = label
             video_other_prompts =  [ v for s,v in map_image_prompt.items() if all_letters(video_image_prompt_type,s)] \
                                  + [ v for s,v in map_video_prompt.items() if check(video_video_prompt_type,s)] \

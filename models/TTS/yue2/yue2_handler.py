@@ -82,7 +82,7 @@ INFOS = """YuE2 creates new 48 kHz stereo songs from lyrics and a music style. I
 
 1. Enter the actual words to sing in **Lyrics**, with labels such as `[Verse]` and `[Chorus]`. See Prompt Help for an example.
 2. Describe the language, genre, instruments, voice and mood in **Music Style**. For example: `English acoustic pop, warm female vocal, fingerpicked guitar, gentle drums, hopeful, 90 BPM`.
-3. Choose **Melody and chords** under **Composition Planning**. Leave **Source Audio** at **No Audio** and **Optional ABC Score** empty.
+3. Choose **Melody and chords** under **Composition Planning**. Choose **Compose from scratch** under **Composition source**.
 4. Start with **32 steps**, **guidance 1**, and the default **120-second maximum** for a short song. Prompt enhancement is optional; you can generate directly from finished lyrics and style.
 
 Change the seed for another performance, or keep the lyrics and change Music Style for another arrangement.
@@ -118,9 +118,9 @@ For finished lyrics or a finished section plan, choose style only. To start from
 
 ### Source Audio and ABC Scores
 
-To reinterpret an existing song, select **Source Audio > Extract Score from Source Song** and upload the recording. YuE2 transcribes musical notes with SheetSage2/MERT2; enter the lyrics separately and align their sections with the source. Choose **Melody and chords** to retain harmony or **Melody only** for freer accompaniment. Instrumental mode accepts a section plan instead of lyrics. Transcription errors can affect the result. This creates a new recording; it does not preserve the original waveform or clone its singer.
+To reinterpret an existing song, select **Use a score transcribed from audio** under **Composition source** and upload the recording. YuE2 transcribes musical notes with SheetSage2/MERT2; enter the lyrics separately and align their sections with the source. Choose **Melody and chords** to retain harmony or **Melody only** for freer accompaniment. Instrumental mode accepts a section plan instead of lyrics. Transcription errors can affect the result. This creates a new recording; it does not preserve the original waveform or clone its singer.
 
-To reuse a written composition, select **No Audio** and upload a compatible UTF-8 `.abc` file under **Optional ABC Score**. It replaces automatic planning. Use the supported Vocal/Ins score format; melody-only scores must omit chord symbols. Source audio hides and overrides the manual ABC file.
+To reuse a written composition, select **Use an ABC score** and upload a compatible UTF-8 `.abc` file under **ABC Score**. It replaces automatic planning. Use the supported Vocal/Ins score format; melody-only scores must omit chord symbols. Only the input selected by Composition source is used. Choose **Extend an ABC score** or **Extend a score transcribed from audio** to let YuE2 continue the score before generating audio. The source notation becomes the planner prefix; maximum duration remains an upper limit, not a target.
 
 Enable **Save ABC and MIDI Score** to export `.abc` and `.mid` beside the song. These contain the composition used for generation, not a transcription of the final performance, and may extend beyond an early-stopped song. Export is off by default.
 
@@ -198,7 +198,7 @@ Use **Instrumental Music Style** to enhance only that description. **Instrumenta
 
 ### When Using Source Audio or a Score
 
-Source audio supplies notes, not a lyric transcript: enter the words separately and match their section order and phrasing to the recording. In instrumental mode, enter a section plan instead. Upload ABC notation through **Optional ABC Score**, not in either text field; select **No Audio** to use that file. See Model Help for score import and export details.
+Source audio supplies notes, not a lyric transcript: enter the words separately and match their section order and phrasing to the recording. In instrumental mode, enter a section plan instead. Upload ABC notation through **ABC Score**, not in either text field; select **Use an ABC score** or **Extend an ABC score** to use that file. See Model Help for score import and export details.
 """
 
 DEEPY_INFOS = """### Classic YuE2 Songs
@@ -211,7 +211,7 @@ DEEPY_INFOS = """### Classic YuE2 Songs
 Mode 3 uses `[Instrumental]` or a section-only plan such as `[Intro]`, `[Verse 1]`, `[Chorus]` in `prompt`, with instrumental `alt_prompt`. Use title-case names as for classic songs; YuE2 normalizes case and removes section numbers internally while preserving times and repetition. Only the six section names listed in prompt help are allowed; instruments belong in `alt_prompt`. Its built-in AR LoRA downloads just in time at strength 1; no manual selection needed. Selecting the same adapter manually uses your multiplier instead. Times/order guide rather than guarantee transitions. Use short caps for previews or larger caps to allow longer pieces/endings.
 
 ### Source Audio and Scores
-`audio_prompt_type="A"` + `audio_guide` transcribes musical notes with SheetSage2/MERT2 in modes 0/1/3. Supply lyrics separately, aligned to the source, or a plan in mode 3. Mode 0 retains harmony; mode 1 allows freer accompaniment. Transcription can make mistakes; regeneration does not preserve waveforms or clone a singer. With no source audio, optional `custom_guide` = compatible UTF-8 `.abc` file replaces automatic planning; use Vocal/Ins voices, omit chord symbols for mode 1. Source audio hides/overrides manual ABC. Old `custom_settings.abc` text is ignored. `custom_settings.save_score=1` exports ABC/MIDI (default 0): the conditioning composition, not a transcription of final audio, possibly longer than an early-stopped result. API artifacts expose side files in memory.
+`audio_prompt_type`: `S` composes from scratch, `Q` uses `custom_guide` ABC, `QE` extends that ABC, `A` transcribes audio, and `AE` transcribes and extends audio. Extension continues the supplied score with the ABC planner before audio generation; duration remains an upper limit. `A`/`AE` + `audio_guide` transcribes musical notes with SheetSage2/MERT2 in modes 0/1/3. Supply lyrics separately, aligned to the source, or a plan in mode 3. Mode 0 retains harmony; mode 1 allows freer accompaniment. Transcription can make mistakes; regeneration does not preserve waveforms or clone a singer. With `Q`/`QE`, required `custom_guide` = compatible UTF-8 `.abc` file replaces automatic planning; use Vocal/Ins voices, omit chord symbols for mode 1. Source audio hides/overrides manual ABC. Old `custom_settings.abc` text is ignored. `custom_settings.save_score=1` exports ABC/MIDI (default 0): the conditioning composition, not a transcription of final audio, possibly longer than an early-stopped result. API artifacts expose side files in memory.
 
 ### LoRAs and License
 `activated_loras`/`loras_multipliers` accept compatible YuE2 AR and acoustic/diffusion adapters together with independent strengths. Keys route each component; AR affects composition/conditioning and requires constant strength, acoustic affects rendering and supports step schedules. Start at 1 and lower for a weaker effect. Native/ComfyUI fused adapters are accepted; full replacement weights require base-relative diff tensors. Model and instrumental adapter: CC BY-NC 4.0, non-commercial use.
@@ -228,7 +228,7 @@ Use actual short, singable lines, one bracketed section label per line, and blan
 `prompt`: `[Instrumental]` alone or `[Intro]`, `[Verse]`, `[Pre-Chorus]`, `[Chorus]`, `[Bridge]`, `[Outro]`, one per real newline. Use the same title-case format as classic songs. Numbers and times are accepted, for example `[Verse 1 0:15-0:45]`. Do not mix `[Instrumental]` with tags, add sung words, or put production notes in brackets. Unlike classic mode, only these six section names are allowed: do not emit instrument tags such as `[Guitar]` or `[Piano]`, or classic-only variants such as `[Solo]` or `[Final Chorus]`. Put instruments in `alt_prompt`. YuE2 handles capitalization and removes section numbers internally, preserving order, repeated sections and times. Times guide rather than guarantee transitions or duration. Example style: `instrumental, ambient, piano, soft strings, reflective, 80 BPM`. Convert a structural brief into valid tags yourself, preserving requested order, repetitions and explicit times. If no structure is requested, use `[Instrumental]`; do not invent timestamps or an arrangement. Preserve an existing valid plan. Write `alt_prompt` beginning with instrumental, describing genre, instruments, mood and arrangement; preserve explicit constraints and never introduce singing, speech, humming, choir or backing vocals. The AR LoRA loads automatically. If validation fails, use the reported line number and original content to correct that line; do not remove valid times or rewrite unrelated sections.
 
 ### Source Audio and Scores
-Source audio supplies notes, not words: provide lyrics with matching section order/phrasing, or a plan for mode 3. Upload notation via `custom_guide`, never either text field; use No Audio for manual ABC (source audio overrides it). `custom_settings.save_score=1` retains the ABC/MIDI composition for editing/reuse, not a transcription of the final performance. See model help for modes and score constraints.
+Source audio supplies notes, not words: provide lyrics with matching section order/phrasing, or a plan for mode 3. Upload notation via `custom_guide`, never either text field; select Use an ABC score or Extend an ABC score for manual ABC. `custom_settings.save_score=1` retains the ABC/MIDI composition for editing/reuse, not a transcription of the final performance. See model help for modes and score constraints.
 """
 
 
@@ -278,8 +278,13 @@ class family_handler:
             "alt_prompt": {"label": "Music Style", "placeholder": "Language, genre, instruments, mood, vocal character and tempo", "lines": 3},
             "model_modes": {"choices": [("Melody and chords", 0), ("Melody only", 1), ("Direct generation", 2), ("Instrumental - Melody and Chords", 3)], "default": 0, "label": "Composition Planning"},
             "any_audio_prompt": True, "audio_prompt_choices": True, "audio_guide_label": "Source Song (Music to Transcribe)",
-            "audio_prompt_type_sources": {"selection": ["", "A"], "labels": {"": "No Audio", "A": "Extract Score from Source Song"}, "default": "", "label": "Source Audio", "letters_filter": "A"},
-            "custom_guide": {"id": "custom_guide", "name": "ABC Score", "label": "Optional ABC Score (.abc)", "type": "file", "default": None, "required": False, "file_types": [".abc"], "audio_prompt_type_not": "A"},
+            "audio_prompt_type_sources": {
+                "selection": ["S", "Q", "QE", "A", "AE"],
+                "labels": {"S": "Compose from scratch", "Q": "Use an ABC score", "QE": "Extend an ABC score", "A": "Use a score transcribed from audio", "AE": "Extend a score transcribed from audio"},
+                "default": "S", "label": "Composition source", "letters_filter": "SAQE",
+                "custom_flags": {"Q": "ABC score", "E": "Extend score"},
+            },
+            "custom_guide": {"id": "custom_guide", "name": "ABC Score", "label": "ABC Score (.abc)", "type": "file", "default": None, "required": False, "file_types": [".abc"], "audio_prompt_type": "Q", "audio_prompt_type_not": "A"},
             "custom_settings": [
                 {"id": "save_score", "name": "Save Score", "label": "Save ABC and MIDI Score", "type": "dropdown", "choices": [("Off", 0), ("On", 1)], "default": 0},
             ],
@@ -336,12 +341,21 @@ class family_handler:
 
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
-        ui_defaults.update({"prompt": PROMPT, "alt_prompt": STYLE, "audio_prompt_type": "", "duration_seconds": 120, "video_length": 0, "num_inference_steps": 32, "guidance_scale": 1.0, "temperature": 1.0, "top_k": 100, "top_p": 0.95, "model_mode": 0, "custom_guide": None, "custom_settings": {"save_score": 0}, "prompt_enhancer": "", "negative_prompt": "", "repeat_generation": 1, "multi_prompts_gen_type": "FG"})
+        ui_defaults.update({"prompt": PROMPT, "alt_prompt": STYLE, "audio_prompt_type": "S", "duration_seconds": 120, "video_length": 0, "num_inference_steps": 32, "guidance_scale": 1.0, "temperature": 1.0, "top_k": 100, "top_p": 0.95, "model_mode": 0, "custom_guide": None, "custom_settings": {"save_score": 0}, "prompt_enhancer": "", "negative_prompt": "", "repeat_generation": 1, "multi_prompts_gen_type": "FG"})
         if base_model_type == HUM_ARCHITECTURE:
             ui_defaults["audio_prompt_type"] = "A"
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if base_model_type != HUM_ARCHITECTURE:
+            from .composition import composition_source
+            custom = dict(ui_defaults.get("custom_settings") or {})
+            ui_defaults["audio_prompt_type"] = composition_source(
+                ui_defaults.get("audio_prompt_type", ""),
+                bool(ui_defaults.get("custom_guide") or ui_defaults.get("custom_guide_used")),
+                custom.pop("extend_score", 0) == 1,
+            )
+            ui_defaults["custom_settings"] = custom
         # Retired style-only variants now share the contextual style choice.
         mode = ui_defaults.get("prompt_enhancer", "")
         if isinstance(mode, str):
@@ -360,7 +374,14 @@ class family_handler:
                 return "Upload a hummed melody for Hum-to-Song."
             if inputs["model_mode"] not in (0, 1):
                 return "Choose Continue Hum or Hum Only."
-        scoring = "A" in inputs["audio_prompt_type"]
+        from .composition import composition_source
+        source = composition_source(inputs["audio_prompt_type"], bool(inputs["custom_guide"]))
+        scoring = "A" in source
+        using_abc = "Q" in source and not scoring
+        if using_abc and inputs["custom_guide"] is None:
+            return "Upload an ABC score for the selected composition source."
+        if "E" in source and ("S" in source or not (scoring or using_abc)):
+            return "Score extension requires an ABC score or source audio."
         if scoring and inputs["audio_guide"] is None:
             return "Upload a source song to extract its score."
         if scoring and inputs["model_mode"] == 2:
@@ -374,7 +395,7 @@ class family_handler:
             error = validate_instrumental_prompt(one_prompt)
             if error:
                 return error
-        if not scoring and inputs["custom_guide"] is not None:
+        if using_abc:
             if Path(inputs["custom_guide"]).suffix.lower() != ".abc":
                 return "Upload an ABC score file with the .abc extension."
             if inputs["model_mode"] == 2:

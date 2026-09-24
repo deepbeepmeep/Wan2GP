@@ -1,7 +1,8 @@
 {
     "model": {
-        "name": "Qwen Image 2.1 7B",
+        "name": "Qwen Image 2.1 TextImage2Image 7B",
         "architecture": "qwen_image_21_7B",
+        "group": "qwen_image_2",
         "description": "Create images from a description, or use up to 10 reference images to change a scene, combine subjects, or guide its appearance. Edit selected areas with a mask, extend an image with outpainting, and work at resolutions up to 4K. For cutouts or stickers, enable RGBA and request a transparent background; PNG output preserves its alpha channel. Text rendering is moderate: prefer short wording and proofread it; dense infographics are not recommended.",
         "URLs": [
             "https://huggingface.co/DeepBeepMeep/Qwen_image_2/resolve/main/qwen_image_21_7B_bf16.safetensors",

@@ -52,6 +52,7 @@ dlss5/
 wgp_config.json
 plugins_local.json
 /plugins/wan2gp-*/
+!/plugins/wan2gp-ming-image/
 /plugins/wangp-*/
 loras_url_cache.json
 loras_url_cache_v2.json

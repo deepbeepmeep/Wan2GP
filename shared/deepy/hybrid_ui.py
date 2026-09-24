@@ -55,7 +55,9 @@ def bind_gallery_sync(service, state, render_gallery, outputs, *, gallery, main)
     # Gradio only preserves custom error display options on its queued path.
     error.input(show_error, inputs=[error], outputs=None, queue=True, show_progress='hidden', trigger_mode='multiple', api_name=False)
     trigger = gr.Button(visible=False, elem_id='deepy_hybrid_gallery_sync')
-    revision = gr.State(-1)
+    # A stale response can be discarded by the browser's selection guard. Only
+    # acknowledge revisions applied there, not responses completed on the server.
+    revision = gr.Number(-1, visible=False, precision=0)
     restored = gr.Textbox(visible=False)
     view = gr.Textbox(visible=False, elem_id='wangp-gallery-view')
     interaction = gr.Textbox(visible=False, elem_id='wangp-gallery-interaction')
@@ -97,7 +99,7 @@ def bind_gallery_sync(service, state, render_gallery, outputs, *, gallery, main)
 
     # The patched Gallery applies explicit indices with the value, including its
     # first population. A second response can restore an already obsolete index.
-    gr.on([main.load, trigger.click], refresh, inputs=[state, revision, restored, view], outputs=[*outputs, revision, restored, view], queue=False, show_progress='hidden', trigger_mode='always_last').then(fn=None, inputs=[restored], outputs=None, js='payload => window.__wangpAssistantChatNS.galleryRestored?.(JSON.parse(payload))')
+    gr.on([main.load, trigger.click], refresh, inputs=[state, revision, restored, view], outputs=[*outputs, revision, restored, view], queue=False, show_progress='hidden', trigger_mode='always_last').success(fn=None, inputs=[restored, revision], outputs=None, js='(payload, revision) => window.__wangpAssistantChatNS.galleryRestored?.(JSON.parse(payload), revision)')
 
     # Reuse the existing preview renderer without requiring a generation request
     # in this page. New/reconnected pages also read the current shared preview.

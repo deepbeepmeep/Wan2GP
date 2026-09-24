@@ -1,4 +1,5 @@
 import html
+import json
 import queue
 import threading
 import uuid
@@ -8,9 +9,10 @@ from typing import Any, Callable
 import gradio as gr
 
 from shared import magic_mask
+from shared.gradio.field_help import WAND_ICON_SVG
 
 
-MAGIC_WAND_LABEL = "\U0001FA84"
+MAGIC_WAND_LABEL = ""  # The shared SVG is inserted when the controls mount.
 MAX_MAGIC_MASK_OBJECTS = 5
 _ABORT_EVENTS: dict[str, threading.Event] = {}
 _ORIGINAL_IMAGE_EDITOR = None
@@ -423,19 +425,20 @@ class MagicMaskUI:
 
 .wangp-magic-mask-trigger,
 .wangp-magic-mask-trigger button {
-    width: 34px !important;
-    min-width: 34px !important;
-    max-width: 34px !important;
-    height: 34px;
-    min-height: 34px;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 28px !important;
+    min-width: 28px !important;
+    max-width: 28px !important;
+    height: 28px !important;
+    min-height: 28px !important;
     padding: 0 !important;
-    border: 1px solid var(--button-secondary-border-color, rgba(17, 84, 118, 0.14)) !important;
-    border-radius: 12px !important;
-    background: var(--button-secondary-background-fill, linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(236, 244, 249, 0.99) 100%)) !important;
-    color: var(--button-secondary-text-color, #155574) !important;
-    box-shadow: var(--shadow-drop, 0 10px 18px rgba(11, 44, 63, 0.08)) !important;
-    font-weight: 700;
-    line-height: 1;
+    border: 1px solid var(--border-color-primary) !important;
+    border-radius: var(--radius-xs, 4px) !important;
+    background: var(--block-background-fill) !important;
+    color: var(--block-label-text-color) !important;
+    box-shadow: var(--shadow-drop) !important;
 }
 
 .wangp-magic-mask-trigger--overlay {
@@ -501,8 +504,18 @@ class MagicMaskUI:
 
 .wangp-magic-mask-trigger:hover,
 .wangp-magic-mask-trigger button:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 14px 24px rgba(11, 44, 63, 0.12);
+    background: var(--background-fill-secondary) !important;
+    color: var(--color-accent) !important;
+    transform: none;
+}
+
+.wangp-magic-mask-trigger svg,
+.wangp-magic-mask-toolbar-button svg {
+    display: block;
+    width: 14px;
+    height: 14px;
+    flex: none;
+    pointer-events: none;
 }
 
 .wangp-magic-mask-trigger:hover::after {
@@ -881,7 +894,7 @@ class MagicMaskUI:
 
     @staticmethod
     def get_javascript():
-        return r"""
+        return "const WMM_WAND_SVG = " + json.dumps(WAND_ICON_SVG) + ";\n" + r"""
 window.__wangpMagicMaskNS = window.__wangpMagicMaskNS || {};
 const WMM = window.__wangpMagicMaskNS;
 WMM.init = WMM.init || false;
@@ -1042,6 +1055,16 @@ WMM.decoratePopupShells = function () {
     document.querySelectorAll('.wangp-magic-mask-close').forEach((closeButton) => closeButton.setAttribute('data-wangp-model-info-close', ''));
 };
 
+WMM.decorateWandTriggers = function () {
+    document.querySelectorAll('.wangp-magic-mask-trigger').forEach((trigger) => {
+        const button = trigger.matches('button') ? trigger : trigger.querySelector('button');
+        if (!button || button.querySelector('svg')) return;
+        button.innerHTML = WMM_WAND_SVG;
+        button.setAttribute('aria-label', 'Magic Mask');
+        button.title = 'Magic Mask';
+    });
+};
+
 WMM.installOverlayTriggerPatch = function () {
     document.querySelectorAll('.wangp-magic-mask-trigger--overlay').forEach((trigger) => {
         if (trigger.dataset.wangpMagicMaskOverlayBound === '1') return;
@@ -1075,6 +1098,7 @@ WMM.findImageEditorForTrigger = function (trigger) {
 
 WMM.mountImageEditorTriggers = function () {
     WMM.decoratePopupShells();
+    WMM.decorateWandTriggers();
     WMM.installOverlayTriggerPatch();
     document.querySelectorAll('.wangp-magic-mask-trigger--editor').forEach((trigger) => {
         const anchor = trigger.closest('.wangp-magic-mask-anchor--image-editor') || trigger.parentElement || document.body;
@@ -1095,7 +1119,7 @@ WMM.mountImageEditorTriggers = function () {
             toolbarButton.className = 'wangp-magic-mask-toolbar-button';
             toolbarButton.setAttribute('aria-label', 'Magic Mask');
             toolbarButton.setAttribute('title', 'Magic Mask');
-            toolbarButton.textContent = '\u{1FA84}';
+            toolbarButton.innerHTML = WMM_WAND_SVG;
             toolbar.appendChild(toolbarButton);
         }
         toolbar.classList.add('wangp-magic-mask-toolbar');

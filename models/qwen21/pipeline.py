@@ -22,6 +22,7 @@ OUTPAINTING_METHOD = "Red Canvas"  # Alternative: "Reference".
 
 
 RED_OUTPAINTING_PROMPT = "Remove the red paddings on the sides and show what's behind them."
+VIGGLE_V02_SIGMAS = (1.0, 0.875, 0.75, 0.5, 0.25)
 
 
 def reference_outpainting_offset(location, width, height):
@@ -216,7 +217,7 @@ class Qwen21Pipeline(QwenImage21Pipeline):
 
     @generation_progress
     @torch.inference_mode()
-    def generate(self, input_prompt, seed=1, n_prompt=None, sampling_steps=40, input_ref_images=None, input_frames=None, input_masks=None, width=1024, height=1024, guide_scale=4.0, batch_size=1, joint_pass=True, VAE_tile_size=None, denoising_strength=1.0, masking_strength=1.0, model_mode=0, loras_slists=None, NAG_scale=1.0, NAG_tau=3.5, NAG_alpha=0.5, callback=None, set_progress_status=None, outpainting_dims=None, custom_settings=None, **kwargs):
+    def generate(self, input_prompt, seed=1, n_prompt=None, sampling_steps=40, sample_solver="default", input_ref_images=None, input_frames=None, input_masks=None, width=1024, height=1024, guide_scale=4.0, batch_size=1, joint_pass=True, VAE_tile_size=None, denoising_strength=1.0, masking_strength=1.0, model_mode=0, loras_slists=None, NAG_scale=1.0, NAG_tau=3.5, NAG_alpha=0.5, callback=None, set_progress_status=None, outpainting_dims=None, custom_settings=None, **kwargs):
         device = torch.device("cuda")
         output_channels = 4 if (custom_settings or {}).get("rgba", "Disabled") == "Enabled" else 3
         use_kv_cache = (custom_settings or {}).get("qwen21_kv_cache", "Disabled") == "Enabled"
@@ -308,14 +309,20 @@ class Qwen21Pipeline(QwenImage21Pipeline):
                 from shared.utils.loras_mutipliers import update_loras_slists
                 update_loras_slists(self.transformer, loras_slists, sampling_steps)
             viggle_active = viggle_turbo_lora_active(self.transformer, self.viggle_turbo_lora_filename)
+            viggle_v02 = sample_solver == "viggle_v02"
+            if viggle_v02 and sampling_steps != len(VIGGLE_V02_SIGMAS):
+                raise ValueError("Viggle Turbo v0.2 scheduler requires 5 inference steps.")
             scheduler = FlowMatchEulerDiscreteScheduler.from_config(
-                self.scheduler_config, **({"shift_terminal": None} if sampling_steps == 1 or viggle_active else {}))
+                self.scheduler_config, **({"shift_terminal": None} if sampling_steps == 1 or viggle_active or viggle_v02 else {}))
             if viggle_active:
                 print(f"Viggle Turbo LoRA Detected - Scheduler Terminal Shift Set To {scheduler.config.shift_terminal}")
+            if viggle_v02:
+                print(f"Viggle Turbo v0.2 Scheduler Selected - Scheduler Terminal Shift Set To {scheduler.config.shift_terminal}")
             cfg = scheduler.config
             slope = (cfg.max_shift - cfg.base_shift) / (cfg.max_image_seq_len - cfg.base_image_seq_len)
             mu = latents.shape[1] * slope + cfg.base_shift - slope * cfg.base_image_seq_len
-            scheduler.set_timesteps(sampling_steps, device=device, sigmas=np.linspace(1, 1 / sampling_steps, sampling_steps), mu=mu)
+            sigmas = VIGGLE_V02_SIGMAS if viggle_v02 else np.linspace(1, 1 / sampling_steps, sampling_steps)
+            scheduler.set_timesteps(sampling_steps, device=device, sigmas=sigmas, mu=mu)
             first_step = 0
             lanpaint = None
             if latent_mask is not None:

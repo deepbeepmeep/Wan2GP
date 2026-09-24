@@ -125,7 +125,10 @@ class family_handler():
 
     @staticmethod
     def query_family_infos():
-        return {"qwen":(1110, "Qwen")}
+        return {
+            "qwen": (1110, "Qwen Image"),
+            "qwen_image_2": (1111, "Qwen Image 2.1"),
+        }
 
     @staticmethod
     def get_lora_dir(base_model_type):

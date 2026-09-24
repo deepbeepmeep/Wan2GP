@@ -8,6 +8,13 @@ from shared.gradio import model_infos
 
 
 _COUNTER = itertools.count()
+WAND_ICON_SVG = (
+    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" '
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<path d="M3 19.4 15.4 7 18 9.6 5.6 22 3 19.4Z"/>'
+    '<path d="m15.4 7 2.1-2.1 2.6 2.6L18 9.6"/>'
+    '<path d="M20 1v3m-1.5-1.5h3M6 3v2M5 4h2m14 11v2m-1-1h2"/></svg>'
+)
 
 
 SPATIAL_UPSAMPLER_HELP_INTRO = """Spatial upsamplers increase resolution. Visual refiners improve targeted content and may leave the dimensions unchanged. Scale is shown only for methods that support multipliers."""
@@ -83,7 +90,7 @@ def render_marker(elem_id, help_id, *, title=None, markdown=None, helper_popup_i
         popup_id = f"wangp-field-help-{popup_key}"
         popup_html = model_infos.render_info_popup(popup_id, title, markdown, lazy=True)
     info_button = _tool_button("info", popup_id, title, "i")
-    helper_button = _tool_button("helper", helper_popup_id if has_helper else "", helper_title or "Prompt Helper", "&#129668;")
+    helper_button = _tool_button("helper", helper_popup_id if has_helper else "", helper_title or "Prompt Helper", WAND_ICON_SVG)
     return (
         f"<span class='wangp-field-help-inline' data-wangp-field-help-for='{html.escape(elem_id, quote=True)}'>"
         f"{info_button}{helper_button}"
@@ -117,7 +124,7 @@ def render_model_prompt_tools(label, elem_id, model_type, model_def, prompt_id, 
         popup_id = f"wangp-field-help-{popup_key}"
         popup_html = model_infos.render_info_popup(popup_id, title, markdown, lazy=True)
     info_button = _tool_button("info", popup_id, title, "i")
-    helper_button = _tool_button("helper", helper_popup_id, helper_title or "Prompt Helper", "&#129668;")
+    helper_button = _tool_button("helper", helper_popup_id, helper_title or "Prompt Helper", WAND_ICON_SVG)
     row_class = "wangp-prompt-tools-row" if popup_id or str(helper_popup_id or "").strip() else "wangp-prompt-tools-row wangp-prompt-tools-empty"
     return (
         f"<div class='{row_class}' data-wangp-prompt-tools-for='{html.escape(elem_id, quote=True)}'>"
@@ -256,8 +263,18 @@ def get_css():
     margin-block: 0 !important;
 }
 .wangp-context-tool-helper {
-    border: 1px solid var(--button-secondary-border-color, rgba(118, 74, 17, 0.26)) !important;
-    color: var(--button-secondary-text-color, #7a520c) !important;
+    width: 22px !important;
+    height: 20px !important;
+    min-width: 22px !important;
+    min-height: 20px !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    color: #175a79 !important;
+}
+.wangp-context-tool-helper svg {
+    width: 18px;
+    height: 18px;
 }
 """
 

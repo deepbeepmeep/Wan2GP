@@ -119,11 +119,11 @@
                     "linux": "https://github.com/deepbeepmeep/kernels/releases/download/Light2xv/lightx2v_kernel-0.0.2+torch2.10.0-cp311-abi3-linux_x86_64.whl"
                 }
             },
-            "gguf": { 
-                "label": "GGUF llama.cpp CUDA Kernels", 
+            "gguf": {
+                "label": "GGUF llama.cpp CUDA Kernels",
                 "cmd": {
-                    "win": "https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.14+torch210cu130py311-cp311-cp311-win_amd64.whl",
-                    "linux": "https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.14+torch210cu130py311-cp311-cp311-linux_x86_64.whl"
+                    "win": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.22/llamacpp_gguf_cuda-1.0.22%2Btorch210cu130py311-cp311-cp311-win_amd64.whl",
+                    "linux": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.22/llamacpp_gguf_cuda-1.0.22%2Btorch210cu130py311-cp311-cp311-linux_x86_64.whl"
                 }
             }
         }

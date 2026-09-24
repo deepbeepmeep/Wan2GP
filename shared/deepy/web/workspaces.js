@@ -6,8 +6,8 @@
     delete: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
   };
   class WorkspacePicker {
-    constructor(host, request, notice, {deepy = false, management = true} = {}) {
-      this.request = request; this.notice = notice; this.state = null;
+    constructor(host, request, notice, {deepy = false, management = true, info = null} = {}) {
+      this.request = request; this.notice = notice; this.info = info; this.state = null;
       this.deepy = deepy; this.management = management; this.busy = false;
       this.node = document.createElement('div'); this.node.className = 'wangp-workspaces'; this.node.setAttribute('role', 'group'); this.node.setAttribute('aria-label', 'Workspace');
       this.node.innerHTML = '<select aria-label="Workspace" title="Workspace"></select>' + Object.entries(icons).map(([action, path]) => `<button type="button" data-workspace-action="${action}" aria-label="${action === 'create' ? 'Add' : action === 'rename' ? 'Rename' : 'Delete'} workspace" title="${action === 'create' ? 'Add' : action === 'rename' ? 'Rename' : 'Delete'} workspace"><svg viewBox="0 0 24 24" aria-hidden="true">${path}</svg></button>`).join('');
@@ -59,7 +59,7 @@
     open(action) {
       const current = this.state.items.find(item => item.id === this.state.selected);
       if (current.deepy_session_id && action !== 'create') {
-        this.notice(`${action === 'rename' ? 'Rename' : 'Delete'} this workspace through its Deepy session.`);
+        (this.info || this.notice)(`${action === 'rename' ? 'Rename' : 'Delete'} this workspace through its Deepy session.`);
         return;
       }
       const removing = action === 'delete';
@@ -82,7 +82,8 @@
         this.render(await this.request('workspaces/' + action, {...payload, context: this.deepy ? 'deepy' : 'gallery'}));
         return true;
       } catch (error) {
-        if (this.dialog.open) {
+        if (this.info && (action === 'rename' || action === 'delete')) this.info(error.message);
+        else if (this.dialog.open) {
           const target = this.dialog.querySelector('[role=alert]'); target.textContent = error.message; target.hidden = false;
         } else this.notice(error.message);
         return false;

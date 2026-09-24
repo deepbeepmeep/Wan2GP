@@ -41,9 +41,12 @@ gradio-app {
     border-radius: 4px;
 }
 
-/* Hide the preview-close toggle; reference galleries have explicit clear controls. */
+/* The preview cross removes the selected item only in the reference gallery. */
 .gallery-container > .preview button[aria-label="Close"] {
     display: none;
+}
+.amg-remove-selected .gallery-container > .preview button[aria-label="Close"] {
+    display: flex;
 }
 
 /* The preview has its own thumbnail strip; no background grid or blur layer. */
@@ -160,15 +163,16 @@ h2 {
 #queue_html_container .pastel-row {
     background-color: hsl(var(--item-hue, 0), 80%, 92%);
 }
+#queue_html_container .pastel-row td,
+#queue_html_container .pastel-row td * {
+    color: #111827;
+}
 #queue_html_container .alternating-grey-row.even-row {
     background-color: #F8FAFC; /* Light mode grey */
 }
 @media (prefers-color-scheme: dark) {
     #queue_html_container tr:hover td {
          background-color: rgba(255, 255, 255, 0.1) !important;
-    }
-    #queue_html_container .pastel-row {
-        background-color: hsl(var(--item-hue, 0), 35%, 25%);
     }
     #queue_html_container .alternating-grey-row.even-row {
         background-color: #2a3748; /* Dark mode grey */

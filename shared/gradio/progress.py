@@ -120,6 +120,11 @@ class WangpProgress:
                 amount = f"{index}" + (f" / {total}" if total is not None else "") + f" {unit}"
             elif total is None and ratio == 0:
                 ratio = None
+            if unit == "phases" and title.startswith("Loading ") and " - " in title:
+                title, subtask = title.rsplit(" - ", 1)
+                title += "..."
+                if bar_text is None:
+                    bar_text = subtask
             phase, separator, suffix = title.rpartition(" | ")
             if separator and _timing.fullmatch(suffix):
                 title, timing = phase, suffix
@@ -138,7 +143,8 @@ class WangpProgress:
         width = f"{percentage:.2f}%" if percentage is not None else "0%"
         value = f' aria-valuenow="{percentage:.1f}"' if percentage is not None else ""
         track = "progress-track" + (" indeterminate" if percentage is None and active and "status-only" not in classes else "")
-        percent = f"{percentage:.0f}%" if percentage is not None else ""
+        has_subtask_label = bool(text) and title.removeprefix("Stopping… ").lower().startswith(("downloading", "loading "))
+        percent = f"{percentage:.0f}%" if percentage is not None and not has_subtask_label else ""
         complete = percentage == 100 and (download is None or download.get("finished_at") is not None)
         tooltip = escape(title + ("\n" + text if text else ""))
         details = escape(" · ".join(item for item in (amount, speed, counter, timing) if item))

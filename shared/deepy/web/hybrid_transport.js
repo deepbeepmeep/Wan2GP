@@ -59,7 +59,10 @@
       // Readiness is per browser: retain loading until Gradio applies its gallery outputs.
       if (pending && !value.pending) click('deepy_hybrid_gallery_sync');
     }
-    WAC.galleryRestored = value => {
+    WAC.galleryRestored = (value, appliedRevision) => {
+      // A selection can discard the response after its host revision was seen.
+      // Complete that refresh even if no further host notification is coming.
+      if (appliedRevision < galleryRevision) click('deepy_hybrid_gallery_sync');
       if (value && !value.pending && value.id === restoration?.id && !restoration.pending) {
         restoredId = value.id;
         WAC.setRestoration(null);
@@ -100,7 +103,9 @@
       if (action === 'resume') WAC.requestCanonicalSync();
       showError(error.notification || error.message);
     });
-    const workspaces = new WanGPWorkspacePicker(galleryTabs, (path, payload) => transport.request(path, payload), notice);
+    // The native Gradio info event stacks messages without reusing the error bridge's callback.
+    const workspaceInfo = message => galleryTabs.dispatchEvent(new CustomEvent('gradio', {bubbles: true, detail: {event: 'info', data: message}}));
+    const workspaces = new WanGPWorkspacePicker(galleryTabs, (path, payload) => transport.request(path, payload), notice, {info: workspaceInfo});
     let sessionWorkspaces = null;
     function syncSessionWorkspaces() {
       const host = document.querySelector('#deepy-session-workspaces');

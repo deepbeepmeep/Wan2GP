@@ -171,7 +171,7 @@ def infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs):
         "text_to_video": "video" in main_outputs and "text" in inputs,
         "image_to_video": "video" in main_outputs and image_inputs["start"],
         "video_to_video": "video" in main_outputs and (video_inputs["continue"] or video_inputs["control"] or video_inputs["reference"]),
-        "text_to_image": "image" in main_outputs and "text" in inputs,
+        "text_to_image": "image" in main_outputs and "text" in inputs and not model_def.get("one_image_ref_needed", False),
         "image_to_image": "image" in main_outputs and (image_inputs["start"] or image_inputs["reference"] or image_inputs["control"]),
         "text_to_audio": "audio" in main_outputs and "text" in inputs,
         "audio_to_audio": "audio" in main_outputs and audio_inputs["prompt"],

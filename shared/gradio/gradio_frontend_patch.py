@@ -69,6 +69,23 @@ function wangpGradio(...args) {
     return wangpGradioValue;
 }
 """
+# WebKit's fetch body reader can strand SSE bytes while its consumer is busy
+# (WebKit bug 322545). Native EventSource does not use that reader. Preserve
+# Gradio's fetch transport for clients that require custom request headers.
+_NATIVE_EVENT_STREAM = """
+if (typeof window !== "undefined" && new Headers(o.headers).keys().next().done) {
+    const source = new EventSource(e, {withCredentials: o.credentials === "include"});
+    const close = () => {
+        source.close();
+        o.signal?.removeEventListener("abort", close);
+    };
+    // Gradio owns stream completion/reopening; never auto-reconnect an old job.
+    source.addEventListener("error", close, {once: true});
+    if (o.signal?.aborted) close();
+    else o.signal?.addEventListener("abort", close, {once: true});
+    return source;
+}
+"""
 _MARK_ANCESTORS = """
 for (let node = f; node; node = node.parent) wangpDirty.add(node);
 }
@@ -325,6 +342,7 @@ _PATCHES = {
         ('return l.$$set=w=>{' + _NODE_INPUTS, 'return l.$$set=w=>{' + _NODE_SKIP + _NODE_INPUTS),
     ],
     'index-Do3LSwBC.js': [
+        ('function lf(e,o={}){', 'function lf(e,o={}){' + _NATIVE_EVENT_STREAM),
         # Inspect only the actual gallery-view output, never unrelated text.
         # Its whole response must be discarded before an old index can paint.
         ('for(let g=0;g<ge.length;g++)for(let P=0;', 'for(let g=0;g<ge.length;g++){const view=ge[g].find(v=>v&&v.prop==="value"&&s[v.id]?.props.elem_id==="wangp-gallery-view");if(view&&window.WanGPGallerySelection?.acceptView(view.value)===false)continue;for(let P=0;'),

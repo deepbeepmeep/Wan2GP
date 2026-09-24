@@ -80,10 +80,11 @@ You can ask Deepy to:
 - create speech from a description or voice sample, generate songs, and generate sound from a description
 - inspect images and video frames or compare several visuals
 - report useful media details such as dimensions, duration, FPS, frame count, and audio tracks
-- extract images, clips, or audio; transcribe audio or video; mute or replace audio; resize or crop media; compose assets side by side; and merge videos
+- extract images, clips, or audio; transcribe audio or video; mute or replace a video soundtrack; resize or crop media; compose assets side by side; and merge videos
 - find available LoRAs, explain the active tool defaults, and answer WanGP usage questions
 
 Prime is especially useful for requests with dependencies. It can create an intermediate asset, inspect it, revise it if necessary, and use the accepted result in the next stage.
+Prime can use `remux_media` to mix stems into one audio stream, package separate selectable audio tracks, or add selectable subtitle tracks to a video. Subtitle files may be SRT, VTT, ASS, or SSA in an authorized workspace path; use `subtitle_tracks` with optional language, title, and default status. Existing video subtitle tracks are retained unless `include_video_subtitles=false`. With a video and subtitles but no audio inputs, compatible existing audio is copied; incompatible audio is converted only when the chosen container requires it. MP4/MOV subtitles use `mov_text`; MKV retains compatible subtitles or converts incompatible ones. Audio-only mixes follow the configured standalone WAV/MP3 format unless you request a supported output extension; separate audio-only tracks use M4A.
 
 ## Everyday workflow
 

@@ -141,3 +141,7 @@ Client requirements and session behavior:
 
 For NAT port forwarding, expose only trusted HTTPS with authentication enabled. See [HTTPS setup](#https-certificates) for certificate and VPN guidance.
 
+---
+
+> Applies to: WanGP and Deepy web authentication, HTTPS and reverse-proxy setup, and MCP OAuth configuration.
+

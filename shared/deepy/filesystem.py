@@ -16,6 +16,7 @@ from typing import Any
 import ffmpeg
 from PIL import Image
 
+from shared.deepy.image_channels import image_color_details
 from shared.deepy.media_registry import detect_media_type
 from shared.utils.video_decode import resolve_media_binary
 
@@ -292,26 +293,6 @@ def build_file_access_policy(server_config: dict[str, Any] | None, *, unrestrict
     return FileAccessPolicy(mode=mode, output_roots=output_roots, selected_roots=selected_roots, read_everywhere=read_everywhere, root_aliases=tuple([*output_aliases, *selected_aliases]))
 
 
-def _extension_filter(value: Any) -> set[str]:
-    if value is None:
-        return set()
-    values = re.split(r"[,;\s]+", value) if isinstance(value, str) else value
-    return {f".{str(item).strip().lower().lstrip('.')}" for item in values if str(item).strip()}
-
-
-def list_files(path: str, extensions: Any = None, policy: FileAccessPolicy | None = None) -> dict[str, Any]:
-    directory = policy.require_read(path, directory=True) if policy is not None else _resolved_path(path)
-    if not directory.is_dir():
-        return {"status": "error", "path": str(directory), "files": [], "count": 0, "error": "Path is not an existing directory."}
-    allowed = _extension_filter(extensions)
-    files = [
-        {"filename": item.name, "extension": item.suffix.lower(), "size_bytes": item.stat().st_size, "path": str(item.resolve())}
-        for item in sorted(directory.iterdir(), key=lambda entry: entry.name.casefold())
-        if item.is_file() and (not allowed or item.suffix.lower() in allowed) and (policy is None or policy.can_read(item))
-    ]
-    return {"status": "done", "path": str(directory), "extensions": sorted(allowed), "files": files, "count": len(files), "error": ""}
-
-
 def list_entries(policy: FileAccessPolicy, path: str = "", pattern: str = "*", recursive: bool = False, limit: int = 200, offset: int = 0, media_type: str = "all") -> dict[str, Any]:
     if not str(path or "").strip():
         roots = policy.roots()
@@ -400,9 +381,10 @@ def _probe_media(path: Path, media_type: str) -> dict[str, Any]:
 def _query_image(path: Path) -> dict[str, Any]:
     with Image.open(path) as image:
         width, height = image.size
+        color_details = image_color_details(image)
         frame_count = int(getattr(image, "n_frames", 1) or 1)
         duration = sum(float(image.seek(index) or image.info.get("duration", 0) or 0) for index in range(frame_count)) / 1000 if frame_count > 1 else None
-    return {"status": "done", "path": str(path), "filename": path.name, "size_bytes": path.stat().st_size, "file_type": "image", "width": width, "height": height, "resolution": f"{width}x{height}", "frame_count": frame_count, "fps": None if not duration else frame_count / duration, "duration_seconds": duration, "has_audio": False, "audio_track_count": 0, "error": ""}
+    return {"status": "done", "path": str(path), "filename": path.name, "size_bytes": path.stat().st_size, "file_type": "image", "width": width, "height": height, "resolution": f"{width}x{height}", "frame_count": frame_count, "fps": None if not duration else frame_count / duration, "duration_seconds": duration, "has_audio": False, "audio_track_count": 0, **color_details, "error": ""}
 
 
 def file_info(path: str, policy: FileAccessPolicy | None = None) -> dict[str, Any]:
@@ -803,5 +785,5 @@ def available_io_actions(policy: FileAccessPolicy, downloads_enabled: bool = Tru
 
 __all__ = [
     "TEXT_MAX_CHARS", "FileAccessPolicy", "IO_ACTIONS", "available_io_actions", "build_file_access_policy", "copy_file", "delete_path", "file_info", "list_entries",
-    "list_files", "make_directory", "move_path", "query_file", "read_text", "search_text", "unzip_file", "write_text", "zip_files",
+    "make_directory", "move_path", "query_file", "read_text", "search_text", "unzip_file", "write_text", "zip_files",
 ]

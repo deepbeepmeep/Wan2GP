@@ -63,7 +63,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-## 20th of September 2026: WanGP v13.1314 — It's Your Lucky Day^$\pi$!
+## 24th of September 2026: WanGP v13.1314 — It's Your Lucky Day^$\pi$!
 
 - **Qwen Image 2.1**: A new Qwen Image model with out-of-the-box editing capabilities and strong text rendering. 
 

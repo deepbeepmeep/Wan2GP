@@ -33,11 +33,13 @@ DEEPY_USAGES = {
 }
 MEDIA_DISCOVERY_DESCRIPTIONS = {
     "create_color_frame": "Create a solid-color Gallery image.",
+    "image_channels": "Convert RGB/RGBA images, extract color channels, or combine grayscale channel images.",
     "extract_audio": "Extract audio, optionally a time range.",
     "extract_video": "Extract a video segment.",
     "inspect_media": "Answer a required question about images via media_id/media_ids or exact video frames via media_inputs, with optional crops; no frame extraction needed.",
     "inspect_video": "Inspect a video time range via media_id using automatically sampled frames.",
     "merge_videos": "Join two videos end to end.",
+    "remux_media": "Copy video, combine audio, and add selectable subtitle tracks.",
     "transcribe_media": "Transcribe speech with timestamps.",
 }
 
@@ -128,7 +130,7 @@ def action_contract(definition):
 def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, downloads=False, allow_async=False, defer_wait=False, deepy_help=False):
     from shared import mcp_server as core
     from shared.deepy import filesystem, long_text
-    from shared.deepy.paged_files import directory_entries, rg_records
+    from shared.deepy.paged_files import list_directory_page, rg_records
     from shared.model_selection import normalize_preferences, rank_models, speciality_catalog
 
     pages = ResultPages()
@@ -351,11 +353,13 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         if action in {"list", "rg"}:
             filters = {name: definition["default"] for name, definition in io_actions[action]["parameters"]["properties"].items() if name not in PAGING and "default" in definition}
             filters.update({name: value for name, value in args.items() if name not in PAGING})
+            if action == "list":
+                return list_directory_page(pages, policy, **filters, limit=args.get("limit", PAGE_SIZE), cursor=args.get("cursor"), summary_only=args.get("summary_only", False))
             metadata = {"complete": True}
             records = None
             if not args.get("cursor"):
-                records = directory_entries(policy, **filters) if action == "list" else rg_records(policy, filters["command"], metadata)
-            return collection(["io", action, filters], records, args, "entries" if action == "list" else "matches", metadata)
+                records = rg_records(policy, filters["command"], metadata)
+            return collection(["io", action, filters], records, args, "matches", metadata)
         with core._GALLERY_LOCK:
             if action == "info":
                 if "paths" in args:
@@ -384,6 +388,22 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
     def wangp_toolbox(action: str | None = None, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
         """Inspect or compare media, transcribe, extract, trim, assemble and transform media, or retrieve their generation settings."""
         actions = {item["name"]: {"description": item["description"], "parameters": {**item["parameters"], "additionalProperties": False}} for item in core._toolbox_discovery(get_toolbox(), policy.read_enabled) if item["name"] not in {"search_doc", "load_doc_section", "get_media_details"}}
+        if deepy_help and "replace_audio" in actions:
+            actions.pop("replace_audio")
+            actions["remux_media"] = action_def(
+                "Copy a video while adding selectable subtitle tracks, replace its soundtrack, mix audio into one stream, or retain separate selectable audio tracks. Provide video_id and subtitle_tracks without audio_ids for a subtitle-only remux. The source video stream is copied and existing subtitles are retained by default; set include_video_subtitles=false to omit existing subtitles. MP4/MOV subtitles use mov_text; MKV copies compatible subtitle streams. Compatible replacement audio is stream-copied; mixing re-encodes. With two or more audio streams, mix by default; mode='multitrack' retains separate streams. Audio-only mix follows the configured standalone WAV/MP3 format; multitrack uses M4A, copying AAC/ALAC and converting other audio to lossless ALAC. Multitrack video uses MKV and copies audio. Set include_video_audio=true to include the original soundtrack. Each mix gain applies to the matching audio_ids item in dB.",
+                {
+                    "audio_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 16, "description": "Audio Gallery IDs or authorized audio file paths, in output track order. The first audio stream of each file is used."},
+                    "video_id": {"type": "string", "minLength": 1, "description": "Optional source video Gallery ID or authorized path."},
+                    "mode": {"type": "string", "enum": ["copy", "replace", "mix", "multitrack"], "description": "Omit to copy video/audio when only editing subtitles, replace a video soundtrack with one audio input, or mix multiple audio inputs."},
+                    "output_extension": {"type": "string", "enum": ["wav", "mp3", "flac", "m4a", "mp4", "mov", "mkv"], "description": "Optional output extension when the user requests one. Audio-only mix: wav, mp3, flac, or m4a; default follows the configured standalone codec. Audio-only multitrack: m4a. Video replace/mix: mp4, mov, or mkv; default follows the configured video container. Multitrack video: mkv."},
+                    "include_video_audio": {"type": "boolean", "default": False, "description": "Include the video's existing soundtrack in the mix or as the first separate track."},
+                    "subtitle_tracks": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "properties": {"path": {"type": "string", "minLength": 1, "description": "Authorized subtitle file path, such as @workspace/captions.srt (SRT, VTT, ASS, or SSA)."}, "language": {"type": "string", "minLength": 2, "maxLength": 3, "pattern": "^[A-Za-z]{2,3}$"}, "title": {"type": "string", "maxLength": 100}, "default": {"type": "boolean"}}, "required": ["path"], "additionalProperties": False}, "description": "New selectable subtitle tracks, in order. Use ISO 639 language codes such as eng or fra."},
+                    "include_video_subtitles": {"type": "boolean", "default": True, "description": "Keep existing subtitle tracks from the source video; set false when asked to remove them."},
+                    "gains_db": {"type": "array", "items": {"type": "number", "minimum": -60, "maximum": 24}, "minItems": 1, "maxItems": 16, "description": "Optional per-file gains for mix mode, aligned with audio_ids."},
+                },
+            )
+            actions["remux_media"]["example"] = {"action": "remux_media", "arguments": {"video_id": "visual:VIDEO", "subtitle_tracks": [{"path": "@workspace/captions.srt", "language": "eng"}]}}
         actions["media_settings"] = media_settings_def
         for name, summary in MEDIA_DISCOVERY_DESCRIPTIONS.items():
             if name in actions:
@@ -396,10 +416,16 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 " Choose exactly one input form: media_id for one visual, media_ids for a list, or media_inputs for per-video time_seconds/frame_no."
                 " Inspect video frames directly; use extract_image only to save a frame."
                 " Each media_inputs item may specify bbox=[x_min,y_min,x_max,y_max] (integers 0..1000), overriding the shared bbox; omitted boxes use the shared bbox or the full visual. Cropping precedes resizing."
+                " Image results report the source color mode and transparency separately; visual analysis uses an RGB copy."
             )
             actions["inspect_media"]["example"] = {"action": "inspect_media", "arguments": {"media_id": "visual:IMAGE", "question": "Describe this image."}}
         if "extract_image" in actions:
             actions["extract_image"]["description"] += " frame_no is zero-based (0 is the first frame); use frame_no or time_seconds, not both."
+        if "image_channels" in actions:
+            actions["image_channels"]["example"] = {
+                "action": "image_channels",
+                "arguments": {"operation": "combine", "media_id": "visual:RGB_IMAGE", "channel_sources": {"A": "visual:GRAYSCALE_MASK"}},
+            }
         if action == "inspect_media" and isinstance(arguments, dict) and "media" in arguments:
             arguments = dict(arguments)
             media = arguments.pop("media")
@@ -414,6 +440,22 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
             return response
         if action == "media_settings":
             return public_media_result(operations["wangp_get_media_settings"](**arguments), get_toolbox().session.media_registry)
+        if action == "remux_media":
+            toolbox = get_toolbox()
+            resolved = core._resolve_toolbox_arguments(session, toolbox, action, arguments, policy.read_enabled, policy)
+            audio_ids = resolved.get("audio_ids", [])
+            video_id = resolved.get("video_id", "")
+            include_video_audio = resolved.get("include_video_audio", False)
+            if not audio_ids and not video_id:
+                raise ValueError("remux_media requires audio_ids or video_id.")
+            if resolved.get("subtitle_tracks") and not video_id:
+                raise ValueError("subtitle_tracks require video_id.")
+            if not audio_ids and not resolved.get("subtitle_tracks") and resolved.get("include_video_subtitles", True):
+                raise ValueError("Provide audio_ids or subtitle_tracks, or set include_video_subtitles=false to remove existing subtitle tracks.")
+            subtitle_tracks = [{**track, "path": str(policy.require_read(track["path"], file=True))} for track in resolved.get("subtitle_tracks", [])]
+            mode = resolved.get("mode") or ("copy" if not audio_ids else "replace" if video_id and len(audio_ids) == 1 and not include_video_audio else "mix")
+            result = toolbox.replace_audio(video_id=video_id, audio_ids=audio_ids, mode=mode, include_video_audio=include_video_audio, gains_db=resolved.get("gains_db"), output_extension=resolved.get("output_extension"), subtitle_tracks=subtitle_tracks, include_video_subtitles=resolved.get("include_video_subtitles", True))
+            return public_media_result(core._register_toolbox_result_media(session, result), toolbox.session.media_registry)
         return public_media_result(operations["wangp_toolbox"](action, arguments), get_toolbox().session.media_registry)
 
     wait_properties = {

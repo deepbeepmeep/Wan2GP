@@ -63,6 +63,10 @@ def get_audio_standalone_extension(codec_key: str | None) -> str:
     codec_key = str(codec_key or "wav").strip().lower() or "wav"
     if codec_key == "mp3":
         codec_key = "mp3_192"
+    if codec_key == "flac":
+        return ".flac"
+    if codec_key in {"m4a", "alac"}:
+        return ".m4a"
     return ".wav" if codec_key == "wav" else ".mp3"
 
 
@@ -80,6 +84,10 @@ def _get_standalone_audio_encode_args(codec_key: str | None) -> list[str]:
         codec_key = "mp3_192"
     if codec_key == "wav":
         return ["-c:a", "pcm_s16le"]
+    if codec_key == "flac":
+        return ["-c:a", "flac"]
+    if codec_key in {"m4a", "alac"}:
+        return ["-c:a", "alac"]
     bitrate = {"mp3_128": "128k", "mp3_192": "192k", "mp3_320": "320k"}.get(codec_key, "192k")
     return ["-c:a", "libmp3lame", "-b:a", bitrate]
 
@@ -498,6 +506,169 @@ def replace_audio(video_path: str, audio_path: str, output_path: str, *, audio_c
         raise RuntimeError(f"No audio stream found in {audio_path}")
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     _run_ffmpeg(["-i", video_path, "-i", audio_path, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", *_get_mp4_audio_encode_args(audio_codec), "-shortest", output_path])
+    return output_path
+
+
+def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_path: str | None = None, include_video_audio: bool = False, gains_db: list[float] | None = None, audio_codec: str | None = None, standalone_audio_codec: str | None = None, subtitle_tracks: list[dict] | None = None, include_video_subtitles: bool = True) -> str:
+    """Copy video, combine or retain audio, and attach selectable subtitle streams."""
+    mode = str(mode or "").strip().lower()
+    if mode not in {"copy", "replace", "mix", "multitrack"}:
+        raise ValueError("mode must be copy, replace, mix, or multitrack.")
+    if not isinstance(audio_paths, list) or (mode != "copy" and not audio_paths):
+        raise ValueError("audio_paths must contain audio files for this mode.")
+    audio_paths = [os.path.normpath(str(path or "").strip()) for path in audio_paths]
+    for path in audio_paths:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Audio not found: {path}")
+        if not _has_audio_stream(path):
+            raise ValueError(f"No audio stream found in {path}")
+    video_path = os.path.normpath(str(video_path).strip()) if video_path else None
+    if video_path and not os.path.isfile(video_path):
+        raise FileNotFoundError(f"Video not found: {video_path}")
+    if mode == "copy" and (not video_path or audio_paths or include_video_audio or gains_db is not None):
+        raise ValueError("copy requires a video and no audio changes.")
+    if mode == "copy" and not subtitle_tracks and include_video_subtitles:
+        raise ValueError("copy requires subtitle_tracks or include_video_subtitles=false.")
+    if subtitle_tracks and not video_path:
+        raise ValueError("Subtitle tracks require a video input.")
+    if not isinstance(subtitle_tracks, (list, type(None))):
+        raise ValueError("subtitle_tracks must be an array.")
+    subtitle_tracks = subtitle_tracks or []
+    if sum(track.get("default") is True for track in subtitle_tracks if isinstance(track, dict)) > 1:
+        raise ValueError("Only one new subtitle track can be the default.")
+    for track in subtitle_tracks:
+        if not isinstance(track, dict) or not str(track.get("path", "")).strip():
+            raise ValueError("Each subtitle track needs a path.")
+        if os.path.splitext(track["path"])[1].lower() not in {".srt", ".vtt", ".ass", ".ssa"}:
+            raise ValueError("Subtitle files must be SRT, VTT, ASS, or SSA.")
+        if not os.path.isfile(track["path"]):
+            raise FileNotFoundError(f"Subtitle not found: {track['path']}")
+        if not any(stream.get("codec_type") == "subtitle" for stream in ffmpeg.probe(track["path"]).get("streams", [])):
+            raise ValueError(f"No subtitle stream found in {track['path']}")
+    if include_video_audio and (not video_path or not _has_audio_stream(video_path)):
+        raise ValueError("include_video_audio requires a video with an audio stream.")
+    if not str(output_path or "").strip():
+        raise ValueError("output_path is required.")
+    output_path = os.path.normpath(str(output_path).strip())
+    output_extension = os.path.splitext(output_path)[1].lower()
+    source_subtitles = []
+    if video_path and include_video_subtitles:
+        source_subtitles = [stream for stream in ffmpeg.probe(video_path).get("streams", []) if stream.get("codec_type") == "subtitle"]
+    subtitle_inputs = []
+    subtitle_args = []
+    if video_path:
+        first_subtitle_input = 1 + len(audio_paths)
+        for track in subtitle_tracks:
+            subtitle_inputs += ["-i", track["path"]]
+        if source_subtitles:
+            subtitle_args += ["-map", "0:s?"]
+        for index, track in enumerate(subtitle_tracks):
+            subtitle_args += ["-map", f"{first_subtitle_input + index}:s:0"]
+        for index, stream in enumerate(source_subtitles + [next(item for item in ffmpeg.probe(track["path"]).get("streams", []) if item.get("codec_type") == "subtitle") for track in subtitle_tracks]):
+            codec = str(stream.get("codec_name", "")).lower()
+            if output_extension in {".mp4", ".mov"}:
+                if codec not in {"mov_text", "subrip", "ass", "ssa", "webvtt", "text"}:
+                    raise ValueError(f"Subtitle codec {codec} cannot be written to {output_extension}; choose MKV.")
+                subtitle_args += [f"-c:s:{index}", "copy" if codec == "mov_text" else "mov_text"]
+            elif output_extension == ".mkv":
+                subtitle_args += [f"-c:s:{index}", "subrip" if codec == "mov_text" else "copy"]
+            if index < len(source_subtitles):
+                tags = stream.get("tags", {})
+                title = tags.get("title") or tags.get("handler_name")
+                if title:
+                    key = "handler_name" if output_extension in {".mp4", ".mov"} else "title"
+                    subtitle_args += [f"-metadata:s:s:{index}", f"{key}={title}"]
+        default_subtitle_index = next((len(source_subtitles) + index for index, track in enumerate(subtitle_tracks) if track.get("default") is True), None)
+        if default_subtitle_index is not None:
+            for index in range(len(source_subtitles) + len(subtitle_tracks)):
+                subtitle_args += [f"-disposition:s:{index}", "default" if index == default_subtitle_index else "0"]
+        for index, track in enumerate(subtitle_tracks, start=len(source_subtitles)):
+            if track.get("language"):
+                subtitle_args += [f"-metadata:s:s:{index}", f"language={track['language']}"]
+            if track.get("title"):
+                key = "handler_name" if output_extension in {".mp4", ".mov"} else "title"
+                subtitle_args += [f"-metadata:s:s:{index}", f"{key}={track['title']}"]
+            if default_subtitle_index is None and track.get("default") is not None:
+                subtitle_args += [f"-disposition:s:{index}", "default" if track["default"] else "0"]
+    if mode == "copy":
+        command = ["-i", video_path, *subtitle_inputs, "-map", "0:v:0", "-map", "0:a?", *subtitle_args, "-c:v", "copy"]
+        if output_extension == ".mkv":
+            command += ["-c:a", "copy"]
+        else:
+            audio_streams = [stream for stream in ffmpeg.probe(video_path).get("streams", []) if stream.get("codec_type") == "audio"]
+            for index, stream in enumerate(audio_streams):
+                codec = str(stream.get("codec_name", "")).lower()
+                if codec in {"aac", "alac"}:
+                    command += [f"-c:a:{index}", "copy"]
+                else:
+                    encode_args = _get_mp4_audio_encode_args(audio_codec)
+                    command += [f"-c:a:{index}" if arg == "-c:a" else f"-b:a:{index}" if arg == "-b:a" else arg for arg in encode_args]
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        _run_ffmpeg([*command, output_path])
+        return output_path
+    if mode == "replace":
+        if not video_path or len(audio_paths) != 1 or include_video_audio or gains_db is not None:
+            raise ValueError("replace requires a video and exactly one audio file, without mixing options.")
+        audio_stream = next(stream for stream in ffmpeg.probe(audio_paths[0]).get("streams", []) if stream.get("codec_type") == "audio")
+        source_codec = str(audio_stream.get("codec_name", "")).lower()
+        copy_audio = output_extension == ".mkv" or (output_extension in {".mp4", ".mov"} and source_codec in {"aac", "alac"})
+        command = ["-i", video_path, "-i", audio_paths[0], *subtitle_inputs, "-map", "0:v:0", "-map", "1:a:0", *subtitle_args, "-c:v", "copy", *(["-c:a", "copy"] if copy_audio else _get_mp4_audio_encode_args(audio_codec))]
+        video_duration = get_media_duration(video_path)
+        if video_duration is not None and video_duration > 0:
+            command += ["-t", f"{video_duration:.6f}"]
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        _run_ffmpeg([*command, output_path])
+        return output_path
+    if len(audio_paths) + int(include_video_audio) < 2:
+        raise ValueError(f"{mode} requires at least two audio streams.")
+    if gains_db is not None:
+        if mode != "mix" or len(gains_db) != len(audio_paths):
+            raise ValueError("gains_db is available for mix only and needs one value per audio file.")
+        gains_db = [float(gain) for gain in gains_db]
+        if any(not math.isfinite(gain) or gain < -60 or gain > 24 for gain in gains_db):
+            raise ValueError("Each gain must be a finite number from -60 to 24 dB.")
+    expected_extension = (".mkv" if video_path else ".m4a") if mode == "multitrack" else (None if video_path else get_audio_standalone_extension(standalone_audio_codec))
+    if expected_extension and os.path.splitext(output_path)[1].lower() != expected_extension:
+        raise ValueError(f"{mode} output must use {expected_extension}.")
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    inputs = (["-i", video_path] if video_path else [])
+    for path in audio_paths:
+        inputs += ["-i", path]
+    inputs += subtitle_inputs
+    first_audio_index = 1 if video_path else 0
+    sources = (["0:a:0"] if include_video_audio else []) + [f"{first_audio_index + index}:a:0" for index in range(len(audio_paths))]
+    maps = ["-map", "0:v:0", "-c:v", "copy"] if video_path else []
+    if mode == "multitrack":
+        for index, source in enumerate(sources):
+            maps += ["-map", source]
+        command = [*inputs, *maps, *subtitle_args]
+        if video_path:
+            command += ["-c:a", "copy"]
+            video_duration = get_media_duration(video_path)
+            if video_duration is not None and video_duration > 0:
+                command += ["-t", f"{video_duration:.6f}"]
+        else:
+            for index, path in enumerate(audio_paths):
+                audio_stream = next(stream for stream in ffmpeg.probe(path).get("streams", []) if stream.get("codec_type") == "audio")
+                source_codec = str(audio_stream.get("codec_name", "")).lower()
+                command += [f"-c:a:{index}", "copy" if source_codec in {"aac", "alac"} else "alac"]
+        names = (["Original Soundtrack"] if include_video_audio else []) + [os.path.splitext(os.path.basename(path))[0] for path in audio_paths]
+        for index, name in enumerate(names):
+            command += [f"-metadata:s:a:{index}", f"title={name}"]
+    else:
+        filters = []
+        labels = []
+        for index, source in enumerate(sources):
+            label = f"track{index}"
+            gain = 0.0 if include_video_audio and index == 0 else (gains_db[index - int(include_video_audio)] if gains_db is not None else 0.0)
+            filters.append(f"[{source}]volume={gain:g}dB[{label}]")
+            labels.append(f"[{label}]")
+        filters.append(f"{''.join(labels)}amix=inputs={len(sources)}:duration=longest:dropout_transition=0:normalize=1{',apad' if video_path else ''}[mixed]")
+        command = [*inputs, "-filter_complex", ";".join(filters), *maps, "-map", "[mixed]", *subtitle_args, *(_get_mp4_audio_encode_args(audio_codec) if video_path else _get_standalone_audio_encode_args(standalone_audio_codec))]
+        video_duration = get_media_duration(video_path) if video_path else None
+        if video_duration is not None and video_duration > 0:
+            command += ["-t", f"{video_duration:.6f}"]
+    _run_ffmpeg([*command, output_path])
     return output_path
 
 

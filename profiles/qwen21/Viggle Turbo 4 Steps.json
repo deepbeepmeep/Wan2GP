@@ -4,6 +4,7 @@
     ],
     "loras_multipliers": "1",
     "num_inference_steps": 4,
+    "sample_solver": "viggle_v02",
     "guidance_scale": 1,
     "negative_prompt": "",
     "custom_settings": {"qwen21_kv_cache": "Disabled", "rgba": "Disabled"},

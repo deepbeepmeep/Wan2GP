@@ -51,7 +51,9 @@ from shared.deepy.config import (
 from shared.deepy import DEFAULT_COMPACTION_PROMPT as ASSISTANT_COMPACTION_PROMPT, ZERO_SYSTEM_PROMPT as ASSISTANT_SYSTEM_PROMPT
 from shared.deepy.debug_bootstrap import capture_external_logs
 from shared import extra_settings
-from shared.deepy import filesystem as deepy_filesystem, long_text as deepy_long_text, media_registry, session_store, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
+from shared.deepy import filesystem as deepy_filesystem, image_channels as deepy_image_channels, long_text as deepy_long_text, media_registry, session_store, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
+from shared.deepy.paged_files import list_directory_page
+from shared.mcp_paging import PAGE_SIZE, ResultPages
 from shared.utils.gallery_media import gallery_media_ids
 from postprocessing import catalog as postprocessing_catalog
 from shared.gradio import assistant_chat
@@ -535,6 +537,8 @@ class AssistantSessionState:
     chat_status: dict[str, Any] | None = None
     remote_usage_stats: dict[str, Any] | None = None
     file_access_policy: Any | None = None
+    file_list_pages: Any | None = None
+    file_list_policy_signature: tuple[Any, ...] | None = None
     seen_video_gallery_paths: list[str] = field(default_factory=list)
     seen_audio_gallery_paths: list[str] = field(default_factory=list)
     generated_client_ids: list[str] = field(default_factory=list)
@@ -594,6 +598,10 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
         if callable(close_backend):
             close_backend()
     session.remote_backends.clear()
+    if session.file_list_pages is not None:
+        session.file_list_pages.close()
+        session.file_list_pages = None
+        session.file_list_policy_signature = None
     if session.prime_toolbox is not None:
         close_prime_toolbox = getattr(session.prime_toolbox, "close", None)
         if callable(close_prime_toolbox):
@@ -1434,6 +1442,7 @@ class DeepyZeroTools:
         self.record_file_metadata = record_file_metadata
         self.get_server_config = get_server_config
         self.file_access_policy_override = None
+        self._file_list_pages: ResultPages | None = None
         self._vision_query_callback: Callable[..., dict[str, Any]] | None = None
         self._vision_is_remote = False
         self._vision_max_images = deepy_vision.VISION_MAX_IMAGES
@@ -3969,6 +3978,91 @@ class DeepyZeroTools:
         return result
 
     @assistant_tool(
+        display_name="Image Channels",
+        description="Convert an image to RGB or RGBA, extract its color channels as grayscale PNGs, or combine grayscale channel images into an RGB/RGBA PNG. RGB to RGBA adds opaque alpha; it does not remove a background.",
+        parameters={
+            "operation": {"type": "string", "enum": ["convert", "extract", "combine"], "description": "convert, extract, or combine."},
+            "media_id": {"type": "string", "description": "Base image ID. Required for convert/extract; optional for combine if R, G, and B sources are supplied.", "required": False},
+            "mode": {"type": "string", "enum": ["RGB", "RGBA"], "description": "Output mode. convert defaults to RGBA; combine infers RGBA when an alpha source is present.", "required": False},
+            "channels": {"type": "array", "items": {"type": "string", "enum": ["R", "G", "B", "A"]}, "minItems": 1, "maxItems": 4, "uniqueItems": True, "description": "Channels to extract. Omit to extract every channel present.", "required": False},
+            "channel_sources": {"type": "object", "properties": {channel: {"type": "string", "description": f"8-bit grayscale image ID supplying {channel}."} for channel in "RGBA"}, "additionalProperties": False, "description": "For combine, grayscale image IDs that supply or replace selected channels. Their dimensions must match the base image or one another.", "required": False},
+            "background": {"type": "string", "description": "Required matte color when an image with alpha is converted or combined into RGB, e.g. #FFFFFF.", "required": False},
+        },
+        pause_runtime=False,
+    )
+    def image_channels(self, operation: str, media_id: str | None = None, mode: str | None = None, channels: list[str] | None = None, channel_sources: dict[str, str] | None = None, background: str | None = None) -> dict[str, Any]:
+        if self.session is None:
+            return {"status": "error", "output_files": [], "error": "Assistant session is not available."}
+        operation = str(operation or "").strip().lower()
+        if operation not in {"convert", "extract", "combine"}:
+            return {"status": "error", "output_files": [], "error": "operation must be convert, extract, or combine."}
+        if not isinstance(channel_sources, (dict, type(None))):
+            return {"status": "error", "output_files": [], "error": "channel_sources must be an object keyed by R, G, B, or A."}
+        if operation in {"convert", "extract"} and not str(media_id or "").strip():
+            return {"status": "error", "output_files": [], "error": "media_id is required for convert and extract."}
+        source, error = self._resolve_image_media(media_id, "media_id") if media_id else (None, None)
+        if error is not None:
+            return {**error, "output_files": []}
+        channel_records = {}
+        for channel, source_id in (channel_sources or {}).items():
+            if channel not in "RGBA" or not str(source_id or "").strip():
+                return {"status": "error", "output_files": [], "error": "channel_sources must use R, G, B, or A with a nonempty image ID."}
+            record, error = self._resolve_image_media(source_id, f"channel_sources.{channel}")
+            if error is not None:
+                return {**error, "output_files": []}
+            channel_records[channel] = record
+        source_paths = {str(record["path"]) for record in ([source] if source is not None else []) + list(channel_records.values())}
+        self._set_status("Processing image channels...", kind="tool")
+        self._update_tool_progress("running", "Processing", {"status": "running", "operation": operation})
+        output_paths = []
+        created_paths = []
+        try:
+            images = deepy_image_channels.render_image_channels(
+                operation, None if source is None else source["path"], mode, channels,
+                {channel: record["path"] for channel, record in channel_records.items()}, background,
+            )
+            origin = source or next(iter(channel_records.values()))
+            stem = os.path.splitext(os.path.basename(origin["path"]))[0]
+            for suffix, _image in images:
+                output_path = self._resolve_direct_output_path(f"{stem}_{suffix}.png", True, False)
+                if os.path.normcase(output_path) in {os.path.normcase(path) for path in source_paths} or output_path in output_paths or os.path.exists(output_path):
+                    raise ValueError("The output path already exists or matches an input image.")
+                output_paths.append(output_path)
+            for output_path, (_suffix, image) in zip(output_paths, images):
+                created_paths.append(output_path)
+                image.save(output_path, format="PNG")
+        except (OSError, ValueError, TypeError, StopIteration) as exc:
+            for output_path in created_paths:
+                if os.path.isfile(output_path):
+                    os.unlink(output_path)
+            result = {"status": "error", "operation": operation, "output_files": [], "error": str(exc)}
+            self._update_tool_progress("error", "Error", result)
+            self._set_status(f"Image channel processing failed: {exc}", kind="error")
+            return result
+        media_ids = []
+        for output_path, (suffix, image) in zip(output_paths, images):
+            comments = f'{operation.capitalize()} image channels from "{os.path.basename(origin["path"])}" ({suffix})'
+            settings = self._build_direct_media_settings(origin, comments, fallback_prompt=comments)
+            settings["resolution"] = f"{image.width}x{image.height}"
+            record = self._record_direct_media(output_path, settings, is_image=True, audio_only=False, label=f"Image {suffix.replace('_', ' ')}")
+            media_ids.append("" if record is None else record.get("media_id", ""))
+        result = {"status": "done", "operation": operation, "error": ""}
+        if operation == "extract":
+            result["channel_outputs"] = [
+                {"channel": suffix[-1], "output_file": path, "media_id": media_id}
+                for path, media_id, (suffix, _image) in zip(output_paths, media_ids, images)
+            ]
+        else:
+            result["color_mode"] = images[0][1].mode
+        if len(output_paths) == 1:
+            result.update(output_file=output_paths[0], media_id=media_ids[0])
+        else:
+            result.update(output_files=output_paths, media_ids=media_ids)
+        self._update_tool_progress("done", "Done", result)
+        self._set_status("Image channel processing finished.", kind="tool")
+        return result
+
+    @assistant_tool(
         display_name="Side by Side",
         description="Place any number of images or videos in one comparison image or video.",
         parameters={
@@ -4566,7 +4660,95 @@ class DeepyZeroTools:
         },
         pause_runtime=False,
     )
-    def replace_audio(self, video_id: str, audio_id: str) -> dict[str, Any]:
+    def replace_audio(self, video_id: str = "", audio_id: str = "", *, audio_ids: list[str] | None = None, mode: str = "replace", include_video_audio: bool = False, gains_db: list[float] | None = None, output_extension: str | None = None, subtitle_tracks: list[dict] | None = None, include_video_subtitles: bool = True) -> dict[str, Any]:
+        if audio_ids is not None or subtitle_tracks is not None:
+            self._sync_recent_media()
+            if audio_ids is None:
+                audio_ids = []
+            if not isinstance(audio_ids, list) or (not audio_ids and mode != "copy"):
+                return {"status": "error", "error": "audio_ids must contain audio files for this mode."}
+            if mode == "copy" and not video_id:
+                return {"status": "error", "error": "copy requires a video_id."}
+            if subtitle_tracks and not video_id:
+                return {"status": "error", "error": "Subtitle tracks require a video_id."}
+            video_media = None
+            if video_id:
+                video_media, error_result = self._resolve_video_media(video_id, "video_id")
+                if error_result is not None:
+                    return error_result
+            audio_media = []
+            for index, source_id in enumerate(audio_ids):
+                source_media, error_result = self._resolve_audio_media(source_id, f"audio_ids[{index}]")
+                if error_result is not None:
+                    return error_result
+                audio_media.append(source_media)
+            video_path = str(video_media["path"]) if video_media else None
+            audio_paths = [str(source["path"]) for source in audio_media]
+            _, video_container = self._get_video_output_settings()
+            standalone_audio_codec = self._get_standalone_audio_output_codec()
+            requested_extension = str(output_extension or "").strip().lower().lstrip(".")
+            if video_media:
+                allowed_extensions = {"mkv"} if mode == "multitrack" else {"mp4", "mov", "mkv"}
+                if requested_extension and requested_extension not in allowed_extensions:
+                    return {"status": "error", "error": f"Video {mode} output_extension must be one of: {', '.join(sorted(allowed_extensions))}."}
+                if requested_extension:
+                    suffix = "." + requested_extension
+                elif mode == "multitrack":
+                    suffix = ".mkv"
+                else:
+                    suffix = deepy_video_tools.get_video_container_extension(video_container)
+            else:
+                allowed_extensions = {"m4a"} if mode == "multitrack" else {"wav", "mp3", "flac", "m4a"}
+                if requested_extension and requested_extension not in allowed_extensions:
+                    return {"status": "error", "error": f"Audio {mode} output_extension must be one of: {', '.join(sorted(allowed_extensions))}."}
+                if mode == "multitrack":
+                    suffix = ".m4a"
+                else:
+                    configured_extension = deepy_video_tools.get_audio_standalone_extension(standalone_audio_codec).lstrip(".")
+                    if requested_extension and requested_extension != configured_extension:
+                        standalone_audio_codec = {"wav": "wav", "mp3": "mp3_192", "flac": "flac", "m4a": "alac"}[requested_extension]
+                    suffix = deepy_video_tools.get_audio_standalone_extension(standalone_audio_codec)
+            base_path = video_path or audio_paths[0]
+            base_name = os.path.splitext(os.path.basename(base_path))[0]
+            output_path = self._resolve_direct_output_path(f"{base_name}_remux_{mode}{suffix}", False, not bool(video_media))
+            self._set_status("Remuxing Media...", kind="tool")
+            self._update_tool_progress("running", "Remuxing", {"status": "running", "mode": mode, "video_id": video_id, "audio_ids": audio_ids})
+            try:
+                output_path = deepy_video_tools.remux_media(audio_paths, output_path, mode=mode, video_path=video_path, include_video_audio=include_video_audio, gains_db=gains_db, audio_codec=self._get_video_audio_output_codec(), standalone_audio_codec=standalone_audio_codec, subtitle_tracks=subtitle_tracks, include_video_subtitles=include_video_subtitles)
+                source_media = video_media or audio_media[0]
+                comment = f"{mode.title()} media"
+                if audio_paths:
+                    comment += " from " + ", ".join(os.path.basename(path) for path in audio_paths)
+                if include_video_audio:
+                    comment += " with the original video soundtrack"
+                if subtitle_tracks:
+                    comment += f" with {len(subtitle_tracks)} subtitle track(s)"
+                settings = self._build_direct_media_settings(source_media, comment)
+                if video_media:
+                    self._update_video_metadata_fields(output_path, settings)
+                else:
+                    self._update_audio_metadata_fields(output_path, settings)
+                label = {"copy": "Remuxed Video", "mix": "Mixed Audio", "multitrack": "Multitrack Audio", "replace": "Video With Replaced Audio"}[mode]
+                # WanGP's embedded audio metadata writer currently supports WAV and MP3.
+                persist_metadata = bool(video_media) or os.path.splitext(output_path)[1].lower() in {".wav", ".mp3"}
+                media_record = self._record_direct_media(output_path, settings, is_image=False, audio_only=not bool(video_media), label=label, persist_metadata=persist_metadata)
+            except Exception as exc:
+                result = {"status": "error", "mode": mode, "output_file": "", "error": str(exc)}
+                self._update_tool_progress("error", "Error", result)
+                self._set_status(f"Media Remux Failed: {exc}", kind="error")
+                return result
+            result = {
+                "status": "done", "mode": mode,
+                "media_id": "" if media_record is None else media_record.get("media_id", ""),
+                "source_video_id": "" if video_media is None else video_media.get("media_id", ""),
+                "source_audio_ids": [source.get("media_id", "") for source in audio_media],
+                "audio_track_count": (sum(stream.get("codec_type") == "audio" for stream in ffmpeg.probe(video_path).get("streams", [])) if mode == "copy" else len(audio_paths) + int(include_video_audio) if mode == "multitrack" else 1),
+                "subtitle_track_count": (sum(stream.get("codec_type") == "subtitle" for stream in ffmpeg.probe(video_path).get("streams", [])) if video_path and include_video_subtitles else 0) + len(subtitle_tracks or []),
+                "output_file": output_path, "error": "",
+            }
+            self._update_tool_progress("done", "Done", result)
+            self._set_status("Media Remux Complete.", kind="tool")
+            return result
         self._sync_recent_media()
         video_media, error_result = self._resolve_video_media(video_id, "video_id")
         if error_result is not None:
@@ -4866,16 +5048,33 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="List Files",
-        description="List files directly inside a filesystem directory, optionally filtering by file extensions. Returns filenames, extensions, full paths, and byte sizes.",
+        description="List authorized roots or one directory using bounded, snapshot-backed pages. Continue with the same filters and cursor=next_cursor when has_more is true. Use rg for recursive searches.",
         parameters={
-            "path": {"type": "string", "description": "Existing directory path."},
-            "extensions": {"type": "array", "items": {"type": "string"}, "description": "Optional extensions such as ['png', 'mp4', 'wav'].", "required": False},
+            "path": {"type": "string", "description": "Authorized directory; omit to list roots.", "required": False, "default": ""},
+            "pattern": {"type": "string", "description": "Filename glob within one directory, such as *.mp4.", "required": False, "default": "*"},
+            "media_type": {"type": "string", "description": "Optional media filter.", "enum": ["all", "image", "video", "audio", "txt", "other"], "required": False, "default": "all"},
+            "limit": {"type": "integer", "description": "Entries per page, from 1 to 100.", "minimum": 1, "maximum": 100, "required": False, "default": PAGE_SIZE},
+            "cursor": {"type": "string", "description": "next_cursor from the previous page; keep filters unchanged.", "required": False},
+            "summary_only": {"type": "boolean", "description": "Return the stored count without entries.", "required": False, "default": False},
         },
         pause_runtime=False,
         requires_file_system=True,
     )
-    def list_files(self, path: str, extensions: list[str] | None = None) -> dict[str, Any]:
-        return deepy_filesystem.list_files(path, extensions, self._file_access_policy())
+    def list_files(self, path: str = "", pattern: str = "*", media_type: str = "all", limit: int = PAGE_SIZE, cursor: str | None = None, summary_only: bool = False) -> dict[str, Any]:
+        policy = self._file_access_policy()
+        if self.session is None:
+            if self._file_list_pages is None:
+                self._file_list_pages = ResultPages()
+            pages = self._file_list_pages
+        else:
+            signature = (policy.mode, policy.read_everywhere, tuple((alias, str(root)) for alias, root in policy.mounts))
+            if self.session.file_list_pages is None or self.session.file_list_policy_signature != signature:
+                if self.session.file_list_pages is not None:
+                    self.session.file_list_pages.close()
+                self.session.file_list_pages = ResultPages()
+                self.session.file_list_policy_signature = signature
+            pages = self.session.file_list_pages
+        return list_directory_page(pages, policy, path=path, pattern=pattern, media_type=media_type, limit=limit, cursor=cursor, summary_only=summary_only)
 
     @assistant_tool(
         display_name="Query File",
@@ -5085,6 +5284,7 @@ class DeepyZeroTools:
             if media_type == "image":
                 with Image.open(media_path) as image_handle:
                     width, height = image_handle.size
+                    color_details = deepy_image_channels.image_color_details(image_handle)
                 result = {
                     "status": "done",
                     "media_id": media_record.get("media_id", ""),
@@ -5101,11 +5301,13 @@ class DeepyZeroTools:
                     "audio_track_count": 0,
                     "sample_rate": None,
                     "channels": None,
+                    **color_details,
                     "error": "",
                 }
             elif media_type == "video":
                 fps, width, height, frame_count = get_video_info(media_path)
                 audio_track_count = int(extract_audio_tracks(media_path, query_only=True))
+                subtitle_streams = [stream for stream in ffmpeg.probe(media_path).get("streams", []) if stream.get("codec_type") == "subtitle"]
                 result = {
                     "status": "done",
                     "media_id": media_record.get("media_id", ""),
@@ -5120,6 +5322,8 @@ class DeepyZeroTools:
                     "duration_seconds": (float(frame_count) / float(fps)) if fps > 0 else None,
                     "has_audio": audio_track_count > 0,
                     "audio_track_count": audio_track_count,
+                    "subtitle_track_count": len(subtitle_streams),
+                    "subtitle_tracks": [{"codec": stream.get("codec_name", ""), "language": stream.get("tags", {}).get("language", ""), "title": stream.get("tags", {}).get("title", stream.get("tags", {}).get("handler_name", ""))} for stream in subtitle_streams],
                     "sample_rate": None,
                     "channels": None,
                     "error": "",
@@ -5355,7 +5559,20 @@ class DeepyZeroTools:
                 "answer": "",
                 "error": "Deepy vision inspection is not available.",
             }
-        return self._vision_query_callback(media_records[0] if len(media_records) == 1 else media_records, question, frame_no if media_inputs is None else None)
+        result = self._vision_query_callback(media_records[0] if len(media_records) == 1 else media_records, question, frame_no if media_inputs is None else None)
+        if isinstance(result, dict) and result.get("status") == "done":
+            image_details = []
+            for record in media_records:
+                if record.get("media_type") != "image" or not os.path.isfile(record.get("path", "")):
+                    continue
+                with Image.open(record["path"]) as image_handle:
+                    image_details.append({"media_id": record.get("media_id", ""), **deepy_image_channels.image_color_details(image_handle)})
+            if image_details:
+                result = dict(result)
+                result["source_image_details"] = image_details
+                if len(media_records) == 1:
+                    result.update({key: value for key, value in image_details[0].items() if key != "media_id"})
+        return result
 
     @assistant_tool(
         display_name="Inspect Video",

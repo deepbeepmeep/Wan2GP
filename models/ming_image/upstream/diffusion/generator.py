@@ -51,6 +51,11 @@ class ConditionedTransformer(nn.Module):
     def dtype(self):
         return next(self.transformer.parameters()).dtype
 
+    def preprocess_loras(self, model_type, state_dict):
+        from ...loras import preprocess_ming_loras
+
+        return preprocess_ming_loras(self, state_dict)
+
     def forward(self, hidden_states,
                     timestep,
                     encoder_hidden_states,

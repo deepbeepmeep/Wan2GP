@@ -43,6 +43,12 @@ DEEPY_SESSION_RESET_MODE_KEY = "deepy_session_reset_mode"
 DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY = "deepy_session_gallery_media_mode"
 DEEPY_MULTI_SESSION_KEY = "deepy_multi_session"
 DEEPY_TEMPLATE_CONFIG_MIGRATIONS = {
+    DEEPY_TOOL_GEN_IMAGE_KEY: {
+        "Qwen Image 2.1 Viggle Turbo 8 Steps": "Qwen Image 2.1 Viggle Turbo v0.2.1 6 Steps",
+    },
+    DEEPY_TOOL_EDIT_IMAGE_KEY: {
+        "Qwen Image 2.1 Viggle Turbo 8 Steps": "Qwen Image 2.1 Viggle Turbo v0.2.1 6 Steps",
+    },
     DEEPY_TOOL_GEN_VIDEO_KEY: {
         "MiniMax H3 FL2VA Turbo Lightx2v 8 Steps": "MiniMax H3 FL2VA Pruned Turbo Lightx2v 8 Steps",
     },
@@ -116,8 +122,8 @@ _DEEPY_QWEN_KV_CACHE_SPECS = {
     4: {"num_kv_cache_layers": 8, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
     5: {"num_kv_cache_layers": 16, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
 }
-_DEEPY_DEFAULT_GEN_IMAGE_ALIASES = {"Z_Image_Turbo": "Z Image Turbo"}
-_DEEPY_DEFAULT_EDIT_IMAGE_ALIASES = {"Qwen_Edit": DEEPY_DEFAULT_EDIT_IMAGE}
+_DEEPY_DEFAULT_GEN_IMAGE_ALIASES = {"Z_Image_Turbo": "Z Image Turbo", **DEEPY_TEMPLATE_CONFIG_MIGRATIONS[DEEPY_TOOL_GEN_IMAGE_KEY]}
+_DEEPY_DEFAULT_EDIT_IMAGE_ALIASES = {"Qwen_Edit": DEEPY_DEFAULT_EDIT_IMAGE, **DEEPY_TEMPLATE_CONFIG_MIGRATIONS[DEEPY_TOOL_EDIT_IMAGE_KEY]}
 _DEEPY_DEFAULT_GEN_VIDEO_ALIASES = {
     "ltx2_22B_distilled": "LTX-2 2.3 Distilled 1.0",
     "LTX-2 2.3 Distilled": "LTX-2 2.3 Distilled 1.0",

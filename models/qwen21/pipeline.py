@@ -22,7 +22,11 @@ OUTPAINTING_METHOD = "Red Canvas"  # Alternative: "Reference".
 
 
 RED_OUTPAINTING_PROMPT = "Remove the red paddings on the sides and show what's behind them."
-VIGGLE_V02_SIGMAS = (1.0, 0.875, 0.75, 0.5, 0.25)
+VIGGLE_SIGMAS = {
+    4: (1.0, 0.75, 0.5, 0.25),
+    5: (1.0, 0.875, 0.75, 0.5, 0.25),
+    6: (1.0, 0.9375, 0.875, 0.75, 0.5, 0.25),
+}
 
 
 def reference_outpainting_offset(location, width, height):
@@ -39,24 +43,6 @@ def reference_outpainting_instruction(location, width, height):
     sides = [name for name, present in (("top", top > 0), ("bottom", top + source_height < height),
                                        ("left", left > 0), ("right", left + source_width < width)) if present]
     return f"Extend the scene in <image1> beyond its {', '.join(sides)} border{'s' if len(sides) > 1 else ''} to fill the larger canvas. Keep its existing content, lighting, and perspective."
-
-
-def viggle_turbo_lora_active(transformer, filename):
-    if not filename:
-        return False
-    filename = str(filename).replace("\\", "/").rsplit("/", 1)[-1].casefold()
-    adapters = getattr(transformer, "_loras_adapters", None) or {}
-    scales = getattr(transformer, "_loras_scaling", None) or {}
-    for slot in getattr(transformer, "_loras_active_adapters", ()) or ():
-        path = adapters.get(str(slot), "")
-        if str(path).replace("\\", "/").rsplit("/", 1)[-1].casefold() != filename:
-            continue
-        scale = scales.get(str(slot), 0)
-        if isinstance(scale, (list, tuple)):
-            scale = any(value != 0 for value in scale)
-        if scale != 0:
-            return True
-    return False
 
 
 def red_outpainting_canvas(source, width, height, location):
@@ -172,10 +158,9 @@ def source_latent_canvas(source, width, height, location):
 
 
 class Qwen21Pipeline(QwenImage21Pipeline):
-    def __init__(self, transformer, text_encoder, vae, processor, scheduler_config, viggle_turbo_lora_filename):
+    def __init__(self, transformer, text_encoder, vae, processor, scheduler_config):
         self.transformer, self.text_encoder, self.vae = transformer, text_encoder, vae
         self.processor, self.tokenizer = processor, processor.tokenizer
-        self.viggle_turbo_lora_filename = viggle_turbo_lora_filename
         self._interrupt = False
         self.text_encoder_cache = TextEncoderCache()
         self.vae_scale_factor = 16
@@ -308,21 +293,18 @@ class Qwen21Pipeline(QwenImage21Pipeline):
             if loras_slists is not None:
                 from shared.utils.loras_mutipliers import update_loras_slists
                 update_loras_slists(self.transformer, loras_slists, sampling_steps)
-            viggle_active = viggle_turbo_lora_active(self.transformer, self.viggle_turbo_lora_filename)
-            viggle_v02 = sample_solver == "viggle_v02"
-            if viggle_v02 and sampling_steps != len(VIGGLE_V02_SIGMAS):
-                raise ValueError("Viggle Turbo v0.2 scheduler requires 5 inference steps.")
+            viggle = sample_solver == "viggle_v02"
+            if viggle and sampling_steps not in VIGGLE_SIGMAS:
+                raise ValueError("Viggle Turbo scheduler supports 4, 5 or 6 inference steps.")
             scheduler = FlowMatchEulerDiscreteScheduler.from_config(
-                self.scheduler_config, **({"shift_terminal": None} if sampling_steps == 1 or viggle_active or viggle_v02 else {}))
-            if viggle_active:
-                print(f"Viggle Turbo LoRA Detected - Scheduler Terminal Shift Set To {scheduler.config.shift_terminal}")
-            if viggle_v02:
-                print(f"Viggle Turbo v0.2 Scheduler Selected - Scheduler Terminal Shift Set To {scheduler.config.shift_terminal}")
+                self.scheduler_config, **({"shift_terminal": None} if sampling_steps == 1 or viggle else {}))
             cfg = scheduler.config
             slope = (cfg.max_shift - cfg.base_shift) / (cfg.max_image_seq_len - cfg.base_image_seq_len)
             mu = latents.shape[1] * slope + cfg.base_shift - slope * cfg.base_image_seq_len
-            sigmas = VIGGLE_V02_SIGMAS if viggle_v02 else np.linspace(1, 1 / sampling_steps, sampling_steps)
+            sigmas = VIGGLE_SIGMAS[sampling_steps] if viggle else np.linspace(1, 1 / sampling_steps, sampling_steps)
             scheduler.set_timesteps(sampling_steps, device=device, sigmas=sigmas, mu=mu)
+            if viggle:
+                print(f"Viggle Turbo Scheduler - Raw Sigmas: {list(sigmas)}; Applied Sigmas: {[round(value, 6) for value in scheduler.sigmas.tolist()]}; Terminal Shift: {scheduler.config.shift_terminal}")
             first_step = 0
             lanpaint = None
             if latent_mask is not None:

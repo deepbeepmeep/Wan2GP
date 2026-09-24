@@ -1,4 +1,5 @@
-"""Optional Kitchen encoder fusion; keep precision and convolution math unchanged."""
+"""Optional Kitchen VAE fusions, enabled only with the fast (approximate) kernel precision.
+fp16_conv3d accumulates in FP16; all other kernels keep the convolution math unchanged."""
 import torch
 from shared.kernels import kernel_policy
 
@@ -20,7 +21,16 @@ except ValueError as exc:
         raise
     _rms_rope = None
 
-_rms_rope_logged = False
+try:
+    from comfy_kitchen import fp16_conv3d as _fp16_conv3d
+except (ImportError, OSError, RuntimeError):
+    _fp16_conv3d = None
+except ValueError as exc:
+    if not str(exc).startswith("infer_schema(func):"):
+        raise
+    _fp16_conv3d = None
+
+_rms_rope_logged = _conv3d_logged = False
 
 
 class RotaryEmbedding(tuple):
@@ -43,7 +53,7 @@ def prepare_rotary(cos, sin):
 
 def can_fuse_rms_rope(x, rotary):
     return (kernel_policy.allow_approximate() and _rms_rope is not None
-            and x.dtype == torch.bfloat16 and hasattr(rotary, 'kitchen_table'))
+            and x.dtype in (torch.bfloat16, torch.float16) and hasattr(rotary, 'kitchen_table'))
 
 
 def rms_rope(q, k, rotary, eps):
@@ -71,3 +81,19 @@ def available(x, norm, pad):
 
 def group_norm_silu_pad3d(x, norm, pad):
     return _group_norm_silu_pad3d(x, norm.weight, norm.bias, norm.num_groups, norm.eps, list(pad), True)
+
+
+def can_conv3d(x, conv):
+    return (kernel_policy.allow_approximate() and _fp16_conv3d is not None and x.is_cuda
+            and torch.cuda.get_device_capability(x.device) == (12, 0)
+            and torch.is_inference_mode_enabled()
+            and x.dtype == torch.float16 and conv.weight.dtype == torch.float16
+            and conv.bias is not None and conv.bias.dtype == torch.float16 and conv.dilation == (1, 1, 1))
+
+
+def conv3d(x, conv, residual=None):
+    global _conv3d_logged
+    if not _conv3d_logged:
+        print("[H3 VAE] Comfy Kitchen FP16 conv3d is being used.")
+        _conv3d_logged = True
+    return _fp16_conv3d(x, conv.weight, conv.bias, residual, list(conv.stride))

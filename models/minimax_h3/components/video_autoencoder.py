@@ -40,6 +40,8 @@ logger = logging.get_logger(__name__)
 # devices retain the established PyTorch implementation.
 USE_TRITON_VAE = triton_installed and (major, minor) == (12, 0)
 USE_KITCHEN_VAE = True
+# Kitchen INT8 fusions validated for this decoder with BF16 and FP16 activations.
+_FUSED_DTYPES = (torch.bfloat16, torch.float16)
 if USE_TRITON_VAE:
     from . import vae_kernels
 
@@ -71,7 +73,7 @@ class MiniMaxH3VideoCausalConv3d(nn.Conv3d):
         self.temporal_padding = temporal_padding
         self.spatial_padding_mode = spatial_padding_mode
 
-    def forward(self, hidden_states: torch.Tensor, *, pre_padded: bool = False) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, *, pre_padded: bool = False, residual: torch.Tensor | None = None) -> torch.Tensor:
         if self.spatial_padding > 0 and not pre_padded:
             padding = self.spatial_padding
             hidden_states = F.pad(
@@ -79,7 +81,10 @@ class MiniMaxH3VideoCausalConv3d(nn.Conv3d):
             )
         if self.temporal_padding > 0 and not pre_padded:
             hidden_states = F.pad(hidden_states, (0, 0, 0, 0, self.temporal_padding, 0), mode="constant")
-        return F.conv3d(hidden_states, self.weight, self.bias, stride=self.stride, padding=0, dilation=self.dilation)
+        if USE_KITCHEN_VAE and vae_kitchen.can_conv3d(hidden_states, self):
+            return vae_kitchen.conv3d(hidden_states, self, residual)
+        hidden_states = F.conv3d(hidden_states, self.weight, self.bias, stride=self.stride, padding=0, dilation=self.dilation)
+        return hidden_states if residual is None else hidden_states.add_(residual)
 
 
 class MiniMaxH3VideoGroupNorm(nn.GroupNorm):
@@ -109,12 +114,12 @@ class MiniMaxH3VideoGroupNorm(nn.GroupNorm):
         return hidden_states
 
 
-def _norm_silu_conv(hidden_states, norm, conv):
+def _norm_silu_conv(hidden_states, norm, conv, residual=None):
     if conv.spatial_padding_mode != "reflect":
-        return conv(F.silu(norm(hidden_states)))
+        return conv(F.silu(norm(hidden_states)), residual=residual)
     p = conv.spatial_padding
     hidden_states = norm(hidden_states, silu_pad=(p, p, p, p, conv.temporal_padding))
-    return conv(hidden_states, pre_padded=True)
+    return conv(hidden_states, pre_padded=True, residual=residual)
 
 
 class MiniMaxH3VideoResnetBlock3d(nn.Module):
@@ -155,10 +160,9 @@ class MiniMaxH3VideoResnetBlock3d(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         residual = hidden_states
         hidden_states = _norm_silu_conv(hidden_states, self.norm1, self.conv1)
-        hidden_states = _norm_silu_conv(hidden_states, self.norm2, self.conv2)
         if self.nin_shortcut is not None:
             residual = self.nin_shortcut(residual)
-        return residual + hidden_states
+        return _norm_silu_conv(hidden_states, self.norm2, self.conv2, residual)
 
 
 class MiniMaxH3VideoDownsample3d(nn.Module):
@@ -512,7 +516,7 @@ class MiniMaxH3VideoTransformerBlock(nn.Module):
     ) -> torch.Tensor:
         hidden_states = _take(hidden_states)
         if (hasattr(self.attn, 'to_qkv')
-                and all(int8_backend.can_fuse_linear(layer, hidden_states)
+                and all(int8_backend.can_fuse_linear(layer, hidden_states, dtypes=_FUSED_DTYPES)
                         for layer in (self.attn.to_qkv, self.attn.to_out, self.ff.w1, self.ff.w2))
                 and all(p.device == hidden_states.device and p.dtype == hidden_states.dtype
                         for p in (self.norm1.weight, self.norm2.weight, self.scale1, self.scale2))):

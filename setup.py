@@ -401,6 +401,11 @@ def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k,
         if cmd: run_cmd(f"{pip} {cmd}")
 
     for k in kernel_list:
+        if k in ("gguf", "gguf_cu128"):
+            gguf_builds = {("cu130", "3.11"): "gguf", ("cu128", "3.10"): "gguf_cu128"}
+            k = gguf_builds.get((torch_k, py_k))
+            if k is None:
+                continue
         if k in config['components']['kernels']:
             cmd = resolve_cmd(config['components']['kernels'][k]['cmd'])
             if cmd: run_cmd(f"{pip} {cmd}")

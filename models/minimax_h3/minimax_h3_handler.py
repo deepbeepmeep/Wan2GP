@@ -861,7 +861,7 @@ class family_handler:
 
     @staticmethod
     def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer=False,
-                   text_encoder_quantization=None, dtype=torch.bfloat16, VAE_dtype=torch.float32,
+                   text_encoder_quantization=None, dtype=torch.bfloat16,
                    mixed_precision_transformer=False, save_quantized=False, submodel_no_list=None,
                    text_encoder_filename=None, shared_h3_pipeline=None, shared_h3_offloadobj=None,
                    disable_pinning=False, **kwargs):
@@ -869,7 +869,7 @@ class family_handler:
 
         pdd = model_def.get("pdd", False)
         viggle = base_model_type == VIGGLE_ARCHITECTURE
-        pipeline = model_factory(model_filename, text_encoder_filename, dtype=dtype, VAE_dtype=VAE_dtype,
+        pipeline = model_factory(model_filename, text_encoder_filename, dtype=dtype,
                                  reference_mode=base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, TTS_REF2VA_PRUNED_ARCHITECTURE, VIGGLE_ARCHITECTURE),
                                  save_quantized=save_quantized, model_type=model_type,
                                  qkv_splitting=model_def["qkv_splitting"],

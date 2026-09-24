@@ -132,7 +132,7 @@ class FileAccessPolicy:
         alias, separator, remainder = reference.partition("/")
         root = next((path for name, path in self.mounts if name.casefold() == alias.casefold()), None)
         if root is None:
-            raise ValueError(f"Unknown virtual filesystem root: {alias or '(empty)'}. Call wangp_io list without a path to list roots.")
+            raise ValueError(f"Unknown virtual filesystem root: {alias or '(empty)'}. List authorized roots without a path first.")
         parts = [part for part in remainder.split("/") if part] if separator else []
         return root.joinpath(*parts).resolve()
 
@@ -146,7 +146,7 @@ class FileAccessPolicy:
         target = Path(text).expanduser()
         absolute = target.is_absolute() or re.match(r"^[A-Za-z]:[\\/]", text) is not None or text.startswith(("\\\\", "/"))
         if absolute and self.virtualized and not isinstance(path, Path):
-            raise PermissionError("Absolute filesystem paths require Read Everywhere; use a virtual root returned by wangp_io list.")
+            raise PermissionError("Absolute filesystem paths require Read Everywhere; use a virtual root returned by the directory listing tool.")
         return (target if absolute else self.output_roots[0] / target).resolve()
 
     def virtualize_path(self, path: Any) -> str:

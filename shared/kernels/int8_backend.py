@@ -113,12 +113,13 @@ def _wide_convrot_linear(input, weight, bias=None):
     return out.reshape(*input.shape[:-1], weight.shape[0])
 
 
-def can_fuse_linear(module, x):
-    """Keep qtype/backend details out of model code; MMGP still owns module calls."""
+def can_fuse_linear(module, x, dtypes=(torch.bfloat16,)):
+    """Keep qtype/backend details out of model code; MMGP still owns module calls.
+    Callers widen `dtypes` only for activation dtypes validated with their model."""
     from shared.kernels import kernel_policy
     return (not torch.compiler.is_compiling() and kernel_policy.allow_approximate() and kitchen_enabled() and _direct_cutlass
             and torch.is_inference_mode_enabled()
-            and not triton._is_fake_tensor(x) and x.is_cuda and x.dtype == torch.bfloat16
+            and not triton._is_fake_tensor(x) and x.is_cuda and x.dtype in dtypes
             and getattr(module, '_convrot_group_size', 0) == 256
             and 256 <= module.in_features <= 16384 and module.in_features % 256 == 0
             and module.out_features % 8 == 0

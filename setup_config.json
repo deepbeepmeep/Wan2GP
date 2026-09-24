@@ -120,10 +120,17 @@
                 }
             },
             "gguf": {
-                "label": "GGUF llama.cpp CUDA Kernels",
+                "label": "GGUF llama.cpp CUDA Kernels (PyTorch 2.10 / CUDA 13)",
                 "cmd": {
-                    "win": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.22/llamacpp_gguf_cuda-1.0.22%2Btorch210cu130py311-cp311-cp311-win_amd64.whl",
-                    "linux": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.22/llamacpp_gguf_cuda-1.0.22%2Btorch210cu130py311-cp311-cp311-linux_x86_64.whl"
+                    "win": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.23/llamacpp_gguf_cuda-1.0.23%2Btorch210cu130py311-cp311-cp311-win_amd64.whl",
+                    "linux": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.23/llamacpp_gguf_cuda-1.0.23%2Btorch210cu130py311-cp311-cp311-linux_x86_64.whl"
+                }
+            },
+            "gguf_cu128": {
+                "label": "GGUF llama.cpp CUDA Kernels (PyTorch 2.7.1 / CUDA 12.8)",
+                "cmd": {
+                    "win": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.23/llamacpp_gguf_cuda-1.0.23%2Btorch271cu128py310-cp310-cp310-win_amd64.whl",
+                    "linux": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.23/llamacpp_gguf_cuda-1.0.23%2Btorch271cu128py310-cp310-cp310-linux_x86_64.whl"
                 }
             }
         }

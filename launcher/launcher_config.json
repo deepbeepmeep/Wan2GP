@@ -1,0 +1,30 @@
+{
+    "app_name": "WanGP",
+    "app_version": "1.0.0",
+    "publisher": "Blencia",
+    "repo_url": "https://github.com/blencia/Wan2Gplus.git",
+    "repo_branch": "main",
+    "python": {
+        "series": "3.11",
+        "installer_url": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe",
+        "installer_sha256": "",
+        "label": "Python 3.11.9 (64-bit)"
+    },
+    "git": {
+        "portable_url": "https://github.com/git-for-windows/git/releases/download/v2.47.1.windows.1/PortableGit-2.47.1-64-bit.7z.exe",
+        "portable_sha256": "",
+        "label": "Portable Git 2.47.1"
+    },
+    "env_type": "venv",
+    "server": {
+        "host": "127.0.0.1",
+        "preferred_port": 7860,
+        "startup_timeout_seconds": 900
+    },
+    "window": {
+        "width": 1450,
+        "height": 940,
+        "min_width": 900,
+        "min_height": 620
+    }
+}

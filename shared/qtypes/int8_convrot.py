@@ -7,6 +7,7 @@ import torch
 from optimum.quanto import QModuleMixin
 from optimum.quanto.tensor.qtype import qtype as _quanto_qtype, qtypes as _quanto_qtypes
 from optimum.quanto.tensor.weights.qbytes import WeightQBytesTensor
+from shared.kernels import quanto_int8_inject, int8_backend
 
 
 HANDLER_NAME = "int8_convrot"
@@ -398,10 +399,24 @@ class QLinearInt8ConvRot(QModuleMixin, torch.nn.Linear):
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         qweight = self.qweight
-        if _is_fake_tensor(input):
+        prepared = getattr(self, '_wangp_prequantized_input', None)
+        if prepared is not None:
+            return int8_backend.kitchen_linear_prequantized(qweight, self.bias, *prepared)
+        fusion = getattr(self, '_wangp_linear_fusion', None)
+        if fusion is not None:
+            return int8_backend.kitchen_linear_fused(input, qweight, self.bias, *fusion)
+        if not torch.compiler.is_compiling() and _is_fake_tensor(input):
             return input.new_empty((*input.shape[:-1], qweight.shape[0]))
         original_input = input
         if self.weight_qtype == _QINT8_CONVROT_QTYPE:
+            if (int8_backend.kitchen_enabled() and self._convrot_group_size == 256
+                    and input.is_cuda and input.dtype in (torch.bfloat16, torch.float16, torch.float32)):
+                return int8_backend.kitchen_linear(input, qweight, self.bias, convrot=True)
+            if (quanto_int8_inject.FUSED_CONVROT_ENABLED and quanto_int8_inject._PATCH_STATE.enabled
+                    and not quanto_int8_inject._RUNTIME_DISABLED and self._convrot_group_size == 256
+                    and input.is_cuda and input.dtype == torch.bfloat16
+                    and input.numel() // input.shape[-1] <= 4 and not quanto_int8_inject._prefer_native_quanto_path(input)):
+                return quanto_int8_inject.fused_convrot_linear(input, qweight, self.bias)
             input = _rotate_activation(input, self._convrot_group_size)
         _debug_forward_dtype(self, original_input, input, qweight)
         return torch.nn.functional.linear(input, qweight, bias=self.bias)

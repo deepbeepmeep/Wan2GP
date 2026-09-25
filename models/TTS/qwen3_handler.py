@@ -111,6 +111,7 @@ QWEN3_TTS_SPEAKER_META = {
 }
 QWEN3_TTS_DURATION_SLIDER = {
     "label": "Max duration (seconds)",
+    "name": "Max Duration",
     "min": 1,
     "max": 600,
     "increment": 1,
@@ -260,6 +261,10 @@ def get_qwen3_model_def(base_model_type: str) -> dict:
     if base_model_type == "qwen3_tts_voicedesign":
         return {
             **common,
+            "infos": "Generate speech by combining the exact words in Text Prompt (`prompt`) with a voice description in Voice instruction (`alt_prompt`). The description defines the voice and delivery for that speech. Select the speech language with Language (`model_mode`), or use Auto. Max duration caps the output; give the script enough time to finish.",
+            "deepy_infos": "VoiceDesign combines spoken text (`prompt`) and a voice/delivery description (`alt_prompt`). Language is `model_mode` (or Auto); Max duration caps speech length.",
+            "deepy_prompt_infos": "Put only the words to speak in `prompt`, naturally punctuated in the target language. Describe age, timbre, accent, pace and emotion in `alt_prompt`, e.g. 'A low, warm male voice, speaking slowly with dry amusement.' Keep one consistent voice description.",
+            "prompt_infos": 'Put only the words to be spoken in `prompt`, with natural punctuation and spelling in the target language. Put age, timbre, accent, pace and emotion in `alt_prompt`, for example: "An older man with a low, slightly rough voice, speaking slowly with dry amusement." Example spoken text: "Welcome aboard. I promise the robot is doing most of the driving." Keep one consistent voice description for the utterance.',
             "model_modes": {
                 "choices": get_qwen3_language_choices(base_model_type),
                 "default": "auto",
@@ -335,17 +340,8 @@ class family_handler:
         return {"tts": (2200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-qwen3-tts",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Qwen3 TTS settings (default: {os.path.join(lora_root, 'qwen3_tts')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_qwen3_tts", None) or os.path.join(lora_root, "qwen3_tts")
+    def get_lora_dir(base_model_type):
+        return "qwen3_tts"
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

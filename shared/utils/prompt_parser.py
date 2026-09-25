@@ -1,4 +1,5 @@
 import re
+from .frame_scheduler import SLASH_BLOCK_RE
 
 PROMPT_UNIT_PREFIX = "#!PROMPT!:"
 ENHANCED_PROMPT_PREFIX = "!enhanced!\n"
@@ -94,6 +95,12 @@ def split_prompt_original_units(prompt_text, multi_prompts_gen_type, single_prom
     def split_marker(line):
         return line[len(PROMPT_UNIT_PREFIX):].strip() if line.startswith(PROMPT_UNIT_PREFIX) else None
 
+    def original_with_commands(original, visible):
+        commands = " ".join(match.group(0) for match in SLASH_BLOCK_RE.finditer(visible))
+        original = SLASH_BLOCK_RE.sub("", original).strip()
+        separator = "\n" if "P" in multi_prompts_gen_type or multi_prompts_gen_type == "FG" else " "
+        return f"{commands}{separator}{original}".strip() if commands else original
+
     if single_prompt or multi_prompts_gen_type == "FG":
         originals, visible_lines = [], []
         for raw_line in prompt_text.split("\n"):
@@ -105,7 +112,7 @@ def split_prompt_original_units(prompt_text, multi_prompts_gen_type, single_prom
             if not raw_line.strip().startswith("#"):
                 visible_lines.append(raw_line.rstrip())
         visible_prompt = "\n".join(visible_lines).strip()
-        prompt = "\n".join(originals) if originals else visible_prompt
+        prompt = original_with_commands("\n".join(originals), visible_prompt) if originals else visible_prompt
         return [prompt] if prompt else []
 
     if "P" in multi_prompts_gen_type:
@@ -114,7 +121,7 @@ def split_prompt_original_units(prompt_text, multi_prompts_gen_type, single_prom
         def flush_paragraph():
             nonlocal current_lines, current_original
             visible_prompt = "\n".join(current_lines).strip()
-            prompt = current_original or visible_prompt
+            prompt = original_with_commands(current_original, visible_prompt) if current_original else visible_prompt
             if prompt:
                 prompts.append(prompt)
             current_lines, current_original = [], None
@@ -145,7 +152,7 @@ def split_prompt_original_units(prompt_text, multi_prompts_gen_type, single_prom
             continue
         if not raw_line.strip() or raw_line.strip().startswith("#"):
             continue
-        prompts.append(pending_original or raw_line.rstrip().strip())
+        prompts.append(original_with_commands(pending_original, raw_line) if pending_original else raw_line.rstrip().strip())
         pending_original = None
     if pending_original:
         prompts.append(pending_original)
@@ -158,6 +165,7 @@ def serialize_prompt_blocks_with_prefix(prompts, original_prompts=None):
         original_prompts = []
     for idx, prompt in enumerate(prompts, start=1):
         original_prompt = original_prompts[idx - 1] if idx - 1 < len(original_prompts) else f"Prompt {idx}"
+        original_prompt = SLASH_BLOCK_RE.sub("", str(original_prompt or ""))
         original_prompt = re.sub(r"[\r\n]+", " ", str(original_prompt or "")).strip()
         blocks.append(f"{PROMPT_UNIT_PREFIX} {original_prompt}\n{prompt}")
     return "\n\n".join(blocks)

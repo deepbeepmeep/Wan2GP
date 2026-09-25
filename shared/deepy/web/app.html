@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0c4b69">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Deepy">
+  <title>Deepy</title>
+  <link rel="manifest" href="assets/manifest.webmanifest" crossorigin="use-credentials">
+  <link rel="apple-touch-icon" href="assets/icon.png">
+  <link rel="stylesheet" href="assets/chat.css">
+  <link rel="stylesheet" href="assets/app.css">
+  <link rel="stylesheet" href="assets/workspaces.css">
+  <script defer src="assets/transport.js"></script>
+  <script defer src="assets/form_sync.js"></script>
+  <script defer src="assets/workspaces.js"></script>
+  <script defer src="assets/media_view.js"></script>
+  <script defer src="assets/app.js"></script>
+  <script defer src="assets/chat.js"></script>
+  <script defer src="assets/compact_actions.js"></script>
+  <script defer src="assets/voice.js"></script>
+</head>
+<body data-deepy-app>
+  <header class="app-header"><div class="app-heading"><strong>Wan<sup>GP</sup> - <span id="deepy-name">Deepy</span></strong><div class="session-bar" hidden><span class="context-picker-kind" role="img" aria-label="Session" title="Session"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v12H9l-5 4V4Z"/></svg></span><select id="saved-session" aria-label="Saved conversation"></select><button id="rename-session" type="button" aria-label="Rename session" title="Rename session"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 3 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14l-1 7Z"/></svg></button><button id="delete-session" type="button" aria-label="Delete session" title="Delete session" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg></button></div></div></header>
+  <div id="connection" role="alert" hidden>Not connected</div>
+  <div id="app-notice" role="status" hidden></div>
+  <main>
+  <div id="generation-progress" hidden>
+    <div class="generation-meter"><div class="generation-caption"><span id="generation-status" role="status"></span><span id="generation-count"></span></div><progress id="generation-bar" aria-label="Generation progress"></progress></div>
+    <button id="abort-generation" type="button" title="Abort current generation"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="3"/></svg><span>Abort</span></button>
+  </div>
+    <section id="chat-view" class="view" aria-label="Deepy chat">
+      <div id="assistant_chat_dock"><div id="assistant_chat_panel">
+        <div id="assistant_chat_shell_block"><!-- CHAT --></div>
+        <div id="assistant_chat_controls">
+          <div id="assistant_chat_request"><textarea aria-label="Request" placeholder="What would you like to create?" rows="1"></textarea></div>
+          <button id="assistant_chat_ask_button" type="button">Ask</button>
+          <button id="assistant_chat_reset_button" type="button">Reset</button>
+        </div>
+        <div id="assistant_chat_stats_block"><!-- STATS --></div>
+      </div></div>
+    </section>
+    <section id="visual-view" class="view gallery-view" aria-label="Images and videos" hidden>
+      <div class="gallery-browser">
+      <div class="gallery-header"><div><h1>Images & videos</h1><p>Import a reference or explore your creations.</p></div><label class="upload-button">＋ Import<input id="visual-upload" type="file" accept="image/*,video/*" multiple hidden></label></div>
+      <div id="visual-gallery" class="media-grid"></div>
+      </div>
+      <div class="gallery-divider" role="separator" tabindex="0" aria-label="Resize image gallery and information panes" aria-orientation="horizontal" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50"><button class="gallery-details-toggle" type="button" aria-label="Hide media information" title="Hide media information" aria-expanded="true" aria-controls="visual-details"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
+      <section id="visual-details" class="gallery-details" aria-label="Selected visual media information"><h2>Media information</h2><iframe id="visual-info" title="Selected image or video details" sandbox></iframe></section>
+    </section>
+    <section id="audio-view" class="view gallery-view" aria-label="Audio" hidden>
+      <div class="gallery-browser">
+      <div class="gallery-header"><div><h1>Audio</h1><p>Voices, music and sound references.</p></div><label class="upload-button">＋ Import<input id="audio-upload" type="file" accept="audio/*" multiple hidden></label></div>
+      <div id="audio-gallery" class="media-grid audio-grid"></div>
+      </div>
+      <div class="gallery-divider" role="separator" tabindex="0" aria-label="Resize audio gallery and information panes" aria-orientation="horizontal" aria-valuemin="20" aria-valuemax="80" aria-valuenow="50"><button class="gallery-details-toggle" type="button" aria-label="Hide media information" title="Hide media information" aria-expanded="true" aria-controls="audio-details"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
+      <section id="audio-details" class="gallery-details" aria-label="Selected audio information"><h2>Media information</h2><iframe id="audio-info" title="Selected audio details" sandbox></iframe></section>
+    </section>
+    <section id="settings-view" class="view settings-view" aria-label="Deepy settings" hidden>
+      <header class="settings-header"><h1>Settings</h1><p>Choose defaults and existing settings templates for Deepy.</p></header>
+      <div class="settings-tabs" role="tablist" aria-label="Settings categories">
+        <button id="properties-tab" type="button" role="tab" data-settings-tab="properties" aria-controls="properties-settings" aria-selected="true">Default properties</button>
+        <button id="templates-tab" type="button" role="tab" data-settings-tab="templates" aria-controls="templates-settings" aria-selected="false" tabindex="-1">Settings templates</button>
+      </div>
+      <form id="deepy-settings-form">
+        <div class="settings-panels">
+          <section id="properties-settings" role="tabpanel" aria-labelledby="properties-tab"><div id="property-mode"></div><div id="property-fields" class="settings-fields"></div></section>
+          <section id="templates-settings" role="tabpanel" aria-labelledby="templates-tab" hidden><p>Select the existing settings template used by each tool.</p><div id="template-fields" class="settings-fields"></div></section>
+        </div>
+        <footer class="settings-footer"><span id="settings-status" role="status"></span><button id="save-settings" type="submit" disabled>Save settings</button></footer>
+      </form>
+    </section>
+  </main>
+  <div id="answer-notice" hidden>
+    <button id="read-answer" type="button"><strong id="answer-title">Deepy replied</strong><span id="answer-preview" role="status"></span></button>
+    <button id="dismiss-answer" type="button" aria-label="Dismiss reply notification">×</button>
+  </div>
+  <nav aria-label="Workspace">
+    <button data-tab="chat" aria-selected="true" aria-label="Chat" title="Chat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9H13a8.5 8.5 0 0 1 8 8v.5Z"/></svg></button>
+    <button data-tab="visual" aria-selected="false" aria-label="Images and videos" title="Images and videos"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m21 15-5-5L6 21"/></svg></button>
+    <button data-tab="audio" aria-selected="false" aria-label="Audio" title="Audio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13M9 9l12-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="18" cy="16" rx="3" ry="3"/></svg></button>
+    <button data-tab="settings" aria-selected="false" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 3 3-1 2 2 3-1 1-3 3-1 1-3-2-2 1-3-3-2-3 1-2-2Z"/><circle cx="12" cy="11" r="3"/></svg></button>
+  </nav>
+  <dialog id="media-viewer" aria-label="Media viewer">
+    <button id="close-media-viewer" type="button" aria-label="Close media viewer" title="Close media viewer (Esc)"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 3v6H3M21 9h-6V3M3 15h6v6M15 21v-6h6"/></svg></button>
+    <img alt="">
+    <video controls playsinline preload="metadata" hidden></video>
+    <audio controls preload="metadata" hidden></audio>
+  </dialog>
+  <dialog id="rename-session-dialog" aria-labelledby="rename-session-heading"><form id="rename-session-form"><h2 id="rename-session-heading">Rename session</h2><label>Session name<input id="session-title" type="text" maxlength="120" required autocomplete="off" autofocus></label><p id="session-delete-description" hidden></p><p id="rename-session-error" role="alert" hidden></p><div class="dialog-actions"><button id="cancel-session-rename" type="button">Cancel</button><button id="save-session-title" type="submit">Save</button></div></form></dialog>
+</body>
+</html>

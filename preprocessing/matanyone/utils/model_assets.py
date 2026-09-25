@@ -4,11 +4,11 @@ import shutil
 import sys
 from typing import Any
 
-from huggingface_hub import hf_hub_download
 from mmgp import offload
 from omegaconf import OmegaConf
 
 from shared.utils import files_locator as fl
+from shared.utils.download import process_files_def_if_needed
 
 from .model_signature import MATANYONE_V1, MATANYONE_V2, detect_matanyone_model_version
 
@@ -117,26 +117,19 @@ def get_selected_matanyone_weights_path(server_config=None):
     return None
 
 
-def _download_asset(folder: str, filename: str) -> str:
-    return hf_hub_download(repo_id=MATANYONE_REPO_ID, filename=filename, local_dir=fl.get_download_location(), subfolder=folder)
-
-
-def _download_mask_asset(filename: str) -> str:
-    return _download_asset(MATANYONE_FOLDER, filename)
-
-
 def _sam3_relpath(filename: str) -> str:
     return os.path.join(SAM3_FOLDER, filename)
+
+
+def query_sam_download_def():
+    return {"repoId": MATANYONE_REPO_ID, "sourceFolderList": [MATANYONE_FOLDER], "fileList": [[MATANYONE_SAM_NAME]]}
 
 
 def query_matanyone_download_def(server_config=None):
     runtime_config = _get_runtime_server_config(server_config)
     if get_selected_matanyone_version(runtime_config) == MATANYONE_SAM3:
-        return {
-            "repoId": MATANYONE_REPO_ID,
-            "sourceFolderList": [SAM3_FOLDER],
-            "fileList": [list(SAM3_FILES)],
-        }
+        from preprocessing.sam3.assets import query_download_def
+        return query_download_def()
     return {
         "repoId": MATANYONE_REPO_ID,
         "sourceFolderList": [MATANYONE_FOLDER],
@@ -182,36 +175,25 @@ def migrate_matanyone_install(server_config=None):
     return "Migrated legacy MatAnyone v1 weights to 'mask/matanyone.safetensors'."
 
 
-def ensure_selected_matanyone_assets(server_config=None):
+def ensure_selected_matanyone_assets(server_config=None, gen=None):
     runtime_config = _get_runtime_server_config(server_config)
     if get_selected_matanyone_version(runtime_config) == MATANYONE_SAM3:
-        return ensure_sam3_assets(runtime_config)
+        return ensure_sam3_assets(runtime_config, gen=gen)
 
     migrate_matanyone_install(runtime_config)
 
-    for filename in query_matanyone_download_def(runtime_config)["fileList"][0]:
-        if filename == get_selected_matanyone_weight_name(runtime_config):
-            continue
-        if fl.locate_file(_mask_relpath(filename), error_if_none=False) is None:
-            _download_mask_asset(filename)
-
+    process_files_def_if_needed(query_matanyone_download_def(runtime_config), gen=gen)
     weights_path = get_selected_matanyone_weights_path(runtime_config)
-    if weights_path is None:
-        weights_path = _download_mask_asset(get_selected_matanyone_weight_name(runtime_config))
 
     config_path = fl.locate_file(_mask_relpath(MATANYONE_CONFIG_NAME))
     sam_path = fl.locate_file(_mask_relpath(MATANYONE_SAM_NAME))
     return config_path, weights_path, sam_path
 
 
-def ensure_sam3_assets(server_config=None):
-    runtime_config = _get_runtime_server_config(server_config)
-    if get_selected_matanyone_version(runtime_config) != MATANYONE_SAM3:
-        runtime_config = {MATANYONE_SETTINGS_KEY: MATANYONE_SAM3}
+def ensure_sam3_assets(server_config=None, gen=None):
+    from preprocessing.sam3.assets import query_download_def
 
-    for filename in SAM3_FILES:
-        if fl.locate_file(_sam3_relpath(filename), error_if_none=False) is None:
-            _download_asset(SAM3_FOLDER, filename)
+    process_files_def_if_needed(query_download_def(), gen=gen)
     return tuple(fl.locate_file(_sam3_relpath(filename)) for filename in SAM3_FILES)
 
 

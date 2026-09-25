@@ -52,6 +52,7 @@ _SHARED_PERSISTENCE_BINDING_KEY = "__shared_persistence__"
 MMAUDIO_METHOD = "mmaudio"
 CUSTOM_SOUNDTRACK_METHOD = "custom"
 REMOVE_BACKGROUND_METHOD = "remove_background"
+REMOVE_VOCALS_METHOD = "remove_vocals"
 SEEDVC_ONE_SPEAKER_METHOD = "seedvc_one_speaker"
 SEEDVC_TWO_SPEAKERS_METHOD = "seedvc_two_speakers"
 LEGACY_SEEDVC_METHODS = {
@@ -456,8 +457,8 @@ def create_generation_audio_ui(gr, ui_get, ui_defaults, *, any_control_video: bo
             replace_voice_sample2 = gr.Audio(value=ui_defaults.get("replace_voice_sample2", None), type="filepath", label="Voice Sample #2", show_download_button=True)
 
     if not update_form:
-        postprocess_audio.change(fn=soundtrack_refresh_updates, inputs=[postprocess_audio], outputs=[postprocess_audio_prompt_col, postprocess_audio_control_col, postprocess_audio_source_col])
-        replace_voice_method.change(fn=voice_replacement_refresh_updates, inputs=[replace_voice_method], outputs=[replace_voice_sample_row, replace_voice_sample2_row])
+        postprocess_audio.input(fn=soundtrack_refresh_updates, inputs=[postprocess_audio], outputs=[postprocess_audio_prompt_col, postprocess_audio_control_col, postprocess_audio_source_col])
+        replace_voice_method.input(fn=voice_replacement_refresh_updates, inputs=[replace_voice_method], outputs=[replace_voice_sample_row, replace_voice_sample2_row])
 
     return {
         "postprocess_audio": postprocess_audio,

@@ -15,6 +15,10 @@ class Wholebody:
             "device_id": device
         })]
         # providers = [("CPUExecutionProvider", {})]
+        from preprocessing.dwpose.assets import query_download_def
+        from shared.utils.download import process_files_def_if_needed
+
+        process_files_def_if_needed(query_download_def())
         onnx_det = fl.locate_file("pose/yolox_l.onnx")
         onnx_pose = fl.locate_file("pose/dw-ll_ucoco_384.onnx")
 

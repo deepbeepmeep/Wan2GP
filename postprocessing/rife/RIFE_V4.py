@@ -240,7 +240,7 @@ class Model:
 
     def load_model(self, path, rank=0, device="cuda"):
         self.device = device
-        state_dict = torch.load(path, map_location=device)
+        state_dict = torch.load(path, map_location="cpu", weights_only=True)
         if isinstance(state_dict, dict):
             if "state_dict" in state_dict:
                 state_dict = state_dict["state_dict"]

@@ -1,5 +1,17 @@
 function() {
     console.log("[WanGP] main JS initialized");
+    document.addEventListener('click', (event) => {
+        const closeButton = event.target.closest('button[aria-label="Close"]');
+        if (!closeButton || !closeButton.closest('.amg-remove-selected')) return;
+        const preview = closeButton.closest('.preview');
+        if (!preview || !preview.parentElement?.classList.contains('gallery-container')) return;
+        const gallery = closeButton.closest('.amg-remove-selected');
+        const removeButton = gallery.querySelector('.amg-remove-button button, button.amg-remove-button');
+        if (!removeButton) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        removeButton.click();
+    }, true);
     window.updateAndTrigger = function(action) {
         const hiddenTextbox = document.querySelector('#queue_action_input textarea');
         const hiddenButton = document.querySelector('#queue_action_trigger');

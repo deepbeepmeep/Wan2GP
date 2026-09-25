@@ -200,14 +200,14 @@ def _on_exit():
     _log_line("Process exit reached", sync=True)
 
 
-def install_wgp_crash_diagnostics(anchor_file):
+def install_wgp_crash_diagnostics(anchor_file, *, log_dir=None):
     try:
         with _LOCK:
             if _STATE["installed"]:
                 return str(_STATE["log_path"] or "")
 
             anchor_path = Path(anchor_file).resolve()
-            log_dir = anchor_path.parent / "crash"
+            log_dir = Path(log_dir) if log_dir is not None else anchor_path.parent / "crash"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / f"wgp_crash_{time.strftime('%Y%m%d_%H%M%S')}_pid{os.getpid()}.log"
             log_file = log_path.open("a", encoding="utf-8", buffering=1)

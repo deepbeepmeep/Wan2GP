@@ -401,6 +401,11 @@ def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k,
         if cmd: run_cmd(f"{pip} {cmd}")
 
     for k in kernel_list:
+        if k in ("gguf", "gguf_cu128"):
+            gguf_builds = {("cu130", "3.11"): "gguf", ("cu128", "3.10"): "gguf_cu128"}
+            k = gguf_builds.get((torch_k, py_k))
+            if k is None:
+                continue
         if k in config['components']['kernels']:
             cmd = resolve_cmd(config['components']['kernels'][k]['cmd'])
             if cmd: run_cmd(f"{pip} {cmd}")
@@ -417,6 +422,11 @@ def menu(title, options, recommended_key=None):
     if choice == "" and recommended_key: return recommended_key
     try: return keys[int(choice)-1]
     except: return recommended_key
+
+def recommended_triton(profile, torch_key):
+    if not profile['triton'] or profile['triton'] == 'v33':
+        return profile['triton']
+    return {'cu128': 'v34', 'cu130': 'v37'}.get(torch_key)
 
 def do_install_interactive(env_type, config, detected_key):
     manager = EnvsManager()
@@ -445,15 +455,14 @@ def do_install_interactive(env_type, config, detected_key):
     print("\n--- Select Install Mode ---")
     print("1. Autoselect (Based on your GPU)")
     print("2. Manual Selection")
-    print("3. Use Latest")
 
-    mode = input("Select option (1-3) [Default: 1]: ").strip()
+    mode = input("Select option (1-2) [Default: 1]: ").strip()
 
     if mode == "2":
         base = config['gpu_profiles'][detected_key]
         py_k = menu("Python Version", config['components']['python'], base['python'])
         torch_k = menu("Torch Version", config['components']['torch'], base['torch'])
-        triton_k = menu("Triton", config['components']['triton'], base['triton'])
+        triton_k = menu("Triton", config['components']['triton'], recommended_triton(base, torch_k))
         sage_k = menu("Sage Attention", config['components']['sage'], base['sage'])
         sparge_k = menu("Sparge Attention", config['components']['sparge'], base.get('sparge'))
         flash_k = menu("Flash Attention", config['components']['flash'], base['flash'])
@@ -461,9 +470,6 @@ def do_install_interactive(env_type, config, detected_key):
 
         install_logic(name, env_type, path, py_k, torch_k, triton_k, sage_k, sparge_k, flash_k, kernels, config)
 
-    elif mode == "3":
-        p = config['gpu_profiles']['RTX_50']
-        install_logic(name, env_type, path, p['python'], p['torch'], p['triton'], p['sage'], p.get('sparge'), p.get('flash'), p['kernels'], config)
     else:
         p = config['gpu_profiles'][detected_key]
         install_logic(name, env_type, path, p['python'], p['torch'], p['triton'], p['sage'], p.get('sparge'), p.get('flash'), p['kernels'], config)
@@ -847,7 +853,7 @@ def do_upgrade(config):
 
     py_k = menu("Python Version", config['components']['python'], rec['python'])
     torch_k = menu("Torch Version", config['components']['torch'], rec['torch'])
-    triton_k = menu("Triton", config['components']['triton'], rec['triton'])
+    triton_k = menu("Triton", config['components']['triton'], recommended_triton(rec, torch_k))
     sage_k = menu("Sage Attention", config['components']['sage'], rec['sage'])
     sparge_k = menu("Sparge Attention", config['components']['sparge'], rec.get('sparge'))
     flash_k = menu("Flash Attention", config['components']['flash'], rec['flash'])

@@ -26,12 +26,28 @@ from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils import logging
 from diffusers.utils.accelerate_utils import apply_forward_hook
 
-from shared.attention import pay_attention
+from shared.attention import pay_attention, triton_installed, major, minor
 
 from ..interrupt import GenerationInterrupted
+from shared.utils.phase_progress import vae_encoding_progress, PhaseProgress
+from . import vae_kitchen
+from shared.kernels import kernel_policy, int8_backend
 
 
 logger = logging.get_logger(__name__)
+
+# Enable only on the architecture validated with real H3 checkpoints. Other
+# devices retain the established PyTorch implementation.
+USE_TRITON_VAE = triton_installed and (major, minor) == (12, 0)
+USE_KITCHEN_VAE = True
+# Kitchen INT8 fusions validated for this decoder with BF16 and FP16 activations.
+_FUSED_DTYPES = (torch.bfloat16, torch.float16)
+if USE_TRITON_VAE:
+    from . import vae_kernels
+
+
+def _use_triton_vae(x):
+    return USE_TRITON_VAE and x.is_cuda and x.dtype == torch.bfloat16 and torch.is_inference_mode_enabled()
 
 
 class MiniMaxH3VideoCausalConv3d(nn.Conv3d):
@@ -57,15 +73,18 @@ class MiniMaxH3VideoCausalConv3d(nn.Conv3d):
         self.temporal_padding = temporal_padding
         self.spatial_padding_mode = spatial_padding_mode
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        if self.spatial_padding > 0:
+    def forward(self, hidden_states: torch.Tensor, *, pre_padded: bool = False, residual: torch.Tensor | None = None) -> torch.Tensor:
+        if self.spatial_padding > 0 and not pre_padded:
             padding = self.spatial_padding
             hidden_states = F.pad(
                 hidden_states, (padding, padding, padding, padding, 0, 0), mode=self.spatial_padding_mode
             )
-        if self.temporal_padding > 0:
+        if self.temporal_padding > 0 and not pre_padded:
             hidden_states = F.pad(hidden_states, (0, 0, 0, 0, self.temporal_padding, 0), mode="constant")
-        return F.conv3d(hidden_states, self.weight, self.bias, stride=self.stride, padding=0, dilation=self.dilation)
+        if USE_KITCHEN_VAE and vae_kitchen.can_conv3d(hidden_states, self):
+            return vae_kitchen.conv3d(hidden_states, self, residual)
+        hidden_states = F.conv3d(hidden_states, self.weight, self.bias, stride=self.stride, padding=0, dilation=self.dilation)
+        return hidden_states if residual is None else hidden_states.add_(residual)
 
 
 class MiniMaxH3VideoGroupNorm(nn.GroupNorm):
@@ -74,13 +93,33 @@ class MiniMaxH3VideoGroupNorm(nn.GroupNorm):
     temporal axis is folded into the batch axis so statistics never mix across frames.
     """
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, *, silu_pad=None) -> torch.Tensor:
+        if silu_pad is not None and USE_KITCHEN_VAE and vae_kitchen.available(hidden_states, self, silu_pad):
+            return vae_kitchen.group_norm_silu_pad3d(hidden_states, self, silu_pad)
         batch_size, num_channels, num_frames, height, width = hidden_states.shape
         hidden_states = hidden_states.permute(0, 2, 1, 3, 4).contiguous()
         hidden_states = hidden_states.view(batch_size * num_frames, num_channels, 1, height, width)
         hidden_states = super().forward(hidden_states)
+        if silu_pad is not None and _use_triton_vae(hidden_states):
+            left, right, top, bottom, front = silu_pad
+            if left == right == top == bottom and left < min(height, width):
+                return vae_kernels.silu_pad_frames(hidden_states, batch_size, num_frames, left, front)
         hidden_states = hidden_states.view(batch_size, num_frames, num_channels, height, width)
-        return hidden_states.permute(0, 2, 1, 3, 4).contiguous()
+        hidden_states = hidden_states.permute(0, 2, 1, 3, 4).contiguous()
+        if silu_pad is not None:
+            left, right, top, bottom, front = silu_pad
+            hidden_states = F.silu(hidden_states)
+            hidden_states = F.pad(hidden_states, (left, right, top, bottom, 0, 0), mode="reflect")
+            hidden_states = F.pad(hidden_states, (0, 0, 0, 0, front, 0))
+        return hidden_states
+
+
+def _norm_silu_conv(hidden_states, norm, conv, residual=None):
+    if conv.spatial_padding_mode != "reflect":
+        return conv(F.silu(norm(hidden_states)), residual=residual)
+    p = conv.spatial_padding
+    hidden_states = norm(hidden_states, silu_pad=(p, p, p, p, conv.temporal_padding))
+    return conv(hidden_states, pre_padded=True, residual=residual)
 
 
 class MiniMaxH3VideoResnetBlock3d(nn.Module):
@@ -120,13 +159,10 @@ class MiniMaxH3VideoResnetBlock3d(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         residual = hidden_states
-        hidden_states = F.silu(self.norm1(hidden_states))
-        hidden_states = self.conv1(hidden_states)
-        hidden_states = F.silu(self.norm2(hidden_states))
-        hidden_states = self.conv2(hidden_states)
+        hidden_states = _norm_silu_conv(hidden_states, self.norm1, self.conv1)
         if self.nin_shortcut is not None:
             residual = self.nin_shortcut(residual)
-        return residual + hidden_states
+        return _norm_silu_conv(hidden_states, self.norm2, self.conv2, residual)
 
 
 class MiniMaxH3VideoDownsample3d(nn.Module):
@@ -272,8 +308,7 @@ class MiniMaxH3VideoEncoder3d(nn.Module):
             hidden_states = down_block(hidden_states)
             if getattr(self, "_interrupt", False):
                 raise GenerationInterrupted
-        hidden_states = F.silu(self.norm_out(hidden_states))
-        return self.conv_out(hidden_states)
+        return _norm_silu_conv(hidden_states, self.norm_out, self.conv_out)
 
 
 class MiniMaxH3VideoRotaryPosEmbed(nn.Module):
@@ -293,7 +328,7 @@ class MiniMaxH3VideoRotaryPosEmbed(nn.Module):
     def forward(self, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         angles = 2.0 * math.pi * position_ids[:, :, :, None] * self.inv_freq[None, None, None, :]
         angles = angles.flatten(2, 3).tile(2).unsqueeze(2)
-        return angles.cos(), angles.sin()
+        return vae_kitchen.prepare_rotary(angles.cos(), angles.sin())
 
 
 def _take(x_list: list[torch.Tensor]) -> torch.Tensor:
@@ -331,24 +366,39 @@ class MiniMaxH3VideoAttnProcessor:
         attn: "MiniMaxH3VideoAttention",
         hidden_states: list[torch.Tensor],
         rotary_emb: tuple[torch.Tensor, torch.Tensor] | None = None,
+        pre_norm=None, residual_scale=None,
     ) -> torch.Tensor:
         hidden_states = _take(hidden_states)
         batch_size, seq_len, _ = hidden_states.shape
+        fused = _use_triton_vae(hidden_states)
+        kitchen_rms = USE_KITCHEN_VAE and vae_kitchen.can_fuse_rms_rope(hidden_states, rotary_emb)
+
+        def normalize(projected, norm):
+            if kitchen_rms:
+                return projected
+            dtype = projected.dtype
+            normalized = norm(projected.float())
+            return vae_kernels.cast_rope(normalized, rotary_emb) if fused else normalized.to(dtype)
+
         if hasattr(attn, "to_q"):
-            dtype = hidden_states.dtype
-            query = attn.norm_q(attn.to_q(hidden_states).view(batch_size, seq_len, attn.heads, attn.dim_head).float()).to(dtype)
-            key = attn.norm_k(attn.to_k(hidden_states).view(batch_size, seq_len, attn.heads, attn.dim_head).float()).to(dtype)
+            query = normalize(attn.to_q(hidden_states).view(batch_size, seq_len, attn.heads, attn.dim_head), attn.norm_q)
+            key = normalize(attn.to_k(hidden_states).view(batch_size, seq_len, attn.heads, attn.dim_head), attn.norm_k)
             value = attn.to_v(hidden_states).view(batch_size, seq_len, attn.heads, attn.dim_head)
         else:
-            qkv = attn.to_qkv(hidden_states).view(batch_size, seq_len, attn.heads, 3, attn.dim_head)
+            qkv = (int8_backend.linear_with_fusion(attn.to_qkv, hidden_states, input_act="rms_norm", act_weight=pre_norm.weight, act_eps=pre_norm.eps)
+                   if pre_norm is not None else attn.to_qkv(hidden_states))
+            qkv = qkv.view(batch_size, seq_len, attn.heads, 3, attn.dim_head)
             query, key, value = qkv.unbind(dim=3)
-            query = attn.norm_q(query.float()).to(query.dtype)
-            key = attn.norm_k(key.float()).to(key.dtype)
+            query = normalize(query, attn.norm_q)
+            key = normalize(key, attn.norm_k)
             value = value.clone()
             del qkv
+        if kitchen_rms:
+            query, key = vae_kitchen.rms_rope(query, key, rotary_emb, attn.norm_q.eps)
+        residual = hidden_states if pre_norm is not None else None
         del hidden_states
 
-        if rotary_emb is not None:
+        if not fused and not kitchen_rms and rotary_emb is not None:
             cos, sin = rotary_emb
             cos, sin = cos.to(query.dtype), sin.to(query.dtype)
             rotary_dim = cos.shape[-1]
@@ -371,7 +421,10 @@ class MiniMaxH3VideoAttnProcessor:
         if output_dtype == torch.float32:
             query, key, value = query.half(), key.half(), value.half()
         hidden_states = pay_attention([query, key, value], causal=False, recycle_q=True)
-        return attn.to_out(hidden_states.flatten(2, 3).to(output_dtype))
+        projected = hidden_states.flatten(2, 3).to(output_dtype)
+        if residual is not None:
+            return int8_backend.linear_with_fusion(attn.to_out, projected, residual=residual, residual_scale=residual_scale)
+        return attn.to_out(projected)
 
 
 class MiniMaxH3VideoAttention(nn.Module):
@@ -393,9 +446,10 @@ class MiniMaxH3VideoAttention(nn.Module):
         self.processor = MiniMaxH3VideoAttnProcessor()
 
     def forward(
-        self, hidden_states: list[torch.Tensor], rotary_emb: tuple[torch.Tensor, torch.Tensor] | None = None
+        self, hidden_states: list[torch.Tensor], rotary_emb: tuple[torch.Tensor, torch.Tensor] | None = None,
+        pre_norm=None, residual_scale=None,
     ) -> torch.Tensor:
-        return self.processor(self, hidden_states, rotary_emb)
+        return self.processor(self, hidden_states, rotary_emb, pre_norm, residual_scale)
 
 
 class MiniMaxH3VideoFeedForward(nn.Module):
@@ -409,14 +463,27 @@ class MiniMaxH3VideoFeedForward(nn.Module):
         hidden_states = _take(hidden_states)
         expanded = self.w1(hidden_states)
         del hidden_states
-        gate, value = expanded.chunk(2, dim=-1)
-        F.silu(gate, inplace=True).mul_(value)
-        del expanded, value
+        if _use_triton_vae(expanded):
+            gate = (vae_kernels.swiglu(expanded) if kernel_policy.allow_approximate()
+                    else vae_kernels.swiglu_(expanded))
+        else:
+            gate, value = expanded.chunk(2, dim=-1)
+            F.silu(gate, inplace=True).mul_(value)
+            del value
+        del expanded
         return self.w2(gate)
 
-    def forward(self, hidden_states: list[torch.Tensor]) -> torch.Tensor:
+    def forward(self, hidden_states: list[torch.Tensor], pre_norm=None, residual_scale=None) -> torch.Tensor:
         hidden_states = _take(hidden_states)
         chunk_size = max(1, hidden_states.shape[1] * hidden_states.shape[2] // self.w1.out_features)
+        if pre_norm is not None:
+            for start in range(0, hidden_states.shape[1], chunk_size):
+                x = hidden_states[:, start:start + chunk_size]
+                expanded = int8_backend.linear_with_fusion(self.w1, x, input_act="rms_norm", act_weight=pre_norm.weight, act_eps=pre_norm.eps)
+                output = int8_backend.linear_with_fusion(self.w2, expanded, input_act="swiglu", residual=x, residual_scale=residual_scale)
+                x.copy_(output)
+                del expanded, output
+            return hidden_states
         if hidden_states.shape[1] <= chunk_size:
             return self._project([hidden_states])
         for start in range(0, hidden_states.shape[1], chunk_size):
@@ -448,14 +515,27 @@ class MiniMaxH3VideoTransformerBlock(nn.Module):
         self, hidden_states: list[torch.Tensor], rotary_emb: tuple[torch.Tensor, torch.Tensor] | None = None
     ) -> torch.Tensor:
         hidden_states = _take(hidden_states)
+        if (hasattr(self.attn, 'to_qkv')
+                and all(int8_backend.can_fuse_linear(layer, hidden_states, dtypes=_FUSED_DTYPES)
+                        for layer in (self.attn.to_qkv, self.attn.to_out, self.ff.w1, self.ff.w2))
+                and all(p.device == hidden_states.device and p.dtype == hidden_states.dtype
+                        for p in (self.norm1.weight, self.norm2.weight, self.scale1, self.scale2))):
+            hidden_states = self.attn([hidden_states], rotary_emb, pre_norm=self.norm1, residual_scale=self.scale1)
+            return self.ff([hidden_states], pre_norm=self.norm2, residual_scale=self.scale2)
         norm_hidden_states = self.norm1(hidden_states.to(self.norm1.weight.dtype)).to(hidden_states.dtype)
         branch = self.attn([norm_hidden_states], rotary_emb)
-        branch.mul_(self.scale1).add_(hidden_states)
+        if _use_triton_vae(branch):
+            vae_kernels.residual_(branch, self.scale1, hidden_states)
+        else:
+            branch.mul_(self.scale1).add_(hidden_states)
         del hidden_states
         hidden_states = branch
         norm_hidden_states = self.norm2(hidden_states.to(self.norm2.weight.dtype)).to(hidden_states.dtype)
         branch = self.ff([norm_hidden_states])
-        branch.mul_(self.scale2).add_(hidden_states)
+        if _use_triton_vae(branch):
+            vae_kernels.residual_(branch, self.scale2, hidden_states)
+        else:
+            branch.mul_(self.scale2).add_(hidden_states)
         del hidden_states
         return branch
 
@@ -892,6 +972,10 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             moments = moments[:, :, : -self.config.token_drop]
         return moments
 
+    def _prepare_decoded_chunk(self, chunk: torch.Tensor) -> torch.Tensor:
+        """Convert finalized pixels before copying them to the CPU output buffer."""
+        return chunk
+
     def _decode(self, z: torch.Tensor) -> torch.Tensor:
         r"""
         Decode a latent video, mirroring the chunking that `_encode` applied.
@@ -899,6 +983,7 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         `token_drop` removed the tail of every encoded chunk, so consecutive decoded chunks overlap by
         `frame_overlap` pixel frames and are linearly cross-faded. Latent frames are repeated at the end when the
         length is not a whole number of chunks; the extra pixel frames are cut off again at the end.
+        Finalized frames are accumulated on CPU; only the current clip and its overlap stay on GPU.
         """
         tokens_chunk_size = self.tokens_chunk_size
         token_drop = self.config.token_drop
@@ -918,37 +1003,51 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             for k in range(pad_tokens)
         )
         output_frames = num_chunks * (chunk_num_frames - self.frame_pre_padding) + self.frame_overlap - pad_frames
-        decoded = None
-        write_position = 0
-        overlap = None
-        for i in range(num_chunks):
-            start = i * tokens_chunk_size
-            clip = self._decode_clip(z[:, :, start : start + tokens_chunk_size + self.token_overlap])
-            for j in range(int(token_drop > 0) + 1):
-                frame_start = j * chunk_num_frames
-                chunk = clip[:, :, frame_start : frame_start + chunk_num_frames]
-                chunk = chunk[:, :, self.frame_pre_padding :]
-                if j == 0:
-                    if overlap is not None:
-                        chunk = self._blend(overlap, chunk, self.frame_overlap, dim=-3)
-                    if decoded is None:
-                        decoded = torch.empty(*chunk.shape[:2], output_frames, *chunk.shape[3:],
-                                              dtype=chunk.dtype, device=chunk.device)
-                    copy_frames = min(chunk.shape[2], output_frames - write_position)
-                    if copy_frames > 0:
-                        decoded[:, :, write_position : write_position + copy_frames].copy_(chunk[:, :, :copy_frames])
-                        write_position += copy_frames
-                else:
-                    overlap = chunk.contiguous()
-            del clip
-        if overlap is not None:
-            copy_frames = min(overlap.shape[2], output_frames - write_position)
-            if copy_frames > 0:
-                decoded[:, :, write_position : write_position + copy_frames].copy_(overlap[:, :, :copy_frames])
+        spatial_tiles = 1
+        if self.use_tiling:
+            height, width = z.shape[-2] * self.spatial_compression_ratio, z.shape[-1] * self.spatial_compression_ratio
+            rows = self._split_tiles(height, self.tile_sample_min_height, self.tile_sample_min_overlap_height)[0]
+            cols = self._split_tiles(width, self.tile_sample_min_width, self.tile_sample_min_overlap_width)[0]
+            spatial_tiles = len(rows) * len(cols)
+        with PhaseProgress(max(1, num_chunks) * spatial_tiles) as progress, progress.track(self.decoder, spatial_tiles):
+            if num_chunks == 0:
+                # Short videos still need one decode, without an overlapping temporal chunk.
+                chunk = self._decode_clip(z)[:, :, self.frame_pre_padding : self.frame_pre_padding + output_frames]
+                return self._prepare_decoded_chunk(chunk).to(device="cpu", non_blocking=False)
+            decoded = None
+            write_position = 0
+            overlap = None
+
+            def write_chunk(chunk):
+                nonlocal decoded, write_position
+                copy_frames = min(chunk.shape[2], output_frames - write_position)
+                if copy_frames <= 0:
+                    return
+                chunk = self._prepare_decoded_chunk(chunk[:, :, :copy_frames])
+                if decoded is None:
+                    decoded = torch.empty(*chunk.shape[:2], output_frames, *chunk.shape[3:], dtype=chunk.dtype, device="cpu")
+                decoded[:, :, write_position : write_position + copy_frames].copy_(chunk, non_blocking=False)
                 write_position += copy_frames
-        if write_position != output_frames:
-            raise RuntimeError(f"MiniMax H3 VAE decoded {write_position} frames, expected {output_frames}")
-        return decoded
+
+            for i in range(num_chunks):
+                start = i * tokens_chunk_size
+                clip = self._decode_clip(z[:, :, start : start + tokens_chunk_size + self.token_overlap])
+                for j in range(int(token_drop > 0) + 1):
+                    frame_start = j * chunk_num_frames
+                    chunk = clip[:, :, frame_start : frame_start + chunk_num_frames]
+                    chunk = chunk[:, :, self.frame_pre_padding :]
+                    if j == 0:
+                        if overlap is not None:
+                            chunk = self._blend(overlap, chunk, self.frame_overlap, dim=-3)
+                        write_chunk(chunk)
+                    else:
+                        overlap = chunk.contiguous()
+                del chunk, clip
+            if overlap is not None:
+                write_chunk(overlap)
+            if write_position != output_frames:
+                raise RuntimeError(f"MiniMax H3 VAE decoded {write_position} frames, expected {output_frames}")
+            return decoded
 
     @apply_forward_hook
     def encode(self, x: torch.Tensor, return_dict: bool = True) -> AutoencoderKLOutput | tuple[torch.Tensor]:
@@ -966,14 +1065,20 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             The latent distribution of the encoded videos. Note that MiniMax-H3 normalizes the sampled latents with
             `latents_mean` / `latents_std` afterwards.
         """
-        if self.use_slicing and x.shape[0] > 1:
-            moments = torch.cat([self._encode(x_slice) for x_slice in x.split(1)])
-        else:
-            moments = self._encode(x)
-        posterior = DiagonalGaussianDistribution(moments)
-        if not return_dict:
-            return (posterior,)
-        return AutoencoderKLOutput(latent_dist=posterior)
+        tiles = (x.shape[0] if self.use_slicing else 1) * ((x.shape[2] + self.config.clip_length - 1) // self.config.clip_length)
+        if self.use_tiling:
+            rows = self._split_tiles(x.shape[-2], self.tile_sample_min_height, self.tile_sample_min_overlap_height)[0]
+            cols = self._split_tiles(x.shape[-1], self.tile_sample_min_width, self.tile_sample_min_overlap_width)[0]
+            tiles *= len(rows) * len(cols)
+        with vae_encoding_progress(tiles, self.encoder, enabled=x.shape[2] > 1):
+            if self.use_slicing and x.shape[0] > 1:
+                moments = torch.cat([self._encode(x_slice) for x_slice in x.split(1)])
+            else:
+                moments = self._encode(x)
+            posterior = DiagonalGaussianDistribution(moments)
+            if not return_dict:
+                return (posterior,)
+            return AutoencoderKLOutput(latent_dist=posterior)
 
     @apply_forward_hook
     def decode(self, z: torch.Tensor, return_dict: bool = True) -> DecoderOutput | tuple[torch.Tensor]:
@@ -988,7 +1093,7 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
 
         Returns:
             [`~models.autoencoders.vae.DecoderOutput`] or `tuple`:
-                The decoded videos, shape `(batch_size, out_channels, num_frames, height, width)`.
+                The decoded CPU videos, shape `(batch_size, out_channels, num_frames, height, width)`.
         """
         if self.use_slicing and z.shape[0] > 1:
             decoded = torch.cat([self._decode(z_slice) for z_slice in z.split(1)])

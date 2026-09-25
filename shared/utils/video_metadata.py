@@ -729,8 +729,9 @@ def read_metadata_from_mp4(file_path):
             return metadata
     except Exception:
         pass
+    tags = _read_container_tags(file_path)
     for tag_key in _CONTAINER_COMMENT_TAGS:
-        metadata = _parse_metadata_text(_read_container_tags(file_path).get(tag_key))
+        metadata = _parse_metadata_text(tags.get(tag_key))
         if metadata is not None:
             return metadata
     return None

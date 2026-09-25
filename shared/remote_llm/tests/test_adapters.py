@@ -8,6 +8,8 @@ import threading
 import time
 import unittest
 import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -197,7 +199,7 @@ class RemoteLLMAdapterTests(unittest.TestCase):
     def test_llm_io_cli_option_creates_the_transcript_in_the_requested_folder(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
-                args = parse_wgp_args([], "wgp_config.json", "loras", ["--llm-io", temp_dir])
+                args = parse_wgp_args("wgp_config.json", ["--llm-io", temp_dir])
                 path = get_llm_io_path()
                 self.assertEqual(args.llm_io, temp_dir)
                 self.assertIsNotNone(path)
@@ -1044,12 +1046,51 @@ class RemoteLLMAdapterTests(unittest.TestCase):
             backend.close()
 
     @unittest.skipUnless(os.name == "nt", "Windows npm wrapper behavior")
+    def test_codex_resolver_prefers_native_path_cli_and_respects_explicit_wrapper(self):
+        with tempfile.TemporaryDirectory() as root:
+            native = Path(root, "codex.exe")
+            native.touch()
+            wrapper = Path(root, "npm", "codex.cmd")
+            wrapper.parent.mkdir()
+            wrapper.touch()
+            with patch.dict(os.environ, {"APPDATA": root}), patch("shared.remote_llm.codex_backend.shutil.which", side_effect=lambda name: str(native) if name == "codex.exe" else None):
+                self.assertEqual(_resolve_codex_executable("codex"), str(native))
+                self.assertEqual(_resolve_codex_executable(str(wrapper)), str(wrapper))
+
+    @unittest.skipUnless(os.name == "nt", "Windows subprocess tree cleanup")
+    def test_codex_resolver_finds_app_cli_without_app_on_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            app_bin = Path(root, "OpenAI", "Codex", "bin")
+            native = app_bin / "current-build" / "codex.exe"
+            native.parent.mkdir(parents=True)
+            native.touch()
+            old = app_bin / "codex.exe"
+            old.touch()
+            os.utime(old, (1, 1))
+            with patch.dict(os.environ, {"LOCALAPPDATA": root}), patch("shared.remote_llm.codex_backend.shutil.which", return_value=None):
+                self.assertEqual(_resolve_codex_executable("codex"), str(native))
+
+    @unittest.skipUnless(os.name == "nt", "Windows subprocess tree cleanup")
+    def test_codex_close_stops_children_before_removing_working_directory(self):
+        import psutil
+
+        backend = CodexBackend({})
+        directory = Path(backend._temp_dir.name)
+        script = "import subprocess, sys, time; child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); print(child.pid, flush=True); time.sleep(60)"
+        backend._process = subprocess.Popen([sys.executable, "-c", script], cwd=directory, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        child_pid = int(backend._process.stdout.readline())
+        backend.close()
+        self.assertFalse(psutil.pid_exists(child_pid))
+        self.assertFalse(directory.exists())
+        backend.close()
+
+    @unittest.skipUnless(os.name == "nt", "Windows npm wrapper behavior")
     def test_codex_resolver_prefers_global_npm_wrapper_and_uses_cmd(self):
         with tempfile.TemporaryDirectory() as root:
             wrapper = Path(root, "npm", "codex.cmd")
             wrapper.parent.mkdir()
             wrapper.touch()
-            with patch.dict(os.environ, {"APPDATA": root}), patch("shared.remote_llm.codex_backend.shutil.which", return_value=r"C:\Program Files\WindowsApps\OpenAI.Codex\codex.exe"):
+            with patch.dict(os.environ, {"APPDATA": root, "LOCALAPPDATA": root}), patch("shared.remote_llm.codex_backend.shutil.which", return_value=r"C:\Program Files\WindowsApps\OpenAI.Codex\codex.exe"):
                 self.assertEqual(_resolve_codex_executable("codex"), str(wrapper))
             self.assertIn("cmd", Path(_codex_launch_command(str(wrapper))[0]).name.lower())
 
@@ -1059,7 +1100,7 @@ class RemoteLLMAdapterTests(unittest.TestCase):
             executable = Path(root, ".vscode", "extensions", "openai.chatgpt-1.2.3-win32-x64", "bin", "windows-x86_64", "codex.exe")
             executable.parent.mkdir(parents=True)
             executable.touch()
-            with patch.dict(os.environ, {"APPDATA": str(Path(root, "appdata")), "USERPROFILE": root}), patch("shared.remote_llm.codex_backend.shutil.which", return_value=r"C:\Program Files\WindowsApps\OpenAI.Codex\codex.exe"):
+            with patch.dict(os.environ, {"APPDATA": str(Path(root, "appdata")), "USERPROFILE": root, "LOCALAPPDATA": root}), patch("shared.remote_llm.codex_backend.shutil.which", return_value=r"C:\Program Files\WindowsApps\OpenAI.Codex\codex.exe"):
                 self.assertEqual(_resolve_codex_executable("codex"), str(executable))
 
     @unittest.skipUnless(os.name == "nt", "Windows VS Code extension behavior")

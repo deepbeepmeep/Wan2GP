@@ -137,3 +137,7 @@ Install exactly the pinned bridge version shown above in WanGP's environment. Do
 ### Authentication or provider changes are not visible
 
 Complete authentication in the external engine, restart an already-running external server when applicable, then click `Refresh`. Model catalogs are cached independently from the selected model.
+
+---
+
+> Applies to: Configuration, authentication and troubleshooting for WanGP's remote Codex, Claude Code and OpenCode engines. Provider setup and media-generation tool interfaces are documented separately.

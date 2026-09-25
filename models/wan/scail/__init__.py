@@ -98,6 +98,14 @@ class ScailPoseProcessor:
         self.multi_person = bool(multi_person)
         self.max_people = max(1, int(max_people))
 
+        from preprocessing.dwpose.assets import query_download_def
+        from shared.utils.download import process_files_def_if_needed
+
+        process_files_def_if_needed(query_download_def())
+        if self.multi_person:
+            from preprocessing.matanyone.utils.model_assets import ensure_selected_matanyone_assets
+            ensure_selected_matanyone_assets({"matanyone_version": "v1"})
+
         # Some upstream helpers use bare `.cuda()` / default device semantics.
         torch.cuda.set_device(self.gpu_id)
         self.detector = DWposeDetector(use_batch=False).to(self.gpu_id)

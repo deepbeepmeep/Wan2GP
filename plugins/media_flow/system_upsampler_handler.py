@@ -113,6 +113,12 @@ class SystemUpsamplerProcessHandler:
         })
         return settings
 
+    def build_image_queue_settings(self, process_settings: dict, *, source_path: str, target_control: str, seed: int) -> dict:
+        settings = self.build_queue_settings(process_settings, source_path=source_path, start_frame=0, frame_count=1, target_control=target_control, seed=seed, continue_cache=None)
+        settings.update({"model_type": "__system_image_postprocessing", "image_mode": 1, "video_source": source_path})
+        settings["_api"]["suppress_source_audio"] = True
+        return settings
+
     def expected_output_frame_count(self, input_frame_count: int, target_control: str) -> int:
         if not self.temporal:
             return int(input_frame_count)

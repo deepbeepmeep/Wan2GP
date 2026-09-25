@@ -1,6 +1,6 @@
 {
     "model": {
-        "name": "Qwen Image 2512 Release 20B",
+        "name": "Qwen Image Text2Image 2512 20B",
         "architecture": "qwen_image_20B",
         "description": "Qwen Image 2512 is a 20B image generator that excels at high quality visuals and long text rendering. This December release offers Enhanced Human Realism, Finer Natural Details & Improved Text Rendering.",
         "URLs": [

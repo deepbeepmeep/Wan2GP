@@ -5,6 +5,7 @@ from typing import Callable, Tuple
 
 import numpy as np
 import torch
+from ....denoiser_kernels import split_rope
 
 
 USE_FP32_ROPE_FREQS = False
@@ -376,6 +377,8 @@ def _apply_split_rope_layout_inplace(input_tensor: torch.Tensor, rope_cache: Rop
         return
     if _is_compiling_graph():
         _apply_split_rope_layout_compile_safe(input_tensor, rope_cache, layout)
+        return
+    if split_rope(input_tensor, rope_cache, layout):
         return
 
     x_view = input_tensor.reshape(b, *grid_sizes, num_heads, dim_head)

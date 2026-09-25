@@ -68,7 +68,7 @@ _RG_ATTACHED_VALUE_OPTIONS = ("-g", "-t", "-T", "-A", "-B", "-C", "-m", "-j", "-
 
 
 def long_text_tools_active(policy) -> bool:
-    return bool(DEEPY_LONG_TEXT_TOOLS_EXPERIMENT and policy is not None and policy.write_enabled)
+    return bool(policy is not None and policy.write_enabled and (DEEPY_LONG_TEXT_TOOLS_EXPERIMENT or getattr(policy, "prompt_read_only", False)))
 
 
 def _session_name(session_id: str) -> str:
@@ -198,7 +198,7 @@ def ensure_ripgrep() -> Path:
         return target
 
 
-def _parse_rg_arguments(arguments: str) -> tuple[list[str], list[str]]:
+def _parse_rg_arguments(arguments: str, *, experimental: bool = True) -> tuple[list[str], list[str]]:
     source = str(arguments or "").strip()
     if not source:
         raise ValueError("rg arguments are empty.")
@@ -241,13 +241,16 @@ def _parse_rg_arguments(arguments: str) -> tuple[list[str], list[str]]:
             index += 1
             continue
         if token.startswith("-"):
-            raise ValueError(f"rg option is not enabled for this experiment: {token}")
+            context = "this experiment" if experimental else "this tool"
+            raise ValueError(f"rg option is not enabled for {context}: {token}")
         positionals.append(token)
         command.append(token)
         index += 1
     files_mode = "--files" in command
     expected_positionals = 0 if files_mode or regexp_count else 1
     if len(positionals) != expected_positionals:
+        if not experimental and expected_positionals == 1 and not positionals:
+            raise ValueError("Text search requires a pattern before -- (or patterns with -e). To list filenames without searching content, use --files, e.g. --files -g '*.txt' -- @outputs. -l lists files containing matching text and still requires a pattern.")
         expectation = "no positional pattern" if expected_positionals == 0 else "exactly one positional pattern"
         raise ValueError(f"This rg wrapper requires {expectation} before `--`; put every search path after `--`.")
     return command, path_tokens
@@ -333,12 +336,15 @@ def _text_argument(value: Any, name: str, *, allow_empty: bool = False) -> str:
     return value
 
 
-def _atomic_write(target: Path, data: bytes) -> None:
+def _atomic_write(target: Path, data: bytes, *, create_only: bool = False) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
     try:
         temporary.write_bytes(data)
-        os.replace(temporary, target)
+        if create_only:
+            os.link(temporary, target)
+        else:
+            os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -362,11 +368,11 @@ def edit_text(policy, file_path: str, old_string: str, new_string: str, replace_
         replacements = occurrences if replace_all else 1
         updated = original.replace(old_string, new_string, -1 if replace_all else 1)
         data = updated.encode(encoding)
-        _atomic_write(target, data)
+        _atomic_write(target, data, create_only=policy.create_only(target))
     return {"status": "done", "action": "edit", "path": policy.virtualize_path(target), "replacements": replacements, "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
 
 
-def append_text(policy, file_path: str, text: str) -> dict[str, Any]:
+def append_text(policy, file_path: str, text: str, *, include_structure: bool = False) -> dict[str, Any]:
     if not long_text_tools_active(policy):
         raise PermissionError("The experimental append_text tool requires Deepy read/write filesystem access.")
     text = _text_argument(text, "text")
@@ -379,18 +385,24 @@ def append_text(policy, file_path: str, text: str) -> dict[str, Any]:
             target = policy.require_read(target, file=True)
             original, encoding = _decode_text(target.read_bytes(), policy.virtualize_path(target))
         data = (original + text).encode(encoding)
-        _atomic_write(target, data)
-    return {"status": "done", "action": "create" if created else "append", "path": policy.virtualize_path(target), "created": created, "appended_characters": len(text), "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        _atomic_write(target, data, create_only=policy.create_only(target))
+    result = {"status": "done", "action": "create" if created else "append", "path": policy.virtualize_path(target), "created": created, "appended_characters": len(text), "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    heading_pattern = r"^#{1,6}[ \t]+\S[^\r\n]*"
+    if include_structure and re.search(heading_pattern, text, re.MULTILINE):
+        headings = list(re.finditer(heading_pattern, original + text, re.MULTILINE))
+        last_heading = headings[-1].group() if headings else None
+        result["structure"] = {"headings_added": sum(match.start() >= len(original) for match in headings), "heading_count": len(headings), "last_heading": last_heading, "last_heading_occurrences": sum(match.group() == last_heading for match in headings)}
+    return result
 
 
-def resolve_prompt_file(value: Any, policy) -> Any:
-    if not isinstance(value, str) or not long_text_tools_active(policy):
+def resolve_prompt_file(value: Any, policy, *, read_only: bool = False) -> Any:
+    if not isinstance(value, str) or not (read_only or long_text_tools_active(policy)):
         return value
     match = _PROMPT_FILE_RE.fullmatch(value)
     if match is None:
         return value
     target = policy.require_read(match.group(1), file=True)
-    if not policy.can_write(target):
+    if not (read_only or getattr(policy, "prompt_read_only", False)) and not policy.can_write(target):
         raise PermissionError(f"Prompt files must be inside a configured read/write root: {policy.virtualize_path(target)}")
     size = target.stat().st_size
     if size > _MAX_PROMPT_FILE_BYTES:
@@ -401,12 +413,12 @@ def resolve_prompt_file(value: Any, policy) -> Any:
     return content
 
 
-def resolve_prompt_references(value: Any, policy, key: str = "") -> Any:
+def resolve_prompt_references(value: Any, policy, key: str = "", *, read_only: bool = False) -> Any:
     if isinstance(value, list):
-        return [resolve_prompt_references(item, policy, key) for item in value]
+        return [resolve_prompt_references(item, policy, key, read_only=read_only) for item in value]
     if isinstance(value, dict):
-        return {child_key: resolve_prompt_references(child_value, policy, str(child_key).casefold()) for child_key, child_value in value.items()}
-    return resolve_prompt_file(value, policy) if key in _PROMPT_FIELDS else value
+        return {child_key: resolve_prompt_references(child_value, policy, str(child_key).casefold(), read_only=read_only) for child_key, child_value in value.items()}
+    return resolve_prompt_file(value, policy, read_only=read_only) if key in _PROMPT_FIELDS else value
 
 
 __all__ = [

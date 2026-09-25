@@ -66,7 +66,11 @@ class DropdownDeps:
 
 def compact_name(family_name, model_name):
     if model_name.startswith(family_name):
-        return model_name[len(family_name):].strip()
+        suffix = model_name[len(family_name):]
+        version = family_name.rsplit(" ", 1)[-1]
+        if suffix.startswith(".") and version.isdigit():
+            return version + suffix
+        return suffix.strip()
     return model_name
 
 
@@ -147,8 +151,8 @@ def _record_main_outputs(record):
 
 
 def _get_model_defs_by_type(deps, dropdown_types):
-    if deps.list_model_defs is not None:
-        return {record["model_type"]: record for record in deps.list_model_defs(model_type=dropdown_types)}
+    # Internal callers only read metadata for exact IDs; the public bulk query
+    # deep-copies entire definitions, including settings, for external callers.
     records = {}
     for model_type in dropdown_types:
         model_def = deps.get_model_def(model_type)

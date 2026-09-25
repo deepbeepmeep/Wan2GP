@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import vae_decoding_progress, set_phase_status
 import os
 import math
 from typing import Dict, Optional, Tuple, Union
@@ -449,6 +450,7 @@ class AutoencoderKLCausal3D(ModelMixin, ConfigMixin, FromOriginalVAEMixin):
                 The latent representations of the encoded images. If `return_dict` is True, a
                 [`~models.autoencoder_kl.AutoencoderKLOutput`] is returned, otherwise a plain `tuple` is returned.
         """
+        set_phase_status("VAE Encoding")
         assert len(x.shape) == 5, "The input tensor should have 5 dimensions"
 
         if self.use_temporal_tiling and x.shape[2] > self.tile_sample_min_tsize:
@@ -511,25 +513,32 @@ class AutoencoderKLCausal3D(ModelMixin, ConfigMixin, FromOriginalVAEMixin):
 
         """
 
-        if self.parallel_decode:
-            if z.dtype != RECOMMENDED_DTYPE:
-                loguru.logger.warning(
-                    f'For better performance, using {RECOMMENDED_DTYPE} for both latent features and model parameters is recommended.'
-                    f'Current latent dtype {z.dtype}. '
-                    f'Please note that the input latent will be cast to {RECOMMENDED_DTYPE} internally when decoding.'
-                )
-                z = z.to(RECOMMENDED_DTYPE)
+        tiles = z.shape[0] if self.use_slicing else 1
+        if self.use_temporal_tiling and z.shape[2] > self.tile_latent_min_tsize:
+            tiles *= len(range(0, z.shape[2], int(self.tile_latent_min_tsize * (1 - self.tile_overlap_factor))))
+        if self.use_spatial_tiling and (z.shape[-1] > self.tile_latent_min_size or z.shape[-2] > self.tile_latent_min_size):
+            stride = int(self.tile_latent_min_size * (1 - self.tile_overlap_factor))
+            tiles *= len(range(0, z.shape[-2], stride)) * len(range(0, z.shape[-1], stride))
+        with vae_decoding_progress(tiles, self.decoder):
+            if self.parallel_decode:
+                if z.dtype != RECOMMENDED_DTYPE:
+                    loguru.logger.warning(
+                        f'For better performance, using {RECOMMENDED_DTYPE} for both latent features and model parameters is recommended.'
+                        f'Current latent dtype {z.dtype}. '
+                        f'Please note that the input latent will be cast to {RECOMMENDED_DTYPE} internally when decoding.'
+                    )
+                    z = z.to(RECOMMENDED_DTYPE)
 
-        if self.use_slicing and z.shape[0] > 1:
-            decoded_slices = [self._decode(z_slice).sample for z_slice in z.split(1)]
-            decoded = torch.cat(decoded_slices)
-        else:
-            decoded = self._decode(z).sample
+            if self.use_slicing and z.shape[0] > 1:
+                decoded_slices = [self._decode(z_slice).sample for z_slice in z.split(1)]
+                decoded = torch.cat(decoded_slices)
+            else:
+                decoded = self._decode(z).sample
 
-        if not return_dict:
-            return (decoded,)
+            if not return_dict:
+                return (decoded,)
 
-        return DecoderOutput(sample=decoded)
+            return DecoderOutput(sample=decoded)
 
     def blend_v(self, a: torch.Tensor, b: torch.Tensor, blend_extent: int) -> torch.Tensor:
         blend_extent = min(a.shape[-2], b.shape[-2], blend_extent)

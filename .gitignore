@@ -21,12 +21,14 @@
 *.backup
 *.pkl
 *.html
+!shared/deepy/web/app.html
 !plugins/motion_designer/assets/motion_designer_iframe_template.html
 *.pdf
 *.whl
 *.exe
 cache
 __pycache__/
+node_modules/
 shared/gradio/wangp_image_editor/templates/component/index.js.map
 storage/
 samples/
@@ -50,6 +52,7 @@ dlss5/
 wgp_config.json
 plugins_local.json
 /plugins/wan2gp-*/
+!/plugins/wan2gp-ming-image/
 /plugins/wangp-*/
 loras_url_cache.json
 loras_url_cache_v2.json

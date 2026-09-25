@@ -1,4 +1,3 @@
-import os
 from typing import Any, Dict, Tuple
 
 import torch
@@ -44,25 +43,10 @@ class family_handler:
         return {"magi_human": (62, "Magi Human")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-magi-human",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Magi Human LoRAs (default: {os.path.join(lora_root, 'magi_human')})",
-        )
-        parser.add_argument(
-            "--lora-dir-magi-human-distill",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Magi Human Distill LoRAs (default: {os.path.join(lora_root, 'magi_human_distill')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         if base_model_type == BASE_ARCH:
-            return getattr(args, "lora_dir_magi_human", None) or os.path.join(lora_root, "magi_human")
-        return getattr(args, "lora_dir_magi_human_distill", None) or os.path.join(lora_root, "magi_human_distill")
+            return "magi_human"
+        return "magi_human_distill"
 
     @staticmethod
     def query_model_def(base_model_type: str, model_def: Dict[str, Any]):

@@ -16,6 +16,7 @@ from typing import Any
 import ffmpeg
 from PIL import Image
 
+from shared.deepy.image_channels import image_color_details
 from shared.deepy.media_registry import detect_media_type
 from shared.utils.video_decode import resolve_media_binary
 
@@ -131,7 +132,7 @@ class FileAccessPolicy:
         alias, separator, remainder = reference.partition("/")
         root = next((path for name, path in self.mounts if name.casefold() == alias.casefold()), None)
         if root is None:
-            raise ValueError(f"Unknown virtual filesystem root: {alias or '(empty)'}. Call wangp_io list without a path to list roots.")
+            raise ValueError(f"Unknown virtual filesystem root: {alias or '(empty)'}. List authorized roots without a path first.")
         parts = [part for part in remainder.split("/") if part] if separator else []
         return root.joinpath(*parts).resolve()
 
@@ -145,7 +146,7 @@ class FileAccessPolicy:
         target = Path(text).expanduser()
         absolute = target.is_absolute() or re.match(r"^[A-Za-z]:[\\/]", text) is not None or text.startswith(("\\\\", "/"))
         if absolute and self.virtualized and not isinstance(path, Path):
-            raise PermissionError("Absolute filesystem paths require Read Everywhere; use a virtual root returned by wangp_io list.")
+            raise PermissionError("Absolute filesystem paths require Read Everywhere; use a virtual root returned by the directory listing tool.")
         return (target if absolute else self.output_roots[0] / target).resolve()
 
     def virtualize_path(self, path: Any) -> str:
@@ -181,10 +182,11 @@ class FileAccessPolicy:
             path_key = key in _PATH_KEYS or key.endswith(("_path", "_paths")) or key.endswith(("_file", "_files", "_folder", "_folders", "_directory", "_directories")) and (absolute or virtual)
             if path_key or key in {"source", "sources"} and (absolute or virtual):
                 try:
-                    return self.virtualize_path(_resolved_path(text) if absolute else self.resolve_path(text))
+                    target = self.resolve_path(text) if virtual and not absolute else _resolved_path(text)
+                    return self.virtualize_path(target) if any(_inside(target, root) for _alias, root in self.mounts) else None
                 except (OSError, PermissionError, ValueError):
                     if absolute:
-                        return Path(text).name or "file"
+                        return None
             return self._virtualize_text(text)
         return value
 
@@ -224,6 +226,15 @@ class FileAccessPolicy:
             raise PermissionError(f"Filesystem write is not authorized for: {self.virtualize_path(target)}")
         return target
 
+    def create_only(self, path: Any) -> bool:
+        return False
+
+    def require_mutation(self, path: Any) -> Path:
+        target = self.require_write(path)
+        if target in self.write_roots:
+            raise PermissionError(f"A filesystem root cannot be moved or deleted: {self.virtualize_path(target)}")
+        return target
+
     def roots(self) -> list[dict[str, Any]]:
         return [{"path": self.virtualize_path(path), "exists": path.is_dir(), "writable": self.can_write(path)} for path in self.read_roots]
 
@@ -261,7 +272,7 @@ def build_file_access_policy(server_config: dict[str, Any] | None, *, unrestrict
     mode = DEEPY_FILE_SYSTEM_ACCESS_READ if unrestricted_read else normalize_deepy_file_system_access(config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, False))
     video_output = config.get("save_path", "outputs") or "outputs"
     output_roots = _unique_paths([video_output, config.get("image_save_path", video_output) or video_output, config.get("audio_save_path", video_output) or video_output])
-    configured_roots = [(path, alias) for path, alias in parse_deepy_file_system_paths(config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT))]
+    configured_roots = parse_deepy_file_system_paths(config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT)) if mode != DEEPY_FILE_SYSTEM_ACCESS_DISABLED else []
     seen_paths = {os.path.normcase(str(path)) for path in output_roots}
     selected = []
     for value, alias in configured_roots:
@@ -280,26 +291,6 @@ def build_file_access_policy(server_config: dict[str, Any] | None, *, unrestrict
     selected_roots = tuple(path for path, _alias in selected)
     read_everywhere = unrestricted_read or mode != DEEPY_FILE_SYSTEM_ACCESS_DISABLED and normalize_deepy_read_everywhere(config.get(DEEPY_READ_EVERYWHERE_KEY, DEEPY_READ_EVERYWHERE_DEFAULT))
     return FileAccessPolicy(mode=mode, output_roots=output_roots, selected_roots=selected_roots, read_everywhere=read_everywhere, root_aliases=tuple([*output_aliases, *selected_aliases]))
-
-
-def _extension_filter(value: Any) -> set[str]:
-    if value is None:
-        return set()
-    values = re.split(r"[,;\s]+", value) if isinstance(value, str) else value
-    return {f".{str(item).strip().lower().lstrip('.')}" for item in values if str(item).strip()}
-
-
-def list_files(path: str, extensions: Any = None, policy: FileAccessPolicy | None = None) -> dict[str, Any]:
-    directory = policy.require_read(path, directory=True) if policy is not None else _resolved_path(path)
-    if not directory.is_dir():
-        return {"status": "error", "path": str(directory), "files": [], "count": 0, "error": "Path is not an existing directory."}
-    allowed = _extension_filter(extensions)
-    files = [
-        {"filename": item.name, "extension": item.suffix.lower(), "size_bytes": item.stat().st_size, "path": str(item.resolve())}
-        for item in sorted(directory.iterdir(), key=lambda entry: entry.name.casefold())
-        if item.is_file() and (not allowed or item.suffix.lower() in allowed) and (policy is None or policy.can_read(item))
-    ]
-    return {"status": "done", "path": str(directory), "extensions": sorted(allowed), "files": files, "count": len(files), "error": ""}
 
 
 def list_entries(policy: FileAccessPolicy, path: str = "", pattern: str = "*", recursive: bool = False, limit: int = 200, offset: int = 0, media_type: str = "all") -> dict[str, Any]:
@@ -390,9 +381,10 @@ def _probe_media(path: Path, media_type: str) -> dict[str, Any]:
 def _query_image(path: Path) -> dict[str, Any]:
     with Image.open(path) as image:
         width, height = image.size
+        color_details = image_color_details(image)
         frame_count = int(getattr(image, "n_frames", 1) or 1)
         duration = sum(float(image.seek(index) or image.info.get("duration", 0) or 0) for index in range(frame_count)) / 1000 if frame_count > 1 else None
-    return {"status": "done", "path": str(path), "filename": path.name, "size_bytes": path.stat().st_size, "file_type": "image", "width": width, "height": height, "resolution": f"{width}x{height}", "frame_count": frame_count, "fps": None if not duration else frame_count / duration, "duration_seconds": duration, "has_audio": False, "audio_track_count": 0, "error": ""}
+    return {"status": "done", "path": str(path), "filename": path.name, "size_bytes": path.stat().st_size, "file_type": "image", "width": width, "height": height, "resolution": f"{width}x{height}", "frame_count": frame_count, "fps": None if not duration else frame_count / duration, "duration_seconds": duration, "has_audio": False, "audio_track_count": 0, **color_details, "error": ""}
 
 
 def file_info(path: str, policy: FileAccessPolicy | None = None) -> dict[str, Any]:
@@ -503,6 +495,8 @@ def write_text(policy: FileAccessPolicy, path: str, text: str, mode: str = "crea
     open_mode = {"create": "x", "overwrite": "w", "append": "a"}.get(mode)
     if open_mode is None:
         raise ValueError("mode must be create, overwrite, or append.")
+    if policy.create_only(file_path):
+        open_mode = "x"
     content = str(text)
     with file_path.open(open_mode, encoding=_encoding(encoding)) as writer:
         writer.write(content)
@@ -539,19 +533,17 @@ def copy_file(policy: FileAccessPolicy, source: str, destination: str, overwrite
         raise FileNotFoundError(f"Destination directory does not exist: {destination_path.parent}")
     if destination_path.exists() and not overwrite:
         raise FileExistsError(f"Destination already exists: {destination_path}")
-    shutil.copy2(source_path, destination_path)
+    if policy.create_only(destination_path):
+        with source_path.open("rb") as reader, destination_path.open("xb") as writer:
+            shutil.copyfileobj(reader, writer)
+        shutil.copystat(source_path, destination_path)
+    else:
+        shutil.copy2(source_path, destination_path)
     return {"status": "done", "source": str(source_path), "path": str(destination_path), "filename": destination_path.name, "size_bytes": destination_path.stat().st_size, "error": ""}
 
 
-def _mutable_path(policy: FileAccessPolicy, path: str) -> Path:
-    target = policy.require_write(path)
-    if any(os.path.normcase(str(target)) == os.path.normcase(str(root)) for root in policy.write_roots):
-        raise PermissionError(f"A filesystem root cannot be moved or deleted: {policy.virtualize_path(target)}")
-    return target
-
-
 def move_path(policy: FileAccessPolicy, source: str, destination: str) -> dict[str, Any]:
-    source_path = _mutable_path(policy, source)
+    source_path = policy.require_mutation(source)
     if not source_path.exists():
         raise FileNotFoundError(f"Source does not exist: {policy.virtualize_path(source_path)}")
     destination_path = policy.resolve_path(destination)
@@ -567,12 +559,20 @@ def move_path(policy: FileAccessPolicy, source: str, destination: str) -> dict[s
     if source_path.is_dir() and _inside(destination_path, source_path):
         raise ValueError("A directory cannot be moved inside itself.")
     item_type = "directory" if source_path.is_dir() else "file"
-    shutil.move(str(source_path), str(destination_path))
+    if policy.create_only(destination_path):
+        if item_type == "directory":
+            shutil.copytree(source_path, destination_path, symlinks=True, copy_function=lambda source, target: copy_file(policy, Path(source), Path(target))["path"])
+            shutil.rmtree(source_path)
+        else:
+            copy_file(policy, source_path, destination_path)
+            source_path.unlink()
+    else:
+        shutil.move(str(source_path), str(destination_path))
     return {"status": "done", "source": str(source_path), "path": str(destination_path), "filename": destination_path.name, "type": item_type, "size_bytes": destination_path.stat().st_size if destination_path.is_file() else None, "error": ""}
 
 
 def delete_path(policy: FileAccessPolicy, path: str, recursive: bool = False) -> dict[str, Any]:
-    target = _mutable_path(policy, path)
+    target = policy.require_mutation(path)
     if not target.exists():
         raise FileNotFoundError(f"Path does not exist: {policy.virtualize_path(target)}")
     item_type = "directory" if target.is_dir() else "file"
@@ -624,7 +624,7 @@ def zip_files(policy: FileAccessPolicy, sources: list[str], destination: str = "
         same_parent = next(iter(parents)) if len(parents) == 1 else None
         default_folder = same_parent if same_parent is not None and policy.can_write(same_parent / default_name) else policy.output_roots[0]
         target = default_folder / default_name
-    target = _available_zip_path(policy.require_write(target))
+    target = policy.require_write(_available_zip_path(target))
     if not target.parent.is_dir():
         raise FileNotFoundError(f"ZIP destination directory does not exist: {target.parent}")
     temp_path = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
@@ -652,7 +652,10 @@ def zip_files(policy: FileAccessPolicy, sources: list[str], destination: str = "
                         index += 1
                     names.add(unique_name.casefold())
                     archive.write(item, unique_name)
-        os.replace(temp_path, target)
+        if policy.create_only(target):
+            os.link(temp_path, target)
+        else:
+            os.replace(temp_path, target)
     finally:
         if temp_path.exists():
             temp_path.unlink()
@@ -693,6 +696,9 @@ def unzip_file(policy: FileAccessPolicy, source: str, destination: str = "", ove
             target = destination_path.joinpath(*member_path.parts).resolve()
             if not _inside(target, destination_path):
                 raise ValueError(f"ZIP member escapes the destination: {member.filename}")
+            from shared.deepy.prime_filesystem import PrimeFileAccessPolicy
+            if isinstance(policy, PrimeFileAccessPolicy):
+                policy.require_write(target)
             if target == source_path:
                 raise ValueError("A ZIP cannot overwrite its own source archive.")
             key = os.path.normcase(str(target))
@@ -724,7 +730,7 @@ def unzip_file(policy: FileAccessPolicy, source: str, destination: str = "", ove
                 target.mkdir(parents=True, exist_ok=True)
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(member, "r") as reader, target.open("wb") as writer:
+            with archive.open(member, "r") as reader, target.open("xb" if policy.create_only(target) else "wb") as writer:
                 shutil.copyfileobj(reader, writer)
 
     files = [member for member, _target, is_directory in plans if not is_directory]
@@ -779,5 +785,5 @@ def available_io_actions(policy: FileAccessPolicy, downloads_enabled: bool = Tru
 
 __all__ = [
     "TEXT_MAX_CHARS", "FileAccessPolicy", "IO_ACTIONS", "available_io_actions", "build_file_access_policy", "copy_file", "delete_path", "file_info", "list_entries",
-    "list_files", "make_directory", "move_path", "query_file", "read_text", "search_text", "unzip_file", "write_text", "zip_files",
+    "make_directory", "move_path", "query_file", "read_text", "search_text", "unzip_file", "write_text", "zip_files",
 ]

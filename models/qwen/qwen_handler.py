@@ -1,4 +1,3 @@
-import os
 import torch
 import gradio as gr
 from shared.utils.hf import build_hf_url
@@ -6,6 +5,9 @@ from shared.utils.hf import build_hf_url
 class family_handler():
     @staticmethod
     def query_model_def(base_model_type, model_def):
+        if base_model_type == "qwen_image_21_7B":
+            from models.qwen21.qwen21_handler import family_handler as qwen21
+            return qwen21.query_model_def(base_model_type, model_def)
         extra_model_def = {
             "image_outputs" : True,
             "sample_solvers":[
@@ -27,6 +29,7 @@ class family_handler():
         extra_model_def["excluded_spatial_upsamplers"] = ["qwen_pid(1.5)"]
 
         if base_model_type in ["qwen_image_layered_20B"]:
+            extra_model_def["specialities"] = [{"name": "layer decomposition", "aliases": ["editable layers"], "description": "Decompose an input image into RGBA layers."}]
             extra_model_def["batch_size_label"] = "Number of Layers"
             extra_model_def["set_video_prompt_type"] = "V"
             extra_model_def["guide_preprocessing"] = {
@@ -104,7 +107,7 @@ class family_handler():
 
     @staticmethod
     def query_supported_types():
-        return ["qwen_image_20B", "qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B", "qwen_image_layered_20B"]
+        return ["qwen_image_20B", "qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B", "qwen_image_layered_20B", "qwen_image_21_7B"]
 
     @staticmethod
     def query_family_maps():
@@ -122,23 +125,22 @@ class family_handler():
 
     @staticmethod
     def query_family_infos():
-        return {"qwen":(1110, "Qwen")}
+        return {
+            "qwen": (1110, "Qwen Image"),
+            "qwen_image_2": (1111, "Qwen Image 2.1"),
+        }
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-qwen",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains qwen images Loras (default: {os.path.join(lora_root, 'qwen')})"
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_qwen", None) or os.path.join(lora_root, "qwen")
+    def get_lora_dir(base_model_type):
+        if base_model_type == "qwen_image_21_7B":
+            return "qwen21"
+        return "qwen"
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
+        if base_model_type == "qwen_image_21_7B":
+            from models.qwen21.qwen21_handler import family_handler as qwen21
+            return qwen21.query_model_files(computeList, base_model_type, model_def)
         vae_files = ["qwen_vae.safetensors", "qwen_vae_config.json"]
         if base_model_type in ["qwen_image_layered_20B"]:
             vae_files = ["qwen_image_layered_vae_bf16.safetensors"]
@@ -158,6 +160,9 @@ class family_handler():
 
     @staticmethod
     def load_model(model_filename, model_type, base_model_type, model_def, quantizeTransformer = False, text_encoder_quantization = None, dtype = torch.bfloat16, VAE_dtype = torch.float32, mixed_precision_transformer = False, save_quantized = False, submodel_no_list = None, text_encoder_filename = None, VAE_upsampling = None, **kwargs):
+        if base_model_type == "qwen_image_21_7B":
+            from models.qwen21.qwen21_handler import family_handler as qwen21
+            return qwen21.load_model(model_filename, model_type, base_model_type, model_def, text_encoder_filename=text_encoder_filename, save_quantized=save_quantized, quantizeTransformer=quantizeTransformer, VAE_dtype=VAE_dtype)
         from .qwen_main import model_factory
         from mmgp import offload
 
@@ -183,6 +188,9 @@ class family_handler():
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if base_model_type == "qwen_image_21_7B":
+            from models.qwen21.qwen21_handler import family_handler as qwen21
+            qwen21.fix_settings(base_model_type, settings_version, model_def, ui_defaults)
         if ui_defaults.get("sample_solver", "") == "": 
             ui_defaults["sample_solver"] = "default"
 
@@ -191,6 +199,9 @@ class family_handler():
                             
     @staticmethod
     def update_default_settings(base_model_type, model_def, ui_defaults):
+        if base_model_type == "qwen_image_21_7B":
+            from models.qwen21.qwen21_handler import family_handler as qwen21
+            return qwen21.update_default_settings(base_model_type, model_def, ui_defaults)
         ui_defaults.update({
             "guidance_scale":  4,
             "sample_solver": "default",
@@ -237,6 +248,9 @@ class family_handler():
 
     @staticmethod
     def custom_prompt_preprocess(prompt, video_guide_outpainting, model_mode, **kwargs):
+        if kwargs.get("base_model_type") == "qwen_image_21_7B" or kwargs.get("model_type") == "qwen_image_21_7B":
+            # The 2.1 pipeline owns this instruction for its selectable border methods.
+            return prompt
         if model_mode == 0:
             # from wgp import get_outpainting_dims
             outpainting_ratio = (kwargs.get("video_guide_outpainting_ratio") or "").strip()
@@ -248,6 +262,9 @@ class family_handler():
 
     @staticmethod
     def get_rgb_factors(base_model_type ):
+        if base_model_type == "qwen_image_21_7B":
+            from models.qwen21.rgb_factors import RGB_FACTORS, RGB_BIAS
+            return RGB_FACTORS, RGB_BIAS
         from shared.RGB_factors import get_rgb_factors
         latent_rgb_factors, latent_rgb_factors_bias = get_rgb_factors("qwen")
         return latent_rgb_factors, latent_rgb_factors_bias

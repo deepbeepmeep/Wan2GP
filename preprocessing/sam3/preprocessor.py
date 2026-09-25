@@ -59,7 +59,11 @@ def _checkpoint_path():
     checkpoint = _PACKAGE_ROOT / _SAM3_CHECKPOINT_NAME
     if checkpoint.is_file():
         return os.fspath(checkpoint), "sam3.1"
-    raise FileNotFoundError("SAM3.1 bf16 safetensors checkpoint was not found by files_locator as sam3/sam3.1_multiplex_bf16.safetensors, sam3.1/sam3.1_multiplex_bf16.safetensors, or sam3.1_multiplex_bf16.safetensors, nor under preprocessing/sam3.")
+    from .assets import query_download_def
+    from shared.utils.download import process_files_def_if_needed
+
+    process_files_def_if_needed(query_download_def())
+    return fl.locate_file(os.path.join(_SAM3_FOLDER, _SAM3_CHECKPOINT_NAME)), "sam3.1"
 
 
 def _bpe_path():

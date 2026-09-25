@@ -2,86 +2,40 @@ import html
 import json
 import re
 
-
-def _render_inline_styles(text: str) -> str:
-    rendered = html.escape(text, quote=False)
-    rendered = re.sub(r"`([^`]+)`", lambda match: f"<code>{match.group(1)}</code>", rendered)
-    rendered = re.sub(r"\*\*([^*]+)\*\*", lambda match: f"<strong>{match.group(1)}</strong>", rendered)
-    return rendered
+import markdown as markdown_module
+from markdown.extensions import Extension
+from markdown.treeprocessors import Treeprocessor
 
 
-def _render_inline_markdown(text: str) -> str:
-    parts, offset = [], 0
-    for match in re.finditer(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)", text):
-        parts.append(_render_inline_styles(text[offset:match.start()]))
-        label = _render_inline_styles(match.group(1))
-        href = html.escape(match.group(2), quote=True)
-        parts.append(f"<a href='{href}' target='_blank' rel='noopener noreferrer'>{label}</a>")
-        offset = match.end()
-    parts.append(_render_inline_styles(text[offset:]))
-    return "".join(parts)
+class _SafeHelpLinks(Treeprocessor):
+    def run(self, root):
+        for element in root.iter():
+            if element.tag == "a":
+                href = element.get("href", "")
+                if not re.match(r"^https?://", href, re.IGNORECASE):
+                    element.attrib.pop("href", None)
+                else:
+                    element.set("target", "_blank")
+                    element.set("rel", "noopener noreferrer")
+            elif element.tag == "img":
+                if not re.match(r"^https?://", element.get("src", ""), re.IGNORECASE):
+                    element.attrib.pop("src", None)
+
+
+class _SafeHelpLinksExtension(Extension):
+    def extendMarkdown(self, md):
+        md.treeprocessors.register(_SafeHelpLinks(md), "safe_help_links", 1)
 
 
 def _render_markdown(markdown: str) -> str:
-    lines = str(markdown or "").strip().splitlines()
-    parts, paragraph, list_items, code_lines = [], [], [], []
-    in_code = False
-    code_lang = ""
-
-    def flush_paragraph():
-        if paragraph:
-            parts.append(f"<p>{_render_inline_markdown(' '.join(paragraph))}</p>")
-            paragraph.clear()
-
-    def flush_list():
-        if list_items:
-            parts.append("<ul>" + "".join(f"<li>{item}</li>" for item in list_items) + "</ul>")
-            list_items.clear()
-
-    def flush_code():
-        if code_lines:
-            lang_class = f" class='language-{html.escape(code_lang, quote=True)}'" if code_lang else ""
-            parts.append(f"<pre><code{lang_class}>{html.escape(chr(10).join(code_lines), quote=False)}</code></pre>")
-            code_lines.clear()
-
-    for raw_line in lines:
-        stripped = raw_line.strip()
-        if stripped.startswith("```"):
-            if in_code:
-                flush_code()
-                in_code = False
-                code_lang = ""
-            else:
-                flush_paragraph()
-                flush_list()
-                in_code = True
-                code_lang = re.sub(r"[^A-Za-z0-9_-]", "", stripped[3:].strip())
-            continue
-        if in_code:
-            code_lines.append(raw_line.rstrip())
-            continue
-        if not stripped:
-            flush_paragraph()
-            flush_list()
-            continue
-        heading = re.match(r"^(#{1,3})\s+(.+)$", stripped)
-        if heading:
-            flush_paragraph()
-            flush_list()
-            level = len(heading.group(1)) + 1
-            parts.append(f"<h{level}>{_render_inline_markdown(heading.group(2).strip())}</h{level}>")
-            continue
-        if stripped.startswith("- "):
-            flush_paragraph()
-            list_items.append(_render_inline_markdown(stripped[2:].strip()))
-            continue
-        flush_list()
-        paragraph.append(stripped)
-
-    flush_code()
-    flush_paragraph()
-    flush_list()
-    return "\n".join(parts)
+    source = html.escape(str(markdown or "").strip(), quote=False)
+    if not source:
+        return ""
+    return markdown_module.markdown(
+        source,
+        extensions=["tables", "fenced_code", "sane_lists", _SafeHelpLinksExtension()],
+        output_format="html5",
+    )
 
 
 def _normalize_infos(infos, model_name: str) -> tuple[str, str]:
@@ -95,7 +49,7 @@ def _json_script_payload(value: str) -> str:
 def render_info_trigger(popup_id: str, title: str, *, extra_class: str = "") -> str:
     title_attr = html.escape(title, quote=True)
     classes = "wangp-model-info-trigger" + (f" {html.escape(extra_class, quote=True)}" if extra_class else "")
-    return f"<button type='button' class='{classes}' title='{title_attr}' aria-label='{title_attr}' data-wangp-model-info-open='{html.escape(popup_id, quote=True)}'>&#9432;</button>"
+    return f"<button type='button' class='{classes}' title='{title_attr}' aria-label='{title_attr}' data-wangp-model-info-open='{html.escape(popup_id, quote=True)}'>i</button>"
 
 
 def render_info_popup(popup_id: str, title: str, markdown: str, *, lazy: bool = False) -> str:
@@ -135,15 +89,15 @@ def _render_info_trigger_and_popup(popup_id: str, title: str, markdown: str, *, 
 
 def render_model_description(description: str, infos=None, *, model_type: str = "", model_name: str = "Model", height: int = 40) -> str:
     if not infos:
-        return f"<div style='height:{int(height)}px'>{description}</div>"
+        return f"<div class='wangp-model-info-host' style='min-height:{int(height)}px'><div class='wangp-model-info-description'>{description}</div></div>"
     title, markdown = _normalize_infos(infos, model_name)
     if not markdown.strip():
-        return f"<div style='height:{int(height)}px'>{description}</div>"
+        return f"<div class='wangp-model-info-host' style='min-height:{int(height)}px'><div class='wangp-model-info-description'>{description}</div></div>"
     popup_id = "wangp-model-info-" + re.sub(r"[^A-Za-z0-9_-]", "-", str(model_type or model_name)).strip("-").lower()
     return (
         f"<div class='wangp-model-info-host' style='min-height:{int(height)}px'>"
-        f"<div class='wangp-model-info-description'>{description}</div>"
         f"{_render_info_trigger_and_popup(popup_id, title, markdown)}"
+        f"<div class='wangp-model-info-description'>{description}</div>"
         "</div>"
     )
 
@@ -168,11 +122,30 @@ def get_css() -> str:
 .wangp-model-info-host {
     position: relative;
     padding-right: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.wangp-model-info-host > .wangp-model-info-trigger {
+    position: static;
+    order: 1;
+    flex: 0 0 22px;
+    margin: 0;
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+    min-height: 22px;
+    border: 1px solid currentColor;
+    background: transparent;
+    color: #175a79;
+    font: 500 17px/1 Arial, sans-serif;
 }
 .header-markdown-group .html-container {
     padding: 0 !important;
 }
 .wangp-model-info-description {
+    flex: 1;
+    min-width: 0;
     line-height: 1.35;
 }
 .wangp-prompt-info-host {
@@ -344,24 +317,53 @@ def get_css() -> str:
     min-height: 0;
     max-height: none;
 }
+.wangp-model-info-content h1,
 .wangp-model-info-content h2,
 .wangp-model-info-content h3,
-.wangp-model-info-content h4 {
+.wangp-model-info-content h4,
+.wangp-model-info-content h5,
+.wangp-model-info-content h6 {
     margin: 12px 0 7px;
     color: var(--body-text-color, #103f59);
     font-weight: 800;
 }
+.wangp-model-info-content h1:first-child,
 .wangp-model-info-content h2:first-child,
 .wangp-model-info-content h3:first-child,
-.wangp-model-info-content h4:first-child {
+.wangp-model-info-content h4:first-child,
+.wangp-model-info-content h5:first-child,
+.wangp-model-info-content h6:first-child {
     margin-top: 0;
 }
 .wangp-model-info-content p,
-.wangp-model-info-content ul {
+.wangp-model-info-content ul,
+.wangp-model-info-content ol,
+.wangp-model-info-content blockquote,
+.wangp-model-info-content table {
     margin: 0 0 11px;
 }
-.wangp-model-info-content ul {
+.wangp-model-info-content ul,
+.wangp-model-info-content ol {
     padding-left: 20px;
+}
+.wangp-model-info-content blockquote {
+    padding-left: 13px;
+    border-left: 3px solid var(--border-color-primary, rgba(17, 84, 118, 0.24));
+}
+.wangp-model-info-content table {
+    width: 100%;
+    border-collapse: collapse;
+    overflow-wrap: anywhere;
+}
+.wangp-model-info-content th,
+.wangp-model-info-content td {
+    padding: 7px 9px;
+    border: 1px solid var(--border-color-primary, rgba(17, 84, 118, 0.18));
+    text-align: left;
+    vertical-align: top;
+}
+.wangp-model-info-content th {
+    background: var(--background-fill-secondary, rgba(16, 86, 121, 0.08));
 }
 .wangp-model-info-content code {
     padding: 1px 4px;
@@ -550,7 +552,8 @@ def get_javascript() -> str:
     };
     window.wangpModelInfo.open = function(button) {
         const popupId = button?.getAttribute("data-wangp-model-info-open");
-        const popup = popupId ? document.getElementById(popupId) : null;
+        const popup = (popupId ? document.getElementById(popupId) : null)
+            || button?.parentElement?.querySelector(".wangp-model-info-popup");
         if (!popup) return;
         const wasOpen = !popup.hidden;
         window.wangpModelInfo.hydrate(popup);
@@ -609,14 +612,14 @@ def get_javascript() -> str:
     };
     let wangpModelInfoDrag = null;
     document.addEventListener("click", (event) => {
-        const openButton = event.target.closest("[data-wangp-model-info-open]");
+        const openButton = event.target.closest("[data-wangp-model-info-open], .wangp-model-info-trigger");
         if (openButton) {
             event.preventDefault();
             event.stopPropagation();
             window.wangpModelInfo.open(openButton);
             return;
         }
-        const closeButton = event.target.closest("[data-wangp-model-info-close]");
+        const closeButton = event.target.closest("[data-wangp-model-info-close], .wangp-model-info-close");
         if (closeButton) {
             event.preventDefault();
             event.stopPropagation();
@@ -624,8 +627,8 @@ def get_javascript() -> str:
         }
     });
     document.addEventListener("pointerdown", (event) => {
-        const handle = event.target.closest("[data-wangp-model-info-drag], .wangp-local-file-picker-titlebar");
-        if (!handle || event.target.closest("[data-wangp-model-info-close], .wangp-local-file-picker-close")) return;
+        const handle = event.target.closest("[data-wangp-model-info-drag], .wangp-model-info-titlebar, .wangp-local-file-picker-titlebar");
+        if (!handle || event.target.closest("[data-wangp-model-info-close], .wangp-model-info-close, .wangp-local-file-picker-close")) return;
         const popup = handle.closest("[data-wangp-model-info-popup], .wangp-model-info-popup, .wangp-local-file-picker-popup");
         if (!popup) return;
         const rect = popup.getBoundingClientRect();

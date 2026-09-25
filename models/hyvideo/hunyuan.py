@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import generation_progress
 import os
 import time
 import random
@@ -447,6 +448,10 @@ class Inference(object):
             wav2vec._model_dtype = torch.float32
             wav2vec.requires_grad_(False)
         if avatar:
+            from models.hyvideo.data_kits.assets import query_download_def
+            from shared.utils.download import process_files_def_if_needed
+
+            process_files_def_if_needed(query_download_def())
             align_instance = AlignImage("cuda", det_path= fl.locate_file("det_align/detface.pt"))
             align_instance.facedet.model.to("cpu")
             adapt_model(model, "audio_adapter_blocks")
@@ -725,6 +730,7 @@ class HunyuanVideoSampler(Inference):
         return freqs_cos, freqs_sin
 
 
+    @generation_progress
     def generate(
         self,
         input_prompt,
@@ -753,6 +759,7 @@ class HunyuanVideoSampler(Inference):
         cfg_star_switch = False,
         fit_into_canvas = True,
         conditioning_latents_size = 0,
+        set_progress_status=None,
         **kwargs,
     ):
 

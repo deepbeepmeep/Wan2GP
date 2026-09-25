@@ -121,3 +121,7 @@ Quantized defaults such as quanto int8, FP8, GGUF, NVFP4, NF4, and Nunchaku redu
 WanGP loads models on demand and can switch without restarting. Use the model selector or toolbar search; the previous model is unloaded as needed to recover memory. Saved settings can retain model inputs and generation options.
 
 The model list can be refreshed after adding or editing a finetune. User-provided checkpoints belong in `finetunes/`; model plugins can contribute additional families and defaults. See [Finetunes](FINETUNES.md), [LoRAs](LORAS.md), and [Plugins](PLUGINS.md) for details.
+
+---
+
+> Applies to: Model family comparisons and selection. The model selector and API provide the current catalogue and capabilities; examples describe named variants and do not replace saved settings or template selections.

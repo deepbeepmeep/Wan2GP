@@ -27,24 +27,24 @@
         },
         "triton": {
             "v33": { 
-                "label": "Triton < 3.3", 
+                "label": "Triton 3.2.x (RTX 20XX only)",
                 "cmd": {
-                    "win": "-U \"triton-windows<3.3\"",
-                    "linux": "-U \"triton<3.3\""
+                    "win": "-U \"triton-windows>=3.2,<3.3\"",
+                    "linux": "-U \"triton>=3.2,<3.3\""
                 }
             },
             "v34": { 
-                "label": "Triton < 3.4", 
+                "label": "Triton 3.3.x (Torch 2.7, RTX 30XX+)",
                 "cmd": {
-                    "win": "-U \"triton-windows<3.4\"",
-                    "linux": "-U \"triton<3.4\""
+                    "win": "-U \"triton-windows>=3.3,<3.4\"",
+                    "linux": "-U \"triton>=3.3,<3.4\""
                 }
             },
-            "latest": { 
-                "label": "Triton Latest", 
+            "v37": {
+                "label": "Triton 3.6.x (Torch 2.10, RTX 30XX+)",
                 "cmd": {
-                    "win": "-U triton-windows",
-                    "linux": "-U triton"
+                    "win": "-U \"triton-windows>=3.6,<3.7\"",
+                    "linux": "-U \"triton>=3.6,<3.7\""
                 }
             }
         },
@@ -119,21 +119,28 @@
                     "linux": "https://github.com/deepbeepmeep/kernels/releases/download/Light2xv/lightx2v_kernel-0.0.2+torch2.10.0-cp311-abi3-linux_x86_64.whl"
                 }
             },
-            "gguf": { 
-                "label": "GGUF llama.cpp CUDA Kernels", 
+            "gguf": {
+                "label": "GGUF llama.cpp CUDA Kernels (PyTorch 2.10 / CUDA 13)",
                 "cmd": {
-                    "win": "https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.14+torch210cu130py311-cp311-cp311-win_amd64.whl",
-                    "linux": "https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.14+torch210cu130py311-cp311-cp311-linux_x86_64.whl"
+                    "win": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.23/llamacpp_gguf_cuda-1.0.23%2Btorch210cu130py311-cp311-cp311-win_amd64.whl",
+                    "linux": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.23/llamacpp_gguf_cuda-1.0.23%2Btorch210cu130py311-cp311-cp311-linux_x86_64.whl"
+                }
+            },
+            "gguf_cu128": {
+                "label": "GGUF llama.cpp CUDA Kernels (PyTorch 2.7.1 / CUDA 12.8)",
+                "cmd": {
+                    "win": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.23/llamacpp_gguf_cuda-1.0.23%2Btorch271cu128py310-cp310-cp310-win_amd64.whl",
+                    "linux": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.23/llamacpp_gguf_cuda-1.0.23%2Btorch271cu128py310-cp310-cp310-linux_x86_64.whl"
                 }
             }
         }
     },
     "gpu_profiles": {
         "GTX_10":      { "python": "3.10", "torch": "cu128", "triton": null,     "sage": null,       "sparge": null, "flash": null, "kernels": [] },
-        "RTX_20":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v1", "sparge": null, "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
-        "RTX_30":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
-        "RTX_40":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
-        "RTX_50":      { "python": "3.11", "torch": "cu130", "triton": "latest", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13","light2xv", "gguf"] },
+        "RTX_20":      { "python": "3.11", "torch": "cu130", "triton": "v33", "sage": "v1", "sparge": null, "flash": null, "kernels": ["nunchaku_cu13", "gguf"] },
+        "RTX_30":      { "python": "3.11", "torch": "cu130", "triton": "v37", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
+        "RTX_40":      { "python": "3.11", "torch": "cu130", "triton": "v37", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
+        "RTX_50":      { "python": "3.11", "torch": "cu130", "triton": "v37", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13","light2xv", "gguf"] },
         "AMD_GFX110X": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "sparge": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"} },
         "AMD_GFX1151": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "sparge": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "11.5.1"} },
         "AMD_GFX1201": { "python": "3.11", "torch": "rocm65", "triton": null, "sage": null, "sparge": null, "flash": null, "kernels": [], "env": {"HSA_OVERRIDE_GFX_VERSION": "12.0.1"} },

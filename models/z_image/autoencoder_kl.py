@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from shared.utils.phase_progress import vae_decoding_progress, set_phase_status
 from typing import Dict, Optional, Tuple, Union
 
 import torch
@@ -282,6 +283,7 @@ class AutoencoderKL(ModelMixin, AutoencoderMixin, ConfigMixin, FromOriginalModel
                 The latent representations of the encoded images. If `return_dict` is True, a
                 [`~models.autoencoder_kl.AutoencoderKLOutput`] is returned, otherwise a plain `tuple` is returned.
         """
+        set_phase_status("VAE Encoding")
         if self.use_slicing and x.shape[0] > 1:
             encoded_slices = [self._encode(x_slice) for x_slice in x.split(1)]
             h = torch.cat(encoded_slices)
@@ -327,16 +329,21 @@ class AutoencoderKL(ModelMixin, AutoencoderMixin, ConfigMixin, FromOriginalModel
                 returned.
 
         """
-        if self.use_slicing and z.shape[0] > 1:
-            decoded_slices = [self._decode(z_slice).sample for z_slice in z.split(1)]
-            decoded = torch.cat(decoded_slices)
-        else:
-            decoded = self._decode(z).sample
+        tiles = z.shape[0] if self.use_slicing else 1
+        if self.use_tiling and (z.shape[-1] > self.tile_latent_min_size or z.shape[-2] > self.tile_latent_min_size):
+            stride = int(self.tile_latent_min_size * (1 - self.tile_overlap_factor))
+            tiles *= len(range(0, z.shape[-2], stride)) * len(range(0, z.shape[-1], stride))
+        with vae_decoding_progress(tiles, self.decoder):
+            if self.use_slicing and z.shape[0] > 1:
+                decoded_slices = [self._decode(z_slice).sample for z_slice in z.split(1)]
+                decoded = torch.cat(decoded_slices)
+            else:
+                decoded = self._decode(z).sample
 
-        if not return_dict:
-            return (decoded,)
+            if not return_dict:
+                return (decoded,)
 
-        return DecoderOutput(sample=decoded)
+            return DecoderOutput(sample=decoded)
 
     def blend_v(self, a: torch.Tensor, b: torch.Tensor, blend_extent: int) -> torch.Tensor:
         blend_extent = min(a.shape[2], b.shape[2], blend_extent)

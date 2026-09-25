@@ -1,4 +1,3 @@
-import os
 import torch
 from shared.utils.hf import build_hf_url
 
@@ -168,35 +167,14 @@ class family_handler():
         return {"hunyuan":(20, "Hunyuan Video"), "hunyuan_1_5":(21, "Hunyuan Video 1.5")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-hunyuan",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Hunyuan Video t2v Loras (default: {os.path.join(lora_root, 'hunyuan')})"
-        )
-        parser.add_argument(
-            "--lora-dir-hunyuan-i2v",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Hunyuan Video i2v Loras (default: {os.path.join(lora_root, 'hunyuan_i2v')})"
-        )
-        parser.add_argument(
-            "--lora-dir-hunyuan-1-5",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Hunyuan Video 1.5 Loras (default: {os.path.join(lora_root, 'hunyuan_1_5')})"
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         if test_hunyuan_1_5(base_model_type):
-            return getattr(args, "lora_dir_hunyuan_1_5", None) or os.path.join(lora_root, "hunyuan_1_5")
+            return "hunyuan_1_5"
             
         elif "i2v" in base_model_type:
-            return getattr(args, "lora_dir_hunyuan_i2v", None) or os.path.join(lora_root, "hunyuan_i2v")
+            return "hunyuan_i2v"
 
-        return getattr(args, "lora_dir_hunyuan", None) or os.path.join(lora_root, "hunyuan")
+        return "hunyuan"
 
     @staticmethod
     def get_rgb_factors(base_model_type ):
@@ -225,14 +203,15 @@ class family_handler():
         else:   
             download_def= {  
             "repoId" : "DeepBeepMeep/HunyuanVideo", 
-            "sourceFolderList" :  [ "llava-llama-3-8b", "clip_vit_large_patch14",  "whisper-tiny" , "det_align", ""  ],
+            "sourceFolderList" :  [ "llava-llama-3-8b", "clip_vit_large_patch14",  "whisper-tiny" , ""  ],
             "fileList" :[ ["config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "preprocessor_config.json"],
                             ["text_config.json", "merges.txt", "model.safetensors", "preprocessor_config.json", "special_tokens_map.json", "tokenizer.json", "tokenizer_config.json", "vocab.json"],
                             ["config.json", "model.safetensors", "preprocessor_config.json", "special_tokens_map.json", "tokenizer_config.json"],
-                            ["detface.pt"],
                             [ "hunyuan_video_720_quanto_int8_map.json", "hunyuan_video_custom_VAE_fp32.safetensors", "hunyuan_video_custom_VAE_config.json", "hunyuan_video_VAE_fp32.safetensors", "hunyuan_video_VAE_config.json" , "hunyuan_video_720_quanto_int8_map.json"   ]  
                             ]
             }
+            from .data_kits.assets import query_download_def
+            download_def = [download_def, query_download_def()]
         return download_def 
 
     @staticmethod

@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import control_video_encoding
 # Copyright 2024-2026 The Alibaba Wan Team Authors. All rights reserved.
 # SCAIL-2 helpers for WanGP.
 
@@ -803,7 +804,8 @@ def prepare_scail2_conditioning(
 
     pose_pixels_ds = pose_pixels.permute(1, 0, 2, 3)
     pose_pixels_ds = F.interpolate(pose_pixels_ds, size=(max(1, height // 2), max(1, width // 2)), mode="bilinear", align_corners=False).permute(1, 0, 2, 3)
-    pose_latents = pipeline.vae.encode([pose_pixels_ds], VAE_tile_size)[0].unsqueeze(0)
+    with control_video_encoding():
+        pose_latents = pipeline.vae.encode([pose_pixels_ds], VAE_tile_size)[0].unsqueeze(0)
 
     driving_mask_video = prepare_scail2_mask(input_masks, pose_frames, height, width, pipeline.device, pipeline.VAE_dtype)
     driving_mask_video = F.interpolate(driving_mask_video.permute(1, 0, 2, 3), size=(max(1, height // 2), max(1, width // 2)), mode="bilinear", align_corners=False).permute(1, 0, 2, 3)

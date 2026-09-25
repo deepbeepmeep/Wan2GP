@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import vae_decoding_progress, set_phase_status
 import math
 from dataclasses import dataclass, field
 
@@ -312,6 +313,7 @@ class AutoencoderKLFlux2(nn.Module):
         return z * s.to(z) + m.to(z)
 
     def encode(self, x: Tensor) -> Tensor:
+        set_phase_status("VAE Encoding")
         moments = self.encoder(x)
         mean = torch.chunk(moments, 2, dim=1)[0]
 
@@ -336,5 +338,6 @@ class AutoencoderKLFlux2(nn.Module):
             
     def decode(self, z: Tensor) -> Tensor:
 
-        dec = self.decoder(z)
-        return dec
+        with vae_decoding_progress(1, self.decoder):
+            dec = self.decoder(z)
+            return dec

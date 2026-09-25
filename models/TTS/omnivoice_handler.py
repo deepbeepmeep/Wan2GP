@@ -1,18 +1,14 @@
-import json
 import os
 import re
 
 import torch
-import whisper
-from accelerate import init_empty_weights
-
-from mmgp import offload
 
 from shared.deepy.transcription import (
     WHISPER_MEDIUM_CONFIG_FILENAME,
     WHISPER_MEDIUM_FOLDER,
     WHISPER_MEDIUM_REPO,
     WHISPER_MEDIUM_WEIGHTS_FILENAME,
+    _load_whisper_medium,
 )
 from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
@@ -71,6 +67,7 @@ OMNIVOICE_LANGUAGE_CHOICES = [
 ]
 OMNIVOICE_DURATION_SLIDER = {
     "label": "Max duration (seconds, 0 = auto)",
+    "name": "Max Duration",
     "min": 0,
     "max": 600,
     "increment": 1,
@@ -204,20 +201,7 @@ def _detach_whisper_alignment_heads(whisper_model):
 
 
 def _load_omnivoice_whisper_medium():
-    model_dir = fl.locate_folder(WHISPER_MEDIUM_FOLDER)
-    config_path = os.path.join(model_dir, WHISPER_MEDIUM_CONFIG_FILENAME)
-    weights_path = fl.locate_file(os.path.join(WHISPER_MEDIUM_FOLDER, WHISPER_MEDIUM_WEIGHTS_FILENAME))
-    with open(config_path, "r", encoding="utf-8") as reader:
-        config = json.load(reader)
-    dims = whisper.model.ModelDimensions(**dict(config.get("dims", {}) or {}))
-    with init_empty_weights(include_buffers=False):
-        whisper_model = whisper.model.Whisper(dims)
-    whisper_model._buffers.pop("alignment_heads", None)
-    offload.load_model_data(whisper_model, weights_path, default_dtype=torch.float32, writable_tensors=False)
-    whisper_model.to(dtype=torch.float32)
-    alignment_heads = str(config.get("alignment_heads", "") or "").strip()
-    if len(alignment_heads) > 0:
-        whisper_model.set_alignment_heads(alignment_heads.encode("ascii"))
+    whisper_model = _load_whisper_medium(torch.device("cpu"))
     _detach_whisper_alignment_heads(whisper_model)
     whisper_model.eval().requires_grad_(False)
     whisper_model._model_dtype = torch.float32
@@ -307,17 +291,8 @@ class family_handler:
         return {"tts": (2200, "TTS")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-omnivoice",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains OmniVoice settings (default: {os.path.join(lora_root, 'omnivoice')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_omnivoice", None) or os.path.join(lora_root, "omnivoice")
+    def get_lora_dir(base_model_type):
+        return "omnivoice"
 
     @staticmethod
     def query_model_def(base_model_type, model_def):

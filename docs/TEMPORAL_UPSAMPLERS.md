@@ -57,8 +57,10 @@ Discovery evaluates the historical `enabled()` method first: `True` maps to
 `enabled` and `False` to `disabled`. Only handlers without `enabled()` use the
 optional `status` property. `unknown` means neither mechanism supplied a valid
 status. A non-empty `reason_disabled` is exposed only for disabled handlers.
-Deepy lists all registered temporal processors with this metadata and refuses
-dispatch when the status is disabled.
+The internal catalog includes all registered temporal processors with this
+metadata. Prime's post-processing toolbox omits disabled processors from
+callable discovery; internal/compatibility views may include them for
+diagnostics. A processor with disabled status cannot be dispatched.
 
 `SimpleScaleSuffixMixin` provides `is_upsampling` / `split_value` / `build_value`
 for the common `<method>*<multiplier>` value encoding, for example `rife*2` or
@@ -199,3 +201,7 @@ offload_registry.unregister_offloadobj("MyTemporalUpsampler", offloadobj)  # in 
 This lets WanGP track every extension offload object and release all extension
 resources centrally: the toolbar "Unload Models" tool and Configuration plugin
 release button call `offload_registry.release_all()`.
+
+---
+
+> Applies to: Developing temporal upsampler plugins: handlers, registration and shared configuration. Installed frame-interpolation options are available through WanGP's post-processing controls and API.

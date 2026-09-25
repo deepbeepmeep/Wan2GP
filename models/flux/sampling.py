@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import text_encoding_progress
 import math
 from typing import Callable, Literal
 
@@ -52,25 +53,26 @@ def get_noise(
 
 
 def prepare_prompt(t5: HFEmbedder, clip: HFEmbedder, bs: int, prompt: str | list[str], neg: bool = False, device: str = "cuda") -> dict[str, Tensor]:
-    if bs == 1 and not isinstance(prompt, str):
-        bs = len(prompt)
+    with text_encoding_progress(list(t5.hf_module.encoder.block) + list(clip.hf_module.text_model.encoder.layers), prompt_count=1 if isinstance(prompt, str) else len(prompt)):
+        if bs == 1 and not isinstance(prompt, str):
+            bs = len(prompt)
 
-    if isinstance(prompt, str):
-        prompt = [prompt]
-    txt = t5(prompt)
-    if txt.shape[0] == 1 and bs > 1:
-        txt = repeat(txt, "1 ... -> bs ...", bs=bs)
-    txt_ids = torch.zeros(bs, txt.shape[1], 3)
+        if isinstance(prompt, str):
+            prompt = [prompt]
+        txt = t5(prompt)
+        if txt.shape[0] == 1 and bs > 1:
+            txt = repeat(txt, "1 ... -> bs ...", bs=bs)
+        txt_ids = torch.zeros(bs, txt.shape[1], 3)
 
-    vec = clip(prompt)
-    if vec.shape[0] == 1 and bs > 1:
-        vec = repeat(vec, "1 ... -> bs ...", bs=bs)
+        vec = clip(prompt)
+        if vec.shape[0] == 1 and bs > 1:
+            vec = repeat(vec, "1 ... -> bs ...", bs=bs)
 
-    return {
-        "neg_txt" if neg else "txt": txt.to(device),
-        "neg_txt_ids" if neg else "txt_ids": txt_ids.to(device),
-        "neg_vec" if neg else "vec": vec.to(device),
-    }
+        return {
+            "neg_txt" if neg else "txt": txt.to(device),
+            "neg_txt_ids" if neg else "txt_ids": txt_ids.to(device),
+            "neg_vec" if neg else "vec": vec.to(device),
+        }
 
 
 def prepare_img(img: Tensor, patch_size: int = 2) -> dict[str, Tensor]:

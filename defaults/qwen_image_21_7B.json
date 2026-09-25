@@ -1,0 +1,21 @@
+{
+    "model": {
+        "name": "Qwen Image 2.1 TextImage2Image 7B",
+        "architecture": "qwen_image_21_7B",
+        "group": "qwen_image_2",
+        "description": "Create images from a description, or use up to 10 reference images to change a scene, combine subjects, or guide its appearance. Edit selected areas with a mask, extend an image with outpainting, and work at resolutions up to 4K. For cutouts or stickers, enable RGBA and request a transparent background; PNG output preserves its alpha channel. Text rendering is moderate: prefer short wording and proofread it; dense infographics are not recommended.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image_2/resolve/main/qwen_image_21_7B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Qwen_image_2/resolve/main/qwen_image_21_7B_int8_convrot.safetensors"
+        ]
+    },
+    "image_mode": 1,
+    "custom_settings": {"qwen21_kv_cache": "Disabled", "rgba": "Disabled"},
+    "prompt": "A red ceramic teapot on a wooden table, soft window light, detailed product photograph.",
+    "negative_prompt": " ",
+    "num_inference_steps": 40,
+    "guidance_scale": 4.0,
+    "batch_size": 1,
+    "remove_background_images_ref": 0,
+    "prompt_enhancer": ""
+}

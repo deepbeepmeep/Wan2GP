@@ -1915,11 +1915,14 @@ class ModelRunner:
         # Kitchen's CUTLASS workspace is per stream and must exist before capture.
         capture_stream = torch.cuda.Stream(device=model_device)
 
+        choose_short_batch_kernels = None
         try:
             import llamacpp_gguf_cuda
             prepare_runtime_buffers = getattr(llamacpp_gguf_cuda, "prepare_runtime_buffers", None)
             if prepare_runtime_buffers is not None:
                 prepare_runtime_buffers(model_device)
+            from shared.kernels import gguf_short_batch
+            choose_short_batch_kernels = lambda: gguf_short_batch.prepare(self.model, llamacpp_gguf_cuda)
         except ImportError:
             pass
 
@@ -1929,6 +1932,12 @@ class ModelRunner:
             capture_stream.wait_stream(torch.cuda.current_stream(model_device))
             with torch.cuda.stream(capture_stream):
                 outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # warmup
+            if choose_short_batch_kernels is not None:
+                # MMGP makes the weights resident during the first warm-up. Capture bakes the
+                # short-batch kernel of each 2-8 row linear, so choose them before any capture.
+                torch.cuda.synchronize()
+                choose_short_batch_kernels()
+                choose_short_batch_kernels = None
             with torch.cuda.graph(graph, self.graph_pool, stream=capture_stream):
                 outputs[:bs] = self.model(input_ids[:bs], positions[:bs])    # capture
             if self.graph_pool is None:

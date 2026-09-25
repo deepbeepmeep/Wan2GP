@@ -476,7 +476,7 @@ def _compact_model_metadata(records: list[dict[str, Any]]) -> list[dict[str, Any
 def _compact_deepy_model_metadata(record: dict[str, Any]) -> dict[str, Any]:
     compact = {key: copy.deepcopy(record[key]) for key in ("model_type", "name", "family", "family_label", "base_model_type", "finetune", "main_output", "outputs", "inputs") if record.get(key) not in (None, "", [], {})}
     compact["capabilities"] = [key for key, enabled in record.get("capabilities", {}).items() if enabled]
-    compact.update({key: copy.deepcopy(record[key]) for key in ("accelerated", "size", "specialities", "matched_specialities", "unmatched_specialities", "word_matches") if key in record})
+    compact.update({key: copy.deepcopy(record[key]) for key in ("accelerated", "size", "specialities", "matched_specialities", "unmatched_specialities", "word_matches", "substring_matches") if key in record})
     if record.get("sliding_window"):
         compact["capabilities"].append("sliding_window")
     compact["media_inputs"] = {kind: [key for key, enabled in values.items() if enabled] for kind, values in record.get("media_inputs", {}).items() if isinstance(values, dict) and any(values.values())}
@@ -591,6 +591,23 @@ def _strip_deepy_fixed_image_mode(session, settings: dict[str, Any], model_type:
     return stripped
 
 
+def _deepy_prompt_mode(session, model_type: str, mode: Any = None) -> str:
+    # A Deepy task is one generation: separate-request modes become one prompt,
+    # or one sliding window per line/paragraph on sliding-window video models.
+    if mode not in (None, "G", "PG"):
+        return mode
+    if (session.get_model_def(model_type) or {}).get("sliding_window", False):
+        return "W" if mode == "G" else "PW"
+    return "FG"
+
+
+def _deepy_task_settings(session, settings: dict[str, Any], model_type: str | None = None) -> dict[str, Any]:
+    stripped = _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(settings), model_type)
+    if "multi_prompts_gen_type" in stripped:
+        stripped["multi_prompts_gen_type"] = _deepy_prompt_mode(session, str(model_type or stripped.get("model_type", "") or ""), stripped["multi_prompts_gen_type"])
+    return stripped
+
+
 def _relevant_deepy_general_properties(tool_id: str, general_properties: dict[str, Any]) -> dict[str, Any]:
     if tool_id in _DEEPY_VIDEO_TOOL_IDS:
         keys = ("width", "height", "num_frames", "seed")
@@ -616,7 +633,7 @@ def _deepy_template_settings(session, tool_id: str, template: str) -> dict[str, 
     effective_settings = session.prepare_settings_for_export(template_settings)
     if not general_properties["use_template_properties"]:
         effective_settings = _apply_deepy_general_properties(tool_id, effective_settings, general_properties)
-    effective_settings = _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(effective_settings))
+    effective_settings = _deepy_task_settings(session, effective_settings)
     result = {
         "tool_id": tool_id,
         "template": resolved_template,
@@ -1355,7 +1372,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
         if view == "definition":
             result = _mcp_model_definition(session.get_model_def(model_type), property_name=property, string_limit=_DEEPY_MODEL_DEF_STRING_LIMIT if compact_model_tools else None)
         elif view == "defaults":
-            result = _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(session.get_exported_default_settings(model_type)), model_type)
+            result = _deepy_task_settings(session, session.get_exported_default_settings(model_type), model_type)
         else:
             result = _compact_deepy_model_schema(session.get_model_schema(model_type))
         if result is None:
@@ -1414,7 +1431,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
     def wangp_get_default_settings(model_type: str) -> dict[str, Any]:
         """Return pristine model defaults generated from WanGP and the model handler, filtered to relevant fields and without fixed metadata such as type or settings version. User-saved UI defaults are not included. Do not call this after a template query because template settings already include these model defaults."""
 
-        return _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(session.get_exported_default_settings(model_type)), model_type)
+        return _deepy_task_settings(session, session.get_exported_default_settings(model_type), model_type)
 
     @api_tool()
     def wangp_model_settings(model_type: str, setting_id: str | None = None) -> dict[str, Any]:
@@ -1691,7 +1708,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                 _validate_generation_media(session, settings, model_type.strip(), path)
                 properties = _deepy_general_properties(session)
                 outputs = (session.get_model_metadata(model_type.strip()) or {}).get("main_output", [])
-                defaults = {"seed": properties["seed"]}
+                defaults = {"seed": properties["seed"], "multi_prompts_gen_type": _deepy_prompt_mode(session, model_type.strip())}
                 if "image" in outputs or "video" in outputs:
                     defaults["resolution"] = f"{properties['width']}x{properties['height']}"
                     if "video" in outputs and settings.get("image_mode", 0) not in (1, 2):

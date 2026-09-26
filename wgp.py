@@ -4130,11 +4130,26 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
     if lm_decoder_engine_obtained in ("cg", "vllm") and int(profile) not in [ 1, 3]:
         _load_models_info(f"Unable to use LM Engine '{lm_decoder_engine_obtained}' as it requires a Memory Profile such as 1,3 or 3+ that loads entirely the Main Models in VRAM. Switching to Legacy LM Engine...")
         lm_decoder_engine_obtained = "legacy"
+    preview_mode = server_config.get("tiny_vae_preview", "disabled")
+    preview_name = preview_path = preview_decoder = None
+    if preview_mode not in ("disabled", "gpu"):
+        raise ValueError("tiny_vae_preview must be disabled or gpu")
+    if preview_mode == "gpu":
+        from shared.tinyvae.decoder import decoder_for, prepare_decoder, load_decoder
+        preview_name = decoder_for(base_model_type, model_def)
+        if preview_name is not None:
+            if not getattr(offload.offload, "supports_cotenant_wildcards", False):
+                raise RuntimeError("GPU TinyVAE previews require MMGP with wildcard cotenant support. Please update MMGP.")
+            preview_path = prepare_decoder(preview_name, gen=gen)
     loading_model_ids = {filename: "transformer" if i == 0 else f"transformer {i + 1}" for i, filename in enumerate(local_model_file_list)}
     if text_encoder_filename:
         loading_model_ids[text_encoder_filename] = "text_encoder"
+    if preview_path is not None:
+        loading_model_ids[preview_path] = "tiny_vae"
     with model_unload_guard(), offload.loading_context(loading_callback, loading_model_ids):
         torch.set_default_device('cpu')
+        if preview_path is not None:
+            preview_decoder = load_decoder(preview_name, preview_path)
         wan_model, pipe = model_type_handler.load_model(
                     local_model_file_list, runtime_model_type or model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
                     dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, text_encoder_filename = text_encoder_filename, profile=profile, lm_decoder_engine=lm_decoder_engine_obtained, **model_kwargs )
@@ -4144,6 +4159,9 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
             kwargs = pipe
             pipe = kwargs.pop("pipe")
         if "coTenantsMap" not in kwargs: kwargs["coTenantsMap"] = {}
+        if preview_decoder is not None:
+            pipe["tiny_vae"] = preview_decoder
+            kwargs["coTenantsMap"]["tiny_vae"] = "*"
         mmgp_profile = init_pipe(pipe, kwargs, profile)
         loras_transformer = kwargs.pop("loras", [])
         if "transformer" in pipe:
@@ -4159,6 +4177,7 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
             _load_models_info("Pytorch compilation is not supported for this Model")
         # kwargs["pinnedMemory"] = "text_encoder"
         offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, loading_callback=loading_callback, **kwargs)
+    offloadobj.tiny_vae = preview_decoder
     if len(args.gpu) > 0:
         torch.set_default_device(args.gpu)
     if track_as_main:
@@ -4252,7 +4271,7 @@ def get_gen_info(state):
         state["gen"] = cache
     return cache
 
-def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None):
+def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None, tiny_preview=None):
     gen = get_gen_info(state)
     gen["num_inference_steps"] = num_inference_steps
     generation_start_time = last_refresh_time = time.time()
@@ -4372,23 +4391,31 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
         last_refresh_time = current_time
         if latent is not None:
             payload = pipe.prepare_preview_payload(latent, preview_meta) if hasattr(pipe, "prepare_preview_payload") else latent
+            if tiny_preview is not None:
+                lat = payload["latents"] if isinstance(payload, dict) else payload
+                if lat is not None:
+                    if preview_meta is not None and preview_meta.get("first_latent_only", False):
+                        lat = lat[:, :1]
+                    tiny_preview.capture(lat, step_idx - 1, num_inference_steps, pass_no)
+                return
             if isinstance(payload, dict):
                 data = payload.copy()
                 lat = data.get("latents")
                 if torch.is_tensor(lat):
                     if preview_meta is not None and preview_meta.get("first_latent_only", False) and lat.ndim == 4:
                         lat = lat[:, :1]
-                    data["latents"] = lat.to("cpu", non_blocking=True)
+                    data["latents"] = lat.to("cpu")
                 payload = data
             elif torch.is_tensor(payload):
                 if preview_meta is not None and preview_meta.get("first_latent_only", False) and payload.ndim == 4:
                     payload = payload[:, :1]
-                payload = payload.to("cpu", non_blocking=True)
+                payload = payload.to("cpu")
             if payload is not None:
                 send_cmd("preview", payload)
             
         # gen["progress_args"] = progress_args
             
+    callback.tiny_vae = tiny_preview is not None
     return callback
 
 def pause_generation(state):
@@ -7987,7 +8014,11 @@ def generate_media(
             gen["progress_status"] = status
             progress_phase = "Generating Audio" if audio_only else "Encoding Prompt"
             gen["progress_phase"] = (progress_phase , -1 )
-            callback = build_callback(state, trans, send_cmd, status, num_inference_steps, preview_meta={"first_latent_only": not model_def.get("preview_all_images", False)} if is_image else None)
+            tiny_preview = None
+            if offloadobj.tiny_vae is not None:
+                from shared.tinyvae.session import PreviewSession
+                tiny_preview = PreviewSession(offloadobj.tiny_vae, send_cmd, gen, is_image)
+            callback = build_callback(state, trans, send_cmd, status, num_inference_steps, preview_meta={"first_latent_only": not model_def.get("preview_all_images", False)} if is_image else None, tiny_preview=tiny_preview)
             progress_args = [0, merge_status_context(status, progress_phase )]
             send_cmd("progress", progress_args)
 
@@ -8613,6 +8644,8 @@ def prepare_generate_media(state):
 
 
 def generate_preview(model_type, payload):
+    if isinstance(payload, Image.Image):
+        return payload
     import einops
     if payload is None:
         return None

@@ -1142,7 +1142,7 @@ class MiniMaxH3Pipeline:
                                                1.0 - VISUAL_COND_TIMESTEP if preserve_input_mask_values or keep_grouped_rows_fixed else None)
                     video_velocity = audio_velocity = video_denoised = audio_velocity_tail = None
                     if callback is not None:
-                        preview = video[0].detach().cpu() if not self.audio_only and (not offline_spectrum or spectrum.replaying) else None
+                        preview = video[0].detach() if not self.audio_only and (not offline_spectrum or spectrum.replaying) else None
                         callback(step, preview, False, denoising_extra=pass_extra, **({"pass_no": pass_no} if pass_no >= 0 else {}))
 
             try:

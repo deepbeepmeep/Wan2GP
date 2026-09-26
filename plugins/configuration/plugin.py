@@ -260,6 +260,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         choices=self.attention_modes_choices,
                         value=self.attention_mode, label="Attention Type", interactive=not self.args.lock_config
                     )
+                    self.tiny_vae_preview_choice = gr.Dropdown(
+                        choices=[("Disabled", "disabled"), ("GPU Mode", "gpu")],
+                        value=self.server_config.get("tiny_vae_preview", "disabled"), label="TinyVAE Preview (when available)",
+                        info="Replaces RGB previews for supported models. Downloads a small decoder on first use and uses additional VRAM.",
+                        interactive=not self.args.lock_config,
+                    )
                     self.preload_model_policy_choice = gr.CheckboxGroup(
                         [("Preload Model on App Launch","P"), ("Preload Model on Switch", "S"), ("Unload Model when Queue is Done", "U")],
                         value=self.preload_model_policy, label="Model Loading/Unloading Policy"
@@ -787,7 +793,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         inputs = [
             self.state,
             self.transformer_types_choices, self.model_hierarchy_type_choice, self.fit_canvas_choice,
-            self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice, self.multi_prompts_gen_type_choice, self.keep_intermediate_sliding_windows_choice,
+            self.attention_choice, self.tiny_vae_preview_choice, self.preload_model_policy_choice, self.clear_file_list_choice, self.multi_prompts_gen_type_choice, self.keep_intermediate_sliding_windows_choice,
             self.display_stats_choice, self.max_frames_multiplier_choice, self.keep_resolution_on_model_switch_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice, self.loras_root_choice, self.save_queue_if_crash_choice,
             self.UI_theme_choice, self.queue_color_scheme_choice, self.process_queues_when_browser_unfocused_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
@@ -882,7 +888,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         (
             transformer_types_choices, model_hierarchy_type_choice, fit_canvas_choice,
-            attention_choice, preload_model_policy_choice, clear_file_list_choice, multi_prompts_gen_type_choice, keep_intermediate_sliding_windows_choice,
+            attention_choice, tiny_vae_preview_choice, preload_model_policy_choice, clear_file_list_choice, multi_prompts_gen_type_choice, keep_intermediate_sliding_windows_choice,
             display_stats_choice, max_frames_multiplier_choice, keep_resolution_on_model_switch_choice, enable_4k_resolutions_choice, checkpoints_paths_choice, loras_root_choice, save_queue_if_crash_choice,
             UI_theme_choice, queue_color_scheme_choice, process_queues_when_browser_unfocused_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
@@ -997,6 +1003,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         new_server_config = copy.deepcopy(old_server_config)
         new_server_config.update({
             "attention_mode": attention_choice, "transformer_types": transformer_types_choices,
+            "tiny_vae_preview": tiny_vae_preview_choice,
             "text_encoder_quantization": text_encoder_quantization_choice, "save_path": save_path_choice,
             "image_save_path": image_save_path_choice, "audio_save_path": audio_save_path_choice,
             "lm_decoder_engine": lm_decoder_engine_choice,

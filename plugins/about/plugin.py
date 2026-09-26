@@ -65,6 +65,7 @@ class AboutPlugin(WAN2GPPlugin):
 
         gr.Markdown("<BR>Special thanks to the following people for their Contributions & Support:")
         gr.Markdown("- <B>Tophness</B> : Designed & developped the Queuing Framework, Edit Mode, Windows Installation scripts and WanGP PlugIns System")
+        gr.Markdown("- <B>GKArtist</B> : For the great Wan2GP Desktop installer (https://github.com/GKartist75/Wan2GP-Desktop-Tauri)")
         gr.Markdown("- <B>Gunther-Schulz</B> : for adding image Start Image / Image Refs storing in Video metadata")
         gr.Markdown("- <B>Cocktail Peanuts</B> : QA and simple installation via Pinokio.computer")
         gr.Markdown("- <B>huangyebiaoke</B> : for his support in porting WanGP to MPS")

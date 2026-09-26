@@ -6,8 +6,8 @@ from typing import Any
 PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY = "prompt_enhancer_speculative_decoding"
 PROMPT_ENHANCER_SPECULATIVE_DECODING_AUTO = 2
 PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT = PROMPT_ENHANCER_SPECULATIVE_DECODING_AUTO
-PROMPT_ENHANCER_SPECULATIVE_DECODING_IDS = frozenset((4, 5))
-PROMPT_ENHANCER_SPECULATIVE_DECODING_VRAM_GB = {4: 12, 5: 24}
+PROMPT_ENHANCER_SPECULATIVE_DECODING_IDS = frozenset((4, 5, 6))
+PROMPT_ENHANCER_SPECULATIVE_DECODING_VRAM_GB = {4: 12, 5: 24, 6: 8}
 PROMPT_ENHANCER_SPECULATIVE_DRAFT_COUNTS = (2, 3, 4)
 BLOCK_DRAFT_METHODS = ("dspark", "dflash2")
 SPECULATIVE_METHOD_LABELS = {"auto": "Auto", "disabled": "Disabled", "mtp": "MTP", "dspark": "DSpark", "dflash2": "DFlash2"}
@@ -114,7 +114,7 @@ def validate_prompt_enhancer_speculative_decoding(enhancer_enabled: Any, value: 
     if runtime_mode not in (0, PROMPT_ENHANCER_SPECULATIVE_DECODING_AUTO) and not prompt_enhancer_supports_speculative_decoding(enhancer_enabled):
         if int(enhancer_enabled or 0) == 3:
             raise ValueError("Speculative decoding is not available with Qwen3.5-4B.")
-        raise ValueError("Speculative decoding requires the Qwen3.5-9B or Qwen3.8-27B prompt enhancer.")
+        raise ValueError("Speculative decoding requires the Qwen3.5-9B, Qwen3.8-9B or Qwen3.8-27B prompt enhancer.")
     return enabled
 
 
@@ -142,7 +142,7 @@ def resolve_prompt_enhancer_speculative_decoding(enhancer_enabled: Any, value: A
             return speculative_decoding_config("mtp", 2), f"Speculative Decoding enabled automatically for Bonsai PTQ1: {detected_vram:.2f} GiB VRAM detected (more than 10 GiB; 2 MTP tokens)."
         return 0, f"Speculative Decoding disabled automatically for Bonsai PTQ1: {detected_vram:.2f} GiB VRAM detected (10 GiB or less)."
     detected_vram_gb = max(0, int(float(total_vram_gb) + 0.5))
-    model_label = "Qwen3.5-9B" if enhancer_no == 4 else "Qwen3.8-27B"
+    model_label = {4: "Qwen3.5-9B", 6: "Qwen3.8-9B"}.get(enhancer_no, "Qwen3.8-27B")
     if detected_vram_gb >= required_vram_gb:
         return 1, f"Speculative Decoding enabled automatically for {model_label}: {detected_vram_gb} GB VRAM detected (minimum {required_vram_gb} GB)."
     return 0, f"Speculative Decoding disabled automatically for {model_label}: {detected_vram_gb} GB VRAM detected (minimum {required_vram_gb} GB)."

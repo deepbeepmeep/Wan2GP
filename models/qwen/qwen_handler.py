@@ -1,6 +1,7 @@
 import torch
 import gradio as gr
 from shared.utils.hf import build_hf_url
+from .vae_variants import query_vae_files, vae_configs
 
 class family_handler():
     @staticmethod
@@ -23,6 +24,8 @@ class family_handler():
             build_hf_url("DeepBeepMeep/Qwen_image", text_encoder_folder, "Qwen2.5-VL-7B-Instruct_quanto_bf16_int8.safetensors"),
         ]
         extra_model_def["text_encoder_folder"] = text_encoder_folder
+        if base_model_type != "qwen_image_layered_20B":
+            extra_model_def["system_configs"] = vae_configs()
 
         extra_model_def["vae_upsampler"] = [1,2]
         extra_model_def["vae_upsamplers"] = {"qwen_vae_pid(1.5)": [1, 2]}
@@ -141,21 +144,16 @@ class family_handler():
         if base_model_type == "qwen_image_21_7B":
             from models.qwen21.qwen21_handler import family_handler as qwen21
             return qwen21.query_model_files(computeList, base_model_type, model_def)
-        vae_files = ["qwen_vae.safetensors", "qwen_vae_config.json"]
-        if base_model_type in ["qwen_image_layered_20B"]:
-            vae_files = ["qwen_image_layered_vae_bf16.safetensors"]
+        layered = base_model_type == "qwen_image_layered_20B"
         download_def = [{  
             "repoId" : "DeepBeepMeep/Qwen_image", 
-            "sourceFolderList" :  ["", "Qwen2.5-VL-7B-Instruct"],
-            "fileList" : [ vae_files, ["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json", "chat_template.json"]  ]
+            "sourceFolderList" :  ["Qwen2.5-VL-7B-Instruct"],
+            "fileList" : [["merges.txt", "tokenizer_config.json", "config.json", "vocab.json", "video_preprocessor_config.json", "preprocessor_config.json", "chat_template.json"]]
             }]
-
-        if base_model_type not in ["qwen_image_layered_20B"]:
-            download_def += [{
-                "repoId" : "DeepBeepMeep/Wan2.1", 
-                "sourceFolderList" :  [""  ],
-                "fileList" : [ ["Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"]  ]   
-            }]
+        if layered:
+            download_def.append({"repoId": "DeepBeepMeep/Qwen_image", "sourceFolderList": [""], "fileList": [["qwen_image_layered_vae_bf16.safetensors"]]})
+        else:
+            download_def += query_vae_files(model_def)
         return download_def
 
     @staticmethod

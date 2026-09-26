@@ -121,7 +121,10 @@ from shared.utils.wgp_config_migration import (
 
 QWEN35_PROMPT_ENHANCER_IDS = (3, 4)
 QWEN38_PROMPT_ENHANCER_ID = 5
+QWEN38_9B_PROMPT_ENHANCER_ID = 6
+QWEN_PROMPT_ENHANCER_IDS = (3, 4, 5, 6)
 QWEN35_QUANTIZATION_CHOICES = [("Quanto Int8 (recommended, better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")]
+QWEN38_9B_QUANTIZATION_CHOICES = [("GGUF Uncensored Q4_K_M (default, fits 8 GB of VRAM)", "gguf"), ("GGUF Uncensored Q8_0 (closest to full precision, needs about 12 GB of VRAM)", "gguf_q8")]
 QWEN38_QUANTIZATION_CHOICES = [("GGUF Uncensored Q4 (default, highest quality and VRAM/RAM use)", "gguf"), ("GGUF Uncensored IQ3_S (recommended Q3, middle quality and VRAM/RAM use)", "gguf_q3"), ("GGUF Uncensored Q2 (lowest quality and VRAM/RAM use)", "gguf_q2"), ("Bonsai 2 Abliterated PTQ1_0 (ternary, requires kernels 1.0.22+)", "gguf_ptq1")]
 
 
@@ -130,6 +133,8 @@ def prompt_enhancer_quantization_ui_state(enhancer_enabled, quantization):
     if enhancer_enabled == QWEN38_PROMPT_ENHANCER_ID:
         value = quantization if quantization in ("gguf", "gguf_q3", "gguf_q2", "gguf_ptq1") else "gguf"
         return QWEN38_QUANTIZATION_CHOICES, value, True
+    if enhancer_enabled == QWEN38_9B_PROMPT_ENHANCER_ID:
+        return QWEN38_9B_QUANTIZATION_CHOICES, quantization if quantization in ("gguf", "gguf_q8") else "gguf", True
     value = "gguf" if quantization in ("gguf", "gguf_q3", "gguf_q2", "gguf_ptq1") else "quanto_int8"
     return QWEN35_QUANTIZATION_CHOICES, value, enhancer_enabled in QWEN35_PROMPT_ENHANCER_IDS
 
@@ -490,7 +495,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     speculative_choices, speculative_method, token_choices, speculative_tokens = speculative_decoding_ui_state(
                         enhancer_enabled_value, enhancer_quantization_value, self.server_config.get("lm_decoder_engine", ""),
                         self.server_config.get(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT))
-                    with gr.Row(visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.enhancer_speculative_row:
+                    with gr.Row(visible=not deepy_remote_default and enhancer_enabled_value in QWEN_PROMPT_ENHANCER_IDS) as self.enhancer_speculative_row:
                         self.enhancer_speculative_decoding_choice = gr.Dropdown(
                             choices=speculative_choices, value=speculative_method, label="Speculative Decoding",
                             info="Speculative decoding uses extra VRAM. For Bonsai PTQ1, Auto disables MTP at 10 GiB VRAM or less and uses 2 draft tokens above 10 GiB.",
@@ -501,7 +506,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             info="Maximum draft tokens per prediction. More tokens can increase memory use and may be slower",
                             interactive=bool(token_choices) and not self.args.lock_config,
                         )
-                    with gr.Row(visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.enhancer_decoding_row:
+                    with gr.Row(visible=not deepy_remote_default and enhancer_enabled_value in QWEN_PROMPT_ENHANCER_IDS) as self.enhancer_decoding_row:
                         self.deepy_kv_cache_quantization_choice = gr.Dropdown(
                             choices=[("Auto", DEEPY_KV_CACHE_QUANTIZATION_AUTO), ("Disabled (BF16)", ""), ("INT8 (about half the KV-cache VRAM)", "int8")],
                             value=deepy_kv_cache_quantization_default,
@@ -513,13 +518,13 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             value=normalize_deepy_repetition_penalty(self.server_config.get(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT)),
                             label="Repetition Penalty",
                             info="Reduces repeated phrases in Prompt Enhancer and Deepy; about 10% slower.",
-                            visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID),
+                            visible=not deepy_remote_default and enhancer_enabled_value in QWEN_PROMPT_ENHANCER_IDS,
                         )
                     self.deepy_type_choice = gr.Dropdown(
                         choices=[("Disabled", DEEPY_TYPE_DISABLED), ("Deepy Zero", DEEPY_TYPE_ZERO), ("Deepy Prime", DEEPY_TYPE_PRIME)],
                         value=deepy_type_default,
                         label="Deepy",
-                        info="Deepy Zero uses local Qwen models for focused tasks such as generation, editing and transcription. Deepy Prime plans multi-step projects, manages workspace files and can use external tools; it requires Qwen3.8 VL 27B locally or an external LLM.",
+                        info="Deepy Zero uses local Qwen models for focused tasks such as generation, editing and transcription. Deepy Prime plans multi-step projects, manages workspace files and can use external tools; it requires a local Qwen3.8 VL model (9B or 27B) or an external LLM.",
                         elem_id="deepy_type_choice",
                     )
                     with gr.Row(visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default) as self.deepy_vram_row:
@@ -532,7 +537,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             value=normalize_deepy_vram_mode(self.server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD)),
                             label="Deepy VRAM Loading Mode (the longer Deepy stays in VRAM, the faster Deepy is)",
                         )
-                    with gr.Row(visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.deepy_context_row:
+                    with gr.Row(visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default and enhancer_enabled_value in QWEN_PROMPT_ENHANCER_IDS) as self.deepy_context_row:
                         with gr.Column(scale=2):
                             self.deepy_context_tokens_choice = gr.Slider(
                                 minimum=DEEPY_CONTEXT_TOKENS_MIN,
@@ -543,7 +548,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                                 label=format_deepy_context_tokens_label(self.server_config.get("enhancer_enabled", 0), deepy_context_tokens_default, deepy_kv_cache_quantization_default),
                                 info="More tokens retain more conversation and tool history, but use more VRAM.",
                             )
-                        with gr.Column(scale=1, visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.deepy_compaction_column:
+                        with gr.Column(scale=1, visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default and enhancer_enabled_value in QWEN_PROMPT_ENHANCER_IDS) as self.deepy_compaction_column:
                             self.deepy_compaction_type_choice = gr.Dropdown(
                                 choices=[("Discard Oldest Entries", DEEPY_COMPACTION_TYPE_DISCARD), (f"Summarize (recommended, {DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:,}+ tokens)", DEEPY_COMPACTION_TYPE_SUMMARIZE), (f"Summarize with Thinking ({DEEPY_COMPACTION_THINKING_MIN_TOKENS:,}+ tokens)", DEEPY_COMPACTION_CHOICE_THINKING)],
                                 value=current_compaction_choice,
@@ -689,7 +694,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         def enforce_deepy_prime_requirements(deepy_type_choice, deepy_context_tokens_choice, deepy_compaction_type_choice, enhancer_enabled_choice, deepy_kv_cache_quantization_choice, deepy_llm_engine_choice):
             if deepy_type_choice == DEEPY_TYPE_DISABLED:
                 return gr.update(), gr.update(), "", DEEPY_TYPE_DISABLED, gr.update()
-            qwen_local = not is_remote_engine(deepy_llm_engine_choice) and enhancer_enabled_choice in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)
+            qwen_local = not is_remote_engine(deepy_llm_engine_choice) and enhancer_enabled_choice in QWEN_PROMPT_ENHANCER_IDS
             runtime_config = dict(self.server_config)
             deepy_enabled_choice, deepy_type_choice = split_deepy_mode(deepy_type_choice)
             runtime_config["enhancer_enabled"] = enhancer_enabled_choice
@@ -711,7 +716,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.deepy_type_choice.input(fn=enforce_deepy_prime_requirements, inputs=[self.deepy_type_choice, self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.enhancer_enabled_choice, self.deepy_kv_cache_quantization_choice, self.deepy_llm_engine_choice], outputs=[self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.deepy_requirement_md, self.deepy_type_value, self.deepy_prime_recommendation], show_progress="hidden")
 
         def update_deepy_context_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice, deepy_type_choice, deepy_llm_engine_choice):
-            if deepy_type_choice == DEEPY_TYPE_DISABLED or is_remote_engine(deepy_llm_engine_choice) or enhancer_enabled_choice not in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID):
+            if deepy_type_choice == DEEPY_TYPE_DISABLED or is_remote_engine(deepy_llm_engine_choice) or enhancer_enabled_choice not in QWEN_PROMPT_ENHANCER_IDS:
                 return gr.update()
             return gr.update(label=format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice))
 
@@ -744,7 +749,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             deepy_remote = is_remote_engine(resolve_role_engine(runtime_config, "deepy"))
             active = {resolve_role_engine(runtime_config, "deepy")}
             quantization_choices, quantization_value, quantization_visible = prompt_enhancer_quantization_ui_state(local_enhancer_id(deepy_engine), enhancer_quantization)
-            qwen_local = not deepy_remote and local_enhancer_id(deepy_engine) in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)
+            qwen_local = not deepy_remote and local_enhancer_id(deepy_engine) in QWEN_PROMPT_ENHANCER_IDS
             deepy_enabled = deepy_type != DEEPY_TYPE_DISABLED
             return (
                 privacy_warning(runtime_config),
@@ -926,12 +931,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
         deepy_remote = is_remote_engine(deepy_llm_engine_choice)
         if not deepy_remote:
             enhancer_enabled_choice = local_enhancer_id(deepy_llm_engine_choice, enhancer_enabled_choice)
-        qwen_local = not deepy_remote and enhancer_enabled_choice in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)
+        qwen_local = not deepy_remote and enhancer_enabled_choice in QWEN_PROMPT_ENHANCER_IDS
 
         if not deepy_remote and int(enhancer_enabled_choice) == QWEN38_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q3", "gguf_q2", "gguf_ptq1"):
             error = "Qwen3.8-27B is available only as GGUF. Select GGUF Q2, Q3, Q4, or Bonsai PTQ1_0 as the Qwen LLM quantization."
             gr.Info(f"Configuration was not saved: {error}")
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {error}</div>", *[gr.update()]*9
+        if not deepy_remote and int(enhancer_enabled_choice) == QWEN38_9B_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q8"):
+            enhancer_quantization_choice = "gguf"
         if not deepy_remote and int(enhancer_enabled_choice) in QWEN35_PROMPT_ENHANCER_IDS and enhancer_quantization_choice not in ("quanto_int8", "gguf"):
             error = "Qwen3.5 is available as Quanto Int8 or GGUF Q4."
             gr.Info(f"Configuration was not saved: {error}")
@@ -949,8 +956,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             if deepy_enabled_choice:
                 if not deepy_remote and not qwen_local:
                     raise ValueError("Florence 2 is not compatible with Deepy. Select a Qwen model or disable Deepy before saving.")
-                if not deepy_remote and deepy_type_choice == DEEPY_TYPE_PRIME and enhancer_enabled_choice != QWEN38_PROMPT_ENHANCER_ID:
-                    raise ValueError("Deepy Prime requires the Qwen3.8 VL 27B model.")
+                if not deepy_remote and deepy_type_choice == DEEPY_TYPE_PRIME and enhancer_enabled_choice not in (QWEN38_PROMPT_ENHANCER_ID, QWEN38_9B_PROMPT_ENHANCER_ID):
+                    raise ValueError("Deepy Prime requires a Qwen3.8 VL model (9B or 27B).")
                 if qwen_local:
                     deepy_compaction_thinking_choice = deepy_compaction_type_choice == DEEPY_COMPACTION_CHOICE_THINKING
                     deepy_compaction_type_choice = normalize_deepy_compaction_type(deepy_compaction_type_choice)

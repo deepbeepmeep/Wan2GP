@@ -4,12 +4,10 @@ import gradio as gr
 import torch
 
 from shared.utils.hf import build_hf_url
+from models.qwen.vae_variants import query_vae_files, vae_configs
 
 
 _PROJECT_REPO = "DeepBeepMeep/krea-2"
-_QWEN_IMAGE_REPO = "DeepBeepMeep/Qwen_image"
-_WAN_REPO = "DeepBeepMeep/Wan2.1"
-_VAE_UPSAMPLER_FILENAME = "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"
 _TEXT_ENCODER_FOLDER = "Qwen3-VL-4B-Instruct"
 _TEXT_ENCODER_BF16_FILENAME = "Qwen3-VL-4B-Instruct_text_bf16.safetensors"
 _TEXT_ENCODER_INT8_FILENAME = "Qwen3-VL-4B-Instruct_quanto_bf16_int8.safetensors"
@@ -34,6 +32,7 @@ class family_handler:
         result = {
             **({"accelerated": "native"} if base_model_type in (_TURBO_MODEL_TYPE, _TURBO_EDIT_MODEL_TYPE) else {}),
             "image_outputs": True,
+            "system_configs": vae_configs(),
             "guidance_max_phases": 1 if base_model_type in (_RAW_MODEL_TYPE, _RAW_EDIT_MODEL_TYPE) else 0,
             "NAG": True,
             "NAG_scale": {"min": 1.0, "max": 1.5, "step": 0.01},
@@ -148,17 +147,7 @@ class family_handler:
                     ["config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "preprocessor_config.json"],
                 ],
             },
-            {
-                "repoId": _QWEN_IMAGE_REPO,
-                "sourceFolderList": [""],
-                "fileList": [["qwen_vae.safetensors", "qwen_vae_config.json"]],
-            },
-            {
-                "repoId": _WAN_REPO,
-                "sourceFolderList": [""],
-                "fileList": [[_VAE_UPSAMPLER_FILENAME]],
-            },
-        ]
+        ] + query_vae_files(model_def)
 
     @staticmethod
     def load_model(

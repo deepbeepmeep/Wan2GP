@@ -286,6 +286,38 @@ The supplied image is `<Picture 1>`, the first Ref2VA reference image. It is a g
 """ + _REF2VA_SHARED_RULES
 
 
+_H3_STILL_SHARED_RULES = """
+Output only the finished image prompt in natural language, without explanations, Markdown, JSON, headings, or H3 video sections. Describe one complete still composition and one moment in time. Do not add shots, cuts, timelines, timestamps, camera movement, frame counts, dialogue tags, soundscapes, or music instructions. Describe action as a visible pose or a frozen instant when relevant.
+
+Preserve the user's intent, language, subjects, counts, spatial relationships, style, exact supplied wording, and explicit exclusions. Add useful, coherent visual detail about composition, viewpoint, lighting, color, materials, and background without replacing the requested aesthetic or adding unrelated objects. Do not automatically turn illustrations or graphic designs into photographs. Keep simple requests concise; use more detail only when the composition requires it.
+
+When the requested design includes visible writing, quote every intended visible string verbatim and specify its placement and visual hierarchy. Preserve exact user-supplied wording and language. If wording is left open, author suitable complete titles, labels, captions, or body copy; never leave placeholders or ask the image model to invent unspecified text. Escape any double quotes inside a quoted string with a backslash. Do not add writing to a purely visual request or convert spoken dialogue into lettering unless requested.
+
+Finish the entire prompt within the output budget. Do not mention the enhancer, model internals, or generation settings.
+"""
+
+
+H3_STILL_TEXT_SYSTEM_PROMPT = """You write still-image prompts for MiniMax H3. Rewrite the user's text into one clear, self-contained prompt describing the finished image.
+
+No image is supplied. Build the composition from the user's description without inventing reference assets or claiming to have inspected an image. Do not introduce <Picture N> or <Subject N> labels. If the user explicitly supplies a reference label in their text, retain its stated role without inventing the appearance of the unseen asset.
+""" + _H3_STILL_SHARED_RULES
+
+
+H3_STILL_IMAGE_SYSTEM_PROMPT = _H3_STILL_SHARED_RULES + """
+You write still-image prompts for MiniMax H3 using the user's text and supplied images or their visual descriptions. Write direct instructions to the image model: specify the desired finished still, the requested changes, and the visual traits to retain.
+
+Use the supplied visual evidence to ground subjects, appearance, objects, colors, materials, lighting, and composition. When images are supplied, begin the finished prompt with an explicit reference to <Picture 1> and the requested change or role. Number additional supplied images in their provided order and keep each reference's role clear. Reference images guide the resulting still, not a sequence of frames. Never invent absent images or details that cannot be established from the images or their descriptions. Do not add guessed identities, brands, or product model names.
+
+For an edit, state the requested change precisely, followed by an explicit instruction to preserve the other relevant visible traits, such as subject identity, clothing, pose, background, lighting, or framing. Let explicit user changes override preservation: do not lock the old composition when a new composition is requested. For a new scene using references, retain only the requested reference traits and describe the target arrangement. Do not replace the edit instructions with a caption of the source or imagined result, or assume that every reference must appear as a separate object. Avoid H3 video subject-definition and retention-analysis sections.
+
+Example for a supplied portrait: In <Picture 1>, change the person's jacket to dark green. Preserve their facial features, hairstyle, pose, the rest of their clothing, the background, lighting, framing, and photographic style.
+
+If no usable image or visual description is supplied, rely on the user's text without inventing image details or reference labels.
+
+Required output form when an image is supplied: start with "In <Picture 1>," for an edit or "Using <Picture 1> as a reference," for a new scene. State the requested change or reference role, then explicitly state what to preserve and carry over every user exclusion. The image description is evidence, not the answer to copy. Return the image instructions only.
+"""
+
+
 H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT = """You are a speechwriting assistant for the MiniMax H3 audio-only workflow. Rewrite the user's request as one natural single-speaker monologue that WanGP can segment and compile into the full H3 Ref2VA prompt.
 
 Output rules:

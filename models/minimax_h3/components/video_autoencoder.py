@@ -990,19 +990,25 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         temporal_ratio = self.temporal_compression_ratio
         chunk_num_frames = tokens_chunk_size * temporal_ratio
 
-        num_tokens = z.shape[2] + token_drop
-        pad_tokens = (-num_tokens) % tokens_chunk_size
-        num_chunks = (num_tokens + pad_tokens) // tokens_chunk_size - int(token_drop > 0)
-        if pad_tokens > 0:
-            z = torch.cat([z, z[:, :, -1:].repeat(1, 1, pad_tokens, 1, 1)], dim=2)
+        if z.shape[2] == 1:
+            # Fizgig H3 Still's decode recipe: five identical latents, then keep pixel frame 3.
+            # https://github.com/shootthesound/ComfyUI-Fizgig-H3-Still (MIT)
+            z = z.repeat(1, 1, tokens_chunk_size, 1, 1)
+            num_chunks, output_frames = 0, 1
+        else:
+            num_tokens = z.shape[2] + token_drop
+            pad_tokens = (-num_tokens) % tokens_chunk_size
+            num_chunks = (num_tokens + pad_tokens) // tokens_chunk_size - int(token_drop > 0)
+            if pad_tokens > 0:
+                z = torch.cat([z, z[:, :, -1:].repeat(1, 1, pad_tokens, 1, 1)], dim=2)
 
-        intra_tail = self.config.clip_length % temporal_ratio
-        num_tokens_before_pad = z.shape[2] - pad_tokens
-        pad_frames = sum(
-            intra_tail if intra_tail and (num_tokens_before_pad + k) % tokens_chunk_size == 0 else temporal_ratio
-            for k in range(pad_tokens)
-        )
-        output_frames = num_chunks * (chunk_num_frames - self.frame_pre_padding) + self.frame_overlap - pad_frames
+            intra_tail = self.config.clip_length % temporal_ratio
+            num_tokens_before_pad = z.shape[2] - pad_tokens
+            pad_frames = sum(
+                intra_tail if intra_tail and (num_tokens_before_pad + k) % tokens_chunk_size == 0 else temporal_ratio
+                for k in range(pad_tokens)
+            )
+            output_frames = num_chunks * (chunk_num_frames - self.frame_pre_padding) + self.frame_overlap - pad_frames
         spatial_tiles = 1
         if self.use_tiling:
             height, width = z.shape[-2] * self.spatial_compression_ratio, z.shape[-1] * self.spatial_compression_ratio

@@ -1,9 +1,9 @@
 """Shared adapter format helpers for LoRA and linear LoKr checkpoints.
 
-``convert_lora_keys`` changes names only; tensor values and architecture layouts
-are unchanged. ``compose_linear_lokr_factors`` is an opt-in conversion for
-decomposed linear LoKr factors. Underscore-separated module names are resolved
-against the actual architecture instead of splitting names such as ``to_out``.
+``convert_lora_keys`` changes names only by default. Linear model loaders can
+opt into composing decomposed LoKr factors with ``compose_lokr=True``.
+Underscore-separated module names are resolved against the actual architecture
+instead of splitting names such as ``to_out``.
 """
 
 import torch
@@ -19,6 +19,8 @@ def compose_linear_lokr_factors(state_dict):
     tensors are untouched. This deliberately does not handle convolutional CP
     factors, which need a different tensor transformation.
     """
+    if any(key.endswith((".lokr_t1", ".lokr_t2")) for key in state_dict):
+        raise ValueError("Convolutional CP LoKr factors are not supported by linear LoKr conversion")
     state_dict = dict(state_dict)
     groups = {}
     for key in state_dict:
@@ -71,9 +73,12 @@ def compose_linear_lokr_factors(state_dict):
     return state_dict
 
 
-def convert_lora_keys(state_dict, module_names, target="wangp", fused_split_map=None, split_linear_modules_map=None):
+def convert_lora_keys(state_dict, module_names, target="wangp", fused_split_map=None, split_linear_modules_map=None, *, compose_lokr=False):
+    """Normalize adapter names, optionally composing linear LoKr factors for loading."""
     if target not in ("wangp", "diffusers", "kohya"):
         raise ValueError(f"Unknown LoRA naming format: {target}")
+    if compose_lokr:
+        state_dict = compose_linear_lokr_factors(state_dict)
     module_names = set(module_names)
     for name in tuple(module_names):
         for fused, spec in (fused_split_map or {}).items():
@@ -94,6 +99,7 @@ def convert_lora_keys(state_dict, module_names, target="wangp", fused_split_map=
         encoded[key] = name
     result = {}
     suffixes = (".lora_A.weight", ".lora_B.weight", ".lora_down.weight", ".lora_up.weight", ".alpha", ".dora_scale", ".lokr_w1", ".lokr_w2")
+    suffixes += tuple("." + suffix for suffix in _DECOMPOSED_LOKR)
     for key, value in state_dict.items():
         normalized = key.replace(".lora.", ".lora_").replace(".default.weight", ".weight")
         suffix = next((suffix for suffix in suffixes if normalized.endswith(suffix)), None)

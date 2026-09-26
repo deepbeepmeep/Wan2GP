@@ -63,7 +63,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-## 24th of September 2026: WanGP v13.1314 — It's Your Lucky Day^?!
+## 24th of September 2026: WanGP v13.1315 — It's Your Lucky Day^?!
 
 - **Qwen Image 2.1**: A new Qwen Image model with out-of-the-box editing capabilities and strong text rendering. 
 
@@ -77,7 +77,7 @@ The base model works without an accelerator; optional LoRA profiles below offer 
 
 - **Minimax H3 INT8 ConvRot VAE**: Twice as fast. Now downloaded automatically and used by default when INT8 is selected in your transformer configuration. 
 
-- **Deepy Prime for the Masses**: Thanks to the new *Bonsai 2 Abliterated PTQ1_0 checkpoint*, *Deepy Prime* and its advanced *Prompt Enhancer* can now run with **10 GB of VRAM, or possibly less**. You will need *GGUF CUDA kernels 1.0.24*. Please see the installation guide.  
+- **Deepy Prime for the Masses**: Thanks to the new *Bonsai 2 Abliterated PTQ1_0 checkpoint*, *Deepy Prime* and its advanced *Prompt Enhancer* can now run with **10 GB of VRAM, or possibly less**. You will need *GGUF CUDA kernels 1.0.25*. Please see the installation guide.  
 
 - **UI Optimizations**: The UI should be even faster, especially the Image/Video Gallery.
 

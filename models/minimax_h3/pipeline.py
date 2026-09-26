@@ -61,6 +61,8 @@ def _return_none_on_interrupt(method):
 
 
 def video_latent_frames(frame_count):
+    if frame_count == 1:
+        return 1
     frame_count = normalize_frame_count(max(5, int(frame_count)), 5, 17, 5)
     return 2 + ((frame_count - 5) // 17) * 5
 
@@ -659,7 +661,7 @@ class MiniMaxH3Pipeline:
                  sample_solver="euler", attention_sparsity=1.0,
                  guide_phases=1, switch_threshold=H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, loras_slists=None, loras_selected=None, set_progress_status=None,
                  starting_sigma=None, preserve_input_mask_values=False, refinement_mode=False,
-                 custom_settings=None, duration_seconds=None, verbose_level=0, dialogue_segment=False, **kwargs):
+                 custom_settings=None, duration_seconds=None, verbose_level=0, dialogue_segment=False, image_mode=0, **kwargs):
         if self.audio_only and H3_DIALOGUE_GENERATION and not dialogue_segment and is_dialogue_prompt(input_prompt):
             self._early_stop = False
             return generate_dialogue(
@@ -671,7 +673,9 @@ class MiniMaxH3Pipeline:
                 set_progress_status=set_progress_status, verbose_level=verbose_level)
         self._use_shared_components()
         grouped_masked_denoising = h3_grouped_masking_enabled(custom_settings)
-        fps = float(fps)
+        image_outputs = image_mode > 0 and not self.audio_only
+        # Image saving uses 1 FPS, but H3's joint latents retain their native 24 FPS timing.
+        fps = 24.0 if image_outputs else float(fps)
         if fps <= 0:
             raise ValueError("MiniMax H3 requires a positive output frame rate")
         self._set_interrupt_state()
@@ -696,8 +700,10 @@ class MiniMaxH3Pipeline:
             frame_num = round(float(duration_seconds) * fps)
             height = width = 32
             guide_phases = 1
-        frame_num = normalize_frame_count(int(frame_num), 5, 17, 5)
-        audio_from_control_video = not self.reference_mode and "2" in (audio_prompt_type or "")
+        frame_num = 1 if image_outputs else normalize_frame_count(int(frame_num), 5, 17, 5)
+        if image_outputs:
+            prefix_frames_count = 0
+        audio_from_control_video = not image_outputs and not self.reference_mode and "2" in (audio_prompt_type or "")
         prefix_frames_count, overlap_error = normalize_overlap(int(prefix_frames_count or 0), 17, 1)
         if overlap_error:
             raise ValueError(overlap_error)
@@ -712,7 +718,7 @@ class MiniMaxH3Pipeline:
         history_frames = continuation[:, -continuation_count:-1] if continuation_count > 1 else None
         history_count = 0 if history_frames is None else history_frames.shape[1]
         target_frames = frame_num - history_count
-        aligned_target_frames = normalize_frame_count(target_frames, 5, 17, 5)
+        aligned_target_frames = 1 if image_outputs else normalize_frame_count(target_frames, 5, 17, 5)
         if target_frames <= 0:
             raise ValueError("Sliding-window overlap leaves no frames for H3 to generate")
         refinement_mode = bool(refinement_mode)
@@ -1407,7 +1413,7 @@ class MiniMaxH3Pipeline:
                               freeze_audio=True, stage_solver=H3_PHASE_2_SAMPLE_SOLVER, use_cache=False)
             phase_2_presentation = phase_2_visual_latents = phase_2_reference_presentation = phase_2_reference_latents = phase_2_refs = None
 
-        audio_refinement = "none" if self.audio_only else (custom_settings or {}).get(H3_AUDIO_REFINEMENT_SETTING, "none")
+        audio_refinement = "none" if self.audio_only or image_outputs else (custom_settings or {}).get(H3_AUDIO_REFINEMENT_SETTING, "none")
         if pdd or not self.reference_mode and any(flag in (audio_prompt_type or "") for flag in "AK"):
             audio_refinement = "none"
         if audio_refinement != "none":
@@ -1446,7 +1452,7 @@ class MiniMaxH3Pipeline:
                 offload.set_step_no_for_lora(self.transformer, lora_step)
 
         if set_progress_status is not None:
-            set_progress_status("Decoding H3 Stereo Audio" if self.audio_only or decoded_video is not None or frozen_target_video is not None else "VAE Decoding of Video and Audio")
+            set_progress_status("VAE Decoding of Image" if image_outputs else "Decoding H3 Stereo Audio" if self.audio_only or decoded_video is not None or frozen_target_video is not None else "VAE Decoding of Video and Audio")
         self._check_abort()
         self._use_shared_components()
         context = payload = presentation = visual_latents = audio_latents = refs = keyframes = audio_keyframes = source_latents = source_noise = source_buffer = editable_mask = None
@@ -1458,6 +1464,10 @@ class MiniMaxH3Pipeline:
             else:
                 decoded_video = frozen_target_video[:, :target_frames].cpu()
         video = None
+        if image_outputs:
+            audio = None
+            self._check_abort()
+            return {"x": decoded_video}
         if set_progress_status is not None:
             set_progress_status("Decoding H3 Stereo Audio")
         decoded_audio = self.audio_vae.decode(audio)[0]

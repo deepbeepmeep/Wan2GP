@@ -8,6 +8,7 @@ from einops import rearrange
 from torch import Tensor
 
 from shared.attention import pay_attention
+from shared.utils.lora_mapping import convert_lora_keys
 
 
 def rope(pos: Tensor, dim: int, theta: float = 1e4, ntk: float = 1.0) -> Tensor:
@@ -441,7 +442,7 @@ class SingleStreamBlock(nn.Module):
 
 class SingleStreamDiT(nn.Module):
     def preprocess_loras(self, model_type, sd):
-        """Map Diffusers/Kohya names and AI Toolkit DoRA magnitudes to MMGP."""
+        """Map adapter names, DoRA magnitudes and linear LoKr factors to MMGP."""
         replacements = (
             ("final_layer", "last"),
             ("img_in", "first"),
@@ -507,7 +508,7 @@ class SingleStreamDiT(nn.Module):
                 key = key.removesuffix(".magnitude") + ".dora_scale"
                 value = value.reshape(-1, 1)
             mapped[key] = value
-        return mapped
+        return convert_lora_keys(mapped, dict(self.named_modules()), compose_lokr=True)
 
     def __init__(self, config: SingleMMDiTConfig):
         super().__init__()

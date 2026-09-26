@@ -18,6 +18,7 @@ from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
 from .viggle import VIGGLE_ARCHITECTURE, VIGGLE_ASSET_FOLDER, VIGGLE_INFOS, VIGGLE_PROMPT_FILE, VIGGLE_REPO_ID
 from .prompt_enhancer import (FL2VA_DEEPY_PROMPT_INFOS, FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
                               H3_AUDIO_DEEPY_PROMPT_INFOS, H3_AUDIO_DIALOGUE_SYSTEM_PROMPT, H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
+                              H3_STILL_IMAGE_SYSTEM_PROMPT, H3_STILL_TEXT_SYSTEM_PROMPT,
                               REF2VA_DEEPY_PROMPT_INFOS, REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
 
 
@@ -395,7 +396,7 @@ class family_handler:
                 "deepy_prompt_infos": "Express the replacement through the Edited Reference Frame. Viggle uses a fixed built-in prompt; generation text is ignored.",
                 "text_encoder_URLs": [], "text_encoder_folder": None, "system_configs": {},
                 "prompt_enhancer_def": {"selection": [], "labels": {}, "default": ""},
-                "image_outputs": False, "sliding_window": True, "video_continuation": False,
+                "image_outputs": False, "v2i_switch_supported": False, "sliding_window": True, "video_continuation": False,
                 "sliding_window_size_locked": True,
                 "sliding_window_defaults": {**result["sliding_window_defaults"], "window_max": 124, "window_default": 124, "overlap_default": 18},
                 "extract_guide_from_window_start": True, "control_video_trim_disabled": False, "control_video_trim": False,
@@ -430,6 +431,8 @@ class family_handler:
             **({"accelerated": "native"} if pdd or vdn else {}),
             **({"specialities": [{"name": "character consistency", "aliases": ["identity preservation"]}, {"name": "motion transfer", "description": "Transfer motion or camera from reference videos to image-reference characters."}]} if reference_mode else {}),
             "fps": 24,
+            "v2i_switch_supported": True,
+            "image_batch_size_max": 1,
             "prompt_enhancer_video_duration": True,
             "frames_minimum": 107,
             "frames_steps": 17,
@@ -502,10 +505,12 @@ class family_handler:
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,
             "prompt_enhancer_button_label": "Write",
             "prompt_enhancer_def": {
-                "selection": ["T", "TI"],
+                "selection": ["T", "TI", "T1", "TI1"],
                 "labels": {
                     "TV": "An H3 Reference Prompt from Text" if reference_mode else "An H3 Prompt from Text",
                     "TIV": "An H3 Reference Prompt from Text + {image_inputs}" if reference_mode else "An H3 Prompt from Text + {image_inputs}",
+                    "T1P": "An H3 Image Prompt from Text",
+                    "TI1P": "An H3 Image Prompt from Text + {image_inputs}",
                 },
                 "default": "",
             },
@@ -513,6 +518,10 @@ class family_handler:
             "video_prompt_enhancer_instructions": REF2VA_IMAGE_SYSTEM_PROMPT if reference_mode else FL2VA_IMAGE_SYSTEM_PROMPT,
             "text_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
             "video_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
+            "text_prompt_enhancer_instructions1": H3_STILL_TEXT_SYSTEM_PROMPT,
+            "image_prompt_enhancer_instructions1": H3_STILL_IMAGE_SYSTEM_PROMPT,
+            "text_prompt_enhancer_max_tokens1": 1024,
+            "image_prompt_enhancer_max_tokens1": 1024,
             "profiles_dir": ["minimax_h3_vdn"] if vdn else [] if pdd else ["minimax_h3", "minimax_h3_ref2va" if reference_mode else "minimax_h3_fl2va"],
             "finetune_custom_urls": ["video_vae_file", "audio_vae_file"],
             "finetunes_infos": H3_FINETUNES_INFOS,
@@ -660,6 +669,12 @@ class family_handler:
             result["deepy_infos"] += " PDD requires exactly 8 inference steps and the Euler sampler."
         if vdn:
             result["deepy_infos"] += " VDN loads its acceleration LoRA automatically and defaults to 8 steps."
+        still_infos = "\n\n**Text to Image:** generate one still image without audio. Video duration, extra frames and Audio Refinement do not apply in this mode."
+        still_prompt_infos = "\n\nFor Text to Image, describe one still scene: its subject, composition, lighting and details. A plain-language image prompt is sufficient; speech and soundtrack instructions are unnecessary. The optional Write enhancer offers image prompts from text alone or from text plus the selected images. With an image, specify what to change and what to preserve."
+        result["infos"] += still_infos
+        result["deepy_infos"] += still_infos + " Set `image_mode` to `1`."
+        result["prompt_infos"] += still_prompt_infos
+        result["deepy_prompt_infos"] += still_prompt_infos
         return result
 
     @staticmethod

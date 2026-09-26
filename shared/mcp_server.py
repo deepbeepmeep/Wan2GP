@@ -5,6 +5,7 @@ import contextlib
 import copy
 import dataclasses
 import io
+import json
 import logging
 import mimetypes
 import sys
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from shared.utils.gallery_media import disambiguate_gallery_media_ids, gallery_media_ids
+from shared.utils.setting_names import split_settings, unknown_settings_error
 
 if TYPE_CHECKING:
     from shared.api import SessionJob
@@ -452,7 +454,7 @@ def _media_settings(session, *, media_id: str | None = None, path: str | None = 
         settings = record.get("settings") if isinstance(record.get("settings"), dict) else {}
         if not settings:
             settings = _extract_media_settings(session, resolved_path)
-        return {"status": "done", "source": "gallery", "media_id": media_id, "media_type": record["media_type"], "filename": Path(resolved_path).name, "settings": _json_safe(settings)}
+        return {"status": "done", "source": "gallery", "media_id": media_id, "media_type": record["media_type"], "filename": Path(resolved_path).name, **_reusable_media_settings(settings)}
     if not allow_read_file_system:
         raise PermissionError("Direct filesystem paths are disabled for this MCP server. Use a media_id returned by wangp_list_gallery.")
     if _is_media_id(path):
@@ -461,7 +463,12 @@ def _media_settings(session, *, media_id: str | None = None, path: str | None = 
     media_type = _mcp_media_type(resolved_path)
     if not media_type:
         raise ValueError(f"Unsupported media file extension: {Path(resolved_path).suffix}")
-    return {"status": "done", "source": "filesystem", "media_id": "", "path": resolved_path, "media_type": media_type, "filename": Path(resolved_path).name, "settings": _json_safe(_extract_media_settings(session, resolved_path))}
+    return {"status": "done", "source": "filesystem", "media_id": "", "path": resolved_path, "media_type": media_type, "filename": Path(resolved_path).name, **_reusable_media_settings(_extract_media_settings(session, resolved_path))}
+
+
+def _reusable_media_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    settings, metadata = split_settings(settings)
+    return {"settings": _json_safe(settings), **({"metadata": _json_safe(metadata)} if metadata else {})}
 
 
 def _compact_model_metadata(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1685,7 +1692,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
             source = resolved_source
             manifest = isinstance(source, dict) and "tasks" in source
             tasks = source["tasks"] if manifest else source if isinstance(source, list) else [source]
-            root = "source.tasks" if manifest else "source"
+            root = "settings.tasks" if manifest else "settings"
             if not isinstance(tasks, list) or not tasks:
                 raise ValueError(f"{root} must be a non-empty task list. Nothing was submitted.")
             for index, task in enumerate(tasks):
@@ -1699,13 +1706,32 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                         break
                 if not isinstance(settings, dict):
                     raise ValueError(f"{path} must be a settings object. Nothing was submitted.")
+                defaults_call = f' See wangp_model(model_type="{settings.get("model_type") or "<model_type>"}", action="defaults", arguments={{}}) for setting names and value formats.'
+                nested = [key for key, value in settings.items() if isinstance(value, dict) and key != "custom_settings" or key == "resolution" and not isinstance(value, str)]
+                if nested:
+                    expected = f'must be a "WIDTHxHEIGHT" string such as "1280x720", not {json.dumps(settings["resolution"])}' if nested[0] == "resolution" else "must be a single value, not an object; only custom_settings holds nested values"
+                    raise ValueError(f"{path}.{nested[0]} {expected}.{defaults_call} Nothing was submitted.")
                 if str(settings.get("mode", "") or "").startswith("edit_"):
                     continue
                 model_key = "base_model_type" if "model_type" not in settings and "base_model_type" in settings else "model_type"
                 model_type = settings.get(model_key)
                 if not isinstance(model_type, str) or not model_type.strip():
                     raise ValueError(f"{path}.{model_key} must be a non-empty string for generation. Nothing was submitted.")
+                unknown_error = unknown_settings_error(settings)
+                if unknown_error:
+                    if "accelerator profile" in unknown_error:
+                        defaults_call = f' Profiles: wangp_model(model_type="{model_type.strip()}", action="saved_settings", arguments={{}}).'
+                    raise ValueError(f"{path}: {unknown_error}{defaults_call} Nothing was submitted.")
                 _validate_generation_media(session, settings, model_type.strip(), path)
+                custom_settings = settings.get("custom_settings")
+                if custom_settings:
+                    declared = [setting["id"] for setting in session._ensure_runtime().module.get_model_custom_settings(session.get_model_def(model_type.strip()))]
+                    unknown = [str(key) for key in custom_settings if key not in declared] if isinstance(custom_settings, dict) else [""]
+                    if unknown:
+                        allowed = ", ".join(declared[:5]) + (", ..." if len(declared) > 5 else "") if declared else "none"
+                        raise ValueError(f"{path}.custom_settings.{unknown[0]} is not a custom setting of {model_type.strip()} (declared: {allowed}); prompt, resolution and other settings go directly in the settings. Nothing was submitted.")
+                if not str(settings.get("prompt") or "").strip():
+                    raise ValueError(f"{path}.prompt is empty; give the complete prompt, otherwise WanGP uses the model's default prompt. Nothing was submitted.")
                 properties = _deepy_general_properties(session)
                 outputs = (session.get_model_metadata(model_type.strip()) or {}).get("main_output", [])
                 defaults = {"seed": properties["seed"], "multi_prompts_gen_type": _deepy_prompt_mode(session, model_type.strip())}

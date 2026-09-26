@@ -432,7 +432,8 @@
     };
     WAC.empty().innerHTML = WAC.emptyMarkup(WAC.host().dataset.deepyType);
     const request = WAC.requestInput();
-    const resizeRequest = (scrollState = WAC.captureAutoscrollState()) => {
+    // Input keeps the pending or beforeinput intent; a fresh capture here would see the previous keystroke's growth.
+    const resizeRequest = scrollState => {
       request.style.height = 'auto';
       request.style.height = request.scrollHeight + 'px';
       WAC.scheduleComposerLayout(scrollState);

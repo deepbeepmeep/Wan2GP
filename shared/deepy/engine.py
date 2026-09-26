@@ -912,7 +912,7 @@ def _summarize_interrupted_committed_messages(messages: list[dict[str, Any]]) ->
                 tool_name = mapped_tool_name or tool_name
                 status = str(payload.get("status", "") or "").strip()
                 identifiers = [f"{key}={payload[key]}" for key in ("job_id", "output_file", "media_id") if payload.get(key) not in (None, "")]
-            if tool_name == "wangp_get_deepy_template_settings" and isinstance(payload.get("settings"), dict):
+            if tool_name in {"wangp_get_deepy_template_settings", "wangp_deepy_templates"} and isinstance(payload.get("settings"), dict):
                 retained_template = {key: payload.get(key) for key in ("tool_id", "template", "general_properties_active") if payload.get(key) is not None}
                 retained_template["settings"] = payload["settings"]
                 if isinstance(payload.get("general_properties"), dict):
@@ -6481,20 +6481,15 @@ class AssistantEngine:
                 )
             )
             self.session.recorded_budget_events.clear()
-        user_text_normalized = re.sub(r"\s+", " ", str(user_text or "").strip().lower())
-        interruption_query = (
-            "interrupt" in user_text_normalized
-            or "resume" in user_text_normalized
-            or "keep on" in user_text_normalized
-            or "keep going" in user_text_normalized
-            or "what were you doing" in user_text_normalized
-        )
-        if interruption_query and len(self.session.interruption_history) > 0:
+        # Requests interrupted since the last completed turn: shown until a turn completes after seeing them.
+        if len(self.session.interruption_history) > 0:
             lines = [
                 "<wangp_runtime_update>",
                 "Hidden WanGP runtime state. This is environment metadata, not a user message.",
-                "Interrupted requests recorded in this chat:",
+                "Interrupted requests since the last completed answer, with their completed steps. Resume one only if the user asks.",
             ]
+            for entry in self.session.interruption_history:
+                entry["shown"] = True
             entries = list(self.session.interruption_history[-12:])
             retained_blocks = []
             retained_chars = 0
@@ -9426,3 +9421,5 @@ class AssistantEngine:
             if self.debug_enabled:
                 self._log("Clearing interruption notice after a successful follow-up turn.")
             self.session.interruption_notice = ""
+        if turn_completed and not self.session.interrupt_requested:
+            self.session.interruption_history[:] = [entry for entry in self.session.interruption_history if not entry.get("shown")]

@@ -395,7 +395,7 @@ class QwenImage21Transformer2DModel(ModelMixin, ConfigMixin):
 
     def preprocess_loras(self, model_type, state_dict):
         from shared.utils.lora_mapping import convert_lora_keys
-        return convert_lora_keys(state_dict, dict(self.named_modules()), split_linear_modules_map=self.split_linear_modules_map)
+        return convert_lora_keys(state_dict, dict(self.named_modules()), split_linear_modules_map=self.split_linear_modules_map, compose_lokr=True)
     _supports_gradient_checkpointing = True
     _no_split_modules = ['QwenImage21TransformerBlock']
     _skip_layerwise_casting_patterns = ['pos_embed', 'norm']

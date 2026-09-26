@@ -621,6 +621,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             ("AAC 256 kbps (High Quality, Recommended)", "aac_256"),
                             ("AAC 320 kbps (Very High Quality)", "aac_320"),
                             ("ALAC Lossless (preview/playback compatibility may be limited)", "alac"),
+                            ("FLAC Lossless (MP4/MKV only, playback compatibility may be limited)", "flac"),
                         ],
                         value=self.server_config.get("audio_output_codec", "aac_128"),
                         visible=True,

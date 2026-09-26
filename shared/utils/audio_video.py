@@ -317,8 +317,19 @@ def get_mp4_audio_codec_settings(codec_key):
         "aac_256": {"codec": "aac", "bitrate": "256k", "ext": ".aac"},
         "aac_320": {"codec": "aac", "bitrate": "320k", "ext": ".aac"},
         "alac": {"codec": "alac", "bitrate": None, "ext": ".m4a"},
+        "flac": {"codec": "flac", "bitrate": None, "ext": ".flac", "sample_fmt": "s16"},
     }
     return settings.get(codec_key, settings["aac_128"])
+
+
+def get_video_audio_encode_args(codec_key):
+    settings = get_mp4_audio_codec_settings(codec_key)
+    args = ["-c:a", settings["codec"]]
+    if settings.get("bitrate"):
+        args += ["-b:a", settings["bitrate"]]
+    if settings.get("sample_fmt"):
+        args += ["-sample_fmt", settings["sample_fmt"]]
+    return args
 
 
 def _infer_video_dimensions(tensor):
@@ -539,6 +550,8 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False, codec_ke
         output_kwargs = {f'map': f'0:a:{stream_index}', 'acodec': audio_settings["codec"]}
         if audio_settings["bitrate"]:
             output_kwargs['b:a'] = audio_settings["bitrate"]
+        if audio_settings.get("sample_fmt"):
+            output_kwargs['sample_fmt'] = audio_settings["sample_fmt"]
         ffmpeg.input(source_path, **time_args).output(temp_path, **output_kwargs).overwrite_output().run(cmd=_ffmpeg_binary(), quiet=not verbose)
 
     return file_paths, metadata
@@ -554,9 +567,7 @@ def combine_and_concatenate_video_with_audio_tracks(
     audio_codec_key="aac_128",
     verbose = False
 ):
-    audio_settings = get_mp4_audio_codec_settings(audio_codec_key)
-    audio_codec = audio_settings["codec"]
-    audio_bitrate = audio_settings["bitrate"]
+    audio_codec = get_mp4_audio_codec_settings(audio_codec_key)["codec"]
     inputs, filters, maps, idx = ['-i', video_path], [], ['-map', '0:v'], 1
     metadata_args = []
     sources = source_audio_tracks or []
@@ -623,11 +634,9 @@ def combine_and_concatenate_video_with_audio_tracks(
            '-filter_complex', ';'.join(filters),  # ✅ Only change made
            *maps, *metadata_args,
            '-c:v', 'copy',
-           '-c:a', audio_codec,
+           *get_video_audio_encode_args(audio_codec_key),
            '-ar', str(audio_sampling_rate),
            '-shortest', save_path_tmp]
-    if audio_bitrate:
-        cmd[-4:-4] = ['-b:a', audio_bitrate]
 
     if verbose:
         print(f"ffmpeg command: {cmd}")
@@ -660,10 +669,7 @@ def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
         if (lang := meta.get('language')):
             cmd += ['-metadata:s:a:' + str(i), f'language={lang}']
 
-    audio_settings = get_mp4_audio_codec_settings(audio_codec_key)
-    cmd += ['-c:v', 'copy', '-c:a', audio_settings["codec"]]
-    if audio_settings["bitrate"]:
-        cmd += ['-b:a', audio_settings["bitrate"]]
+    cmd += ['-c:v', 'copy', *get_video_audio_encode_args(audio_codec_key)]
     cmd += ['-t', str(dur), output_video]
 
     result = subprocess.run(cmd, capture_output=not verbose, text=True)

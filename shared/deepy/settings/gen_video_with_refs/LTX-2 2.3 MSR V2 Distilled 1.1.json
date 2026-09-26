@@ -1,6 +1,7 @@
 {
     "image_mode": 0,
     "model_type": "ltx2_22B_msr_v2",
+    "prompt_enhancer": "TI",
     "type": "LTX-2 2.3 MSR V2 Distilled 1.1",
     "settings_version": 2.73,
     "video_prompt_type": "I",

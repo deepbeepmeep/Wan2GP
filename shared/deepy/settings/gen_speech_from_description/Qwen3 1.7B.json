@@ -29,5 +29,6 @@
     "mode": "",
     "activated_loras": [],
     "settings_version": 2.55,
-    "model_type": "qwen3_tts_voicedesign"
+    "model_type": "qwen3_tts_voicedesign",
+    "prompt_enhancer": "T"
 }

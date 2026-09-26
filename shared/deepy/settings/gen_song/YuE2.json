@@ -14,7 +14,7 @@
     "model_mode": 0,
     "custom_guide": null,
     "custom_settings": {"save_score": 0},
-    "prompt_enhancer": "",
+    "prompt_enhancer": "T",
     "seed": -1,
     "type": "YuE2"
 }

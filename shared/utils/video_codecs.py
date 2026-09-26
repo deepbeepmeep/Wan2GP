@@ -1,5 +1,6 @@
 SDR_VIDEO_CODEC_CHOICES = [
-    ("x265 CRF 28 (Balanced)", "libx265_28"),
+    ("x265 CRF 28 (Small)", "libx265_28"),
+    ("x265 CRF 18 (Balanced)", "libx265_18"),
     ("x264 Level 8 (Balanced)", "libx264_8"),
     ("x265 CRF 8 (High Quality)", "libx265_8"),
     ("x264 Level 10 (High Quality)", "libx264_10"),
@@ -46,6 +47,8 @@ def _get_video_codec_spec(codec_key: str | None, container: str | None) -> tuple
         return "libx264", "yuv420p", ["-crf", "0"]
     if codec_key == "libx265_28":
         return "libx265", "yuv420p", ["-crf", "28", "-x265-params", "log-level=none"]
+    if codec_key == "libx265_18":
+        return "libx265", "yuv420p", ["-crf", "18", "-x265-params", "log-level=none"]
     if codec_key == "libx265_8":
         return "libx265", "yuv420p", ["-crf", "8", "-x265-params", "log-level=none"]
     if codec_key == "libx264_lossless":

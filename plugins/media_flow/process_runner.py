@@ -1104,7 +1104,8 @@ class ProcessRunner:
                 write_state.stopped = True
             finalizing_message = "Finalizing written output before merge..." if continuation_output_path and os.path.isfile(write_state.mux_output_path) else "Finalizing written output..."
             yield self.ui_update(status_ui.render_chunk_status_html(total_chunks_display, completed_chunks, current_chunk_display, "Finalizing Output", finalizing_message, continued=continued_mode, **_timing_kwargs()), output_path if os.path.isfile(output_path) else self.ui_skip, str(time.time_ns()), start_enabled=False, abort_enabled=False)
-            return_code, stderr, forced_termination = write_state.finalize()
+            finalize_label = "continuation segment" if continuation_output_path and os.path.isfile(write_state.mux_output_path) else "output"
+            return_code, stderr, forced_termination = write_state.finalize(label=finalize_label)
             if self.active_job.get("cancel_requested"):
                 write_state.stopped = True
             if forced_termination:

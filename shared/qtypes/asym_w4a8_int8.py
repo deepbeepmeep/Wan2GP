@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover
 try:
     import triton
     import triton.language as tl
-    from triton.language.extra.cuda import libdevice as tl_libdevice
+    from triton.language.extra import libdevice as tl_libdevice
 
     _TRITON_AVAILABLE = True
 except Exception:  # pragma: no cover
@@ -238,7 +238,8 @@ def _workspace_rows(k, n):
 
 
 def _kernel_backend(device):
-    if not _TRITON_AVAILABLE or device.type != "cuda" or torch.version.cuda is None:
+    # PyTorch uses cuda devices for both CUDA and ROCm; the backend probes support.
+    if not _TRITON_AVAILABLE or device.type != "cuda":
         return None
     from shared.kernels import quanto_int8_triton
 

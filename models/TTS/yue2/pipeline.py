@@ -151,13 +151,13 @@ class YuE2Pipeline:
             input_prompt = normalize_instrumental_prompt(input_prompt)
         if self.hum is None:
             audio_prompt_type = composition_source(audio_prompt_type, input_custom is not None)
-        extend_score = self.hum is None and "E" in audio_prompt_type
-        using_abc = "Q" in audio_prompt_type and "A" not in audio_prompt_type
+        extend_score = self.hum is None and "2" in audio_prompt_type
+        using_abc = "1" in audio_prompt_type and "A" not in audio_prompt_type
         if using_abc and input_custom is None:
             raise ValueError("Upload an ABC score for the selected composition source.")
         if (using_abc or "A" in audio_prompt_type) and mode == "off":
             raise ValueError("A source score requires a composition planning mode.")
-        if extend_score and ("S" in audio_prompt_type or not (using_abc or "A" in audio_prompt_type)):
+        if extend_score and ("0" in audio_prompt_type or not (using_abc or "A" in audio_prompt_type)):
             raise ValueError("Score extension requires an ABC score or source audio.")
         carrier = None
         midi = None

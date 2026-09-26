@@ -880,7 +880,9 @@ def euler_denoising_loop(
 
             if mask_context is not None:
                 _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
-            _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
+            preview_state = replace(video_state, latent=denoised_video) if getattr(callback, "tiny_vae", False) else video_state
+            _invoke_callback(callback, step_idx, pass_no, preview_state, preview_tools)
+            del preview_state
 
         return video_state, audio_state
     finally:
@@ -965,7 +967,9 @@ def gradient_estimating_euler_denoising_loop(
             audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
             if mask_context is not None:
                 _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
-            _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
+            preview_state = replace(video_state, latent=denoised_video) if getattr(callback, "tiny_vae", False) else video_state
+            _invoke_callback(callback, step_idx, pass_no, preview_state, preview_tools)
+            del preview_state
 
         return video_state, audio_state
     finally:
@@ -2384,7 +2388,9 @@ def res2s_audio_video_denoising_loop(
             audio_state = replace(audio_state, latent=x_next_audio.to(audio_state.latent.dtype))
             if mask_context is not None:
                 _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
-            _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
+            preview_state = replace(video_state, latent=denoised_video_2) if getattr(callback, "tiny_vae", False) else video_state
+            _invoke_callback(callback, step_idx, pass_no, preview_state, preview_tools)
+            del preview_state
 
         if sigmas[-1] == 0:
             if interrupt_check is not None and interrupt_check():

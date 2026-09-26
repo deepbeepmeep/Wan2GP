@@ -397,6 +397,7 @@ While not command line options, these environment variables can affect behavior:
 - `PYTORCH_CUDA_ALLOC_CONF` - CUDA memory allocation settings
 - `TRITON_CACHE_DIR` - Triton cache directory (for Sage attention) 
 - `WAN2GP_DEEPY_TELEMETRY=1` - Enable detailed Deepy decode, MTP, CUDA-memory, and GPU telemetry when verbose level 2 is active (disabled by default)
+- `WAN2GP_FFMPEG_TIMEOUT` - Timeout in seconds when finalizing ffmpeg containers or merging continuation segments in Media Flow (default: `300.0`)
 
 ---
 

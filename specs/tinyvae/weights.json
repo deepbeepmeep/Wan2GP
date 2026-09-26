@@ -1,0 +1,110 @@
+{
+  "taeltx_2": {
+    "url": "https://raw.githubusercontent.com/madebyollin/taehv/011dfc2112197741c540e0bdd5b7b67bcc930771/safetensors/taeltx_2.safetensors",
+    "sha256": "6e4cc0469134213d0101a46877ea2bce1dc7cf06ff5f5aefb9e4076c03542f7b",
+    "filename": "taeltx_2.safetensors",
+    "prepared_filename": "taeltx_2.safetensors",
+    "prepared_sha256": "6e4cc0469134213d0101a46877ea2bce1dc7cf06ff5f5aefb9e4076c03542f7b",
+    "repo": "DeepBeepMeep/LTX-2",
+    "dtypes": {
+      "torch.float16": 128
+    },
+    "tensor_count": 128
+  },
+  "taeltx2_3": {
+    "url": "https://raw.githubusercontent.com/madebyollin/taehv/62f7591f59dfbb4c3c02b7a621d180a9eeaba26c/safetensors/taeltx2_3.safetensors",
+    "sha256": "f0773b4e3e57318e6aa4dd4a35e1d16213a5f160fbc0376163f06888bbcbe246",
+    "filename": "taeltx2_3.safetensors",
+    "prepared_filename": "taeltx2_3.safetensors",
+    "prepared_sha256": "f0773b4e3e57318e6aa4dd4a35e1d16213a5f160fbc0376163f06888bbcbe246",
+    "repo": "DeepBeepMeep/LTX-2",
+    "dtypes": {
+      "torch.float16": 128
+    },
+    "tensor_count": 128
+  },
+  "taef2": {
+    "url": "https://raw.githubusercontent.com/madebyollin/taesd/e87efbcfc5298d84986b5d9280f40d358b6a228d/taef2_decoder.pth",
+    "sha256": "0a44a31e1ae59eb9dbf9359d24942fd3ef5928162c1800d97a28c61d51be0ab5",
+    "filename": "taef2_decoder.pth",
+    "prepared_filename": "taef2_decoder.safetensors",
+    "prepared_sha256": "83841c5ca153e4cae60f03e2bedc7a49cb8b157da17623e5f137cce2fa183624",
+    "repo": "DeepBeepMeep/Flux2",
+    "dtypes": {
+      "torch.float16": 79
+    },
+    "tensor_count": 79
+  },
+  "taef1": {
+    "url": "https://raw.githubusercontent.com/madebyollin/taesd/e87efbcfc5298d84986b5d9280f40d358b6a228d/taef1_decoder.pth",
+    "sha256": "beae86f2eeaf0cea884dc8ffe639fb297dac8c984441bb53420f07d767785104",
+    "filename": "taef1_decoder.pth",
+    "prepared_filename": "taef1_decoder.safetensors",
+    "prepared_sha256": "5283b341ac4358818690111b9c2e760ef1958888e32b03568c75f8006423c272",
+    "repo": "DeepBeepMeep/Flux",
+    "dtypes": {
+      "torch.float32": 67
+    },
+    "tensor_count": 67
+  },
+  "taew2_1": {
+    "url": "https://raw.githubusercontent.com/madebyollin/taehv/011dfc2112197741c540e0bdd5b7b67bcc930771/safetensors/taew2_1.safetensors",
+    "sha256": "04766eac0221b5390b985ae3fdcca652cbb4b1e8b82b28ea7ff89dfad1b1a93f",
+    "filename": "taew2_1.safetensors",
+    "prepared_filename": "taew2_1.safetensors",
+    "prepared_sha256": "04766eac0221b5390b985ae3fdcca652cbb4b1e8b82b28ea7ff89dfad1b1a93f",
+    "repo": "DeepBeepMeep/Wan2.1",
+    "dtypes": {
+      "torch.float16": 128
+    },
+    "tensor_count": 128
+  },
+  "taew2_2": {
+    "url": "https://raw.githubusercontent.com/madebyollin/taehv/011dfc2112197741c540e0bdd5b7b67bcc930771/safetensors/taew2_2.safetensors",
+    "sha256": "b84609b2a133d48434bd9636bfcb44bf05168dc436e2d3cecf26256faa1f5325",
+    "filename": "taew2_2.safetensors",
+    "prepared_filename": "taew2_2.safetensors",
+    "prepared_sha256": "b84609b2a133d48434bd9636bfcb44bf05168dc436e2d3cecf26256faa1f5325",
+    "repo": "DeepBeepMeep/Wan2.2",
+    "dtypes": {
+      "torch.float16": 128
+    },
+    "tensor_count": 128
+  },
+  "taehv": {
+    "url": "https://raw.githubusercontent.com/madebyollin/taehv/011dfc2112197741c540e0bdd5b7b67bcc930771/safetensors/taehv.safetensors",
+    "sha256": "032ad4ddc689513287ce02fcc099b5278592526ed1eac0324a7fab94bb690ed9",
+    "filename": "taehv.safetensors",
+    "prepared_filename": "taehv.safetensors",
+    "prepared_sha256": "032ad4ddc689513287ce02fcc099b5278592526ed1eac0324a7fab94bb690ed9",
+    "repo": "DeepBeepMeep/HunyuanVideo",
+    "dtypes": {
+      "torch.float16": 128
+    },
+    "tensor_count": 128
+  },
+  "taehv1_5": {
+    "url": "https://raw.githubusercontent.com/madebyollin/taehv/011dfc2112197741c540e0bdd5b7b67bcc930771/safetensors/taehv1_5.safetensors",
+    "sha256": "b52e245bb86c62e159f50338e2e8f422d4b6f98b467164939c1c031c7d61352e",
+    "filename": "taehv1_5.safetensors",
+    "prepared_filename": "taehv1_5.safetensors",
+    "prepared_sha256": "b52e245bb86c62e159f50338e2e8f422d4b6f98b467164939c1c031c7d61352e",
+    "repo": "DeepBeepMeep/HunyuanVideo1.5",
+    "dtypes": {
+      "torch.float16": 128
+    },
+    "tensor_count": 128
+  },
+  "taeh3": {
+    "url": "https://huggingface.co/Kijai/MiniMax-H3-TAE/resolve/a213ac8bf2f148b4f32372279a7f207846978900/vae_approx/taeh3.safetensors",
+    "sha256": "f0f60fa072089997f817402098c2fd90777cb2660dd79cf5df42fc1e3e08e527",
+    "filename": "taeh3.safetensors",
+    "prepared_filename": "taeh3.safetensors",
+    "prepared_sha256": "f0f60fa072089997f817402098c2fd90777cb2660dd79cf5df42fc1e3e08e527",
+    "repo": "DeepBeepMeep/MiniMax-H3",
+    "dtypes": {
+      "torch.float32": 81
+    },
+    "tensor_count": 81
+  }
+}

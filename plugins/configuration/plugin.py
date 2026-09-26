@@ -461,7 +461,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             return DEEPY_COMPACTION_CHOICE_THINKING
                         return compaction_type
                     with gr.Row():
-                        self.enhancer_mode_choice = gr.Dropdown(choices=[("On-Demand Button Only", 1),("Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
+                        self.enhancer_mode_choice = gr.Dropdown(choices=[("Manual Button Only", 1),("Manual Button + Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
                     with gr.Row(visible=not deepy_remote_default) as self.enhancer_sampling_row:
                         self.prompt_enhancer_temperature_choice = gr.Slider(
                             0.1,

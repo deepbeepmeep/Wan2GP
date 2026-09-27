@@ -8490,7 +8490,7 @@ def generate_media(
                             try:
                                 set_progress_status("Transcribing vocals for .srt")
                                 from shared.deepy.transcription import transcribe_media
-                                res = transcribe_media(audio_path, timestamp_type="word", model_name="large-v3", check_cancelled=lambda: gen.get("abort", False), decode_options={"condition_on_previous_text": False, "temperature": 0.2})
+                                res = transcribe_media(audio_path, timestamp_type="word", model_name="turbo", check_cancelled=lambda: gen.get("abort", False), decode_options={"condition_on_previous_text": False, "temperature": 0.2})
                                 segments = clean_music_segments(res.get("segments") or [])
                                 words = [w for s in segments for w in (s.get("words") or [])]
                                 try:
@@ -8647,7 +8647,7 @@ def generate_media(
                         try:
                             set_progress_status("Transcribing audio for .srt")
                             from shared.deepy.transcription import transcribe_media
-                            res = transcribe_media(video_path, timestamp_type="word", model_name="large-v3", check_cancelled=lambda: gen.get("abort", False), decode_options={"condition_on_previous_text": False, "temperature": 0.2})
+                            res = transcribe_media(video_path, timestamp_type="word", model_name="turbo", check_cancelled=lambda: gen.get("abort", False), decode_options={"condition_on_previous_text": False, "temperature": 0.2})
                             segments = clean_music_segments(res.get("segments") or [])
                             words = [w for s in segments for w in (s.get("words") or [])]
                             try:

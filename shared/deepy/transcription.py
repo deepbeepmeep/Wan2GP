@@ -22,6 +22,8 @@ from shared.deepy.assets import (
     WHISPER_MEDIUM_WEIGHTS_FILENAME,
     WHISPER_LARGE_V3_FOLDER,
     WHISPER_LARGE_V3_REPO,
+    WHISPER_TURBO_FOLDER,
+    WHISPER_TURBO_REPO,
     query_deepy_download_defs,
 )
 from shared.ffmpeg_setup import download_ffmpeg
@@ -131,22 +133,30 @@ def _large_v3_state_dict(state_dict):
     return converted
 
 
-def _load_whisper_large_v3(device, *, check_cancelled=lambda: None, gen=None):
+def _load_whisper_hf(device, *, folder, repo, heads_key, check_cancelled=lambda: None, gen=None):
     from shared.utils.download import process_files_def
 
     check_cancelled()
-    folder = fl.locate_folder(WHISPER_LARGE_V3_FOLDER, error_if_none=False)
-    if not _whisper_medium_files_present(Path(folder) if folder else None):
-        process_files_def(repoId=WHISPER_LARGE_V3_REPO, sourceFolderList=[WHISPER_LARGE_V3_FOLDER], fileList=[["config.json", "model.safetensors"]], gen=gen)
+    located = fl.locate_folder(folder, error_if_none=False)
+    if not _whisper_medium_files_present(Path(located) if located else None):
+        process_files_def(repoId=repo, sourceFolderList=[""], fileList=[["config.json", "model.safetensors"]], targetFolderList=[folder], gen=gen)
     check_cancelled()
-    config_path = fl.locate_file(f"{WHISPER_LARGE_V3_FOLDER}/config.json")
-    weights_path = fl.locate_file(f"{WHISPER_LARGE_V3_FOLDER}/model.safetensors")
+    config_path = fl.locate_file(f"{folder}/config.json")
+    weights_path = fl.locate_file(f"{folder}/model.safetensors")
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     dims = dict(
         n_mels=config["num_mel_bins"], n_audio_ctx=config["max_source_positions"], n_audio_state=config["d_model"], n_audio_head=config["encoder_attention_heads"], n_audio_layer=config["encoder_layers"],
         n_vocab=config["vocab_size"], n_text_ctx=config["max_target_positions"], n_text_state=config["d_model"], n_text_head=config["decoder_attention_heads"], n_text_layer=config["decoder_layers"],
     )
-    return _load_whisper(dims, weights_path, device, whisper._ALIGNMENT_HEADS["large-v3"], _large_v3_state_dict, check_cancelled)
+    return _load_whisper(dims, weights_path, device, whisper._ALIGNMENT_HEADS[heads_key], _large_v3_state_dict, check_cancelled)
+
+
+def _load_whisper_large_v3(device, *, check_cancelled=lambda: None, gen=None):
+    return _load_whisper_hf(device, folder=WHISPER_LARGE_V3_FOLDER, repo=WHISPER_LARGE_V3_REPO, heads_key="large-v3", check_cancelled=check_cancelled, gen=gen)
+
+
+def _load_whisper_turbo(device, *, check_cancelled=lambda: None, gen=None):
+    return _load_whisper_hf(device, folder=WHISPER_TURBO_FOLDER, repo=WHISPER_TURBO_REPO, heads_key="turbo", check_cancelled=check_cancelled, gen=gen)
 
 
 def _make_temp_audio_path() -> Path:
@@ -210,7 +220,7 @@ def transcribe_media(source_path: str, *, timestamp_type: str | None = None, aud
     try:
         check_cancelled()
         if prepared_model is None:
-            model = {"medium": _load_whisper_medium, "large-v3": _load_whisper_large_v3}[model_name](device)
+            model = {"medium": _load_whisper_medium, "large-v3": _load_whisper_large_v3, "turbo": _load_whisper_turbo}[model_name](device)
         else:
             model = prepared_model.pop()
             check_cancelled()

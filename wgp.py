@@ -8501,14 +8501,23 @@ def generate_media(
                                     enhanced_lyrics = prompt_parser.serialize_prompt_units("", prompts, multi_prompts_gen_type) if prompt_was_enhanced else ""
                                 except Exception:
                                     enhanced_lyrics = ""
-                                lyrics_base, _ = pick_lyrics_base_multi([enhanced_lyrics, save_prompt, alt_lyrics], words, segments)
+                                lyrics_base, scored = pick_lyrics_base_multi([enhanced_lyrics, save_prompt, alt_lyrics], words, segments)
                                 if words:
                                     done = write_aligned_lyrics_srt(lyrics_base, words, srt_path) is not None
                                 if not done and segments:
                                     activity = [(s.get("start"), s.get("end")) for s in segments]
                                     done = write_segment_aligned_lyrics_srt(lyrics_base, segments, srt_path, activity_spans=activity) is not None
                                 if not done and segments and not is_hallucinated_repetition(segments):
-                                    done = write_segments_srt(segments, srt_path) is not None
+                                    try:
+                                        span = float(segments[-1].get("end", 0) or 0) - float(segments[0].get("start", 0) or 0)
+                                    except (TypeError, ValueError):
+                                        span = 0.0
+                                    try:
+                                        media_duration, _ = get_media_duration_and_audio_layouts(audio_path)
+                                    except Exception:
+                                        media_duration = None
+                                    if scored or (media_duration and span >= 0.5 * float(media_duration)):
+                                        done = write_segments_srt(segments, srt_path) is not None
                             except (InterruptedError, KeyboardInterrupt):
                                 done = True  # aborted: don't write fallback, don't fail generation
                             except Exception:
@@ -8658,14 +8667,23 @@ def generate_media(
                                 enhanced_lyrics = prompt_parser.serialize_prompt_units("", prompts, multi_prompts_gen_type) if prompt_was_enhanced else ""
                             except Exception:
                                 enhanced_lyrics = ""
-                            lyrics_base, _ = pick_lyrics_base_multi([enhanced_lyrics, save_prompt, alt_lyrics], words, segments)
+                            lyrics_base, scored = pick_lyrics_base_multi([enhanced_lyrics, save_prompt, alt_lyrics], words, segments)
                             if words:
                                 done = write_aligned_lyrics_srt(lyrics_base, words, srt_path) is not None
                             if not done and segments:
                                 activity = [(s.get("start"), s.get("end")) for s in segments]
                                 done = write_segment_aligned_lyrics_srt(lyrics_base, segments, srt_path, activity_spans=activity) is not None
                             if not done and segments and not is_hallucinated_repetition(segments):
-                                done = write_segments_srt(segments, srt_path) is not None
+                                try:
+                                    span = float(segments[-1].get("end", 0) or 0) - float(segments[0].get("start", 0) or 0)
+                                except (TypeError, ValueError):
+                                    span = 0.0
+                                try:
+                                    media_duration, _ = get_media_duration_and_audio_layouts(video_path)
+                                except Exception:
+                                    media_duration = None
+                                if scored or (media_duration and span >= 0.5 * float(media_duration)):
+                                    done = write_segments_srt(segments, srt_path) is not None
                         except (InterruptedError, KeyboardInterrupt):
                             done = True  # aborted: don't write fallback, don't fail generation
                         except Exception:

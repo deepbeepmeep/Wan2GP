@@ -8505,7 +8505,8 @@ def generate_media(
                                 if words:
                                     done = write_aligned_lyrics_srt(lyrics_base, words, srt_path) is not None
                                 if not done and segments:
-                                    done = write_segment_aligned_lyrics_srt(lyrics_base, segments, srt_path) is not None
+                                    activity = [(s.get("start"), s.get("end")) for s in segments]
+                                    done = write_segment_aligned_lyrics_srt(lyrics_base, segments, srt_path, activity_spans=activity) is not None
                                 if not done and segments and not is_hallucinated_repetition(segments):
                                     done = write_segments_srt(segments, srt_path) is not None
                             except (InterruptedError, KeyboardInterrupt):
@@ -8661,7 +8662,8 @@ def generate_media(
                             if words:
                                 done = write_aligned_lyrics_srt(lyrics_base, words, srt_path) is not None
                             if not done and segments:
-                                done = write_segment_aligned_lyrics_srt(lyrics_base, segments, srt_path) is not None
+                                activity = [(s.get("start"), s.get("end")) for s in segments]
+                                done = write_segment_aligned_lyrics_srt(lyrics_base, segments, srt_path, activity_spans=activity) is not None
                             if not done and segments and not is_hallucinated_repetition(segments):
                                 done = write_segments_srt(segments, srt_path) is not None
                         except (InterruptedError, KeyboardInterrupt):

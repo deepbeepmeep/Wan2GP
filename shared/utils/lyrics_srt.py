@@ -341,11 +341,14 @@ def write_aligned_lyrics_srt(lyrics_text, words, srt_path):
     return srt_path
 
 
-def align_lyrics_to_segments(lyrics_text, segments, min_ratio=0.6, max_lines_per_block=1, max_chars_per_block=160):
+def align_lyrics_to_segments(lyrics_text, segments, min_ratio=0.6, max_lines_per_block=1, max_chars_per_block=160, activity_spans=None):
     """Align input lyric lines to Whisper segment timestamps.
 
     Used when word timestamps are unavailable (DTW often fails on sung
     vocals): each exact lyric line inherits its matching segment's timing.
+    Unmatched lines spread across vocal-active spans inside their gap
+    (hallucinated segments still mark sung positions), so unheard verses
+    land where the singing is, not over silence.
     Returns cue list or None when too few lines match.
     """
     segs = []
@@ -379,9 +382,43 @@ def align_lyrics_to_segments(lyrics_text, segments, min_ratio=0.6, max_lines_per
             hits += 1
     if hits < 2:
         return None
-    # Spread unmatched runs across their gaps so every lyric line gets a
-    # sensible slot (e.g. a verse Whisper couldn't hear still lands in the
-    # verse's time span instead of being dropped or crammed).
+    # Spread unmatched runs across vocal-active spans inside their gaps so
+    # every lyric line lands where singing was detected (hallucinated
+    # segments still mark sung positions) instead of over silence.
+    activity = sorted(
+        (max(0.0, float(a)), max(0.0, float(b)))
+        for a, b in (activity_spans or [])
+        if b is not None and a is not None and float(b) > float(a)
+    )
+    def spread_run(li, k, gap_start, gap_end):
+        active = []
+        for a, b in activity:
+            s, e = max(a, gap_start), min(b, gap_end)
+            if e > s:
+                active.append((s, e))
+        if not active:
+            active = [(gap_start, gap_end)] if gap_end is not None else []
+        if not active:
+            for m in range(k):
+                s = gap_start + m * 4.0
+                line_time[li + m] = (s, s + 3.5)
+            return
+        total = sum(e - s for s, e in active)
+        per = max(total, k * 0.5) / k
+        cursor, span_idx, m = active[0][0], 0, 0
+        while m < k:
+            s = cursor
+            e = s + per
+            span_end = active[span_idx][1]
+            if e > span_end and span_idx + 1 < len(active):
+                s = e = span_end
+                cursor = active[span_idx + 1][0]
+                span_idx += 1
+                continue
+            if m == k - 1 and gap_end is not None:
+                e = gap_end
+            line_time[li + m] = (s, max(s + 0.5, e))
+            cursor, m = e, m + 1
     li = 0
     while li < len(lines):
         if line_time[li] is not None:
@@ -390,19 +427,9 @@ def align_lyrics_to_segments(lyrics_text, segments, min_ratio=0.6, max_lines_per
         j = li
         while j < len(lines) and line_time[j] is None:
             j += 1
-        k = j - li
         prev_end = line_time[li - 1][1] if li > 0 else 0.0
         next_start = line_time[j][0] if j < len(lines) else None
-        if next_start is not None:
-            per = max(next_start - prev_end, k * 0.5) / k
-            for m in range(k):
-                s = prev_end + m * per
-                e = next_start if m == k - 1 else s + per
-                line_time[li + m] = (s, max(s + 0.5, e))
-        else:
-            for m in range(k):
-                s = prev_end + m * 4.0
-                line_time[li + m] = (s, s + 3.5)
+        spread_run(li, j - li, prev_end, next_start)
         li = j
     # Group into cue blocks, enforce monotonic non-overlap
     cues, block, bstart, bend, block_len = [], [], None, None, 0
@@ -426,9 +453,9 @@ def align_lyrics_to_segments(lyrics_text, segments, min_ratio=0.6, max_lines_per
     return fixed or None
 
 
-def write_segment_aligned_lyrics_srt(lyrics_text, segments, srt_path):
+def write_segment_aligned_lyrics_srt(lyrics_text, segments, srt_path, activity_spans=None):
     """Write input lyrics aligned to Whisper segment timestamps as .srt."""
-    cues = align_lyrics_to_segments(lyrics_text, segments)
+    cues = align_lyrics_to_segments(lyrics_text, segments, activity_spans=activity_spans)
     if not cues:
         return None
     lines = []

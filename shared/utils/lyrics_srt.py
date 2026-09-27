@@ -10,6 +10,7 @@ Two modes:
 """
 
 import difflib
+import itertools
 import os
 import re
 
@@ -77,6 +78,25 @@ def parse_lyrics_blocks(lyrics_text, max_lines_per_block=2, max_chars_per_block=
 
 def _norm_word(word):
     return _WORD_NORM_RE.sub("", str(word or "").lower().strip())
+
+
+def _norm_text(text):
+    return re.sub(r"\s+", " ", str(text or "").lower()).strip()
+
+
+def is_hallucinated_repetition(segments, threshold=0.6):
+    """Detect Whisper hallucinations on music: the same sentence repeated.
+
+    Returns True when most segments share identical text (e.g. 3/3
+    "we are now at upper session road"). Real songs stay far below the
+    threshold (repeated choruses excepted, which still vary).
+    """
+    texts = [_norm_text(s.get("text", "")) for s in segments or []]
+    texts = [t for t in texts if t]
+    if len(texts) < 3:
+        return False
+    top_count = max(len(list(g)) for _, g in itertools.groupby(sorted(texts)))
+    return top_count / len(texts) > threshold
 
 
 def _split_lyric_lines(lyrics_text):

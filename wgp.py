@@ -8421,7 +8421,7 @@ def generate_media(
                     video_path = audio_path
                     if server_config.get("save_lyrics_srt", False):
                         try:
-                            from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt
+                            from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt, is_hallucinated_repetition
                             srt_path = os.path.splitext(audio_path)[0] + ".srt"
                             done = False
                             try:
@@ -8432,7 +8432,7 @@ def generate_media(
                                 words = [w for s in segments for w in (s.get("words") or [])]
                                 if words:
                                     done = write_aligned_lyrics_srt(save_prompt, words, srt_path) is not None
-                                if not done and segments:
+                                if not done and segments and not is_hallucinated_repetition(segments):
                                     done = write_segments_srt(segments, srt_path) is not None
                             except (InterruptedError, KeyboardInterrupt):
                                 done = True  # aborted: don't write fallback, don't fail generation
@@ -8557,7 +8557,7 @@ def generate_media(
 
                 if not audio_only and not is_image and server_config.get("save_lyrics_srt", False) and isinstance(video_path, str):
                     try:
-                        from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt
+                        from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt, is_hallucinated_repetition
                         srt_path = os.path.splitext(video_path)[0] + ".srt"
                         done = False
                         try:
@@ -8568,7 +8568,7 @@ def generate_media(
                             words = [w for s in segments for w in (s.get("words") or [])]
                             if words:
                                 done = write_aligned_lyrics_srt(save_prompt, words, srt_path) is not None
-                            if not done and segments:
+                            if not done and segments and not is_hallucinated_repetition(segments):
                                 done = write_segments_srt(segments, srt_path) is not None
                         except (InterruptedError, KeyboardInterrupt):
                             done = True  # aborted: don't write fallback, don't fail generation

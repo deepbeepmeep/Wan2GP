@@ -6,6 +6,7 @@ H3_EXCERPT_DEFAULT_SECONDS = 3.0
 H3_EXCERPT_MIN_SECONDS = 2.0
 H3_EXCERPTS_MAX_SECONDS = 15.0
 H3_EXCERPTS_MAX_COUNT = 3
+H3_REFERENCE_MAX_FRAMES = 362  # 17n+5 frames covering 15 s at 24 fps
 
 _EXCERPT = re.compile(r"(\d+(?:\.\d+)?s|\d+)(?:/(\d+(?:\.\d+)?)s?)?", re.IGNORECASE)
 
@@ -13,6 +14,11 @@ H3_EXCERPT_SETTINGS = [
     {"id": H3_VIDEO_EXCERPTS_SETTING, "name": "Reference Video Excerpt Positions", "label": "Reference Positions from Control Video (frames or seconds, optional /duration, e.g. 3 5.2s/4s 12s)", "type": "text", "default": "", "video_prompt_type": "1"},
     {"id": H3_AUDIO_EXCERPTS_SETTING, "name": "Soundtrack Excerpt Positions", "label": "Audio Reference Positions from Reference-Video Soundtrack (frames or seconds, optional /duration, e.g. 3 5.2s/4s 12s)", "type": "text", "default": "", "audio_prompt_type": "1"},
 ]
+
+
+def reference_video_frame_limit(video_count, fps):
+    """Longest valid H3 reference length (17n+5 frames) when video_count videos share the 362-frame budget evenly."""
+    return (round(H3_REFERENCE_MAX_FRAMES * fps / 24 / video_count) - 5) // 17 * 17 + 5
 
 
 def parse_excerpts(text, fps, media_seconds, label, video_frames=False):

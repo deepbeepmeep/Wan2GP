@@ -21,7 +21,7 @@ from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_coun
 from .constants import (H3_AUDIO_REFINEMENT_DENOISE, H3_AUDIO_REFINEMENT_SETTING, H3_AUDIO_REFINEMENT_STEPS,
                         H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, h3_grouped_masking_enabled)
 from .dialogue import H3_DIALOGUE_GENERATION, generate_dialogue, is_dialogue_prompt
-from .excerpts import H3_AUDIO_EXCERPTS_SETTING, H3_VIDEO_EXCERPTS_SETTING, parse_excerpts
+from .excerpts import H3_AUDIO_EXCERPTS_SETTING, H3_VIDEO_EXCERPTS_SETTING, parse_excerpts, reference_video_frame_limit
 from .first_block_cache import MiniMaxH3FirstBlockCache
 from .interrupt import GenerationInterrupted
 from .pdd import pdd_sampling_plans, pdd_sampling_plans_for_sigmas
@@ -552,14 +552,6 @@ class MiniMaxH3Pipeline:
             waveforms.append(waveform)
         return waveforms
 
-    @staticmethod
-    def _limit_audio_references(waveforms):
-        references = [waveform for waveform in waveforms if waveform is not None]
-        if not references or sum(waveform.shape[-1] for waveform in references) <= 15 * AUDIO_SAMPLE_RATE:
-            return waveforms
-        max_samples = round(15 * AUDIO_SAMPLE_RATE / len(references))
-        return [None if waveform is None else waveform[..., :max_samples] for waveform in waveforms]
-
     def _encode_audio(self, waveform):
         self._check_abort()
         return self.audio_vae.encode(waveform.to(device=self.device, dtype=torch.float32)).cpu()
@@ -578,7 +570,8 @@ class MiniMaxH3Pipeline:
         keyframes.append(keyframe)
 
     def _add_video_history(self, video, visual_latents, keyframes):
-        latent = self._encode_video(video, keep_all_latents=True)
+        with control_video_encoding():  # show VAE tile progress for videos, never for images
+            latent = self._encode_video(video, keep_all_latents=True)
         visual_latents.append(latent)
         keyframes.append({"anchor": "history", "latent_frame_count": latent.shape[2]})
 
@@ -627,7 +620,8 @@ class MiniMaxH3Pipeline:
             return
         if video.shape[1] < 5 or (video.shape[1] - 5) % 17:
             raise ValueError(f"MiniMax H3 reference videos must contain 17n+5 preprocessed frames, got {video.shape[1]}")
-        latent = self._encode_video(video)
+        with control_video_encoding():
+            latent = self._encode_video(video)
         audio_latent = self._encode_audio(soundtrack) if soundtrack is not None else None
         if audio_latent is not None:
             presentation.append({"type": "audio"})
@@ -869,14 +863,16 @@ class MiniMaxH3Pipeline:
                 print("Viggle: no control video frames available for this window; continuing without control-video motion guidance.")
                 video_sources = [source for source in video_sources if source is not None]
             video_sources = [source[:, history_count:] for source in video_sources]
-        total_reference_duration = sum(video.shape[1] for video in video_sources) / fps
-        if total_reference_duration > 15:
-            raise ValueError(f"MiniMax H3 reference videos must total at most 15 seconds (found {total_reference_duration:.2f}s)")
+        if len(video_sources) > 1 and sum(video.shape[1] for video in video_sources) > reference_video_frame_limit(1, fps):  # share the budget evenly, like audio references
+            max_frames = reference_video_frame_limit(len(video_sources), fps)
+            video_sources = [video[:, :max_frames] for video in video_sources]
+        if sum(video.shape[1] for video in video_sources) > reference_video_frame_limit(1, fps):
+            raise ValueError(f"MiniMax H3 reference videos must total at most {reference_video_frame_limit(1, fps)} frames (found {sum(video.shape[1] for video in video_sources)})")
         soundtrack = "S" in (audio_prompt_type or "")  # the audio is the soundtrack: condition on it rather than reference it
         soundtrack_excerpts = "1" in (audio_prompt_type or "")  # K1: soundtrack excerpts become independent audio references
         soundtrack_sources = (audio_guide, audio_guide2, audio_guide3) if self.fixed_prompt is None and "K" in (audio_prompt_type or "") and not soundtrack and not soundtrack_excerpts else (None, None, None)
         soundtracks = [self._load_audio_reference(soundtrack_sources[index]) if soundtrack_sources[index] is not None else None for index in range(len(video_sources))]
-        soundtracks = self._limit_audio_references(soundtracks)
+        soundtracks = [None if track is None else track[..., :round(video.shape[1] / fps * AUDIO_SAMPLE_RATE)] for track, video in zip(soundtracks, video_sources)]  # each soundtrack matches its video
         for index, source in enumerate(video_sources):
             self._add_video_reference(_resize_video(source, height, width), soundtracks[index], fps, presentation, visual_latents, audio_latents, refs)
         if self.fixed_prompt is not None:

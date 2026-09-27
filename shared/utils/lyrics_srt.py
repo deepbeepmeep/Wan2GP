@@ -84,6 +84,37 @@ def _norm_text(text):
     return re.sub(r"\s+", " ", str(text or "").lower()).strip()
 
 
+def _word_set(text):
+    return set(w for w in re.split(r"\s+", _norm_text(text)) if w)
+
+
+def pick_lyrics_base(prompt_text, alt_text, words=None, segments=None):
+    """Pick whichever input field holds the actual song lyrics.
+
+    Song models split lyrics/style across prompt/alt_prompt differently.
+    The lyrics field is the one whose words best overlap the transcribed
+    vocals. Returns (base_text, is_alt).
+    """
+    prompt_text = str(prompt_text or "")
+    alt_text = str(alt_text or "")
+    heard = set()
+    for w in words or []:
+        n = _norm_word((w.get("word", "") if isinstance(w, dict) else w))
+        if n:
+            heard.add(n)
+    if not heard:
+        for s in segments or []:
+            heard |= _word_set(s.get("text", "") if isinstance(s, dict) else s)
+    if not heard:
+        return (prompt_text if prompt_text.strip() else alt_text, False)
+    p_hit = len(_word_set(prompt_text) & heard)
+    a_hit = len(_word_set(alt_text) & heard)
+    # Require a clear margin before preferring alt over prompt
+    if alt_text.strip() and (a_hit > p_hit + 2 or (p_hit <= 2 and a_hit > p_hit)):
+        return alt_text, True
+    return prompt_text if prompt_text.strip() else alt_text, False
+
+
 def is_hallucinated_repetition(segments, threshold=0.6):
     """Detect Whisper hallucinations on music: the same sentence repeated.
 

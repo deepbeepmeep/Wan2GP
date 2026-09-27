@@ -8421,7 +8421,7 @@ def generate_media(
                     video_path = audio_path
                     if server_config.get("save_lyrics_srt", False):
                         try:
-                            from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt, write_segment_aligned_lyrics_srt, is_hallucinated_repetition
+                            from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt, write_segment_aligned_lyrics_srt, is_hallucinated_repetition, pick_lyrics_base
                             srt_path = os.path.splitext(audio_path)[0] + ".srt"
                             done = False
                             try:
@@ -8430,10 +8430,15 @@ def generate_media(
                                 res = transcribe_media(audio_path, timestamp_type="word", model_name="large-v3", check_cancelled=lambda: gen.get("abort", False), decode_options={"condition_on_previous_text": False, "temperature": 0.2})
                                 segments = res.get("segments") or []
                                 words = [w for s in segments for w in (s.get("words") or [])]
+                                try:
+                                    alt_lyrics = str(original_alt_prompts[0] or "") if original_alt_prompts else ""
+                                except Exception:
+                                    alt_lyrics = ""
+                                lyrics_base, _ = pick_lyrics_base(save_prompt, alt_lyrics, words, segments)
                                 if words:
-                                    done = write_aligned_lyrics_srt(save_prompt, words, srt_path) is not None
+                                    done = write_aligned_lyrics_srt(lyrics_base, words, srt_path) is not None
                                 if not done and segments:
-                                    done = write_segment_aligned_lyrics_srt(save_prompt, segments, srt_path) is not None
+                                    done = write_segment_aligned_lyrics_srt(lyrics_base, segments, srt_path) is not None
                                 if not done and segments and not is_hallucinated_repetition(segments):
                                     done = write_segments_srt(segments, srt_path) is not None
                             except (InterruptedError, KeyboardInterrupt):
@@ -8452,7 +8457,12 @@ def generate_media(
                                     except Exception:
                                         duration = None
                                 if duration:
-                                    write_lyrics_srt(save_prompt, float(duration), srt_path)
+                                    try:
+                                        alt_lyrics = str(original_alt_prompts[0] or "") if original_alt_prompts else ""
+                                    except Exception:
+                                        alt_lyrics = ""
+                                    lyrics_base, _ = pick_lyrics_base(save_prompt, alt_lyrics)
+                                    write_lyrics_srt(lyrics_base, float(duration), srt_path)
                         except Exception:
                             pass
                 elif is_image:
@@ -8559,7 +8569,7 @@ def generate_media(
 
                 if not audio_only and not is_image and server_config.get("save_lyrics_srt", False) and isinstance(video_path, str):
                     try:
-                        from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt, write_segment_aligned_lyrics_srt, is_hallucinated_repetition
+                        from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt, write_segment_aligned_lyrics_srt, is_hallucinated_repetition, pick_lyrics_base
                         srt_path = os.path.splitext(video_path)[0] + ".srt"
                         done = False
                         try:
@@ -8568,10 +8578,15 @@ def generate_media(
                             res = transcribe_media(video_path, timestamp_type="word", model_name="large-v3", check_cancelled=lambda: gen.get("abort", False), decode_options={"condition_on_previous_text": False, "temperature": 0.2})
                             segments = res.get("segments") or []
                             words = [w for s in segments for w in (s.get("words") or [])]
+                            try:
+                                alt_lyrics = str(original_alt_prompts[0] or "") if original_alt_prompts else ""
+                            except Exception:
+                                alt_lyrics = ""
+                            lyrics_base, _ = pick_lyrics_base(save_prompt, alt_lyrics, words, segments)
                             if words:
-                                done = write_aligned_lyrics_srt(save_prompt, words, srt_path) is not None
+                                done = write_aligned_lyrics_srt(lyrics_base, words, srt_path) is not None
                             if not done and segments:
-                                done = write_segment_aligned_lyrics_srt(save_prompt, segments, srt_path) is not None
+                                done = write_segment_aligned_lyrics_srt(lyrics_base, segments, srt_path) is not None
                             if not done and segments and not is_hallucinated_repetition(segments):
                                 done = write_segments_srt(segments, srt_path) is not None
                         except (InterruptedError, KeyboardInterrupt):
@@ -8581,7 +8596,12 @@ def generate_media(
                         if not done:
                             video_duration = float(output_frame_count) / float(output_fps) if output_frame_count and output_fps else None
                             if video_duration:
-                                write_lyrics_srt(save_prompt, video_duration, srt_path)
+                                try:
+                                    alt_lyrics = str(original_alt_prompts[0] or "") if original_alt_prompts else ""
+                                except Exception:
+                                    alt_lyrics = ""
+                                lyrics_base, _ = pick_lyrics_base(save_prompt, alt_lyrics)
+                                write_lyrics_srt(lyrics_base, video_duration, srt_path)
                     except Exception:
                         pass
 

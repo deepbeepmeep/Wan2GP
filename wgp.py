@@ -3415,6 +3415,7 @@ if not "video_output_codec" in server_config: server_config["video_output_codec"
 if not "hdr_video_crf" in server_config: server_config["hdr_video_crf"] = 8
 if not "video_container" in server_config: server_config["video_container"]= "mp4"
 if not "embed_source_images" in server_config: server_config["embed_source_images"]= False
+if not "save_lyrics_srt" in server_config: server_config["save_lyrics_srt"]= False
 if not "keep_resolution_on_model_switch" in server_config: server_config["keep_resolution_on_model_switch"]= True
 if not "enable_4k_resolutions" in server_config: server_config["enable_4k_resolutions"]= 0
 if not "max_reserved_loras" in server_config: server_config["max_reserved_loras"]= -1
@@ -8418,6 +8419,23 @@ def generate_media(
                     audio_path = os.path.join(output_dir, file_name)
                     audio_path = save_audio_file(audio_path, sample.squeeze(0), output_audio_sampling_rate, audio_codec)
                     video_path = audio_path
+                    if server_config.get("save_lyrics_srt", False):
+                        try:
+                            from shared.utils.lyrics_srt import write_lyrics_srt
+                            try:
+                                duration, _ = get_media_duration_and_audio_layouts(audio_path)
+                            except Exception:
+                                duration = None
+                            if not duration:
+                                try:
+                                    num_samples = sample.squeeze(0).shape[-1]
+                                    duration = float(num_samples) / float(output_audio_sampling_rate)
+                                except Exception:
+                                    duration = None
+                            if duration:
+                                write_lyrics_srt(save_prompt, float(duration), os.path.splitext(audio_path)[0] + ".srt")
+                        except Exception:
+                            pass
                 elif is_image:
                     image_path = os.path.join(output_dir, file_name)
                     sample =  sample.transpose(1,0)  #c f h w -> f c h w 
@@ -8519,6 +8537,15 @@ def generate_media(
                         video_path = save_hdr_video(tensor=output_video_frames, save_file=video_path, fps=output_fps, codec_type=server_config.get("hdr_video_crf", 8), container=container)
                     else:
                         save_video( tensor=output_video_frames, save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None), container= container)
+
+                if not audio_only and not is_image and server_config.get("save_lyrics_srt", False) and isinstance(video_path, str):
+                    try:
+                        from shared.utils.lyrics_srt import write_lyrics_srt
+                        video_duration = float(output_frame_count) / float(output_fps) if output_frame_count and output_fps else None
+                        if video_duration:
+                            write_lyrics_srt(save_prompt, video_duration, os.path.splitext(video_path)[0] + ".srt")
+                    except Exception:
+                        pass
 
                 end_time = time.time()
 

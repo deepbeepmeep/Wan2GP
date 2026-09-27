@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from shared.api import GeneratedArtifact, GenerationError, GenerationResult, PreviewUpdate, SessionJob, WanGPSession
+from shared.tinyvae.media import VideoPreview
 
 _NO_YIELDED_RESULT = object()
 _GRADIO_LOG_PATCH_LOCK = threading.Lock()
@@ -518,7 +519,8 @@ class WebUIQueueProbe:
                     self._publish(
                         "preview",
                         PreviewUpdate(
-                            image=preview_image,
+                            image=preview_image.image if isinstance(preview_image, VideoPreview) else preview_image,
+                            video=preview_image.video if isinstance(preview_image, VideoPreview) else None,
                             phase=progress_update.phase,
                             status=progress_update.status,
                             progress=progress_update.progress,

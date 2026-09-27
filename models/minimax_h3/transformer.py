@@ -1,3 +1,4 @@
+from shared.utils.media_control import inference_checkpoint
 # Copyright 2025 The MiniMax Team and The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -609,6 +610,7 @@ class MiniMaxH3Model(nn.Module):
         return self.token_refiner([self.condition_proj(text_states[0])]).unsqueeze(0)
 
     def _check_interrupt(self):
+        inference_checkpoint()
         if self._interrupt:
             raise GenerationInterrupted
 

@@ -1,3 +1,4 @@
+from shared.utils.media_control import inference_checkpoint
 import torch
 from torch import nn
 import math
@@ -132,6 +133,7 @@ class Transformer(nn.Module):
             context_freqs_cis = None
         skip_in_x_list = []
         for i, layer in enumerate(self.layers):
+            inference_checkpoint()
             if self.uvit_skip_connection and i in self.layers_receive_skip:
                 skip_in_x = skip_in_x_list.pop(-1)
             else:

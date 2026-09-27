@@ -4,6 +4,7 @@ See LICENSES and sources.json for the upstream implementations and weights.
 """
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import torch
@@ -51,26 +52,52 @@ class TinyVAE(nn.Module):
         self.config = REGISTRY['decoders'][name]
         self._convertWeightsFloatTo = None
 
-    def forward(self, latents, image=False, abort_check=None):
+    def forward(self, latents, image=False, abort_check=None, video=False, duration=None):
         # Input is WanGP's existing C,T,H,W preview contract. Image batches
         # occupy T; temporal video decoders must not mix those images.
         value = latents.permute(1, 0, 2, 3).to(next(self.net.parameters()))
-        if self.config['kind'] != 'video':
-            decoded = torch.cat([self.net(frame) for frame in value[frame_indices(len(value))].split(1)])
-        elif image:
-            decoded = torch.cat([self.net.decode_video(frame[:, None], parallel=False)[:, 0] for frame in value[frame_indices(len(value))].split(1)])
+        video = video and not image
+        count = (len(value) - 1) * self.net.t_upscale + 1 if self.config['kind'] == 'video' and not image else len(value)
+        if video:
+            samples = min(count, 240, max(1, math.ceil(duration * 12)))
+            indices = [round(i * (count - 1) / max(1, samples - 1)) for i in range(samples)]
         else:
-            count = (len(value) - 1) * self.net.t_upscale + 1
-            decoded = self.net.decode_video(value[None], parallel=False, output_indices=frame_indices(count), abort_check=abort_check)
+            indices = frame_indices(count)
+
+        def to_pixels(frame):
+            height, width = frame.shape[-2:]
+            if video:
+                scale = min(200 / height, 384 / width)
+                size = (max(2, round(height * scale / 2) * 2), max(2, round(width * scale / 2) * 2))
+            else:
+                size = (200, max(1, round(width * 200 / height)))
+            frame = F.interpolate(frame, size=size, mode='bilinear', align_corners=False)
+            return frame.clamp(0, 1).mul_(255).round_().to(torch.uint8).cpu()
+
+        if self.config['kind'] != 'video':
+            frames = []
+            for index in indices:
+                if abort_check is not None and abort_check():
+                    return None
+                frames.append(to_pixels(self.net(value[index:index + 1])))
+            pixels = torch.cat(frames)
+        elif image:
+            frames = []
+            for index in indices:
+                decoded = self.net.decode_video(value[index:index + 1, None], parallel=False, abort_check=abort_check)
+                if decoded is None:
+                    return None
+                frames.append(to_pixels(decoded[:, 0]))
+            pixels = torch.cat(frames)
+        else:
+            decoded = self.net.decode_video(value[None], parallel=False, output_indices=indices, abort_check=abort_check, output_transform=to_pixels)
             if decoded is None:
                 return None
-            decoded = decoded[0]
+            pixels = decoded[0]
         if abort_check is not None and abort_check():
             return None
-        height, width = decoded.shape[-2:]
-        # Match the existing RGB preview strip and keep transport unchanged.
-        decoded = F.interpolate(decoded, size=(200, max(1, round(width * 200 / height))), mode='bilinear', align_corners=False)
-        pixels = decoded.clamp(0, 1).mul_(255).round_().to(torch.uint8).cpu()
+        if video:
+            return [Image.fromarray(frame.permute(1, 2, 0).numpy()) for frame in pixels], len(indices) / duration
         pixels = pixels.permute(2, 0, 3, 1).flatten(1, 2).numpy()
         return Image.fromarray(pixels)
 

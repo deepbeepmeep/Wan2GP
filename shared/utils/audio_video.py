@@ -253,44 +253,25 @@ def _compute_active_abs_amplitude(audio_data, active_mask=None):
     return avg_abs, active_avg_abs
 
 
-def normalize_audio_pair_volumes(audio1, audio2, active_mask1=None, active_mask2=None):
-    audio1 = np.asarray(audio1, dtype=np.float32)
-    audio2 = np.asarray(audio2, dtype=np.float32)
-    avg1, active1 = _compute_active_abs_amplitude(audio1, active_mask1)
-    avg2, active2 = _compute_active_abs_amplitude(audio2, active_mask2)
-    midpoint = 0.5 * (active1 + active2)
-    eps = 1e-8
-    gain1 = midpoint / active1 if active1 > eps else 1.0
-    gain2 = midpoint / active2 if active2 > eps else 1.0
-    stats = {
-        "audio1_avg_abs": float(avg1),
-        "audio2_avg_abs": float(avg2),
-        "audio1_active_avg_abs": float(active1),
-        "audio2_active_avg_abs": float(active2),
-        "target_active_avg_abs": float(midpoint),
-        "audio1_gain": float(gain1),
-        "audio2_gain": float(gain2),
-    }
-    return np.clip(audio1 * float(gain1), -1.0, 1.0), np.clip(audio2 * float(gain2), -1.0, 1.0), stats
+def normalize_audio_volumes(audios):
+    """Scale each audio so its active loudness matches the average active loudness of all of them."""
+    audios = [np.asarray(audio, dtype=np.float32) for audio in audios]
+    levels = [_compute_active_abs_amplitude(audio)[1] for audio in audios]
+    target = sum(levels) / len(levels)
+    return [np.clip(audio * float(target / level if level > 1e-8 else 1.0), -1.0, 1.0) for audio, level in zip(audios, levels)]
 
 
-def normalize_audio_pair_volumes_to_temp_files(audio_path1, audio_path2, output_dir=None, prefix="audio_norm_", active_mask1=None, active_mask2=None, max_duration_seconds=None):
-    frames1 = -1 if max_duration_seconds is None else round(float(max_duration_seconds) * sf.info(os.fspath(audio_path1)).samplerate)
-    frames2 = -1 if max_duration_seconds is None else round(float(max_duration_seconds) * sf.info(os.fspath(audio_path2)).samplerate)
-    audio1, sr1 = sf.read(os.fspath(audio_path1), frames=frames1, dtype="float32", always_2d=False)
-    audio2, sr2 = sf.read(os.fspath(audio_path2), frames=frames2, dtype="float32", always_2d=False)
-    norm1, norm2, stats = normalize_audio_pair_volumes(audio1, audio2, active_mask1=active_mask1, active_mask2=active_mask2)
-
+def normalize_audio_volumes_to_temp_files(audio_paths, output_dir=None, prefix="audio_norm_", max_duration_seconds=None):
+    audios = [sf.read(os.fspath(path), frames=-1 if max_duration_seconds is None else round(float(max_duration_seconds) * sf.info(os.fspath(path)).samplerate), dtype="float32", always_2d=False) for path in audio_paths]
     if output_dir is not None:
         os.makedirs(output_dir, exist_ok=True)
-
-    fd1, out1 = tempfile.mkstemp(prefix=prefix + "1_", suffix=".wav", dir=output_dir)
-    os.close(fd1)
-    fd2, out2 = tempfile.mkstemp(prefix=prefix + "2_", suffix=".wav", dir=output_dir)
-    os.close(fd2)
-    sf.write(out1, norm1, int(sr1))
-    sf.write(out2, norm2, int(sr2))
-    return out1, out2, stats
+    outputs = []
+    for index, (normalized, (_, sample_rate)) in enumerate(zip(normalize_audio_volumes([audio for audio, _ in audios]), audios), 1):
+        fd, output = tempfile.mkstemp(prefix=f"{prefix}{index}_", suffix=".wav", dir=output_dir)
+        os.close(fd)
+        sf.write(output, normalized, int(sample_rate))
+        outputs.append(output)
+    return outputs
 
 
 def _get_audio_codec_settings(codec_key):

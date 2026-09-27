@@ -953,7 +953,13 @@ WAC.consumePayload = function (payload) {
     return [];
   }
   const chatSessionId = typeof event.chat_session_id === 'string' ? event.chat_session_id : '';
-  if (chatSessionId && WAC.chatSessionId && chatSessionId !== WAC.chatSessionId) WAC.reset();
+  if (chatSessionId && WAC.chatSessionId && chatSessionId !== WAC.chatSessionId) {
+    // Saving the first request assigns a persistent session ID. Keep following it
+    // when this event acknowledges that request, despite resetting the old session.
+    const followedSubmission = WAC.syncAcknowledgesFollowedSubmission(event.messages || [event.message], event.acknowledged_submission_ids) ? WAC.followSubmissionId : '';
+    WAC.reset();
+    WAC.followSubmissionId = followedSubmission;
+  }
   if (chatSessionId) WAC.chatSessionId = chatSessionId;
   if (event.type === 'session_resume_ready') {
     WAC.prefillResumedSession(event.request_id);
@@ -2307,7 +2313,7 @@ WAC.renderStatus = function (status, restoreAnchor) {
     pauseNode.textContent = isPaused ? 'Resume' : kind === 'pause_pending' ? 'Pausing…' : kind === 'resuming' ? 'Resuming…' : 'Pause';
     pauseNode.setAttribute('aria-label', isPaused ? 'Resume Deepy' : 'Pause Deepy');
     pauseNode.dataset.mode = isPaused ? 'resume' : 'pause';
-    pauseNode.disabled = kind === 'pause_pending' || kind === 'resuming' || kind === 'session_loading';
+    pauseNode.disabled = kind === 'pause_pending' || kind === 'resuming' || kind === 'session_loading' || kind === 'stop_pending';
   }
   if (stopNode) {
     stopNode.hidden = kind === 'session_loading';

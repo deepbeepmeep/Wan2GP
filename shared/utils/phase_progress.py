@@ -1,4 +1,5 @@
 """Layer/tile progress scoped to one generation, with throttled UI and abort polling."""
+from shared.utils.media_control import current_control, inference_checkpoint, checkpoint_modules, MediaProcessingAborted
 
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -21,7 +22,6 @@ class _GenerationProgress:
         self.pipeline = pipeline
         self.callback = callback
         self.set_status = set_status
-        self.next_poll = 0.0
         self.next_update = 0.0
         self.prompt_no = 0
         self.prompt_total = 1
@@ -30,11 +30,12 @@ class _GenerationProgress:
         self.vae_encoding_enabled = False
 
     def check_abort(self):
-        now = monotonic()
-        if now >= self.next_poll:
-            self.next_poll = now + 1 / 3
-            if self.pipeline._interrupt:
-                raise GenerationAborted
+        inference_checkpoint()
+        checkpoint = getattr(self.callback, "checkpoint", None)
+        if checkpoint is not None:
+            checkpoint()
+        if self.pipeline._interrupt:
+            raise GenerationAborted
 
 
 def generation_progress(method):
@@ -51,7 +52,7 @@ def generation_progress(method):
             state.check_abort()
             result = method(self, *args, **kwargs)
             return None if self._interrupt else result
-        except GenerationAborted:
+        except (GenerationAborted, MediaProcessingAborted):
             return None
         finally:
             _generation.reset(token)
@@ -60,6 +61,7 @@ def generation_progress(method):
 
 
 def check_abort():
+    inference_checkpoint()
     state = _generation.get()
     if state is not None:
         state.check_abort()
@@ -161,7 +163,11 @@ def text_encoding_prompts(total, inherit=False):
 def text_encoding_progress(layers, next_status="Preparing Conditioning", prompt_count=1,
                            complete_on_success=False, completion_hold=0.0, title=None):
     state = _generation.get()
-    if state is None or state.text_phase_active:
+    if state is None:
+        with checkpoint_modules(entry[0] if isinstance(entry, tuple) else entry for entry in layers):
+            yield
+        return
+    if state.text_phase_active:
         yield
         return
     state.prompt_no += prompt_count
@@ -197,7 +203,7 @@ def text_encoding_progress(layers, next_status="Preparing Conditioning", prompt_
 @contextmanager
 def vae_decoding_progress(total, decoder, count=1, cleanup=None, title="VAE Decoding", next_status=None):
     """Track actual decoder calls and allow cancellation within an untiled decode."""
-    if _generation.get() is None:
+    if _generation.get() is None and current_control() is None:
         yield
         return
     handles = []
@@ -223,8 +229,13 @@ def vae_decoding_progress(total, decoder, count=1, cleanup=None, title="VAE Deco
 def vae_encoding_progress(total, encoder, count=1, cleanup=None, enabled=True):
     """Count encoder tiles with the same throttling and cancellation as decoding."""
     state = _generation.get()
-    if state is None or not (state.vae_encoding_enabled and enabled):
-        yield
+    if not enabled or (state is None and current_control() is None) or (state is not None and not state.vae_encoding_enabled):
+        try:
+            with checkpoint_modules(module for module in encoder.modules() if not module._modules):
+                yield
+        finally:
+            if cleanup is not None:
+                cleanup()
         return
     with vae_decoding_progress(total, encoder, count, cleanup, title="VAE Encoding", next_status="Preparing Conditioning"):
         yield

@@ -485,6 +485,7 @@ class DramaBoxAudioPipeline(LTXAudioTTSPipelineBase):
         input_waveform=None,
         input_waveform_sample_rate=None,
         audio_guide2: Optional[str] = None,
+        audio_guide3: Optional[str] = None,
         audio_prompt_type: str = "",
         alt_scale=None,
         set_header_text=None,
@@ -529,6 +530,10 @@ class DramaBoxAudioPipeline(LTXAudioTTSPipelineBase):
             speaker_ref_latents[2] = self._encode_voice_reference(None, None, audio_guide2)
             if speaker_ref_latents[2] is None:
                 raise ValueError("DramaBox Audio Speaker 2 reference mode requires a second reference audio file.")
+        if "D" in audio_prompt_type:
+            if set_progress_status is not None:
+                set_progress_status("Encoding Speaker 3 Reference")
+            speaker_ref_latents[3] = self._encode_voice_reference(None, None, audio_guide3)
 
         if self._interrupt:
             return None

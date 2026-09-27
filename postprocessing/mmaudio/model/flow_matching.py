@@ -1,3 +1,4 @@
+from shared.utils.media_control import current_control, inference_checkpoint
 import logging
 from typing import Callable, Optional
 
@@ -62,10 +63,16 @@ class FlowMatching:
         elif self.inference_mode == 'euler':
             x = x0
             steps = torch.linspace(t0, t1 - self.min_sigma, self.num_steps + 1)
+            control = current_control()
+            if control is not None:
+                control.send_cmd("progress", [(0, self.num_steps), "MMAudio Denoising", self.num_steps])
             for ti, t in enumerate(steps[:-1]):
+                inference_checkpoint()
                 flow = fn(t, x)
                 next_t = steps[ti + 1]
                 dt = next_t - t
                 x = x + dt * flow
+                if control is not None:
+                    control.send_cmd("progress", [(ti + 1, self.num_steps), "MMAudio Denoising", self.num_steps])
 
         return x

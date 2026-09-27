@@ -352,6 +352,8 @@ class DistilledPipeline:
         ancestral_noise_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 10000) if use_ancestral_sampler else None
 
         def denoising_loop(sigmas, video_state, audio_state, stepper, preview_tools=None):
+            if callback is not None:
+                callback(-1, None, True, override_num_inference_steps=len(sigmas) - 1)
             return euler_denoising_loop(
                 sigmas=sigmas,
                 video_state=video_state,

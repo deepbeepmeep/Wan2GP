@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 from PIL import Image
+from shared.tinyvae.media import VideoPreview
 
 from shared.utils.frame_scheduler import normalize_output_frame_count
 from shared.utils.process_locks import set_main_generation_running
@@ -98,8 +99,9 @@ def apply_media_flag_defaults(settings: dict[str, Any], model_def: dict[str, Any
     audio_prompt_type = str(settings.get("audio_prompt_type", "") or "")
     has_audio_guide = _has_media_setting(settings.get("audio_guide"))
     has_audio_guide2 = _has_media_setting(settings.get("audio_guide2"))
-    if has_audio_guide or has_audio_guide2:
-        required_flag = "B" if has_audio_guide2 else "A"
+    has_audio_guide3 = _has_media_setting(settings.get("audio_guide3"))
+    if has_audio_guide or has_audio_guide2 or has_audio_guide3:
+        required_flag = "D" if has_audio_guide3 else "B" if has_audio_guide2 else "A"
         audio_mode = next((value for value in _declared_choice_values(model_def.get("audio_prompt_type_sources")) if required_flag in value), "")
         if audio_mode and required_flag not in audio_prompt_type:
             audio_prompt_type = _add_unique_flags(audio_prompt_type, audio_mode)
@@ -195,6 +197,7 @@ class PreviewUpdate:
     progress: int
     current_step: int | None
     total_steps: int | None
+    video: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -1093,7 +1096,8 @@ class WanGPSession:
             model_type = str(self._get_task_settings(queue_tasks[0]).get("model_type", ""))
         image = wgp.generate_preview(model_type, payload) if model_type else None
         return PreviewUpdate(
-            image=image,
+            image=image.image if isinstance(image, VideoPreview) else image,
+            video=image.video if isinstance(image, VideoPreview) else None,
             phase=progress.phase,
             status=progress.status,
             progress=progress.progress,

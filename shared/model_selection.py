@@ -78,7 +78,7 @@ def speciality_catalog(records):
     return [{"name": name, **({"aliases": sorted(item["aliases"])} if item["aliases"] else {}), **({"description": " ".join(sorted(item["descriptions"]))} if item["descriptions"] else {})} for name, item in sorted(catalog.items())]
 
 
-def rank_models(records, specialities, preferences):
+def rank_models(records, specialities, preferences, main_output=None):
     if not isinstance(specialities, list) or any(not isinstance(term, str) or not term.strip() for term in specialities):
         raise ValueError("specialities must be a list of non-empty strings")
     terms = list(dict.fromkeys(_normalized(term) for term in specialities))
@@ -103,7 +103,9 @@ def rank_models(records, specialities, preferences):
         speed = preferences["speed"]
         score = int(speed == "fast" and record["accelerated"] in ("native", "profiles") or speed == "standard" and record["accelerated"] in ("none", "profiles"))
         score += int(preferences["size"] != "any" and record.get("size") == {"smaller": "lighter", "larger": "large"}.get(preferences["size"]))
-        ranked.append((len(matched), len(word_matches), len(substring_matches), score, record, matched, word_matches, substring_matches))
+        # Models dedicated to the requested output rank before multimodal models that can also produce it.
+        dedicated = int(main_output is not None and list(record.get("main_output") or []) == [main_output])
+        ranked.append((len(matched), len(word_matches), len(substring_matches), dedicated * 10 + score, record, matched, word_matches, substring_matches))
     exact = any(item[0] == len(terms) for item in ranked)
     if exact:
         ranked = [item for item in ranked if item[0] == len(terms)]

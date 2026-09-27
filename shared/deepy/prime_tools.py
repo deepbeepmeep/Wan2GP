@@ -869,7 +869,7 @@ class DeepyPrimeTools:
                 return finish(f"Find Models for {short(arguments['query'])}")
             action = arguments.get("action")
             nested = arguments.get("arguments")
-            describing = nested is None
+            describing = nested is None and tool_name not in {"wangp_model", "wangp_models"}
             nested = dict(nested or {})
             target = ""
             if tool_name == "wangp_model":
@@ -885,7 +885,9 @@ class DeepyPrimeTools:
                 if action in {"capabilities", "definition", "defaults"}:
                     subject = short(nested.get("property")) if action == "definition" else ""
                     return finish(f"Read {subject or humanize(action)} for {target}")
-                tool_name = {"saved_settings": "wangp_model_settings", "loras": "wangp_list_loras"}.get(action, tool_name)
+                if action == "profiles" and "setting_id" not in nested:
+                    return finish(f"Read Accelerator Profiles for {target}")
+                tool_name = {"saved_settings": "wangp_model_settings", "user_settings": "wangp_model_settings", "presets": "wangp_model_settings", "profiles": "wangp_model_settings", "loras": "wangp_list_loras"}.get(action, tool_name)
                 nested["model_type"] = arguments["model_type"]
             elif tool_name == "wangp_deepy_templates":
                 tool_name = {"deepy_templates": "wangp_list_deepy_templates", "deepy_template_settings": "wangp_get_deepy_template_settings"}.get(action, tool_name)

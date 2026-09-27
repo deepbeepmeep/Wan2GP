@@ -1,3 +1,5 @@
+from shared.utils.media_control import inference_checkpoint
+from shared.utils.media_control import controlled_model_loading, loading_callback
 import gc
 import logging
 import os
@@ -73,6 +75,7 @@ def _load_state_dict(model_path, device):
     return state
 
 
+@controlled_model_loading
 def get_model(persistent_models = False, verboseLevel = 1, model_name = None, model_path = None) -> tuple[MMAudio, FeaturesUtils, SequenceConfig]:
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -129,7 +132,7 @@ def get_model(persistent_models = False, verboseLevel = 1, model_name = None, mo
 
         pipe = { "net" : net, "clip" : feature_utils.clip_model, "syncformer" : feature_utils.synchformer, "vocode" : feature_utils.tod.vocoder, "vae" : feature_utils.tod.vae }
         from mmgp import offload
-        offloadobj = offload.profile(pipe, profile_no=4, verboseLevel=2)
+        offloadobj = offload.profile(pipe, loading_callback=loading_callback(), profile_no=4, verboseLevel=2)
         if persistent_models:
             from shared.utils import offload_registry
 
@@ -162,45 +165,52 @@ def video_to_audio(video, prompt: str, negative_prompt: str, seed: int, num_step
     global device
 
     net, feature_utils, seq_cfg, offloadobj = get_model(persistent_models, verboseLevel, model_name=model_name, model_path=model_path )
+    from shared.utils import offload_registry
+    offload_registry.register_offloadobj("MMAudio", offloadobj, release_models if persistent_models else offloadobj.release)
+    try:
+        inference_checkpoint()
 
-    rng = torch.Generator(device=feature_utils.device)
-    if seed >= 0:
-        rng.manual_seed(seed)
-    else:
-        rng.seed()
-    fm = FlowMatching(min_sigma=0, inference_mode='euler', num_steps=num_steps)
+        rng = torch.Generator(device=feature_utils.device)
+        if seed >= 0:
+            rng.manual_seed(seed)
+        else:
+            rng.seed()
+        fm = FlowMatching(min_sigma=0, inference_mode='euler', num_steps=num_steps)
 
-    video_info = load_video(video, duration)
-    clip_frames = video_info.clip_frames
-    sync_frames = video_info.sync_frames
-    duration = video_info.duration_sec
-    clip_frames = clip_frames.unsqueeze(0)
-    sync_frames = sync_frames.unsqueeze(0)
-    seq_cfg.duration = duration
-    net.update_seq_lengths(seq_cfg.latent_seq_len, seq_cfg.clip_seq_len, seq_cfg.sync_seq_len)
+        video_info = load_video(video, duration)
+        clip_frames = video_info.clip_frames
+        sync_frames = video_info.sync_frames
+        duration = video_info.duration_sec
+        clip_frames = clip_frames.unsqueeze(0)
+        sync_frames = sync_frames.unsqueeze(0)
+        seq_cfg.duration = duration
+        net.update_seq_lengths(seq_cfg.latent_seq_len, seq_cfg.clip_seq_len, seq_cfg.sync_seq_len)
 
-    audios = generate(clip_frames,
-                      sync_frames, [prompt],
-                      negative_text=[negative_prompt],
-                      feature_utils=feature_utils,
-                      net=net,
-                      fm=fm,
-                      rng=rng,
-                      cfg_strength=cfg_strength,
-                      offloadobj = offloadobj
-                      )
-    audio = audios.float().cpu()[0]
+        audios = generate(clip_frames,
+                          sync_frames, [prompt],
+                          negative_text=[negative_prompt],
+                          feature_utils=feature_utils,
+                          net=net,
+                          fm=fm,
+                          rng=rng,
+                          cfg_strength=cfg_strength,
+                          offloadobj = offloadobj
+                          )
+        audio = audios.float().cpu()[0]
 
 
-    if audio_file_only:
-        write_wav_file(save_path, audio, seq_cfg.sampling_rate)
-    else:
-        make_video(video, video_info, save_path, audio, sampling_rate=seq_cfg.sampling_rate, audio_codec_key=audio_codec_key)
+        if audio_file_only:
+            write_wav_file(save_path, audio, seq_cfg.sampling_rate)
+        else:
+            make_video(video, video_info, save_path, audio, sampling_rate=seq_cfg.sampling_rate, audio_codec_key=audio_codec_key)
 
-    offloadobj.unload_all()
-    if not persistent_models:
-        offloadobj.release()
-
-    torch.cuda.empty_cache()
-    gc.collect()
+    finally:
+        net.latent_rot = net.latent_rot.cpu()
+        net.clip_rot = net.clip_rot.cpu()
+        offloadobj.unload_all()
+        if not persistent_models:
+            offload_registry.unregister_offloadobj("MMAudio", offloadobj)
+            offloadobj.release()
+        torch.cuda.empty_cache()
+        gc.collect()
     return save_path

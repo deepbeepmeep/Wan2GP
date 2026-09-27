@@ -54,7 +54,7 @@ class TGrow(nn.Module):
         return x.reshape(-1, x.shape[1] // self.stride, x.shape[2], x.shape[3])
 
 
-def _apply(model, x, parallel, output_indices=None, abort_check=None):
+def _apply(model, x, parallel, output_indices=None, abort_check=None, output_transform=None):
     if parallel:
         n, t, c, h, w = x.shape
         flat = x.reshape(n * t, c, h, w)
@@ -79,6 +79,8 @@ def _apply(model, x, parallel, output_indices=None, abort_check=None):
         value, index = queues.pop(0)
         if index == len(model):
             if output_indices is None or output_no in output_indices:
+                if output_transform is not None:
+                    value = output_transform(value)
                 output.append(value.unsqueeze(1))
             output_no += 1
             continue
@@ -138,10 +140,12 @@ class TAEHV(nn.Module):
             x = F.pixel_shuffle(x, self.patch_size)
         return x.clamp_(0, 1)
 
-    def decode_video(self, x, parallel=True, show_progress_bar=False, output_indices=None, abort_check=None):
+    def decode_video(self, x, parallel=True, show_progress_bar=False, output_indices=None, abort_check=None, output_transform=None):
         selected = None if output_indices is None else {i + self.frames_to_trim for i in output_indices}
-        decoded = _apply(self.decoder, x, parallel, selected, abort_check)
+        transform = None if output_transform is None else lambda frame: output_transform(self.postprocess_output_frames(frame))
+        decoded = _apply(self.decoder, x, parallel, selected, abort_check, transform)
         if decoded is None:
             return None
-        decoded = self.postprocess_output_frames(decoded)
+        if output_transform is None:
+            decoded = self.postprocess_output_frames(decoded)
         return decoded[:, self.frames_to_trim :] if output_indices is None else decoded

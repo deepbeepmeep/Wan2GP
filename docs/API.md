@@ -413,7 +413,7 @@ Deepy templates and the Gallery need no discovery. `wangp_deepy_templates(tool_i
 |---|---|
 | Model search | `wangp_models` / `search` |
 | Model schema, definition, defaults | `wangp_model` / `capabilities`, `definition`, `defaults` |
-| Saved settings, profiles, presets, LoRAs | `wangp_model` / `saved_settings`, `loras` |
+| Accelerator profiles, presets, user settings, LoRAs | `wangp_model` / `profiles` (with the recommended profile's settings), `presets`, `user_settings`, `loras` |
 | Deepy templates and merged settings | `wangp_deepy_templates(tool_id=..., template="default")` |
 | Gallery inventory / selections | `wangp_list_gallery(media_type=..., selected_only=...)` |
 | Generation | `wangp_generate(settings=...)`: one settings object, or a list for a batch |
@@ -442,7 +442,7 @@ On the external MCP server, generation and post-processing retain `wait`, `timeo
 
 Deepy Prime manages synchronous waiting itself, including with remote LLMs. Its generation and post-processing contracts omit `wait` and `timeout_s`; Prime accepts but ignores these two controls at the top level or inside action arguments and reports this in the result. Other unknown arguments remain errors. `event_limit` still controls the returned event count. External MCP v1/v2 and Deepy Zero keep their existing behavior.
 
-Batch generation is preserved: `source` accepts a settings list, a task list, or a manifest containing `tasks`. The entire batch is passed in one submission to the existing WanGP queue, with its order and per-task settings intact. V2 does not split it into separate jobs or alter queue scheduling.
+Batch generation is preserved: `settings` accepts a settings list, a task list, or a manifest containing `tasks`. The entire batch is passed in one submission to the existing WanGP queue, with its order and per-task settings intact. V2 does not split it into separate jobs or alter queue scheduling.
 
 V2 checks the required model field before submitting any part of a generation batch. Each settings object, supplied directly or wrapped in `params` / `settings`, needs a non-empty `model_type`; legacy `base_model_type` is accepted when `model_type` is absent. Existing `edit_*` post-processing tasks need no model. A missing/invalid model field or malformed task container rejects the whole call with its exact location (for example `source.tasks[1].params.model_type`) and creates no job. V1 and Deepy Zero retain their existing validation paths.
 
@@ -911,7 +911,7 @@ Known `kind` values:
 - `progress`
   - Structured progress update.
 - `preview`
-  - RGB preview update.
+  - Generation preview update, using the configured RGB or Tiny VAE mode.
 - `stream`
   - One stdout/stderr line.
 - `status`
@@ -1051,7 +1051,9 @@ PreviewUpdate(
 Fields:
 
 - `image: PIL.Image.Image | None`
-  - RGB preview image generated from WanGP's latent preview payload.
+  - The frame strip or image preview. For video previews, this is the first frame, so existing image consumers keep working.
+- `video: bytes | None`
+  - A complete, silent MP4 preview when Generation Preview uses Tiny VAE video mode; otherwise `None`. Save these bytes with an `.mp4` extension or play them as `video/mp4`.
 - `phase`, `status`, `progress`, `current_step`, `total_steps`
   - Same interpretation as `ProgressUpdate`.
 
@@ -1105,8 +1107,8 @@ Supported callback methods:
   - Use this for progress bars, step counters, and status text.
 
 - `on_preview(preview_update)`
-  - Called when a preview image is available.
-  - Use this when you want live RGB preview frames during inference.
+  - Called when a generation preview is available.
+  - Use `image` for still previews or `video` for animated Tiny VAE previews during inference.
 
 - `on_stream(stream_message)`
   - Called for every redirected stdout/stderr line.

@@ -59,13 +59,14 @@ INDEX_TTS2_DURATION_SLIDER = {
     "default": 25,
 }
 INDEX_TTS2_AUDIO_PROMPT_TYPES = {
-    "selection": ["A", "AB", "AB2"],
+    "selection": ["A", "AB", "AB2", "ABD2"],
     "labels": {
         "A": "Voice cloning (1 reference audio)",
         "AB": "Voice + emotion (2 reference audios)",
         "AB2": "Dialogue (2 speaker reference audios)",
+        "ABD2": "Dialogue (3 speaker reference audios)",
     },
-    "letters_filter": "AB2",
+    "letters_filter": "ABD2",
     "default": "A",
 }
 INDEX_TTS2_AUTO_SPLIT_SETTING_ID = "auto_split_every_s"
@@ -127,6 +128,7 @@ def _get_index_tts2_model_def(base_model_type):
         "pause_between_sentences": True,
         "audio_guide_label": "Speaker reference voice",
         "audio_guide2_label": "Speaker 2 voice / emotion reference (optional)",
+        "audio_guide3_label": "Speaker 3 voice reference",
         "alt_prompt": {
             "label": "Default Emotion Instruction (empty preserves emotion from the speaker reference; [] overrides per segment)",
             "name": "Default Emotion Instruction",
@@ -151,10 +153,10 @@ def _get_index_tts2_model_def(base_model_type):
     }
     if not is_v25:
         model_def.update({
-            "deepy_infos": "`prompt` = speech; `audio_guide` = required speaker sample. `audio_prompt_type`: `A` uses its voice/emotion; `AB` adds emotion from `audio_guide2`; `AB2` uses that second sample as speaker 2. `alt_prompt` sets default emotion. Max duration caps output.",
-            "deepy_prompt_infos": "Write exact English/Chinese speech. Inline cues persist until replaced: '[happy] Hello. [calm] We have time.' `alt_prompt` applies where no inline cue exists; text emotion overrides audio emotion. Keep delivery directions in cues or `alt_prompt`. For `AB2`, label dialogue `Speaker 1:` / `Speaker 2:` matching sample order.",
-            "infos": "Generate speech from Text Prompt (`prompt`) and a required Speaker reference voice (`audio_guide`). In audio mode `A`, the sample supplies the speaker and emotion. Mode `AB` uses the second sample (`audio_guide2`) as an emotion reference; `AB2` uses it as a second speaker for dialogue. Default Emotion Instruction (`alt_prompt`) and inline emotion cues control delivery separately from the spoken words. Max duration caps the assembled audio.",
-            "prompt_infos": 'Write the exact words to speak, with natural punctuation, in English or Chinese. WanGP reads `[happy] Hello there. [calm] We have time.` as emotion cues followed by speech; each cue stays active until replaced. `alt_prompt` supplies the default emotion where no inline cue applies. Keep directions inside these cues or the emotion field. For `AB2` dialogue, use `Speaker 1:` and `Speaker 2:` sections matching the two samples. Inline/text emotion overrides the audio emotion for that segment.',
+            "deepy_infos": "`prompt` = speech; `audio_guide` = required speaker sample. `audio_prompt_type`: `A` uses its voice/emotion; `AB` adds emotion from `audio_guide2`; `AB2` uses that second sample as speaker 2; `ABD2` adds `audio_guide3` as speaker 3. `alt_prompt` sets default emotion. Max duration caps output.",
+            "deepy_prompt_infos": "Write exact English/Chinese speech. Inline cues persist until replaced: '[happy] Hello. [calm] We have time.' `alt_prompt` applies where no inline cue exists; text emotion overrides audio emotion. Keep delivery directions in cues or `alt_prompt`. For `AB2` / `ABD2`, label dialogue `Speaker 1:` / `Speaker 2:` / `Speaker 3:` matching sample order.",
+            "infos": "Generate speech from Text Prompt (`prompt`) and a required Speaker reference voice (`audio_guide`). In audio mode `A`, the sample supplies the speaker and emotion. Mode `AB` uses the second sample (`audio_guide2`) as an emotion reference; `AB2` uses it as a second speaker for dialogue, and `ABD2` adds a third speaker (`audio_guide3`). Default Emotion Instruction (`alt_prompt`) and inline emotion cues control delivery separately from the spoken words. Max duration caps the assembled audio.",
+            "prompt_infos": 'Write the exact words to speak, with natural punctuation, in English or Chinese. WanGP reads `[happy] Hello there. [calm] We have time.` as emotion cues followed by speech; each cue stays active until replaced. `alt_prompt` supplies the default emotion where no inline cue applies. Keep directions inside these cues or the emotion field. For `AB2` / `ABD2` dialogue, use `Speaker 1:`, `Speaker 2:` (and `Speaker 3:`) sections matching the samples. Inline/text emotion overrides the audio emotion for that segment.',
         })
     if is_v25:
         model_def.update({
@@ -440,23 +442,24 @@ class family_handler:
         if audio_prompt_type == "AB" and inputs.get("audio_guide2") is None:
             return "Emotion mode requires a second reference audio file."
         if audio_prompt_type == "2":
-            if inputs.get("audio_guide2") is None:
-                return "Two-speaker mode requires a second speaker reference audio file."
+            speaker_count = 3 if "D" in raw_audio_prompt_type else 2
+            if any(inputs.get(key) is None for key in ("audio_guide2", "audio_guide3")[:speaker_count - 1]):
+                return f"{speaker_count}-speaker mode requires {speaker_count} speaker reference audio files."
             speaker_matches = list(re.finditer(r"Speaker\s*(\d+)\s*:", prompt_text, flags=re.IGNORECASE))
             if not speaker_matches:
                 return (
-                    "Two-speaker mode requires prompt lines using Speaker 1: and Speaker 2: "
-                    "(or any two numeric speaker IDs). For headless settings, keep "
+                    f"{speaker_count}-speaker mode requires prompt lines using Speaker 1: to Speaker {speaker_count}: "
+                    f"(or any {speaker_count} numeric speaker IDs). For headless settings, keep "
                     "'multi_prompts_gen_type' = 'FG' so dialogue lines stay in one prompt."
                 )
             speaker_ids = sorted({int(match.group(1)) for match in speaker_matches})
-            if len(speaker_ids) != 2:
+            if len(speaker_ids) != speaker_count:
                 return (
-                    "Two-speaker mode requires exactly two speaker IDs. Use Speaker 1: and Speaker 2:. "
+                    f"{speaker_count}-speaker mode requires exactly {speaker_count} speaker IDs. Use Speaker 1: to Speaker {speaker_count}:. "
                     "For headless settings, keep 'multi_prompts_gen_type' = 'FG'."
                 )
         elif has_speaker_syntax:
-            return "Speaker-tag dialogue requires two-speaker mode (set audio prompt mode to Dialogue)."
+            return "Speaker-tag dialogue requires a Dialogue audio prompt mode."
         return None
 
     @staticmethod

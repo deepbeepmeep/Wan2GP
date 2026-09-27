@@ -171,7 +171,12 @@ def ensure_qwen35_prompt_enhancer_assets(process_files_def, backend: str = enhan
     if spec["root_repo"] == spec.get("gguf_repo"):
         gguf_backend = backend in (enhancer_quantization_GGUF, enhancer_quantization_GGUF_Q3, enhancer_quantization_GGUF_Q2, enhancer_quantization_GGUF_PTQ1, enhancer_quantization_GGUF_Q8)
         checkpoint_filename = _get_qwen35_gguf_filename(spec, backend) if gguf_backend else spec["text_int8_filename"]
-        qwen35_shared_files += [spec["vision_filename"], checkpoint_filename]
+        qwen35_shared_files.append(spec["vision_filename"])
+        checkpoint_folder = spec.get("gguf_repo_subfolder", repo_subfolder)
+        if checkpoint_folder == repo_subfolder:
+            qwen35_shared_files.append(checkpoint_filename)
+        else:
+            process_files_def(repoId=spec["gguf_repo"], sourceFolderList=[checkpoint_folder], targetFolderList=[spec["assets_dir_name"]], fileList=[[checkpoint_filename]])
         if speculative_decoding:
             mtp_filename = spec.get("text_gguf_q3_mtp_filename" if backend == enhancer_quantization_GGUF_Q3 else "text_mtp_filename")
             if mtp_filename:

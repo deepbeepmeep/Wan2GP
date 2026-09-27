@@ -44,6 +44,7 @@ _DEEPY_MODEL_DEF_STRING_LIMIT = 256
 _TOOLBOX_ACTIONS = {
     "add_to_gallery",
     "create_color_frame",
+    "create_mask",
     "image_channels",
     "inspect_media",
     "inspect_video",
@@ -78,6 +79,7 @@ _TOOLBOX_MEDIA_PARAMETERS = {
     "merge_videos": ("video_first", "video_second"),
     "get_media_details": ("media_id",),
     "image_channels": ("media_id",),
+    "create_mask": ("media_id",),
 }
 _POSTPROCESS_PATH_PARAMETERS = {
     "audio_media_id": "audio_path",
@@ -86,8 +88,8 @@ _POSTPROCESS_PATH_PARAMETERS = {
 }
 _MCP_MEDIA_SETTING_KEYS = {
     "image_start", "image_end", "image_refs", "image_guide", "image_mask",
-    "video_guide", "video_guide2", "video_mask", "video_source",
-    "audio_guide", "audio_guide2", "audio_source",
+    "video_guide", "video_guide2", "video_guide3", "video_mask", "video_source",
+    "audio_guide", "audio_guide2", "audio_guide3", "audio_source",
     "replace_voice_sample", "replace_voice_sample2", "custom_guide",
 }
 _GALLERY_LOCK = threading.RLock()
@@ -757,10 +759,12 @@ def _validate_generation_media(session, settings, model_type, path):
         "image_guide": (has_control and image_output, control_active, "an enabled Control Image mode"),
         "video_guide": (has_control and not image_output, control_active, "an enabled Control Video mode"),
         "video_guide2": (any("+" in value for value in guide_choices) and not image_output, control_active and "+" in video_flags, "an enabled two-video mode"),
+        "video_guide3": (any("*" in value for value in guide_choices) and not image_output, control_active and "*" in video_flags, "an enabled three-video mode"),
         "image_mask": (has_mask and image_output, mask_active, "an enabled Control Image mask mode"),
         "video_mask": (has_mask and not image_output, mask_active, "an enabled Control Video mask mode"),
         "audio_guide": (has_audio and (audio_choices is None or any("A" in value for value in audio_values)), "A" in audio_flags, "audio_prompt_type containing A"),
         "audio_guide2": (has_audio and (any("B" in value for value in audio_values) if audio_choices is not None else not model_def.get("one_speaker_only", False) and not model_def.get("audio_only", False)), "B" in audio_flags, "audio_prompt_type containing B"),
+        "audio_guide3": (has_audio and audio_choices is not None and any("D" in value for value in audio_values), "D" in audio_flags, "audio_prompt_type containing D"),
         "custom_guide": (model_def.get("custom_guide") is not None, True, "a declared custom guide"),
     }
     for key in sorted(supplied & checks.keys()):
@@ -1717,6 +1721,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                 model_type = settings.get(model_key)
                 if not isinstance(model_type, str) or not model_type.strip():
                     raise ValueError(f"{path}.{model_key} must be a non-empty string for generation. Nothing was submitted.")
+                if session.get_model_metadata(model_type.strip()) is None:
+                    raise ValueError(f'{path}.{model_key}: unknown model {model_type.strip()!r}. Use wangp_deepy_templates(tool_id="...") for the configured default model, or wangp_models(query="...") to find one. Nothing was submitted.')
                 unknown_error = unknown_settings_error(settings)
                 if unknown_error:
                     if "accelerator profile" in unknown_error:
@@ -1744,6 +1750,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                 for key, value in defaults.items():
                     if settings.get(key) is None:
                         settings[key] = value
+                if compact_model_tools:  # Deepy writes final prompts itself; a template's enhancer must not rewrite them
+                    settings["prompt_enhancer"] = ""
         if api_version == 2 or long_text_active:
             resolved_source = deepy_long_text.resolve_prompt_references(resolved_source, file_access_policy, read_only=api_version == 2)
         record = jobs.submit(_resolve_generation_media(session, resolved_source, allow_read_file_system, file_access_policy))

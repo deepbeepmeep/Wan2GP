@@ -97,6 +97,7 @@ from shared.remote_llm.config import (
     ENGINE_CODEX,
     ENGINE_OPENCODE,
     ENGINE_QWEN35_4B,
+    ENGINE_QWEN38_9B,
     LLM_CONFIG_KEY,
     is_remote_engine,
     local_enhancer_id,
@@ -265,10 +266,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         choices=self.attention_modes_choices,
                         value=self.attention_mode, label="Attention Type", interactive=not self.args.lock_config
                     )
-                    self.tiny_vae_preview_choice = gr.Dropdown(
-                        choices=[("Disabled", "disabled"), ("GPU Mode", "gpu")],
-                        value=self.server_config.get("tiny_vae_preview", "disabled"), label="TinyVAE Preview (when available)",
-                        info="Replaces RGB previews for supported models. Downloads a small decoder on first use and uses additional VRAM.",
+                    self.generation_preview_choice = gr.Dropdown(
+                        choices=[("Frames Selection using RGB Factors (fast)", "rgb"), ("Frames Selection using Tiny VAE (when available, slower)", "tiny_vae_frames"), ("Video using Tiny VAE (when available, even slower)", "tiny_vae_video")],
+                        value=self.server_config.get("generation_preview", "rgb"), label="Generation Preview",
+                        info="Tiny VAE modes use additional GPU memory and download a small decoder on first use. Unsupported models keep RGB previews; image generations show still images.",
                         interactive=not self.args.lock_config,
                     )
                     self.preload_model_policy_choice = gr.CheckboxGroup(
@@ -439,7 +440,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     deepy_remote_default = is_remote_engine(resolve_role_engine(llm_config_view, "deepy"))
                     deepy_type_default = deepy_mode_from_config(self.server_config.get(DEEPY_ENABLED_KEY, 0), self.server_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT))
                     with gr.Group(elem_classes=["wangp-transparent-group"]):
-                        self.deepy_llm_engine_choice = gr.Dropdown(choices=DEEPY_ENGINE_CHOICES, value=llm_config["deepy"], label="Prompt Enhancer / Deepy LLM Engine")
+                        self.deepy_llm_engine_choice = gr.Dropdown(choices=[choice for choice in DEEPY_ENGINE_CHOICES if choice[1] != ENGINE_QWEN38_9B or llm_config["deepy"] == ENGINE_QWEN38_9B], value=llm_config["deepy"], label="Prompt Enhancer / Deepy LLM Engine")  # Qwen3.8 9B hidden until it works reliably
                         self.remote_llm_warning_md = gr.Markdown(value=privacy_warning(self.server_config))
                         self.remote_llm_auth_md = gr.Markdown("Authentication is managed by each external engine. WanGP does not request or store passwords, API keys, access tokens, or refresh tokens.", visible=deepy_remote_default)
                         self.codex_config_ui = create_codex_config_ui(gr, llm_config["profiles"][ENGINE_CODEX], visible=ENGINE_CODEX in active_llm_engines, lock_config=self.args.lock_config)
@@ -798,7 +799,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         inputs = [
             self.state,
             self.transformer_types_choices, self.model_hierarchy_type_choice, self.fit_canvas_choice,
-            self.attention_choice, self.tiny_vae_preview_choice, self.preload_model_policy_choice, self.clear_file_list_choice, self.multi_prompts_gen_type_choice, self.keep_intermediate_sliding_windows_choice,
+            self.attention_choice, self.generation_preview_choice, self.preload_model_policy_choice, self.clear_file_list_choice, self.multi_prompts_gen_type_choice, self.keep_intermediate_sliding_windows_choice,
             self.display_stats_choice, self.max_frames_multiplier_choice, self.keep_resolution_on_model_switch_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice, self.loras_root_choice, self.save_queue_if_crash_choice,
             self.UI_theme_choice, self.queue_color_scheme_choice, self.process_queues_when_browser_unfocused_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
@@ -893,7 +894,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         (
             transformer_types_choices, model_hierarchy_type_choice, fit_canvas_choice,
-            attention_choice, tiny_vae_preview_choice, preload_model_policy_choice, clear_file_list_choice, multi_prompts_gen_type_choice, keep_intermediate_sliding_windows_choice,
+            attention_choice, generation_preview_choice, preload_model_policy_choice, clear_file_list_choice, multi_prompts_gen_type_choice, keep_intermediate_sliding_windows_choice,
             display_stats_choice, max_frames_multiplier_choice, keep_resolution_on_model_switch_choice, enable_4k_resolutions_choice, checkpoints_paths_choice, loras_root_choice, save_queue_if_crash_choice,
             UI_theme_choice, queue_color_scheme_choice, process_queues_when_browser_unfocused_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
@@ -1010,7 +1011,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         new_server_config = copy.deepcopy(old_server_config)
         new_server_config.update({
             "attention_mode": attention_choice, "transformer_types": transformer_types_choices,
-            "tiny_vae_preview": tiny_vae_preview_choice,
+            "generation_preview": generation_preview_choice,
             "text_encoder_quantization": text_encoder_quantization_choice, "save_path": save_path_choice,
             "image_save_path": image_save_path_choice, "audio_save_path": audio_save_path_choice,
             "lm_decoder_engine": lm_decoder_engine_choice,

@@ -1,3 +1,4 @@
+from shared.utils.media_control import inference_checkpoint
 import logging
 from dataclasses import dataclass
 from typing import Optional
@@ -281,10 +282,12 @@ class MMAudio(nn.Module):
         self.latent_rot = self.latent_rot.to(latent.device)
         self.clip_rot = self.clip_rot.to(latent.device)
         for block in self.joint_blocks:
+            inference_checkpoint()
             latent, clip_f, text_f = block(latent, clip_f, text_f, global_c, extended_c,
                                            self.latent_rot, self.clip_rot)  # (B, N, D)
 
         for block in self.fused_blocks:
+            inference_checkpoint()
             latent = block(latent, extended_c, self.latent_rot)
         self.latent_rot = self.latent_rot.to("cpu")
         self.clip_rot = self.clip_rot.to("cpu")

@@ -15,8 +15,9 @@ H3_EXCERPT_SETTINGS = [
 ]
 
 
-def parse_excerpts(text, fps, media_seconds, label):
-    """Return up to three (start, duration) excerpts in seconds, centred on each position and kept inside the media."""
+def parse_excerpts(text, fps, media_seconds, label, video_frames=False):
+    """Return up to three (start, duration) excerpts in seconds, centred on each position and kept inside the media.
+    With video_frames, durations use the nearest H3 reference length of 17n+5 frames that fits in the media."""
     tokens = (text or "").replace(",", " ").split()
     if not tokens:
         raise ValueError(f"{label}: enter up to {H3_EXCERPTS_MAX_COUNT} positions, for example 3 5.2s/4s 12s")
@@ -36,13 +37,10 @@ def parse_excerpts(text, fps, media_seconds, label):
             raise ValueError(f"{label}: excerpt '{token}' must last at least {H3_EXCERPT_MIN_SECONDS:g}s")
         if duration > media_seconds:
             raise ValueError(f"{label}: excerpt '{token}' is longer than the media ({media_seconds:.2f}s)")
+        if video_frames:
+            duration = (min(round((duration * fps - 5) / 17), int((media_seconds * fps - 5) // 17)) * 17 + 5) / fps
         excerpts.append((min(max(center - duration / 2, 0.0), media_seconds - duration), duration))
     total = sum(duration for _, duration in excerpts)
     if total > H3_EXCERPTS_MAX_SECONDS:
-        raise ValueError(f"{label}: excerpts total {total:g}s, above the {H3_EXCERPTS_MAX_SECONDS:g}s limit")
+        raise ValueError(f"{label}: excerpts total {total:.2f}s, above the {H3_EXCERPTS_MAX_SECONDS:g}s limit")
     return excerpts
-
-
-def excerpt_frame_count(duration, fps):
-    """H3 reference videos contain 17n+5 frames; use the nearest count to the requested duration."""
-    return round((duration * fps - 5) / 17) * 17 + 5

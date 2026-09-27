@@ -33,7 +33,8 @@ DEEPY_USAGES = {
     "gen_speech_from_sample": "Generate speech using a voice sample",
 }
 MEDIA_DISCOVERY_DESCRIPTIONS = {
-    "create_color_frame": "Create a solid-color Gallery image.",
+    "create_color_frame": "Create a solid-color Gallery image, optionally with boxes (box masks).",
+    "create_mask": "Mask named objects in an image or video (Magic Mask) for image_mask/video_mask.",
     "image_channels": "Convert RGB/RGBA images, extract color channels, or combine grayscale channel images.",
     "extract_audio": "Extract audio, optionally a time range.",
     "extract_video": "Extract a video segment.",
@@ -102,8 +103,8 @@ def invocation(actions, action, arguments):
                 compact[name] += " Execute with arguments={}."
         return {"status": "discovery", "actions": compact, "usage": "Describe: action + arguments=null. Execute: action + arguments={...}."}
     if action not in actions:
-        close = difflib.get_close_matches(action, actions, n=1, cutoff=0.6) or [name for name in actions if action in name][:1]
-        raise ValueError(f"Unknown or unavailable action: {action}. " + (f"Did you mean {close[0]}?" if close else f"Available actions: {', '.join(actions)}."))
+        close = sorted(difflib.get_close_matches(action, actions, n=3, cutoff=0.6) or [name for name in actions if action in name][:3])
+        raise ValueError(f"Unknown or unavailable action: {action}. " + (f"Did you mean {' or '.join(close)}? Omit action to discover available actions." if close else f"Available actions: {', '.join(actions)}."))
     definition = actions[action]
     if arguments is None:
         return {"status": "schema", "action": {"name": action, **action_contract(definition)}}
@@ -143,6 +144,12 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
     mcp._wangp_jobs = jobs
     mcp._wangp_allow_async = allow_async
 
+    def hide_enhancer(settings):
+        # Deepy writes final prompts itself, so the prompt enhancer setting is neither shown to it nor used.
+        if deepy_help:
+            settings.pop("prompt_enhancer", None)
+        return settings
+
     def collection(query, records, args, key="items", metadata=None):
         return pages.page(query, records, key=key, limit=args.get("limit", PAGE_SIZE), cursor=args.get("cursor"), metadata=metadata, summary_only=args.get("summary_only", False))
 
@@ -154,16 +161,18 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
     model_filters["inputs"]["description"] = "Accepted media kind. For broad image-conditioned video discovery combine inputs='image' with main_output='video'; check media_inputs for the supported image roles."
     model_filters["capabilities"] = {"type": "array", "items": {"type": "string"}, "description": "Require every named capability. image_to_video means opening-frame support; reference_images means image reference conditioning; reference_videos means video reference conditioning, distinct from continuation or spatial control. Other examples: audio_output, video_continuation. Never relaxed by speciality matching."}
     filter_schema = {"type": "object", "properties": model_filters, "additionalProperties": False}
-    search_def = paginated(action_def("Find models by name, strict capabilities or specialities, ranked by speed/size preferences. query is a literal case-insensitive substring of name, ID, family or description; filters stay strict. specialities matches all named strengths or aliases, ignoring plural forms; only when no exact matches exist, returns partial matches with missing, word-match or substring evidence. Results sort by speciality relevance, then matching speed/size preferences (both, one, neither). Prime inherits its live preferences; standalone MCP is neutral. Override preferences for this request only, using 'any' for no preference. accelerated='native' uses defaults; 'profiles' offers accelerator profiles, read with wangp_model(model_type=..., action='saved_settings', arguments={}) and applied as settings; 'none' has none. size='lighter'/'large' is relative, not GB or a quality score.", {"query": {"type": "string", "default": ""}, "filters": filter_schema, "specialities": {"type": "array", "items": {"type": "string", "minLength": 1}}, "preferences": {"type": "object", "properties": {"speed": {"type": "string", "enum": ["fast", "standard", "any"]}, "size": {"type": "string", "enum": ["smaller", "larger", "any"]}}, "additionalProperties": False}}))
-    specialities_def = paginated(action_def("List declared model specialities and aliases, optionally filtered by model capabilities. Use returned names in search.specialities. Known terms can be searched directly; no catalog read is required.", {"filters": filter_schema}))
+    search_def = paginated(action_def("Find models by name, strict capabilities or specialities, ranked by speed/size preferences. query is a literal case-insensitive substring of name, ID, family or description; filters stay strict. specialities matches all named strengths or aliases, ignoring plural forms; only when no exact matches exist, returns partial matches with missing, word-match or substring evidence. Results sort by speciality relevance, then models dedicated to the filtered main_output, then matching speed/size preferences (both, one, neither). Without query or specialities, results are compact rows; read details with wangp_model. Prime inherits its live preferences; standalone MCP is neutral. Override preferences for this request only, using 'any' for no preference. accelerated='native' uses defaults; 'profiles' offers accelerator profiles; 'none' has none. size='lighter'/'large' is relative, not GB or a quality score.", {"query": {"type": "string", "default": ""}, "filters": filter_schema, "specialities": {"type": "array", "items": {"type": "string", "minLength": 1}}, "preferences": {"type": "object", "properties": {"speed": {"type": "string", "enum": ["fast", "standard", "any"]}, "size": {"type": "string", "enum": ["smaller", "larger", "any"]}}, "additionalProperties": False}}))
+    specialities_def = paginated(action_def("List declared model specialities and aliases, optionally filtered by model capabilities. Use returned names in search.specialities. Search directly first: plurals and aliases already match, so list the catalog only if a search finds nothing.", {"filters": filter_schema}))
 
     @mcp.tool()
     def wangp_models(action: str | None = None, arguments: dict[str, Any] | None = None, query: str | None = None) -> dict[str, Any]:
-        """Find models by name (query alone), or discover search filters, speciality matching and speed/size preferences. action='specialities', arguments={} lists declared strengths when terminology is unknown."""
+        """Find models by name (query alone), or discover search filters, speciality matching and speed/size preferences. Search specialities directly (plurals and aliases already match); action='specialities', arguments={} lists declared strengths only if a search finds nothing."""
         if query is not None:
             if action is not None or arguments is not None:
                 raise ValueError("Pass query alone, or use action='search' with query inside arguments alongside advanced filters.")
             action, arguments = "search", {"query": query}
+        if action in {"search", "specialities"} and arguments is None:  # read-only actions without required arguments run directly
+            arguments = {}
         response = invocation({"search": search_def, "specialities": specialities_def}, action, arguments)
         if response is not None:
             return response
@@ -179,15 +188,22 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         preferences = normalize_preferences({**preferences, **arguments.get("preferences", {})})
         records, metadata = None, None
         if not arguments.get("cursor"):
-            records = [record for record in session.list_model_metadata(include_selection=True, **filters) if all(record["capabilities"].get(key, False) for key in required)]
+            records = session.list_model_metadata(include_selection=True, **filters)
+            missing = {record["model_type"]: [key for key in required if not record["capabilities"].get(key, False)] for record in records}
             if action == "specialities":
-                records = speciality_catalog(records)
+                records = speciality_catalog([record for record in records if not missing[record["model_type"]]])
             else:
-                records, match = rank_models(records, specialities, preferences)
+                # Required capabilities stay strict: without a full match, return the nearest models and what each lacks.
+                fewest = min(map(len, missing.values()), default=0)
+                records, match = rank_models([record for record in records if len(missing[record["model_type"]]) == fewest], specialities, preferences, filters.get("main_output"))
                 metadata = {"match": match, "preferences": preferences}
-                if match == "none" and specialities:
+                if fewest:
+                    metadata["note"] = "No model has every required capability; these nearest models lack the capabilities in missing_capabilities."
+                elif match == "none" and specialities:
                     metadata["note"] = "No declared speciality matches within the required filters. A capable default template may still meet the request."
-                records = [core._compact_deepy_model_metadata(item) for item in records]
+                records = [{**core._compact_deepy_model_metadata(item), **({"missing_capabilities": missing[item["model_type"]]} if fewest else {})} for item in records]
+                if not filters["query"] and not specialities:  # browsing: identify models compactly
+                    records = [{**{key: item[key] for key in ("model_type", "name", "accelerated", "size", "missing_capabilities") if key in item}, **({"specialities": [entry["name"] for entry in item["specialities"]]} if item.get("specialities") else {})} for item in records]
         result = collection(["models", action, filters, required, specialities, arguments.get("preferences", {})], records, arguments, "specialities" if action == "specialities" else "models", metadata=metadata)
         if result["has_more"]:
             result["next_call"] = {"action": action, "arguments": {**arguments, "cursor": result["next_cursor"]}}
@@ -197,20 +213,31 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         "capabilities": action_def("Read the model's capabilities, parameter usage and generation limits."),
         "definition": action_def("Read model declarations: property='infos' explains inputs and their combinations; 'prompt_infos' explains prompting. Shared setting meanings: wangp://docs/settings. Omit property only to explore declarations. Root strings longer than 256 characters are previews; request the indicated property for its full value.", {"property": {"type": "string"}}),
         "defaults": action_def("Read pristine generation defaults for this model; saved UI settings are separate."),
-        "saved_settings": paginated(action_def("List saved settings, accelerator profiles and presets, or read one by setting_id. Accelerators sort by descending profile_priority; a unique highest positive priority is recommended. For fast generation on accelerated='profiles', read that profile and apply its settings over model defaults. No recommended flag means consult model help, not filename order. Native acceleration needs no automatic extra profile.", {"setting_id": {"type": "string"}})),
+        "profiles": action_def("List accelerator profiles by descending profile_priority, with the recommended profile's settings included: apply them over model defaults for fast generation on accelerated='profiles'. Read another profile by setting_id. Without a recommended profile, consult model help rather than filename order. Native acceleration needs no profile.", {"setting_id": {"type": "string"}}),
+        "presets": paginated(action_def("List the model's built-in presets, or read one by setting_id.", {"setting_id": {"type": "string"}})),
+        "user_settings": paginated(action_def("List the user's saved settings for this model, or read one by setting_id. Use only when the user refers to their saved settings.", {"setting_id": {"type": "string"}})),
         "loras": paginated(action_def("Find locally available LoRAs for this model. name accepts case-insensitive * and ? globs; returned identifiers go in activated_loras with loras_multipliers.", {"name": {"type": "string"}})),
     }
+    # Earlier clients listed profiles and user settings together; accepted, no longer advertised.
+    legacy_model_actions = {"saved_settings": paginated(action_def("List saved settings, accelerator profiles and presets, or read one by setting_id.", {"setting_id": {"type": "string"}}))}
+    setting_actions = {"profiles", "presets", "user_settings", "saved_settings"}
+    setting_types = {"presets": "preset", "user_settings": "user settings"}
 
     @mcp.tool()
     def wangp_model(model_type: str, action: str | None = None, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Explore a chosen model's capabilities, limits, definition, defaults, saved settings and LoRAs."""
+        """Explore a chosen model's capabilities, limits, definition, defaults, accelerator profiles, presets, user settings and LoRAs."""
         known_model(model_type)
-        if action == "saved_settings" and isinstance(arguments, dict) and "id" in arguments:
+        actions = {**model_actions, **legacy_model_actions} if action in legacy_model_actions else model_actions
+        if action in actions and arguments is None:  # read-only actions without required arguments run directly
+            arguments = {}
+        if action in setting_actions and isinstance(arguments, dict) and "id" in arguments:
             arguments = dict(arguments)
             setting_id = arguments.pop("id")  # listings return id; setting_id is its accepted alias target
             if arguments.setdefault("setting_id", setting_id) != setting_id:
-                raise ValueError("saved_settings: id and setting_id must not specify different values.")
-        response = invocation(model_actions, action, arguments)
+                raise ValueError(f"{action}: id and setting_id must not specify different values.")
+        if action == "definition" and isinstance(arguments, dict) and arguments.get("property") == "profiles" and "profiles" not in session.get_model_def(model_type):
+            action, arguments = "profiles", {}  # like the defaults/capabilities properties, a request for the action of that name
+        response = invocation(actions, action, arguments)
         if response is not None:
             return response
         if action in {"capabilities", "definition", "defaults"}:
@@ -231,26 +258,34 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                     help_text = model_def.get(f"deepy_{property_name}", model_def.get(property_name)) if deepy_help else model_def.get(property_name)
                     if help_text:
                         result[route] = {"action": "definition", "arguments": {"property": property_name}}
-            return result
-        if action == "saved_settings" and "setting_id" in arguments:
+            return hide_enhancer(result) if action == "defaults" else result
+        if action in setting_actions and "setting_id" in arguments:
             if arguments.get("cursor"):
                 raise ValueError("A single setting_id cannot be combined with a cursor.")
             result = operations["wangp_model_settings"](model_type, arguments["setting_id"])
-            if result.get("type") == "accelerator profile":
-                result["usage"] = "Copy every content setting except help into the generation settings, beside model_type, prompt and resolution."
+            hide_enhancer(result["content"])
+            return result
+        if action == "profiles":
+            profiles = [{key: value for key, value in item.items() if key != "type"} for item in operations["wangp_model_settings"](model_type)["settings"] if item["type"] == "accelerator profile"]
+            result = {"status": "done", "profiles": profiles}
+            recommended = next((item["id"] for item in profiles if item.get("recommended")), None)
+            if recommended:
+                result["recommended_settings"] = hide_enhancer(operations["wangp_model_settings"](model_type, recommended)["content"])
+            else:
+                result["note"] = "No profile is recommended; consult model help rather than filename order." if profiles else "This model has no accelerator profiles."
             return result
         name = arguments.get("name")
         result = None if arguments.get("cursor") else operations["wangp_list_loras"](model_type, name) if action == "loras" else operations["wangp_model_settings"](model_type)
         key = "loras" if action == "loras" else "settings"
-        return collection(["model", model_type, action, name], None if result is None else result[key], arguments, key)
+        records = None if result is None else [item for item in result[key] if item["type"] == setting_types[action]] if action in setting_types else result[key]
+        return collection(["model", model_type, action, name], records, arguments, key)
 
     template_help = (
         "Read a Deepy recipe for image, video, voice or music: the template's generation settings, the model's supported media_inputs and the template names available for that tool_id. "
-        "Omit template for the configured default; pass a returned name only to choose an alternative. "
-        "media_inputs describes supported model roles, not populated settings or a settings field: image start/end anchor frames, reference conditions appearance, injected_frames inserts frames at specified positions; video reference guides appearance or motion rather than continuing a clip. "
-        "Use model help for mode-specific input combinations. Returned settings already include active general_properties; apply explicit user overrides last. Query capabilities only for missing limits. A long template list returns next_call to continue it.")
+        "Omit template for the configured default; pass a returned name only to choose an alternative. Returned settings already include active general_properties; apply explicit user overrides last."
+        + ("" if deepy_help else " media_inputs describes supported model roles, not populated settings or a settings field: image start/end anchor frames, reference conditions appearance, injected_frames inserts frames at specified positions; video reference guides appearance or motion rather than continuing a clip. Use model help for mode-specific input combinations. Query capabilities only for missing limits."))
     template_parameters = {"type": "object", "properties": {
-        "tool_id": {"type": "string", "enum": list(DEEPY_USAGES), "description": "Deepy usage: " + "; ".join(f"{name}: {usage}" for name, usage in DEEPY_USAGES.items()) + "."},
+        "tool_id": {"type": "string", "enum": list(DEEPY_USAGES), **({} if deepy_help else {"description": "Deepy usage: " + "; ".join(f"{name}: {usage}" for name, usage in DEEPY_USAGES.items()) + "."})},
         "template": {"type": "string", "minLength": 1, "default": "default", "description": "A returned template name; default is the configured default template."},
         "cursor": {"type": "string", "description": "Only from next_call, to continue a long template list."}},
         "required": ["tool_id"], "additionalProperties": False}
@@ -280,12 +315,14 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         if cursor:
             return {"status": "done", "tool_id": tool_id, **template_names(tool_id, cursor=cursor)}
         result = operations["wangp_get_deepy_template_settings"](tool_id, template)
-        result["media_inputs"] = core._compact_deepy_model_metadata(session.get_model_metadata(result["settings"]["model_type"]))["media_inputs"]
+        hide_enhancer(result["settings"])
+        metadata = core._compact_deepy_model_metadata(session.get_model_metadata(result["settings"]["model_type"]))
+        result.update({key: metadata[key] for key in ("accelerated", "media_inputs") if key in metadata})
         records = [{"template": item["template"], **({"label": item["label"]} if item["label"] != item["template"] else {})} for item in operations["wangp_list_deepy_templates"](tool_id)[0]["templates"]]
         return {**result, **template_names(tool_id, records)}
 
     gallery_help = ("List current and remembered Gallery images, videos and audio, including the user's live selections: selected_only=true returns only selected media; media_type filters by kind. "
-                    "Results alternate image/video then audio, newest-first within each gallery. Returned media_id values identify inputs to other tools. " + PAGING_HELP)
+                    "Results alternate image/video then audio, newest-first within each gallery. Returned media_id values identify inputs to other tools. " + ("Continue with unchanged filters and cursor=next_cursor." if deepy_help else PAGING_HELP))
     gallery_parameters = {"type": "object", "properties": {"media_type": {"type": "string", "enum": ["all", "image", "video", "audio"], "default": "all"}, "selected_only": {"type": "boolean", "default": False}, **copy.deepcopy(PAGING)}, "required": [], "additionalProperties": False}
 
     @mcp.tool(description=gallery_help)
@@ -460,7 +497,9 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         if response is not None:
             return response
         if action == "media_settings":
-            return public_media_result(operations["wangp_get_media_settings"](**arguments), get_toolbox().session.media_registry)
+            result = operations["wangp_get_media_settings"](**arguments)
+            hide_enhancer(result["settings"])
+            return public_media_result(result, get_toolbox().session.media_registry)
         if action == "remux_media":
             toolbox = get_toolbox()
             resolved = core._resolve_toolbox_arguments(session, toolbox, action, arguments, policy.read_enabled, policy)
@@ -505,12 +544,11 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         "Generate image, video or audio. settings is one flat WanGP settings object, or a list of them for a batch submitted together in order. "
         "Each object needs model_type and the complete prompt; other WanGP settings go beside them, only custom_settings holds nested values, and media go directly in fields such as image_start or audio_guide. "
         "Template and media settings can be copied and edited. edit_* post-processing tasks need no model or prompt. "
-        "Model selection and supplied media inputs are checked before submission; inputs unsupported by the model or inactive in the selected mode return an error. "
-        "A prompt may be @file(\"@workspace/prompt.txt\"): WanGP reads and snapshots that authorized UTF-8 file, preserving blank lines. "
+        + ("" if deepy_help else "A prompt may be @file(\"@workspace/prompt.txt\"): WanGP reads and snapshots that authorized UTF-8 file, preserving blank lines. ") +
         "Omitted resolution, video_length or duration_seconds, and seed use Deepy's standing defaults before model factory settings; supplied values are preserved. " + wait_help)
     generation_settings = {"type": "object", "properties": {"model_type": {"type": "string", "description": "WanGP model type."}, "prompt": {"type": "string", "description": "Complete prompt text or @file reference."}},
                            "required": ["model_type", "prompt"], "additionalProperties": True}
-    generate_parameters = {"type": "object", "properties": {"settings": {"anyOf": [generation_settings, {"type": "array", "items": generation_settings, "minItems": 1}]}, **wait_properties},
+    generate_parameters = {"type": "object", "properties": {"settings": {"anyOf": [generation_settings, {"type": "array", "items": {"type": "object"}, "minItems": 1}]}, **wait_properties},
                            "required": ["settings"], "additionalProperties": False}
 
     @mcp.tool(description=generate_help)
@@ -529,7 +567,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
 
     @mcp.tool()
     def wangp_postprocess(media: str, action: str | None = None, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Discover and apply compatible image, video or audio treatments, including upscaling, refinement, interpolation and sound processing."""
+        """Discover and apply compatible image, video or audio treatments, including upscaling, refinement, interpolation and sound processing. media is the media ID or path to process; use "image", "video" or "audio" only to list treatments before any media exists."""
         from postprocessing import catalog
 
         concrete = media not in {"image", "video", "audio"}
@@ -552,13 +590,15 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 if parameter.get("required") and "default" not in parameter:
                     required.append(name)
             actions[process["id"]] = action_def(process["description"], {**properties, **wait_properties}, required)
-            actions[process["id"]]["limitations"] = "Execution requires a concrete media ID or authorized path. " + wait_help
+            actions[process["id"]]["limitations"] = "Execute with the concrete media ID or authorized path as the top-level media, beside action and arguments. " + wait_help
+        if isinstance(arguments, dict) and {"media", "media_id", "path"} & arguments.keys():
+            raise ValueError(f'Pass the media ID or path as the top-level media, not inside arguments: {{"media": "<media_id>", "action": "{action}", "arguments": {{...}}}}. Nothing was executed.')
         response = invocation(actions, action, arguments)
         if response is not None:
             response["media_type"] = kind
             return response
         if not concrete:
-            raise ValueError("Execution requires a concrete Gallery media ID or authorized path, not a media type.")
+            raise ValueError("Execution requires a concrete Gallery media ID or authorized path as the top-level media, not a media type.")
         parameters = {key: value for key, value in arguments.items() if key not in wait_properties}
         initial = operations["wangp_postprocess"](media_id=media if core._is_media_id(media) else None, path=None if core._is_media_id(media) else media, process=action, parameters=parameters)
         return finish(initial, arguments)

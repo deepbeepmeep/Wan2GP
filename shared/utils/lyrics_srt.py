@@ -113,6 +113,35 @@ def _word_set(text):
     return set(w for w in re.split(r"\s+", _norm_text(text)) if w)
 
 
+def pick_lyrics_base_multi(candidates, words=None, segments=None, min_hits=3, margin=3):
+    """Pick whichever input text holds the actual song lyrics.
+
+    Song generation may sing the enhanced prompt while save_prompt only
+    holds the original idea, and lyrics/style split across prompt fields
+    differently per model. Scores each candidate by word overlap with the
+    transcribed vocals; ties fall back to the longest text.
+    """
+    texts = [str(c or "") for c in candidates or []]
+    heard = set()
+    for w in words or []:
+        n = _norm_word(w.get("word", "") if isinstance(w, dict) else w)
+        if n:
+            heard.add(n)
+    if not heard:
+        for s in segments or []:
+            heard |= _word_set(s.get("text", "") if isinstance(s, dict) else s)
+    scored = [(_word_set(t) & heard, t) for t in texts if t.strip()]
+    if not scored:
+        return "", False
+    scored.sort(key=lambda item: len(item[0]), reverse=True)
+    best_hits = len(scored[0][0])
+    runner_hits = len(scored[1][0]) if len(scored) > 1 else 0
+    if heard and best_hits >= min_hits and best_hits - runner_hits >= margin:
+        return scored[0][1], True
+    longest = max(scored, key=lambda item: len(item[1]))
+    return longest[1], False
+
+
 def pick_lyrics_base(prompt_text, alt_text, words=None, segments=None):
     """Pick whichever input field holds the actual song lyrics.
 

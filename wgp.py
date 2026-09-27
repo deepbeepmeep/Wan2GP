@@ -8421,19 +8421,32 @@ def generate_media(
                     video_path = audio_path
                     if server_config.get("save_lyrics_srt", False):
                         try:
-                            from shared.utils.lyrics_srt import write_lyrics_srt
+                            from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt
+                            srt_path = os.path.splitext(audio_path)[0] + ".srt"
+                            synced = False
                             try:
-                                duration, _ = get_media_duration_and_audio_layouts(audio_path)
+                                set_progress_status("Transcribing vocals for .srt")
+                                from shared.deepy.transcription import transcribe_media
+                                res = transcribe_media(audio_path, timestamp_type="segment", model_name="large-v3", check_cancelled=lambda: gen.get("abort", False))
+                                if res.get("segments"):
+                                    synced = write_segments_srt(res["segments"], srt_path) is not None
+                            except (InterruptedError, KeyboardInterrupt):
+                                synced = True  # aborted: don't write fallback, don't fail generation
                             except Exception:
-                                duration = None
-                            if not duration:
+                                pass
+                            if not synced:
                                 try:
-                                    num_samples = sample.squeeze(0).shape[-1]
-                                    duration = float(num_samples) / float(output_audio_sampling_rate)
+                                    duration, _ = get_media_duration_and_audio_layouts(audio_path)
                                 except Exception:
                                     duration = None
-                            if duration:
-                                write_lyrics_srt(save_prompt, float(duration), os.path.splitext(audio_path)[0] + ".srt")
+                                if not duration:
+                                    try:
+                                        num_samples = sample.squeeze(0).shape[-1]
+                                        duration = float(num_samples) / float(output_audio_sampling_rate)
+                                    except Exception:
+                                        duration = None
+                                if duration:
+                                    write_lyrics_srt(save_prompt, float(duration), srt_path)
                         except Exception:
                             pass
                 elif is_image:
@@ -8540,10 +8553,23 @@ def generate_media(
 
                 if not audio_only and not is_image and server_config.get("save_lyrics_srt", False) and isinstance(video_path, str):
                     try:
-                        from shared.utils.lyrics_srt import write_lyrics_srt
-                        video_duration = float(output_frame_count) / float(output_fps) if output_frame_count and output_fps else None
-                        if video_duration:
-                            write_lyrics_srt(save_prompt, video_duration, os.path.splitext(video_path)[0] + ".srt")
+                        from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt
+                        srt_path = os.path.splitext(video_path)[0] + ".srt"
+                        synced = False
+                        try:
+                            set_progress_status("Transcribing audio for .srt")
+                            from shared.deepy.transcription import transcribe_media
+                            res = transcribe_media(video_path, timestamp_type="segment", model_name="large-v3", check_cancelled=lambda: gen.get("abort", False))
+                            if res.get("segments"):
+                                synced = write_segments_srt(res["segments"], srt_path) is not None
+                        except (InterruptedError, KeyboardInterrupt):
+                            synced = True  # aborted: don't write fallback, don't fail generation
+                        except Exception:
+                            pass
+                        if not synced:
+                            video_duration = float(output_frame_count) / float(output_fps) if output_frame_count and output_fps else None
+                            if video_duration:
+                                write_lyrics_srt(save_prompt, video_duration, srt_path)
                     except Exception:
                         pass
 

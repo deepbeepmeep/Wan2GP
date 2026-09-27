@@ -1,8 +1,10 @@
-"""Write input lyrics/prompts as timed .srt sidecar files.
+"""Write .srt sidecar files for generated songs and videos.
 
-The lyrics come from the generation input (song lyrics for audio-only
-models, prompt for videos). Timing blocks are distributed evenly over the
-actual output media duration, so the .srt stays in sync with the file.
+Two modes:
+- Transcribed (in sync): Whisper segment timestamps from the actual output
+  audio, so cues match the performed vocals.
+- Lyrics fallback (approximate): input lyrics/prompt blocks distributed
+  evenly over the output media duration.
 """
 
 import os
@@ -101,6 +103,37 @@ def write_lyrics_srt(lyrics_text, duration_seconds, srt_path):
         lines.append(str(i + 1))
         lines.append(f"{format_srt_timestamp(start)} --> {format_srt_timestamp(end)}")
         lines.append(block)
+        lines.append("")
+    os.makedirs(os.path.dirname(os.path.abspath(srt_path)), exist_ok=True)
+    with open(srt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines).strip() + "\n")
+    return srt_path
+
+
+def write_segments_srt(segments, srt_path):
+    """Write Whisper-style segments ([{start, end, text}]) as .srt.
+
+    Uses the real transcription timestamps, so cues are in sync with the
+    performed audio. Returns srt_path on success, None when empty.
+    """
+    cues = []
+    for seg in segments or []:
+        try:
+            start = float(seg.get("start", None))
+            end = float(seg.get("end", None))
+        except (TypeError, ValueError):
+            continue
+        text = str(seg.get("text", "") or "").strip()
+        if not text or not end > start or start < 0:
+            continue
+        cues.append((start, end, text))
+    if not cues:
+        return None
+    lines = []
+    for i, (start, end, text) in enumerate(cues, 1):
+        lines.append(str(i))
+        lines.append(f"{format_srt_timestamp(start)} --> {format_srt_timestamp(end)}")
+        lines.append(text)
         lines.append("")
     os.makedirs(os.path.dirname(os.path.abspath(srt_path)), exist_ok=True)
     with open(srt_path, "w", encoding="utf-8") as f:

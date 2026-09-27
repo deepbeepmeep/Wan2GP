@@ -8,6 +8,7 @@ import torch
 from shared.utils.hf import build_hf_url
 from shared.utils.frame_scheduler import normalize_overlap
 
+from .excerpts import H3_AUDIO_EXCERPTS_SETTING, H3_EXCERPT_SETTINGS, H3_VIDEO_EXCERPTS_SETTING, parse_excerpts
 from .constants import (H3_AUDIO_REFINEMENT_SETTING, H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_ROWS,
                         H3_MASK_MODE_SHARED_TIMESTEP, H3_MASK_MODE_SETTING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT,
                         h3_grouped_masking_enabled)
@@ -18,6 +19,7 @@ from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
 from .viggle import VIGGLE_ARCHITECTURE, VIGGLE_ASSET_FOLDER, VIGGLE_INFOS, VIGGLE_PROMPT_FILE, VIGGLE_REPO_ID
 from .prompt_enhancer import (FL2VA_DEEPY_PROMPT_INFOS, FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
                               H3_AUDIO_DEEPY_PROMPT_INFOS, H3_AUDIO_DIALOGUE_SYSTEM_PROMPT, H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
+                              H3_STILL_IMAGE_SYSTEM_PROMPT, H3_STILL_TEXT_SYSTEM_PROMPT,
                               REF2VA_DEEPY_PROMPT_INFOS, REF2VA_IMAGE_SYSTEM_PROMPT, REF2VA_PROMPT_INFOS, REF2VA_TEXT_SYSTEM_PROMPT)
 
 
@@ -55,7 +57,7 @@ FL2VA_DEEPY_INFOS = """Generate video and stereo sound from `prompt`. `image_sta
 
 Control Video (`video_guide`) guides frames: lower Denoising Strength preserves more source content; Whole Frame at strength 1 gives full freedom. A mask selects the edited area. For motion/appearance references, use Ref2VA Reference Video. Inject Frames uses ordered `image_refs` and explicit positions (`1` = first frame, `L` = last frame of the window, `X` = skip a window without consuming an image).
 
-`audio_prompt_type`: empty = generate video and audio; `A` = condition on `audio_guide`; `K` = control video plus its soundtrack; `2` = keep control frames and generate their audio. A complete input soundtrack is reused; a shorter one permits generated sound afterward. Match visible action and speech to supplied audio.
+`audio_prompt_type`: empty = generate video and audio; `A` = `audio_guide` is the soundtrack; `K` = the control video's audio track is the soundtrack; `2` = keep control frames and generate their audio. The video follows a soundtrack and WanGP keeps it as the output audio when it covers the video; a shorter one permits generated sound afterward. Match visible action and speech to supplied audio.
 
 Use `capabilities` for window limits. WanGP rounds overlap to compatible values (1, 18, 35, ...); `video_length` sets total duration across windows. Read `prompt_infos` for H3's structured prompt syntax.
 """
@@ -84,8 +86,8 @@ For motion or appearance transfer from a video reference, use Ref2VA with **Refe
 ### Audio Source
 
 - **Generate Video and Audio from Text Prompt:** let H3 create both.
-- **Generate Video based on Soundtrack and Text Prompt:** upload a soundtrack and H3 will create the video around it. If the soundtrack covers the whole video, WanGP uses the original audio in the final file. If it ends early, H3 generates the remaining sound.
-- **Generate Video based on Control Video + its Audio Track and Text Prompt:** select **Use Control Video**. H3 uses both its frames and its existing audio track; the visual changes follow the denoising and mask settings.
+- **Generate Video based on Soundtrack and Text Prompt (Soundtrack Kept):** upload a soundtrack and H3 will create the video around it. If the soundtrack covers the whole video, WanGP uses the original audio in the final file. If it ends early, H3 generates the remaining sound.
+- **Generate Video based on Control Video + its Audio Track and Text Prompt (Soundtrack Kept):** select **Use Control Video**. H3 uses both its frames and its existing audio track, which is kept as the soundtrack like an uploaded one; the visual changes follow the denoising and mask settings.
 - **Generate Audio based on Control Video and Text Prompt:** select **Use Control Video**. WanGP keeps the control video's frames unchanged and asks H3 to create a new soundtrack.
 
 ### Longer videos
@@ -97,11 +99,11 @@ H3 is designed for 24 FPS, although WanGP can generate at another frame rate. Mi
 
 REF2VA_DEEPY_INFOS = """Generate video and 32 kHz stereo audio from `prompt` and references. Ordered `image_refs` guide identity, objects or setting; reference flags in `video_prompt_type`: `I` preserves chosen output dimensions, `KI` derives them from the first image. `image_start` / `image_end` are timeline anchors shown before general image references. `video_source` and sliding windows provide continuation.
 
-`video_guide` / `video_guide2` supply up to two reference videos for appearance, motion or camera; choose the corresponding video mode. Reference videos preserve the chosen output size. Depth or Generic Control uses the control video's aspect ratio. Use Reference Video for motion transfer to image-reference characters. Generic Control edits through denoising: lower strength preserves more source content; at strength 1 without a mask, the source supplies no visual conditioning. Generic Control does not supply a video reference.
+`video_guide`, `video_guide2` and `video_guide3` supply up to three reference videos for appearance, motion or camera; choose the corresponding video mode. `V1-U` instead takes up to three excerpts from `video_guide` at `custom_settings.h3_video_excerpt_positions`: frame numbers or seconds such as `5.2s`, each optionally followed by `/duration` (default 3s), for example `3 5.2s/4s 12s`. Reference videos preserve the chosen output size. Depth or Generic Control uses the control video's aspect ratio. Use Reference Video for motion transfer to image-reference characters. Generic Control edits through denoising: lower strength preserves more source content; at strength 1 without a mask, the source supplies no visual conditioning. Generic Control does not supply a video reference.
 
-`audio_prompt_type`: empty = no audio reference; `A` = `audio_guide`; `AB` = both audio guides; `K` = reference-video soundtracks. The prompt defines whether audio is copied or used as a voice/sound reference.
+`audio_prompt_type`: empty = no audio input. References, whose voice or sound H3 reuses in newly generated audio: `A` = `audio_guide`, `AB` = two audio guides, `ABD` = three audio guides, `K` = reference-video soundtracks (not with excerpts);  `K1` = up to three soundtrack excerpts at `custom_settings.h3_audio_excerpt_positions`, same syntax, independent of the video excerpts; the prompt defines each reference's role. Soundtrack, kept as the output audio and followed by the video across sliding windows: `AS` = `audio_guide`, `KS` = the reference video's whole audio track. `K1` and `KS` need a single reference video or excerpts from one. A kept soundtrack is not a reference: give it no <Audio N> label.
 
-Limits: 9 reference images; 2 videos, each at least 2s, truncated to 15s and totaling at most 15s; 2 audio references, each at least 2s. Audio above 15s combined is limited to 15s for one reference or 7.5s each for two. Image + video reference count must cover audio reference count. At most 12 uploaded reference files; a video soundtrack shares its video's file. Keep backgrounds when scene context matters; optional background removal isolates subjects. Read `prompt_infos` for Ref2VA's six-section syntax.
+Limits: 9 reference images; 3 videos, each at least 2s, truncated to 15s and totaling at most 15s; 3 audio references, each at least 2s. Audio above 15s combined is split evenly: 15s for one reference, 7.5s each for two, 5s each for three. Image + video reference count must cover audio reference count. At most 12 uploaded reference files; a video soundtrack shares its video's file. Keep backgrounds when scene context matters; optional background removal isolates subjects. Read `prompt_infos` for Ref2VA's six-section syntax.
 """
 
 REF2VA_INFOS = """## Ref2VA — Reference to Video and Audio
@@ -111,11 +113,31 @@ Ref2VA generates a new video with native 32 kHz stereo audio from text plus mult
 ### Reference limits
 
 - **Images:** up to 9.
-- **Videos in WanGP:** up to 2 clips; each source must be at least 2 seconds, inputs longer than 15 seconds are truncated, and the prepared clips may total at most 15 seconds. The H3 model itself documents support for 3 video clips.
-- **Audio in WanGP:** up to 2 inputs, each at least 2 seconds long. When their combined duration exceeds 15 seconds, WanGP limits one reference to 15 seconds or each of two references to 7.5 seconds. The H3 model itself documents support for 3 audio clips.
+- **Videos:** up to 3 clips; each source must be at least 2 seconds, inputs longer than 15 seconds are truncated, and the prepared clips may total at most 15 seconds.
+- **Audio:** up to 3 inputs, each at least 2 seconds long. When their combined duration exceeds 15 seconds, WanGP splits the 15 seconds evenly: 15 seconds for one reference, 7.5 seconds each for two, 5 seconds each for three.
 - **Audio requires matching visual references:** the combined number of reference images and videos must be at least the number of reference audio clips.
-- **Video soundtracks:** selecting reference-video soundtracks uses one audio-reference slot per selected video. A soundtrack shares its video's uploaded file, so it does not add another file to the mixed-input count.
+- **Video soundtracks:** selecting reference-video soundtracks uses one audio-reference slot per selected video; soundtrack excerpts use one slot per excerpt. Each video excerpt counts as one reference video. A soundtrack shares its video's uploaded file, so it does not add another file to the mixed-input count.
 - **Mixed references:** at most 12 files across images, videos, and audio.
+
+### Audio Source
+
+- **Generate without an Audio Reference:** H3 creates the sound from the prompt.
+- **Use One / Two / Three Audio References:** H3 reuses the voice or sound of each uploaded audio in newly generated audio. Name them `<Audio 1>` to `<Audio 3>` in the prompt and state their role.
+- **Use Reference Videos Soundtrack(s) as Audio References:** the same, using each reference video's audio track. Not available with excerpts: use the soundtrack excerpt choice below.
+- **Use Up to 3 Excerpts from Reference-Video Soundtrack:** takes audio references from the reference video's soundtrack at the positions entered in **Audio Reference Positions**, independently of any video excerpts. Requires a single reference video or excerpts from one.
+- **Generate Video based on Soundtrack and Text Prompt (Soundtrack Kept):** upload a speech or music track that must be heard exactly as it is. H3 creates the video around it and WanGP keeps the original audio in the final file, in sync across sliding windows.
+- **Generate Video based on Reference Video + its Audio Track and Text Prompt (Soundtrack Kept):** the same, using the reference video's whole audio track; the video, or its excerpts, still guides appearance and motion. Requires a single reference video or excerpts from one.
+
+A kept soundtrack is not a reference: describe its speech and sounds in the prompt as they occur, without an `<Audio N>` label.
+
+### Excerpts from one Reference Video
+
+Select **Use Up to 3 Excerpts from same Reference Video** to take up to three moments from one longer video instead of uploading separate clips. Enter them in **Reference Positions from Control Video** as frame numbers or seconds, separated by spaces or commas. Each position is the centre of an excerpt lasting 3 seconds unless a duration follows a slash:
+
+- `3 5s 12s`: three 3-second excerpts around frame 3, 5 seconds, and 12 seconds.
+- `3/4s 5.2s/3s 12s/2.5s`: the same moments with individual durations.
+
+Each excerpt lasts at least 2 seconds, the excerpts total at most 15 seconds, and an excerpt near the start or end of the video is moved inward to keep its duration. Each excerpt counts as one reference video; name them `<Video 1>` to `<Video 3>` in order.
 
 ### Choosing a video input
 
@@ -195,8 +217,8 @@ This audio-only preset reuses the pruned Ref2VA checkpoint. H3 still jointly den
 
 - **No reference:** generate speech, ambience, Foley, or music from the prompt alone.
 - **One audio reference:** use `<Audio 1>` in the prompt to describe the voice, delivery, music, or sound characteristics to retain.
-- **Two audio references:** use `<Audio 1>` and `<Audio 2>` independently, for example as two cloned speaker voices.
-- Each reference must be at least 2 seconds long. Above a combined 15 seconds, one reference is limited to 15 seconds or each of two references is limited to 7.5 seconds.
+- **Two or three audio references:** use `<Audio 1>` to `<Audio 3>` independently, for example as cloned speaker voices.
+- Each reference must be at least 2 seconds long. Above a combined 15 seconds, the 15 seconds are split evenly: 15 seconds for one reference, 7.5 seconds each for two, 5 seconds each for three.
 - **Maximum Total Audio Duration** is the cumulative limit for the assembled monologue or dialogue. Each speaker turn is generated separately; individual segments above H3's official 15-second range remain experimental.
 - **Early Stop** finishes the H3 segment currently being generated, then assembles and returns all completed segments.
 
@@ -274,16 +296,19 @@ def _get_audio_generator_model_def(model_def):
         "any_audio_prompt": True,
         "audio_prompt_choices": True,
         "audio_reference_max_total_duration": 15,
+        "reference_audio_enabled": True,
         "audio_guide_label": "Voice / Audio Reference 1",
         "audio_guide2_label": "Voice / Audio Reference 2",
+        "audio_guide3_label": "Voice / Audio Reference 3",
         "audio_prompt_type_sources": {
-            "selection": ["", "A", "AB"],
+            "selection": ["", "A", "AB", "ABD"],
             "labels": {
                 "": "Generate without an Audio Reference",
                 "A": "Use One Voice / Audio Reference",
                 "AB": "Use Two Voice / Audio References",
+                "ABD": "Use Three Voice / Audio References",
             },
-            "letters_filter": "AB",
+            "letters_filter": "ABD",
             "label": "Voice / Audio References",
             "show_label": True,
             "default": "A",
@@ -309,7 +334,7 @@ def _get_audio_generator_model_def(model_def):
         "sample_solvers": [("Euler", "euler"), ("RES Multistep", "res_multistep"), ("Ralston 2S (~2x slower)", "ralston_2s")],
         "infos": H3_AUDIO_GENERATOR_INFOS + H3_SPEED_INFOS + H3_STANDARD_SAMPLER_INFOS + H3_COMMON_RUNTIME_INFOS + PRUNED_INFOS,
         "prompt_infos": (H3_DIALOGUE_PROMPT_INFOS if H3_DIALOGUE_GENERATION else "") + REF2VA_PROMPT_INFOS,
-        "deepy_infos": "Generate 32 kHz stereo audio from `prompt`. `audio_prompt_type`: empty = no sample; `A` = voice/audio from `audio_guide`; `AB` = both audio guides. For Speaker scripts, samples map to speakers 1 and 2. Each sample must be at least 2s; above 15s combined, one is limited to 15s or two to 7.5s each. `duration_seconds` caps the assembled audio. Speaker turns are generated and joined automatically; Early Stop finishes the current turn and returns completed turns.",
+        "deepy_infos": "Generate 32 kHz stereo audio from `prompt`. `audio_prompt_type`: empty = no sample; `A` = voice/audio from `audio_guide`; `AB` = two audio guides; `ABD` = three audio guides. For Speaker scripts, samples map to speakers 1 to 3. Each sample must be at least 2s; above 15s combined, the 15s are split evenly across samples. `duration_seconds` caps the assembled audio. Speaker turns are generated and joined automatically; Early Stop finishes the current turn and returns completed turns.",
         "deepy_prompt_infos": H3_AUDIO_DEEPY_PROMPT_INFOS if H3_DIALOGUE_GENERATION else REF2VA_DEEPY_PROMPT_INFOS,
         "prompt_enhancer_button_label": "Write",
         "prompt_enhancer_def": {
@@ -395,7 +420,7 @@ class family_handler:
                 "deepy_prompt_infos": "Express the replacement through the Edited Reference Frame. Viggle uses a fixed built-in prompt; generation text is ignored.",
                 "text_encoder_URLs": [], "text_encoder_folder": None, "system_configs": {},
                 "prompt_enhancer_def": {"selection": [], "labels": {}, "default": ""},
-                "image_outputs": False, "sliding_window": True, "video_continuation": False,
+                "image_outputs": False, "v2i_switch_supported": False, "sliding_window": True, "video_continuation": False,
                 "sliding_window_size_locked": True,
                 "sliding_window_defaults": {**result["sliding_window_defaults"], "window_max": 124, "window_default": 124, "overlap_default": 18},
                 "extract_guide_from_window_start": True, "control_video_trim_disabled": False, "control_video_trim": False,
@@ -430,6 +455,8 @@ class family_handler:
             **({"accelerated": "native"} if pdd or vdn else {}),
             **({"specialities": [{"name": "character consistency", "aliases": ["identity preservation"]}, {"name": "motion transfer", "description": "Transfer motion or camera from reference videos to image-reference characters."}]} if reference_mode else {}),
             "fps": 24,
+            "v2i_switch_supported": True,
+            "image_batch_size_max": 1,
             "prompt_enhancer_video_duration": True,
             "frames_minimum": 107,
             "frames_steps": 17,
@@ -462,7 +489,7 @@ class family_handler:
                     ("None", "none"),
                     ("Enabled (6 extra steps, denoising 0.5)", "enabled"),
                 ],
-                **({"audio_prompt_type_not": "AK"} if not reference_mode else {}),
+                "audio_prompt_type_not": "S" if reference_mode else "AK",
             }],
             "switch_threshold": {
                 "label": "Phase 2 Noise Level Start",
@@ -502,10 +529,12 @@ class family_handler:
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,
             "prompt_enhancer_button_label": "Write",
             "prompt_enhancer_def": {
-                "selection": ["T", "TI"],
+                "selection": ["T", "TI", "T1", "TI1"],
                 "labels": {
                     "TV": "An H3 Reference Prompt from Text" if reference_mode else "An H3 Prompt from Text",
                     "TIV": "An H3 Reference Prompt from Text + {image_inputs}" if reference_mode else "An H3 Prompt from Text + {image_inputs}",
+                    "T1P": "An H3 Image Prompt from Text",
+                    "TI1P": "An H3 Image Prompt from Text + {image_inputs}",
                 },
                 "default": "",
             },
@@ -513,6 +542,10 @@ class family_handler:
             "video_prompt_enhancer_instructions": REF2VA_IMAGE_SYSTEM_PROMPT if reference_mode else FL2VA_IMAGE_SYSTEM_PROMPT,
             "text_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
             "video_prompt_enhancer_max_tokens": 2048 if reference_mode else 1024,
+            "text_prompt_enhancer_instructions1": H3_STILL_TEXT_SYSTEM_PROMPT,
+            "image_prompt_enhancer_instructions1": H3_STILL_IMAGE_SYSTEM_PROMPT,
+            "text_prompt_enhancer_max_tokens1": 1024,
+            "image_prompt_enhancer_max_tokens1": 1024,
             "profiles_dir": ["minimax_h3_vdn"] if vdn else [] if pdd else ["minimax_h3", "minimax_h3_ref2va" if reference_mode else "minimax_h3_fl2va"],
             "finetune_custom_urls": ["video_vae_file", "audio_vae_file"],
             "finetunes_infos": H3_FINETUNES_INFOS,
@@ -574,15 +607,18 @@ class family_handler:
                 "guide_custom_choices": {
                     "choices": [("Generate without a Reference or Control Video", ""), ("Use One Reference Video", "V-U"),
                                 ("Use Two Reference Videos", "V+-U"),
+                                ("Use Three Reference Videos", "V+*-U"),
+                                ("Use Up to 3 Excerpts from same Reference Video", "V1-U"),
                                 # ("Transfer Human Pose From Control Video", "PV"),
                                 ("Transfer Depth Map From Control Video", "DV"),
                                 # ("Transfer Edges Map From Control Video", "EV"),
                                 ("Provide Generic Control Video", "GV")],
-                    "letters_filter": "GPDEV+-U",
+                    "letters_filter": "GPDEV+*-U1",
                     "default": "",
                     "label": "Reference / Control Video",
                 },
                 "preprocess_video_guide2": True,
+                "skip_video_guide_preprocess": "1",  # excerpts are decoded by the pipeline from the source file
                 "mask_preprocessing": {"selection": ["", "A", "NA"]},
                 "reference_video_enabled": True,
                 "reference_video_max_frames": 15 * 24,
@@ -590,19 +626,26 @@ class family_handler:
                 "any_audio_prompt": True,
                 "audio_prompt_choices": True,
                 "audio_reference_max_total_duration": 15,
+                "reference_audio_enabled": True,
                 "video_guide_label": "Reference / Control Video 1",
                 "video_guide2_label": "Reference Video 2",
+                "video_guide3_label": "Reference Video 3",
                 "audio_guide_label": "Audio Reference 1",
                 "audio_guide2_label": "Audio Reference 2",
+                "audio_guide3_label": "Audio Reference 3",
                 "audio_prompt_type_sources": {
-                    "selection": ["", "A", "AB", "K"],
+                    "selection": ["", "A", "AB", "ABD", "K", "K1", "AS", "KS"],
                     "labels": {
                         "": "Generate without an Audio Reference",
                         "A": "Use One Audio Reference",
                         "AB": "Use Two Audio References",
-                        "K": "Use Reference-Video Soundtrack(s)",
+                        "ABD": "Use Three Audio References",
+                        "K": "Use Reference Videos Soundtrack(s) as Audio References",
+                        "K1": "Use Up to 3 Excerpts from Reference-Video Soundtrack",
+                        "AS": "Generate Video based on Soundtrack and Text Prompt (Soundtrack Kept)",
+                        "KS": "Generate Video based on Reference Video + its Audio Track and Text Prompt (Soundtrack Kept)",
                     },
-                    "letters_filter": "ABK",
+                    "letters_filter": "ABDKS1",
                     "label": "Audio References",
                     "show_label": True,
                     "default": "",
@@ -610,6 +653,7 @@ class family_handler:
                 "audio_guide_window_slicing": True,
                 "video_length_not_limited_by_audio": True,
             })
+            result["custom_settings"] = result["custom_settings"] + H3_EXCERPT_SETTINGS
         else:
             result.update({
                 "sliding_window": True,
@@ -644,8 +688,8 @@ class family_handler:
                     "selection": ["", "A", "K", "2"],
                     "labels": {
                         "": "Generate Video and Audio from Text Prompt",
-                        "A": "Generate Video based on Soundtrack and Text Prompt",
-                        "K": "Generate Video based on Control Video + its Audio Track and Text Prompt",
+                        "A": "Generate Video based on Soundtrack and Text Prompt (Soundtrack Kept)",
+                        "K": "Generate Video based on Control Video + its Audio Track and Text Prompt (Soundtrack Kept)",
                         "2": "Generate Audio based on Control Video and Text Prompt",
                     },
                     "letters_filter": "AK2",
@@ -660,6 +704,12 @@ class family_handler:
             result["deepy_infos"] += " PDD requires exactly 8 inference steps and the Euler sampler."
         if vdn:
             result["deepy_infos"] += " VDN loads its acceleration LoRA automatically and defaults to 8 steps."
+        still_infos = "\n\n**Text to Image:** generate one still image without audio. Video duration, extra frames and Audio Refinement do not apply in this mode."
+        still_prompt_infos = "\n\nFor Text to Image, describe one still scene: its subject, composition, lighting and details. A plain-language image prompt is sufficient; speech and soundtrack instructions are unnecessary. The optional Write enhancer offers image prompts from text alone or from text plus the selected images. With an image, specify what to change and what to preserve."
+        result["infos"] += still_infos
+        result["deepy_infos"] += still_infos + " Set `image_mode` to `1`."
+        result["prompt_infos"] += still_prompt_infos
+        result["deepy_prompt_infos"] += still_prompt_infos
         return result
 
     @staticmethod
@@ -683,6 +733,8 @@ class family_handler:
             audios = [inputs["audio_guide"]] if "A" in audio_prompt_type else []
             if "B" in audio_prompt_type:
                 audios.append(inputs["audio_guide2"])
+            if "D" in audio_prompt_type:
+                audios.append(inputs["audio_guide3"])
             import librosa
 
             audio_durations = []
@@ -754,18 +806,23 @@ class family_handler:
             videos.append(inputs["video_guide"])
             if "+" in video_prompt_type:
                 videos.append(inputs["video_guide2"])
-        audios = [inputs["audio_guide"]] if "A" in audio_prompt_type and base_model_type != VIGGLE_ARCHITECTURE else []
+            if "*" in video_prompt_type:
+                videos.append(inputs["video_guide3"])
+        soundtrack = "S" in audio_prompt_type  # a kept soundtrack conditions the video and is not an audio reference
+        audios = [inputs["audio_guide"]] if "A" in audio_prompt_type and not soundtrack and base_model_type != VIGGLE_ARCHITECTURE else []
         if "B" in audio_prompt_type:
             audios.append(inputs["audio_guide2"])
+        if "D" in audio_prompt_type:
+            audios.append(inputs["audio_guide3"])
 
         if image_count > 9:
             return "MiniMax H3 Ref2VA accepts at most 9 reference images"
-        if len(videos) > 2:
-            return "WanGP accepts at most 2 MiniMax H3 reference videos"
+        if len(videos) > 3:
+            return "MiniMax H3 accepts at most 3 reference videos"
 
         from shared.utils.utils import get_video_info
 
-        video_durations = []
+        video_seconds = []
         for index, video in enumerate(videos, 1):
             try:
                 fps, _, _, frames = get_video_info(video)
@@ -774,7 +831,15 @@ class family_handler:
                 return f"Unable to read Reference Video {index}: {error}"
             if duration < 2:
                 return f"Reference Video {index} must be at least 2 seconds long (found {duration:.2f}s)"
-            video_durations.append(min(duration, 15))
+            video_seconds.append(duration)
+        video_durations = [min(duration, 15) for duration in video_seconds]
+        custom_settings = inputs["custom_settings"] or {}
+        fps = model_def["fps"]
+        if "1" in video_prompt_type:
+            try:
+                video_durations = [duration for _, duration in parse_excerpts(custom_settings.get(H3_VIDEO_EXCERPTS_SETTING), fps, video_seconds[0], "Reference Positions", video_frames=True)]
+            except ValueError as error:
+                return str(error)
         if sum(video_durations) > 15:
             return f"Reference videos must total at most 15 seconds (found {sum(video_durations):.2f}s)"
 
@@ -782,16 +847,27 @@ class family_handler:
         if soundtrack_mode:
             if not videos:
                 return "Using reference-video soundtracks requires at least one Reference Video"
+            audio_excerpts = "1" in audio_prompt_type
+            if "1" in video_prompt_type and not (soundtrack or audio_excerpts):
+                return "Reference-video excerpts cannot also be used as audio references; select Use Up to 3 Excerpts from Reference-Video Soundtrack instead"
+            if len(videos) > 1 and (soundtrack or audio_excerpts):
+                return "Keeping a reference-video soundtrack or taking excerpts from it requires a single Reference Video (or excerpts from one)"
             from shared.utils.audio_video import extract_audio_tracks
 
-            for index, video in enumerate(videos, 1):
+            for index, video in enumerate(videos[:1] if soundtrack else videos, 1):
                 try:
                     if extract_audio_tracks(video, query_only=True) == 0:
                         return f"Reference Video {index} has no audio track"
                 except Exception as error:
                     return f"Unable to inspect the soundtrack of Reference Video {index}: {error}"
-            audio_durations = video_durations
-            audio_count = len(videos)
+            if audio_excerpts:
+                try:
+                    audio_durations = [duration for _, duration in parse_excerpts(custom_settings.get(H3_AUDIO_EXCERPTS_SETTING), fps, video_seconds[0], "Audio Reference Positions")]
+                except ValueError as error:
+                    return str(error)
+            else:
+                audio_durations = [] if soundtrack else video_durations
+            audio_count = len(audio_durations)
         else:
             import librosa
 
@@ -806,10 +882,10 @@ class family_handler:
                 audio_durations.append(duration)
             audio_count = len(audios)
 
-        if audio_count > 2:
-            return "WanGP accepts at most 2 MiniMax H3 audio references"
+        if audio_count > 3:
+            return "MiniMax H3 accepts at most 3 audio references"
         _notify_audio_reference_limit(audio_durations)
-        visual_count = image_count + len(videos)
+        visual_count = image_count + len(video_durations)
         if audio_count > visual_count:
             return f"MiniMax H3 requires at least as many reference images and videos as audio references (found {visual_count} visual and {audio_count} audio)"
         file_count = image_count + len(videos) + (0 if soundtrack_mode else audio_count)

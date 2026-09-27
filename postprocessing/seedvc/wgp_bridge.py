@@ -1,4 +1,5 @@
 from __future__ import annotations
+from shared.utils.media_control import controlled_model_loading, loading_callback, checkpoint_modules
 
 import gc
 import os
@@ -36,6 +37,7 @@ def release_models() -> None:
     _persistent_profile = None
 
 
+@controlled_model_loading
 def _get_runtime(persistent_models: bool, profile_no=4, verbose_level: int = 1, init_pipe: Callable[..., int] | None = None, mode: int = 1):
     import torch
     from mmgp import offload
@@ -56,7 +58,7 @@ def _get_runtime(persistent_models: bool, profile_no=4, verbose_level: int = 1, 
         if init_pipe is not None:
             profile_no = init_pipe(pipe, offload_kwargs, profile_no)
         offload_kwargs["pinnedMemory"] = False
-        offloadobj = offload.profile(pipe, profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=torch.float16, verboseLevel=verbose_level, **offload_kwargs)
+        offloadobj = offload.profile(pipe, loading_callback=loading_callback(), profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=torch.float16, verboseLevel=verbose_level, **offload_kwargs)
         from shared.utils import offload_registry
         offload_registry.register_offloadobj("SeedVC", offloadobj, release_models)
         if persistent_models:
@@ -83,7 +85,8 @@ def convert_audio_file(source_audio_path: str, voice_sample_path: str, output_pa
         reference_audio, reference_rate = _load_audio_tensor(voice_sample_path)
         amplitude_audio = source_audio if amplitude_match_audio_path is None else _load_audio_tensor(amplitude_match_audio_path)[0]
         reference_audio = _match_reference_amplitude(amplitude_audio, reference_audio)
-        with torch.inference_mode():
+        modules = (module for model in converter.pipe_modules().values() for module in model.modules() if not module._modules)
+        with torch.inference_mode(), checkpoint_modules(modules):
             converted = converter.convert_tensor(
                 source_audio,
                 source_rate,

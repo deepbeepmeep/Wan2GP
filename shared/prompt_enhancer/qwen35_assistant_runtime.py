@@ -405,7 +405,7 @@ def extract_incomplete_tool_arguments(raw_text: str) -> dict[str, Any]:
     return {} if open_brace_index < 0 else _decode_completed_object_members(candidate, open_brace_index)
 
 
-def _extract_bare_json_tool_call(text: str) -> tuple[dict[str, Any] | None, tuple[int, int] | None]:
+def _extract_bare_json_tool_call(text: str, tool_names=None) -> tuple[dict[str, Any] | None, tuple[int, int] | None]:
     decoder = json.JSONDecoder()
     source_text = str(text or "")
     for start_idx, ch in enumerate(source_text):
@@ -415,8 +415,13 @@ def _extract_bare_json_tool_call(text: str) -> tuple[dict[str, Any] | None, tupl
             parsed, end_idx = decoder.raw_decode(source_text[start_idx:])
         except Exception:
             continue
+        # An untagged object with a "name" is ordinary data (a drafted answer, a
+        # quoted setting) unless it is the whole text or carries its arguments.
+        whole_text = start_idx == 0 and len(source_text[end_idx:].strip()) == 0
+        if not whole_text and not (isinstance(parsed, dict) and isinstance(parsed.get("arguments"), dict)):
+            continue
         tool_call = _normalize_tool_call_dict(parsed)
-        if tool_call is None:
+        if tool_call is None or tool_names is not None and tool_call["name"] not in tool_names:
             continue
         return tool_call, (start_idx, start_idx + end_idx)
     return None, None
@@ -429,7 +434,7 @@ def _extract_inline_tool_call(text: str, allow_incomplete_function: bool = False
     tagged_tool_call = _parse_tagged_tool_call(candidate, allow_incomplete_function=allow_incomplete_function, tool_parameters=tool_parameters, preserve_unknown_parameters=preserve_unknown_parameters)
     if tagged_tool_call is not None:
         return tagged_tool_call, (0, len(candidate))
-    return _extract_bare_json_tool_call(candidate)
+    return _extract_bare_json_tool_call(candidate, None if tool_parameters is None else set(tool_parameters))
 
 
 def extract_tool_calls(raw_text: str, tool_parameters: dict[str, set[str]] | None = None, *, preserve_unknown_parameters: bool = False) -> list[dict[str, Any]]:
@@ -449,10 +454,7 @@ def extract_tool_calls(raw_text: str, tool_parameters: dict[str, set[str]] | Non
         tool_calls.append(tool_call)
     if len(tool_calls) > 0:
         return tool_calls
-    inline_tool_call, _inline_span = _extract_inline_tool_call(source_text, allow_incomplete_function=True, tool_parameters=tool_parameters, preserve_unknown_parameters=preserve_unknown_parameters)
-    if inline_tool_call is not None:
-        tool_calls.append(inline_tool_call)
-        return tool_calls
+    # Untagged calls count only in the answer, never inside reasoning.
     _thinking_text, answer_text = qwen35_text._split_generated_text(source_text)
     inline_tool_call, _inline_span = _extract_inline_tool_call(answer_text, allow_incomplete_function=True, tool_parameters=tool_parameters, preserve_unknown_parameters=preserve_unknown_parameters)
     if inline_tool_call is not None:
@@ -470,7 +472,7 @@ def strip_inline_tool_call_text(raw_text: str) -> str:
     return stripped_text
 
 
-def has_complete_tool_call(raw_text: str) -> bool:
+def has_complete_tool_call(raw_text: str, allow_untagged: bool = True) -> bool:
     text = str(raw_text or "")
     if validate_tool_call_structure(text):
         return False
@@ -482,11 +484,11 @@ def has_complete_tool_call(raw_text: str) -> bool:
             parsed = _parse_tagged_tool_call(payload)
         if _normalize_tool_call_dict(parsed) is not None:
             return True
-    inline_tool_call, _inline_span = _extract_inline_tool_call(text)
-    if inline_tool_call is None:
-        _thinking_text, answer_text = qwen35_text._split_generated_text(text)
-        inline_tool_call, _inline_span = _extract_inline_tool_call(answer_text)
-    return inline_tool_call is not None
+    if not allow_untagged:
+        return False
+    # Untagged calls count only in the answer, never inside reasoning.
+    _thinking_text, answer_text = qwen35_text._split_generated_text(text)
+    return _extract_inline_tool_call(answer_text)[0] is not None
 
 
 class Qwen35AssistantRuntime:
@@ -1058,29 +1060,36 @@ class Qwen35AssistantRuntime:
         if len(normalized_token_ids) == 0:
             raise ValueError("Cannot prefill assistant context with an empty token sequence.")
         _engine, llm = self._ensure_clean_runtime(max_context_tokens=len(normalized_token_ids), max_new_tokens=1, seed=seed)
-        initial_token_ids = normalized_token_ids[:_ASSISTANT_PREFILL_CHUNK_TOKENS]
+        speculative = bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False))
+        # Without MTP, the first decode step processes the final context token,
+        # so the scheduled prefill leaves it for the suffix path below.
+        initial_token_ids = normalized_token_ids[:_ASSISTANT_PREFILL_CHUNK_TOKENS if speculative else min(_ASSISTANT_PREFILL_CHUNK_TOKENS, len(normalized_token_ids) - 1)]
         seq = Sequence(initial_token_ids, SamplingParams(max_tokens=1, ignore_eos=True))
         seq._assistant_context_id = uuid4().hex
         llm.scheduler.add(seq)
         scheduled, is_prefill = llm.scheduler.schedule()
         if not scheduled or not is_prefill:
             raise RuntimeError("Assistant context prefill did not schedule a prefill batch.")
-        if bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)):
+        if speculative:
             llm.model_runner.call("prefill_mtp_only", scheduled)
         else:
             llm.model_runner.call("run", scheduled, is_prefill)
         seq = scheduled[0]
-        seq = self._chunk_prefill_suffix(seq, normalized_token_ids[len(initial_token_ids):])
+        seq = self._chunk_prefill_suffix(seq, normalized_token_ids[len(initial_token_ids):], processed_tokens=len(initial_token_ids))
         self._seal_sequence(seq)
         self._log_speculative_alignment(seq, "after context prefill")
         self._log(f"Primed assistant context with {len(normalized_token_ids)} tokens.")
         return seq
 
-    def _chunk_prefill_suffix(self, seq: Sequence, token_ids: list[int], chunk_tokens: int = _ASSISTANT_PREFILL_CHUNK_TOKENS) -> Sequence:
+    def _chunk_prefill_suffix(self, seq: Sequence, token_ids: list[int], chunk_tokens: int = _ASSISTANT_PREFILL_CHUNK_TOKENS, processed_tokens: int | None = None) -> Sequence:
         suffix = [int(token_id) for token_id in list(token_ids or [])]
         if len(suffix) == 0:
             return seq
         llm = self._get_live_llm()
+        speculative = bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False))
+        # Without MTP, decode processes the last token (a sampled token or the
+        # final context token): prefill resumes at it and stops before the new one.
+        processed = int(seq.num_tokens) - 1 if processed_tokens is None else processed_tokens
         original_processor = seq.logits_processor
         original_update = seq.logits_processor_update_state
         original_max_tokens = seq.max_tokens
@@ -1105,13 +1114,19 @@ class Qwen35AssistantRuntime:
                     seq.num_cached_tokens = min(int(getattr(seq, "num_cached_tokens", old_num_tokens) or 0), old_num_tokens)
                     raise RuntimeError("Assistant chunk prefill exceeded the available KV cache blocks.")
                 llm.scheduler.block_manager.begin_prompt_append(seq, old_num_tokens)
-                seq.num_cached_tokens = old_num_tokens
-                if bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False)):
+                if speculative:
+                    seq.num_cached_tokens = old_num_tokens
                     llm.model_runner.call("prefill_mtp_suffix", [seq], old_num_tokens)
-                else:
-                    llm.model_runner.call("prefill_only", [seq])
+                elif seq.num_tokens - 1 > processed:
+                    full_token_ids = seq.token_ids
+                    seq.num_cached_tokens, seq.num_tokens, seq.token_ids = processed, len(full_token_ids) - 1, full_token_ids[:-1]
+                    try:
+                        llm.model_runner.call("prefill_only", [seq])
+                    finally:
+                        seq.num_tokens, seq.token_ids = len(full_token_ids), full_token_ids
                 llm.scheduler.block_manager.finalize_prompt_append(seq, old_num_tokens)
-                seq.num_cached_tokens = seq.num_tokens
+                processed = seq.num_tokens - 1
+                seq.num_cached_tokens = seq.num_tokens if speculative else processed
                 self._log(
                     f"Chunk-prefilled assistant suffix chunk {chunk_index}/{total_chunks} "
                     f"with {len(chunk)} tokens in {time.perf_counter() - chunk_started_at:.3f}s (context={int(seq.num_tokens)})."
@@ -1584,7 +1599,9 @@ class Qwen35AssistantRuntime:
                 stream_callback_called = stream_emitter.emit(stream_callback, raw_text=raw_text, token_count=generated_tokens, stop_reason=None, is_final=False)
             stream_seconds = time.perf_counter() - stream_started if stream_started else 0.0
             parse_started = time.perf_counter() if decode_telemetry is not None else 0.0
-            stop_reason = "tool_call" if boundary_candidate and has_complete_tool_call(raw_text) else "stop_token" if last_token_id in stop_token_ids else None
+            # Segments (compaction summaries) may quote earlier calls or settings
+            # objects: only a tagged call ends them early.
+            stop_reason = "tool_call" if boundary_candidate and has_complete_tool_call(raw_text, allow_untagged=False) else "stop_token" if last_token_id in stop_token_ids else None
             parse_seconds = time.perf_counter() - parse_started if decode_telemetry is not None else 0.0
             self._update_decode_telemetry(decode_telemetry, seq, emitted_tokens, runner_seconds, scheduler_seconds, postprocess_seconds, decode_seconds, parse_seconds, stream_seconds, stream_emitter is not None, stream_callback_called)
             if stop_reason is not None:

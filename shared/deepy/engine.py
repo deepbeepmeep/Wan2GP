@@ -18,7 +18,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
-from PIL import Image, ImageColor
+from PIL import Image, ImageColor, ImageDraw
 
 from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io, media_descriptor, token_id_descriptor
 from shared.utils.audio_video import extract_audio_tracks
@@ -912,7 +912,7 @@ def _summarize_interrupted_committed_messages(messages: list[dict[str, Any]]) ->
                 tool_name = mapped_tool_name or tool_name
                 status = str(payload.get("status", "") or "").strip()
                 identifiers = [f"{key}={payload[key]}" for key in ("job_id", "output_file", "media_id") if payload.get(key) not in (None, "")]
-            if tool_name == "wangp_get_deepy_template_settings" and isinstance(payload.get("settings"), dict):
+            if tool_name in {"wangp_get_deepy_template_settings", "wangp_deepy_templates"} and isinstance(payload.get("settings"), dict):
                 retained_template = {key: payload.get(key) for key in ("tool_id", "template", "general_properties_active") if payload.get(key) is not None}
                 retained_template["settings"] = payload["settings"]
                 if isinstance(payload.get("general_properties"), dict):
@@ -1187,13 +1187,13 @@ def request_assistant_interrupt(session: AssistantSessionState, interruption_kin
         session.steering_pending = False
         session.steering_deadline = 0.0
     preserve_pending_action = interruption_kind == "session_switch" or str(session.pending_reset_mode or "") == session_store.RESET_MODE_NEW
-    if not preserve_pending_action:
-        clear_pending_action_replay(session, persist=True)
     session.pause_requested = False
     session.paused = False
     session.paused_runtime_snapshot = None
     session.interrupt_requested = True
     session.pause_resume_event.set()
+    if not preserve_pending_action:
+        clear_pending_action_replay(session, persist=True)
 
 
 STEERING_THOUGHT_GRACE_SECONDS = 5.0
@@ -3348,7 +3348,7 @@ class DeepyZeroTools:
         parameters={
             **copy.deepcopy(gen_video._assistant_tool["parameters"]),
             "image_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "Image media IDs supplying subject identity or appearance.", "required": False},
-            "video_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 2, "description": "Video media IDs supplying appearance or motion; only when the selected template supports video references.", "required": False},
+            "video_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 3, "description": "Video media IDs supplying appearance or motion; only when the selected template supports video references.", "required": False},
         },
     )
     def gen_video_with_refs(
@@ -3374,8 +3374,8 @@ class DeepyZeroTools:
                 sources[name].append(media["path"])
         if not sources["image_refs"] and not sources["video_refs"]:
             return {"status": "error", "error": "Supply image_refs or video_refs. For text or start/end-frame video without references, use gen_video."}
-        video_mode = "V+-U" if len(sources["video_refs"]) == 2 else "V-U"
-        if sources["video_refs"] and (len(sources["video_refs"]) > 2 or not model_def.get("reference_video_enabled", False) or video_mode not in [value for label, value in model_def["guide_custom_choices"]["choices"]]):
+        video_mode = ("V-U", "V-U", "V+-U", "V+*-U")[min(len(sources["video_refs"]), 3)]
+        if sources["video_refs"] and (len(sources["video_refs"]) > 3 or not model_def.get("reference_video_enabled", False) or video_mode not in [value for label, value in model_def["guide_custom_choices"]["choices"]]):
             return {"status": "error", "error": "The selected reference template does not support this video-reference input. Choose a compatible template in Deepy Settings."}
         for name, value in (("image_start", image_start), ("image_end", image_end)):
             media, error = self._resolve_image_media(value or "", name)
@@ -3392,9 +3392,8 @@ class DeepyZeroTools:
             # Keep the template's image-reference mode when images are supplied.
             image_mode = "".join(flag for flag in task["video_prompt_type"] if flag in "KI") if sources["image_refs"] else ""
             task["video_prompt_type"] = image_mode + video_mode
-            task["video_guide"] = sources["video_refs"][0]
-            if len(sources["video_refs"]) == 2:
-                task["video_guide2"] = sources["video_refs"][1]
+            for key, video in zip(("video_guide", "video_guide2", "video_guide3"), sources["video_refs"]):
+                task[key] = video
         try:
             task = deepy_tool_settings.apply_tool_loras(tool_name, variant, task, loras)
         except (TypeError, ValueError) as exc:
@@ -3913,7 +3912,7 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Create Color Frame",
-        description="Create a solid-color image with the requested width and height, rounded to the nearest multiple of 16, and add it to WanGP galleries. Use this for blank frames, color cards, or transition plates.",
+        description="Create a solid-color image with the requested width and height, rounded to the nearest multiple of 16, and add it to WanGP galleries. Use this for blank frames, color cards, transition plates, or box masks: a black frame with white boxes marks the regions to regenerate.",
         parameters={
             "width": {
                 "type": "integer",
@@ -3928,10 +3927,22 @@ class DeepyZeroTools:
                 "description": "Optional fill color. Accepts common names like black, white, red, or hex values like #000000.",
                 "required": False,
             },
+            "boxes": {
+                "type": "array",
+                "items": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 1000}, "minItems": 4, "maxItems": 4},
+                "minItems": 1,
+                "description": "Optional rectangles drawn over the fill, each [x_min,y_min,x_max,y_max] in integers 0..1000 relative to the frame.",
+                "required": False,
+            },
+            "box_color": {
+                "type": "string",
+                "description": "Color of the boxes; defaults to white.",
+                "required": False,
+            },
         },
         pause_runtime=False,
     )
-    def create_color_frame(self, width: int, height: int, color: str = "black") -> dict[str, Any]:
+    def create_color_frame(self, width: int, height: int, color: str = "black", boxes: list[list[int]] | None = None, box_color: str = "white") -> dict[str, Any]:
         try:
             width = int(width)
             height = int(height)
@@ -3955,13 +3966,18 @@ class DeepyZeroTools:
         output_path = self._resolve_direct_output_path(output_name, True, False)
         try:
             image = Image.new("RGB", (width, height), rgb_color)
+            if boxes:
+                draw = ImageDraw.Draw(image)
+                for x_min, y_min, x_max, y_max in boxes:
+                    draw.rectangle((round(x_min * width / 1000), round(y_min * height / 1000), round(x_max * width / 1000) - 1, round(y_max * height / 1000) - 1), fill=ImageColor.getrgb(box_color)[:3])
             image.save(output_path)
         except Exception as exc:
             result = {"status": "error", "width": width, "height": height, "color": resolved_color, "output_file": "", "error": str(exc)}
             self._update_tool_progress("error", "Error", result)
             self._set_status(f"Color frame creation failed: {exc}", kind="error")
             return result
-        settings = self._build_direct_image_settings(f'Created solid {resolved_color} image at {width}x{height}', width, height, prompt=f"A solid {resolved_color} image at {width}x{height}.")
+        boxes_text = f" with {len(boxes)} {box_color} box{'es' if len(boxes) > 1 else ''}" if boxes else ""
+        settings = self._build_direct_image_settings(f'Created solid {resolved_color} image at {width}x{height}{boxes_text}', width, height, prompt=f"A solid {resolved_color} image at {width}x{height}{boxes_text}.")
         media_record = self._record_direct_media(output_path, settings, is_image=True, audio_only=False, label="Color frame")
         result = {
             "status": "done",
@@ -3975,6 +3991,65 @@ class DeepyZeroTools:
         }
         self._update_tool_progress("done", "Done", result)
         self._set_status("Color frame created.", kind="tool")
+        return result
+
+    @assistant_tool(
+        display_name="Create Mask",
+        description="Create a black/white mask of the named objects in an image or video with Magic Mask (SAM3 keyword segmentation), and add it to WanGP galleries. White marks the objects; invert=true marks everything else. Use the returned media_id as image_mask or video_mask.",
+        parameters={
+            "media_id": {"type": "string", "description": "Source image or video ID."},
+            "keywords": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "Objects to mask, e.g. [\"the woman\", \"the dog\"]."},
+            "invert": {"type": "boolean", "description": "Mask everything except the named objects. Defaults to false.", "required": False},
+            "video_length": {"type": ["integer", "string"], "description": "Videos only: mask just the start of the video, as a frame count or seconds such as \"5s\". Omit to mask the whole video.", "required": False},
+        },
+    )
+    def create_mask(self, media_id: str, keywords: list[str], invert: bool = False, video_length: int | str | None = None) -> dict[str, Any]:
+        from shared import magic_mask
+        from shared.utils.download import process_files_def
+
+        self._sync_recent_media()
+        source_media = self._resolve_media_record_input(media_id)
+        if source_media is None:
+            return {"status": "error", "media_id": str(media_id or "").strip(), "output_file": "", "error": "Unknown media id."}
+        media_type = source_media.get("media_type")
+        if media_type not in {"image", "video"}:
+            return {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": f"media_id must reference an image or video, not a {media_type or 'unknown media type'}."}
+        source_path = str(source_media.get("path", "")).strip()
+        max_time_seconds = None
+        if video_length is not None and media_type == "video":
+            text = str(video_length).strip().lower()
+            try:
+                max_time_seconds = float(text[:-1]) if text.endswith("s") else int(text) / get_video_info(source_path)[0]
+            except ValueError:
+                return {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": 'video_length must be a frame count or seconds such as "5s".'}
+        label = ", ".join(keywords)
+        self._set_status(f"Creating {'inverted ' if invert else ''}mask for {label}...", kind="tool")
+        self._update_tool_progress("running", "Masking", {"status": "running", "media_id": source_media.get("media_id", ""), "keywords": keywords, "invert": invert})
+        try:
+            process_files_def(**magic_mask.query_download_def())
+            if media_type == "image":
+                _, mask_image, _ = magic_mask.generate_image_mask(source_path, keywords, negative_mask=invert)
+                output_path = self._resolve_direct_output_path(f"{os.path.splitext(os.path.basename(source_path))[0]}_mask.png", True, False)
+                mask_image.save(output_path)
+            else:
+                output_dir = os.path.dirname(self._resolve_direct_output_path("mask.mp4", False, False))
+                output_path, _ = magic_mask.generate_video_mask(source_path, keywords, negative_mask=invert, output_dir=output_dir, max_time_seconds=max_time_seconds)
+        except Exception as exc:
+            result = {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": str(exc)}
+            self._update_tool_progress("error", "Error", result)
+            self._set_status(f"Mask creation failed: {exc}", kind="error")
+            return result
+        comments = f'{"Inverted mask" if invert else "Mask"} of {label} in "{os.path.basename(source_path)}"'
+        if media_type == "image":
+            width, height = mask_image.size
+            settings = self._build_direct_image_settings(comments, width, height, prompt=f"A black and white mask of {label}.")
+        else:
+            settings = self._build_deepy_settings(f"A black and white mask video of {label}.", comments)
+            self._update_video_metadata_fields(output_path, settings)
+        media_record = self._record_direct_media(output_path, settings, is_image=media_type == "image", audio_only=False, label=f"{media_type.capitalize()} mask")
+        result = {"status": "done", "media_id": "" if media_record is None else media_record.get("media_id", ""), "source_media_id": source_media.get("media_id", ""), "media_type": media_type, "keywords": keywords, "invert": invert, "output_file": output_path, "error": ""}
+        self._update_tool_progress("done", "Done", result)
+        self._set_status("Mask created.", kind="tool")
         return result
 
     @assistant_tool(
@@ -6481,20 +6556,15 @@ class AssistantEngine:
                 )
             )
             self.session.recorded_budget_events.clear()
-        user_text_normalized = re.sub(r"\s+", " ", str(user_text or "").strip().lower())
-        interruption_query = (
-            "interrupt" in user_text_normalized
-            or "resume" in user_text_normalized
-            or "keep on" in user_text_normalized
-            or "keep going" in user_text_normalized
-            or "what were you doing" in user_text_normalized
-        )
-        if interruption_query and len(self.session.interruption_history) > 0:
+        # Requests interrupted since the last completed turn: shown until a turn completes after seeing them.
+        if len(self.session.interruption_history) > 0:
             lines = [
                 "<wangp_runtime_update>",
                 "Hidden WanGP runtime state. This is environment metadata, not a user message.",
-                "Interrupted requests recorded in this chat:",
+                "Interrupted requests since the last completed answer, with their completed steps.",
             ]
+            for entry in self.session.interruption_history:
+                entry["shown"] = True
             entries = list(self.session.interruption_history[-12:])
             retained_blocks = []
             retained_chars = 0
@@ -8430,6 +8500,9 @@ class AssistantEngine:
         if steering_after_action:
             self._set_status("Steering accepted. Applying the new instructions at the action boundary...", kind="queued")
         result = self._virtualize_tool_result(result)
+        if result.get("status") == "interrupted" and not self.session.interrupt_requested:
+            with self.session.turn_lock:
+                request_assistant_interrupt(self.session)
         self._log(f"Tool result: {_json_dumps(result)}")
         # This ordered block update includes final status and attachments. Full transcript
         # recovery remains available through the publication queue and client sync request.
@@ -9426,3 +9499,5 @@ class AssistantEngine:
             if self.debug_enabled:
                 self._log("Clearing interruption notice after a successful follow-up turn.")
             self.session.interruption_notice = ""
+        if turn_completed and not self.session.interrupt_requested:
+            self.session.interruption_history[:] = [entry for entry in self.session.interruption_history if not entry.get("shown")]

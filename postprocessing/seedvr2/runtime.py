@@ -1,4 +1,5 @@
 from __future__ import annotations
+from shared.utils.media_control import controlled_model_loading, loading_callback
 
 import gc
 from contextlib import contextmanager
@@ -174,6 +175,7 @@ class SeedVR2Runtime:
         self.offloadobj = None
         self.profile = None
 
+    @controlled_model_loading
     def load(self, paths: SeedVR2Paths, *, init_pipe, profile) -> None:
         if self.dit is not None and self.profile == profile:
             return
@@ -198,7 +200,7 @@ class SeedVR2Runtime:
         kwargs = {}
         profile_no = init_pipe(pipe, kwargs, profile)
         kwargs["pinnedMemory"] = False
-        self.offloadobj = offload.profile(pipe, profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=self.dtype, verboseLevel=-1, **kwargs)
+        self.offloadobj = offload.profile(pipe, loading_callback=loading_callback(), profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=self.dtype, verboseLevel=-1, **kwargs)
         offload_registry.register_offloadobj("SeedVR2", self.offloadobj, self.release)
 
     def _clear_vae_memory(self):

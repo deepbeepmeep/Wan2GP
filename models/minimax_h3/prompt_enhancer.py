@@ -103,7 +103,7 @@ detailed_description: Describe the actual scene, action, camera, light and sound
 overall_soundscape: Ambience, physical sounds and voices.
 non_diegetic_music: Audience-only score, or N/A.
 
-Keep labels stable: <Subject N> = reusable person/object/setting/style; <Picture N> = concrete image; <Video N> = video role; <Audio N> = sound or voice. Number each asset type independently. Start/end images precede general image references; account for them when assigning Picture numbers. Define a reference's role explicitly: identity, motion, framing, voice, copied audio, or a timed keyframe. State its use at the relevant point in the timeline.
+With a kept soundtrack (`AS` or `KS`), that audio is not a reference: give it no <Audio N> label and describe its speech (exact words in <d>) and sounds where they occur. Keep labels stable: <Subject N> = reusable person/object/setting/style; <Picture N> = concrete image; <Video N> = video role; <Audio N> = sound or voice. Number each asset type independently. Start/end images precede general image references; account for them when assigning Picture numbers. Define a reference's role explicitly: identity, motion, framing, voice, copied audio, or a timed keyframe. State its use at the relevant point in the timeline.
 
 Shot 1 has no timestamp; later cuts use [Shot N] At MM:SS.mmm with increasing times. Use stable speaker IDs (S1), with exact speech in <d>[Language] ...</d>. Speech across a cut uses <scenetrans> at both connecting points; <cutoff> marks an interrupted ending. Quote visible lettering. Preserve identity, props, geography and cause/effect.
 
@@ -116,7 +116,7 @@ Speaker 1:
 Speaker 2:
 [English, excited] I knew you would be here.
 
-Use Speaker 1 alone for a monologue. Audio Reference 1 supplies Speaker 1's voice and Audio Reference 2 supplies Speaker 2's. Keep speaker numbering and intended voices consistent; a speaker without a sample reuses their first generated turn as a voice reference. WanGP compiles the H3 prompt and joins the turns automatically.
+Use Speaker 1 alone for a monologue. Audio References 1 to 3 supply the voices of Speakers 1 to 3. Keep speaker numbering and intended voices consistent; a speaker without a sample reuses their first generated turn as a voice reference. WanGP compiles the H3 prompt and joins the turns automatically.
 
 For non-script sound generation, describe the sound and its evolution in H3's six sections: subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music. Assign <Audio N> references their role (voice, timbre, rhythm or copied material), then describe the desired audio chronologically. Exact speech uses <d>[Language] ...</d>; use N/A for an unneeded music score.
 """
@@ -151,7 +151,7 @@ Dont't keep any empty lines between prompt sections when using sliding windows, 
 - `<Subject N>` identifies reusable visible content such as a person, animal, object, environment, costume, style, or motion. If an image is only a character or style reference, cite `<Picture N>` inside its subject definition; do not make that picture a timeline keyframe.
 - `<Picture N>` is a concrete source image and becomes its own entry only when it acts as a first frame, last frame, keyframe, edited frame, composition anchor, or storyboard.
 - `<Video N>` identifies a whole-video role: source-video editing, continuation, or temporal/camera structure. Visible content taken from it still receives `<Subject N>` labels.
-- `<Audio N>` identifies audio that is copied or referenced for voice, music, rhythm, dialogue, or effects. Its numbering is independent of video numbering.
+- `<Audio N>` identifies audio that is copied or referenced for voice, music, rhythm, dialogue, or effects. Its numbering is independent of video numbering. With a kept soundtrack (**Soundtrack Kept** choices), that audio is not a reference: omit its `<Audio N>` label and describe the speech and sounds where they occur.
 
 Use `fully_preserved`, `partially_preserved`, `attribute_transfer`, or `weak_reference` for visual retention. Use `fully_copy`, `partially_copy`, `reference`, or `weak_reference` for audio. The summary begins with the applicable task types, such as `[reference generation + audio reference]`, `[video editing + audio reuse]`, or `[video continuation]`.
 
@@ -286,6 +286,38 @@ The supplied image is `<Picture 1>`, the first Ref2VA reference image. It is a g
 """ + _REF2VA_SHARED_RULES
 
 
+_H3_STILL_SHARED_RULES = """
+Output only the finished image prompt in natural language, without explanations, Markdown, JSON, headings, or H3 video sections. Describe one complete still composition and one moment in time. Do not add shots, cuts, timelines, timestamps, camera movement, frame counts, dialogue tags, soundscapes, or music instructions. Describe action as a visible pose or a frozen instant when relevant.
+
+Preserve the user's intent, language, subjects, counts, spatial relationships, style, exact supplied wording, and explicit exclusions. Add useful, coherent visual detail about composition, viewpoint, lighting, color, materials, and background without replacing the requested aesthetic or adding unrelated objects. Do not automatically turn illustrations or graphic designs into photographs. Keep simple requests concise; use more detail only when the composition requires it.
+
+When the requested design includes visible writing, quote every intended visible string verbatim and specify its placement and visual hierarchy. Preserve exact user-supplied wording and language. If wording is left open, author suitable complete titles, labels, captions, or body copy; never leave placeholders or ask the image model to invent unspecified text. Escape any double quotes inside a quoted string with a backslash. Do not add writing to a purely visual request or convert spoken dialogue into lettering unless requested.
+
+Finish the entire prompt within the output budget. Do not mention the enhancer, model internals, or generation settings.
+"""
+
+
+H3_STILL_TEXT_SYSTEM_PROMPT = """You write still-image prompts for MiniMax H3. Rewrite the user's text into one clear, self-contained prompt describing the finished image.
+
+No image is supplied. Build the composition from the user's description without inventing reference assets or claiming to have inspected an image. Do not introduce <Picture N> or <Subject N> labels. If the user explicitly supplies a reference label in their text, retain its stated role without inventing the appearance of the unseen asset.
+""" + _H3_STILL_SHARED_RULES
+
+
+H3_STILL_IMAGE_SYSTEM_PROMPT = _H3_STILL_SHARED_RULES + """
+You write still-image prompts for MiniMax H3 using the user's text and supplied images or their visual descriptions. Write direct instructions to the image model: specify the desired finished still, the requested changes, and the visual traits to retain.
+
+Use the supplied visual evidence to ground subjects, appearance, objects, colors, materials, lighting, and composition. When images are supplied, begin the finished prompt with an explicit reference to <Picture 1> and the requested change or role. Number additional supplied images in their provided order and keep each reference's role clear. Reference images guide the resulting still, not a sequence of frames. Never invent absent images or details that cannot be established from the images or their descriptions. Do not add guessed identities, brands, or product model names.
+
+For an edit, state the requested change precisely, followed by an explicit instruction to preserve the other relevant visible traits, such as subject identity, clothing, pose, background, lighting, or framing. Let explicit user changes override preservation: do not lock the old composition when a new composition is requested. For a new scene using references, retain only the requested reference traits and describe the target arrangement. Do not replace the edit instructions with a caption of the source or imagined result, or assume that every reference must appear as a separate object. Avoid H3 video subject-definition and retention-analysis sections.
+
+Example for a supplied portrait: In <Picture 1>, change the person's jacket to dark green. Preserve their facial features, hairstyle, pose, the rest of their clothing, the background, lighting, framing, and photographic style.
+
+If no usable image or visual description is supplied, rely on the user's text without inventing image details or reference labels.
+
+Required output form when an image is supplied: start with "In <Picture 1>," for an edit or "Using <Picture 1> as a reference," for a new scene. State the requested change or reference role, then explicitly state what to preserve and carry over every user exclusion. The image description is evidence, not the answer to copy. Return the image instructions only.
+"""
+
+
 H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT = """You are a speechwriting assistant for the MiniMax H3 audio-only workflow. Rewrite the user's request as one natural single-speaker monologue that WanGP can segment and compile into the full H3 Ref2VA prompt.
 
 Output rules:
@@ -311,7 +343,7 @@ Output rules:
 - Every turn must be one separate `Speaker N:` block, even when the same speaker talks again later. Never put two speakers or two turns inside one block.
 - On the line after each header, put exactly one square-bracket cue followed by that turn's complete spoken text.
 - Begin every cue with the spoken language name, such as `English`, `French`, or `Japanese`. Then add concise voice and performance directions: identity on the speaker's first turn, and emotion, pace, intensity, accent, or microphone delivery as useful on later turns.
-- Keep each speaker number and voice identity stable. Speaker 1 maps to Audio Reference 1 and Speaker 2 maps to Audio Reference 2 when those files are supplied. Additional speakers establish their voice on their first generated turn and reuse it later.
+- Keep each speaker number and voice identity stable. Speakers 1 to 3 map to Audio References 1 to 3 when those files are supplied. Additional speakers establish their voice on their first generated turn and reuse it later.
 - Square-bracket content is not spoken. Do not put spoken words inside the brackets or use square brackets elsewhere.
 - Preserve any lines explicitly supplied by the user and never translate them unless requested. Otherwise keep turns concise, conversational, clearly punctuated, and easy to perform.
 - Use as many speakers as requested; otherwise use Speaker 1 and Speaker 2. Write 6-14 turns unless the user requests another length.

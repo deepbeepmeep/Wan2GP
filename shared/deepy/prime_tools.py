@@ -734,12 +734,11 @@ class DeepyPrimeTools:
     @staticmethod
     def get_tool_stream_label_fields(tool_name: str) -> tuple[str, ...]:
         return {
-            "wangp_generate": ("action", "arguments"),
+            "wangp_generate": ("model_type",),
             "wangp_postprocess": ("media",),
             "wangp_model": ("model_type",),
             "wangp_models": ("action",),
-            "wangp_list_gallery": ("action",),
-            "wangp_deepy_templates": ("action",),
+            "wangp_deepy_templates": ("tool_id",),
             "wangp_session": ("action",),
             "wangp_toolbox": ("action",),
             "wangp_io": ("action",),
@@ -853,16 +852,24 @@ class DeepyPrimeTools:
         model_label = ""
         media_label = ""
         if tool_name == "wangp_generate":
-            action_arguments = arguments.get("arguments")
-            if action_arguments is None:
-                return "Get Generation Schema" if arguments.get("action") else "Explore Generation"
-            media_label, model_label = self._generation_label_context(action_arguments.get("source"))
+            settings = arguments.get("settings")
+            if settings is None and isinstance(arguments.get("arguments"), dict):
+                settings = arguments["arguments"].get("source")
+            if settings is None and arguments.get("model_type"):
+                settings = arguments  # members already streamed from an incomplete settings object
+            if settings is None:
+                return self.get_tool_display_name(tool_name)
+            media_label, model_label = self._generation_label_context(settings)
+        elif tool_name in {"wangp_deepy_templates", "wangp_list_gallery"} and "action" not in arguments:
+            if tool_name == "wangp_deepy_templates":
+                tool_name = "wangp_list_deepy_templates" if arguments.get("cursor") else "wangp_get_deepy_template_settings"
+                arguments = {"template": "default", **arguments}
         elif tool_name in {"wangp_model", "wangp_models", "wangp_deepy_templates", "wangp_list_gallery", "wangp_postprocess", "wangp_session"}:
             if tool_name == "wangp_models" and arguments.get("query") is not None:
                 return finish(f"Find Models for {short(arguments['query'])}")
             action = arguments.get("action")
             nested = arguments.get("arguments")
-            describing = nested is None
+            describing = nested is None and tool_name not in {"wangp_model", "wangp_models"}
             nested = dict(nested or {})
             target = ""
             if tool_name == "wangp_model":
@@ -878,7 +885,9 @@ class DeepyPrimeTools:
                 if action in {"capabilities", "definition", "defaults"}:
                     subject = short(nested.get("property")) if action == "definition" else ""
                     return finish(f"Read {subject or humanize(action)} for {target}")
-                tool_name = {"saved_settings": "wangp_model_settings", "loras": "wangp_list_loras"}.get(action, tool_name)
+                if action == "profiles" and "setting_id" not in nested:
+                    return finish(f"Read Accelerator Profiles for {target}")
+                tool_name = {"saved_settings": "wangp_model_settings", "user_settings": "wangp_model_settings", "presets": "wangp_model_settings", "profiles": "wangp_model_settings", "loras": "wangp_list_loras"}.get(action, tool_name)
                 nested["model_type"] = arguments["model_type"]
             elif tool_name == "wangp_deepy_templates":
                 tool_name = {"deepy_templates": "wangp_list_deepy_templates", "deepy_template_settings": "wangp_get_deepy_template_settings"}.get(action, tool_name)
@@ -905,7 +914,7 @@ class DeepyPrimeTools:
         if plugin_tool is not None:
             return {"pause_runtime": plugin_tool.pause_runtime, "pause_reason": plugin_tool.pause_reason}
         if tool_name == "wangp_generate":
-            return {"pause_runtime": call_arguments.get("action") == "generate" and isinstance(call_arguments.get("arguments"), dict), "pause_reason": "tool"}
+            return {"pause_runtime": isinstance(call_arguments.get("settings"), (dict, list, str)), "pause_reason": "tool"}
         if tool_name == "wangp_postprocess":
             return {"pause_runtime": bool(call_arguments.get("action")) and isinstance(call_arguments.get("arguments"), dict), "pause_reason": "tool"}
         if tool_name == "wangp_toolbox":
@@ -929,26 +938,29 @@ class DeepyPrimeTools:
             unknown -= {"wait", "timeout_s"}
         unknown = sorted(unknown)
         if unknown and (toolbox or parameters.get("additionalProperties") is False):
-            hint = ' Put action at the top level and action parameters inside arguments: {"action":"<action>","arguments":{...}}.' if toolbox else " Use only the declared parameters."
+            hint = ' Put action at the top level and action parameters inside arguments: {"action":"<action>","arguments":{...}}.' if toolbox else " Pass the declared parameters directly, without action or arguments." if {"action", "arguments"} & set(unknown) else " Use only the declared parameters."
+            if tool_name == "wangp_generate" and "settings" not in unknown:
+                hint = ' Put every generation setting inside settings: {"settings": {"model_type": "...", "prompt": "...", ...}}.'
             if tool_name == "wangp_toolbox" and arguments.get("action") == "inspect_media" and "media" in unknown:
                 hint = ' Put media_id (one visual) or media_ids (a list) inside arguments alongside question. Read the contract with {"action":"inspect_media","arguments":null}.'
             return f"Unexpected top-level parameters: {', '.join(unknown)}. Nothing was executed." + hint
         for name, parameter in parameters.get("properties", {}).items():
             value = arguments.get(name)
-            if parameter.get("type") != "object" or not isinstance(value, str):
+            kinds = {kind for option in (parameter, *parameter.get("anyOf", [])) for kind in (option.get("type") if isinstance(option.get("type"), list) else [option.get("type")])}
+            if not isinstance(value, str) or not kinds & {"object", "array"}:
                 continue
             try:
                 decoded = json.loads(value)
             except json.JSONDecodeError:
                 continue
-            if isinstance(decoded, dict):
+            if isinstance(decoded, dict) and "object" in kinds or isinstance(decoded, list) and "array" in kinds:
                 arguments[name] = decoded
         if toolbox and tool_name != "wangp_artifact" and arguments.get("arguments") is not None:
             nested = arguments["arguments"]
             if not isinstance(nested, dict):
                 hint = ' For rg, use {"action":"rg","arguments":{"command":"-n pattern -- @workspace/file.txt"}}.' if tool_name == "wangp_io" and arguments.get("action") == "rg" else ""
                 return 'arguments must be an object: {"action":"<action>","arguments":{...}}.' + hint
-            if not arguments.get("action"):
+            if not arguments.get("action") and nested:
                 return 'action belongs at the top level, beside arguments: {"action":"<action>","arguments":{...}}. Nothing was executed.'
         if tool_name == "wangp_artifact" and "arguments" in arguments and not isinstance(arguments["arguments"], dict):
             raw_arguments = arguments["arguments"]
@@ -1003,7 +1015,7 @@ class DeepyPrimeTools:
                                 ignored.append(name)
         result = self._call_mcp_tool(tool_name, arguments)
         if tool_name in {"wangp_generate", "wangp_postprocess"} and result.get("job_id"):
-            action_arguments = arguments["arguments"]
+            action_arguments = arguments if tool_name == "wangp_generate" else arguments["arguments"]
             if action_arguments.get("wait", True):
                 result = self._wait_for_generation(result, action_arguments.get("timeout_s"), action_arguments.get("event_limit", 0))
             else:

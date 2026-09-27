@@ -7,20 +7,13 @@ from shared.utils.process_locks import gen_lock
 
 
 def postprocessing_pause_checkpoint(gen):
-    """Pause between progress callbacks, retaining processor-owned GPU state."""
-    while True:
-        with gen_lock:
-            status = gen.get('process_status', '') or ''
-            requested = status == 'request:pause' or status.startswith('request:deepy_pause_')
-            paused = status == 'process:pause' or status.startswith('process:deepy_pause_')
-            if not requested and not paused:
-                return
-            if gen.get('abort'):
-                gen['process_status'] = 'process:main'
-                return
-            if requested:
-                gen['process_status'] = status.replace('request:', 'process:', 1)
-        time.sleep(.1)
+    """Compatibility entry point for cooperative media workers."""
+    from shared.utils.media_control import current_control, pause_checkpoint
+    control = current_control()
+    if control is not None and control.gen is gen:
+        control.checkpoint()
+    else:
+        pause_checkpoint(gen)
 
 
 def generation_pause_controls(state, previous):
@@ -74,7 +67,7 @@ class MediaToolPause:
         self.gen.get('process_names', {}).pop(self.owner, None)
 
     def poll(self):
-        from shared.deepy.engine import mark_assistant_paused, request_assistant_pause
+        from shared.deepy.engine import mark_assistant_paused, request_assistant_interrupt, request_assistant_pause
         from shared.deepy.chat import build_status_event
 
         session = self.session
@@ -82,9 +75,15 @@ class MediaToolPause:
             return
         acknowledged = False
         resuming = False
+        interrupted = False
         with session.turn_lock:
             with gen_lock:
                 status = self.gen.get('process_status')
+                queue_errors = self.gen.get('queue_errors', {})
+                cancelled = any(client_id in queue_errors and queue_errors[client_id][1] for client_id in self.client_ids)
+                if not session.interrupt_requested and (cancelled or (self.gen.get('abort') and self._owns_active_task())):
+                    request_assistant_interrupt(session)
+                    interrupted = True
                 if status not in ('request:pause', 'process:pause'):
                     self.manual_pause = False
                 if status in ('request:pause', 'process:pause') and self._owns_active_task() and not self.manual_pause:
@@ -104,6 +103,8 @@ class MediaToolPause:
                         self.gen.setdefault('process_names', {})[self.owner] = 'Deepy Pause'
                         self.gen['pause_msg'] = 'Media Processing Paused - Resume in Deepy'
                         self.gen['process_status'] = self.request
+            if interrupted:
+                self.send_cmd('chat_output', build_status_event('Stopping generation...', kind='stop_pending', session=session))
             if resuming:
                 self.send_cmd('chat_output', build_status_event('Resuming media processing...', kind='tool', session=session))
             if acknowledged and mark_assistant_paused(session):

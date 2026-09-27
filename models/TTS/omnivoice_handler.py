@@ -74,13 +74,14 @@ OMNIVOICE_DURATION_SLIDER = {
     "default": 0,
 }
 OMNIVOICE_AUDIO_PROMPT_TYPE_SOURCES = {
-    "selection": ["", "A", "AB"],
+    "selection": ["", "A", "AB", "ABD"],
     "labels": {
         "": "Voice design",
         "A": "Voice cloning (1 reference audio)",
         "AB": "Voice cloning dialogue (Speaker 1 and Speaker 2)",
+        "ABD": "Voice cloning dialogue (Speakers 1, 2 and 3)",
     },
-    "letters_filter": "AB",
+    "letters_filter": "ABD",
     "default": "",
 }
 OMNIVOICE_AUDIO_PROMPT_TYPE_CUSTOM_OPTION = {
@@ -182,13 +183,14 @@ The transcript must describe the reference audio, not the target prompt. For bes
 
 If this field contains only valid voice tags such as `female` or `male, british accent`, WanGP treats it as a voice instruction rather than a reference transcript.
 
-### Two-speaker cloning
+### Two- or three-speaker cloning
 
-Upload both reference voices and provide transcripts like this, or leave blank for Whisper transcription:
+Upload the two or three reference voices and provide transcripts like this, or leave blank for Whisper transcription:
 
 ```text
 Speaker 1: Exact words spoken in the first reference audio.
 Speaker 2: Exact words spoken in the second reference audio.
+Speaker 3: Exact words spoken in the third reference audio.
 ```
 """
 
@@ -241,6 +243,7 @@ def _get_omnivoice_model_def():
         "custom_settings": [one.copy() for one in OMNIVOICE_CUSTOM_SETTINGS],
         "audio_guide_label": "Speaker 1 reference voice",
         "audio_guide2_label": "Speaker 2 reference voice",
+        "audio_guide3_label": "Speaker 3 reference voice",
         "text_prompt_enhancer_instructions": TTS_MONOLOGUE_PROMPT,
         "text_prompt_enhancer_instructions1": TTS_QWEN3_DIALOGUE_PROMPT,
         "text_prompt_enhancer_max_tokens": 512,
@@ -389,16 +392,17 @@ class family_handler:
         if "A" in audio_prompt_type and "B" not in audio_prompt_type and inputs.get("audio_guide") is None:
             return "OmniVoice voice cloning requires a reference audio file."
         if "B" in audio_prompt_type:
-            if inputs.get("audio_guide") is None or inputs.get("audio_guide2") is None:
-                return "OmniVoice dialogue mode requires two reference audio files."
+            speaker_count = 3 if "D" in audio_prompt_type else 2
+            if any(inputs.get(key) is None for key in ("audio_guide", "audio_guide2", "audio_guide3")[:speaker_count]):
+                return f"OmniVoice dialogue mode requires {speaker_count} reference audio files."
             speaker_matches = list(re.finditer(r"Speaker\s*(\d+)\s*:", text, flags=re.IGNORECASE))
             if not speaker_matches:
-                return "OmniVoice dialogue mode requires prompt lines using Speaker 1: and Speaker 2:."
+                return f"OmniVoice dialogue mode requires prompt lines using Speaker 1: to Speaker {speaker_count}:."
             speaker_ids = sorted({int(m.group(1)) for m in speaker_matches})
-            if len(speaker_ids) != 2:
-                return "OmniVoice dialogue mode requires exactly two speaker IDs. Use Speaker 1: and Speaker 2:."
+            if len(speaker_ids) != speaker_count:
+                return f"OmniVoice dialogue mode requires exactly {speaker_count} speaker IDs. Use Speaker 1: to Speaker {speaker_count}:."
         elif has_speaker_syntax:
-            return "Speaker-tag dialogue requires OmniVoice two-speaker mode."
+            return "Speaker-tag dialogue requires an OmniVoice dialogue mode."
         return None
 
     @staticmethod

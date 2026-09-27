@@ -1,3 +1,4 @@
+from shared.utils.media_control import inference_checkpoint
 """
 MIT License
 
@@ -160,6 +161,7 @@ class IFNet(nn.Module):
         feat = None
 
         for i in range(5):
+            inference_checkpoint()
             if flow is None:
                 flow, mask, feat = self.blocks[i](
                     torch.cat((img0, img1, f0, f1, timestep), 1),

@@ -115,12 +115,13 @@ DEEPY_CONFIG_FILENAME = "wgp_config.json"
 # Deepy's existing read/write filesystem permission in addition to this switch.
 DEEPY_LONG_TEXT_TOOLS_EXPERIMENT = True
 
-DEEPY_QWEN_ENHANCER_IDS = {3, 4, 5}
-_DEEPY_QWEN_VARIANT_LABELS = {3: "Qwen3.5-4B", 4: "Qwen3.5-9B", 5: "Qwen3.8-27B"}
+DEEPY_QWEN_ENHANCER_IDS = {3, 4, 5, 6}
+_DEEPY_QWEN_VARIANT_LABELS = {3: "Qwen3.5-4B", 4: "Qwen3.5-9B", 5: "Qwen3.8-27B", 6: "Qwen3.8-9B"}
 _DEEPY_QWEN_KV_CACHE_SPECS = {
     3: {"num_kv_cache_layers": 8, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
     4: {"num_kv_cache_layers": 8, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
     5: {"num_kv_cache_layers": 16, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
+    6: {"num_kv_cache_layers": 8, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
 }
 _DEEPY_DEFAULT_GEN_IMAGE_ALIASES = {"Z_Image_Turbo": "Z Image Turbo", **DEEPY_TEMPLATE_CONFIG_MIGRATIONS[DEEPY_TOOL_GEN_IMAGE_KEY]}
 _DEEPY_DEFAULT_EDIT_IMAGE_ALIASES = {"Qwen_Edit": DEEPY_DEFAULT_EDIT_IMAGE, **DEEPY_TEMPLATE_CONFIG_MIGRATIONS[DEEPY_TOOL_EDIT_IMAGE_KEY]}
@@ -302,8 +303,8 @@ def validate_deepy_version_config(deepy_type: Any, compaction_type: Any, context
     except (TypeError, ValueError):
         enhancer_no = 0
     if normalized_type == DEEPY_TYPE_PRIME:
-        if enhancer_no != 5:
-            raise ValueError("Deepy Prime requires the Qwen3.8 VL 27B model.")
+        if enhancer_no not in (5, 6):
+            raise ValueError("Deepy Prime requires a Qwen3.8 VL model (9B or 27B).")
         if normalized_compaction != DEEPY_COMPACTION_TYPE_SUMMARIZE:
             raise ValueError("Deepy Prime requires Summarize compaction.")
     validate_deepy_compaction_config(compaction_type, normalized_tokens, compaction_thinking=compaction_thinking)

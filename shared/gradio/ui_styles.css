@@ -504,12 +504,13 @@ user-select: text;
     display: inline-block;
     vertical-align: middle;
 }
-#video_input .video-container .container {
-    flex-direction: row !important;
-    display: flex !important;
+/* Let the preview shrink inside fixed-height video inputs so the trim
+   timeline, duration, actions and source selector stay inside the block. */
+.video-container > .wrap {
+    min-height: 0;
 }
-#video_input .video-container .container .controls {
-    overflow: visible !important;
+.video-container > .wrap video {
+    object-fit: contain;
 }
 .tabitem {padding-top:0px}
 .rule-row { margin-bottom: calc(8px * var(--wangp-ui-scale)); align-items: center !important; display: flex; gap: calc(8px * var(--wangp-ui-scale)); }

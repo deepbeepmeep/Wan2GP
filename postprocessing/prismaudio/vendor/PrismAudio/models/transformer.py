@@ -1,3 +1,4 @@
+from shared.utils.media_control import inference_checkpoint
 from functools import reduce, partial
 from packaging import version
 
@@ -963,6 +964,7 @@ class ContinuousTransformer(nn.Module):
             global_cond_embed = global_cond
         # Iterate over the transformer layers
         for layer_ix, layer in enumerate(self.layers):
+            inference_checkpoint()
             if use_checkpointing:
                 x = checkpoint(layer, x, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond_embed, self_attention_flash_sliding_window = self.sliding_window, sync_cond=sync_cond, prepend_length=prepend_length, **kwargs)
             else:

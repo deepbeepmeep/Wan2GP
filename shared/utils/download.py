@@ -8,7 +8,7 @@ class DownloadError(Exception):
     """An asset transfer failed; stop the operation before trying to load it."""
 
 
-def generation_downloads(get_gen_info):
+def generation_downloads(get_gen_info, get_offloadobj=lambda: None):
     from functools import wraps
 
     def decorate(fn):
@@ -16,12 +16,15 @@ def generation_downloads(get_gen_info):
 
         @wraps(fn)
         def run(*args, **kwargs):
-            arguments = signature.bind(*args, **kwargs).arguments
+            bound = signature.bind(*args, **kwargs)
+            arguments = bound.arguments
             gen = get_gen_info(arguments["state"])
-            with download_operation(gen):
+            from shared.utils.media_control import MediaControl, MediaProcessingAborted
+            with download_operation(gen), MediaControl(gen, arguments["send_cmd"], get_offloadobj) as control:
+                arguments["send_cmd"] = control.send_cmd
                 try:
-                    return fn(*args, **kwargs)
-                except DownloadCancelled:
+                    return fn(*bound.args, **bound.kwargs)
+                except (DownloadCancelled, MediaProcessingAborted):
                     gen["abort"] = True
                     return True  # The queue/API reports this as cancellation from gen["abort"].
                 except DownloadError as exc:

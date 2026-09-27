@@ -1,4 +1,5 @@
 """WanGP inference pipeline for MiniMax H3."""
+from shared.utils.media_control import inference_checkpoint
 
 import functools
 import hashlib
@@ -20,6 +21,7 @@ from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_coun
 from .constants import (H3_AUDIO_REFINEMENT_DENOISE, H3_AUDIO_REFINEMENT_SETTING, H3_AUDIO_REFINEMENT_STEPS,
                         H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, h3_grouped_masking_enabled)
 from .dialogue import H3_DIALOGUE_GENERATION, generate_dialogue, is_dialogue_prompt
+from .excerpts import H3_AUDIO_EXCERPTS_SETTING, H3_VIDEO_EXCERPTS_SETTING, parse_excerpts
 from .first_block_cache import MiniMaxH3FirstBlockCache
 from .interrupt import GenerationInterrupted
 from .pdd import pdd_sampling_plans, pdd_sampling_plans_for_sigmas
@@ -61,6 +63,8 @@ def _return_none_on_interrupt(method):
 
 
 def video_latent_frames(frame_count):
+    if frame_count == 1:
+        return 1
     frame_count = normalize_frame_count(max(5, int(frame_count)), 5, 17, 5)
     return 2 + ((frame_count - 5) // 17) * 5
 
@@ -434,6 +438,7 @@ class MiniMaxH3Pipeline:
         return self.transformer, None
 
     def _check_abort(self):
+        inference_checkpoint()
         if self._interrupt:
             raise GenerationInterrupted
 
@@ -515,6 +520,17 @@ class MiniMaxH3Pipeline:
 
         audio, sample_rate = sf.read(path, dtype="float32", always_2d=True)
         return self._waveform(audio, sample_rate)
+
+    def _load_video_excerpts(self, path, positions, fps, height, width):
+        from shared.utils.utils import get_resampled_video_transparent, get_video_info
+
+        source_fps, _, _, source_frames = get_video_info(path)
+        excerpts = []
+        for start, duration in parse_excerpts(positions, fps, source_frames / source_fps, "Reference Positions", video_frames=True):
+            self._check_abort()
+            frames = get_resampled_video_transparent(path, int(start * fps), round(duration * fps), fps)
+            excerpts.append(torch.stack([_resize_video(frame.permute(2, 0, 1).float().div_(127.5).sub_(1.0).unsqueeze(1), height, width)[:, 0] for frame in frames], dim=1))
+        return excerpts
 
     def _prepare_audio_references(self, sources):
         import soundfile as sf
@@ -649,21 +665,21 @@ class MiniMaxH3Pipeline:
     @_return_none_on_interrupt
     @generation_progress
     @torch.inference_mode()
-    def generate(self, input_prompt, image_start=None, image_end=None, image_end_frame_position=None, input_frames=None, input_frames2=None, input_ref_images=None,
+    def generate(self, input_prompt, image_start=None, image_end=None, image_end_frame_position=None, input_frames=None, input_frames2=None, input_frames3=None, input_ref_images=None,
                  frames_to_inject=None, frames_relative_positions_list=None, image_refs_relative_size=100,
                  input_masks=None, outpainting_dims=None, denoising_strength=1.0, masking_strength=1.0,
                  input_video=None, input_waveform=None, input_waveform_sample_rate=None,
-                 audio_guide=None, audio_guide2=None, prefix_frames_count=0,
+                 video_guide=None, audio_guide=None, audio_guide2=None, audio_guide3=None, prefix_frames_count=0,
                  frame_num=124, height=768, width=1344, shift=12.0, sampling_steps=30, seed=0,
                  callback=None, VAE_tile_size=None, audio_prompt_type="", video_prompt_type="", fps=24,
                  sample_solver="euler", attention_sparsity=1.0,
                  guide_phases=1, switch_threshold=H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, loras_slists=None, loras_selected=None, set_progress_status=None,
                  starting_sigma=None, preserve_input_mask_values=False, refinement_mode=False,
-                 custom_settings=None, duration_seconds=None, verbose_level=0, dialogue_segment=False, **kwargs):
+                 custom_settings=None, duration_seconds=None, verbose_level=0, dialogue_segment=False, image_mode=0, **kwargs):
         if self.audio_only and H3_DIALOGUE_GENERATION and not dialogue_segment and is_dialogue_prompt(input_prompt):
             self._early_stop = False
             return generate_dialogue(
-                self, input_prompt, audio_guide=audio_guide, audio_guide2=audio_guide2, input_waveform=input_waveform,
+                self, input_prompt, audio_guide=audio_guide, audio_guide2=audio_guide2, audio_guide3=audio_guide3, input_waveform=input_waveform,
                 input_waveform_sample_rate=input_waveform_sample_rate, audio_prompt_type=audio_prompt_type,
                 duration_seconds=duration_seconds, sampling_steps=sampling_steps, seed=seed, shift=shift, callback=callback,
                 VAE_tile_size=VAE_tile_size, fps=fps, sample_solver=sample_solver, attention_sparsity=attention_sparsity,
@@ -671,7 +687,9 @@ class MiniMaxH3Pipeline:
                 set_progress_status=set_progress_status, verbose_level=verbose_level)
         self._use_shared_components()
         grouped_masked_denoising = h3_grouped_masking_enabled(custom_settings)
-        fps = float(fps)
+        image_outputs = image_mode > 0 and not self.audio_only
+        # Image saving uses 1 FPS, but H3's joint latents retain their native 24 FPS timing.
+        fps = 24.0 if image_outputs else float(fps)
         if fps <= 0:
             raise ValueError("MiniMax H3 requires a positive output frame rate")
         self._set_interrupt_state()
@@ -696,8 +714,10 @@ class MiniMaxH3Pipeline:
             frame_num = round(float(duration_seconds) * fps)
             height = width = 32
             guide_phases = 1
-        frame_num = normalize_frame_count(int(frame_num), 5, 17, 5)
-        audio_from_control_video = not self.reference_mode and "2" in (audio_prompt_type or "")
+        frame_num = 1 if image_outputs else normalize_frame_count(int(frame_num), 5, 17, 5)
+        if image_outputs:
+            prefix_frames_count = 0
+        audio_from_control_video = not image_outputs and not self.reference_mode and "2" in (audio_prompt_type or "")
         prefix_frames_count, overlap_error = normalize_overlap(int(prefix_frames_count or 0), 17, 1)
         if overlap_error:
             raise ValueError(overlap_error)
@@ -712,7 +732,7 @@ class MiniMaxH3Pipeline:
         history_frames = continuation[:, -continuation_count:-1] if continuation_count > 1 else None
         history_count = 0 if history_frames is None else history_frames.shape[1]
         target_frames = frame_num - history_count
-        aligned_target_frames = normalize_frame_count(target_frames, 5, 17, 5)
+        aligned_target_frames = 1 if image_outputs else normalize_frame_count(target_frames, 5, 17, 5)
         if target_frames <= 0:
             raise ValueError("Sliding-window overlap leaves no frames for H3 to generate")
         refinement_mode = bool(refinement_mode)
@@ -839,7 +859,11 @@ class MiniMaxH3Pipeline:
             video_sources.append(input_frames)
             if "+" in (video_prompt_type or ""):
                 video_sources.append(input_frames2)
+            if "*" in (video_prompt_type or ""):
+                video_sources.append(input_frames3)
         video_sources = [_as_video(source) for source in video_sources]
+        if self.reference_mode and self.fixed_prompt is None and "1" in (video_prompt_type or ""):  # excerpts replace the whole reference video
+            video_sources = self._load_video_excerpts(video_guide, custom_settings[H3_VIDEO_EXCERPTS_SETTING], fps, height, width)
         if self.fixed_prompt is not None:
             if any(source is None for source in video_sources):
                 print("Viggle: no control video frames available for this window; continuing without control-video motion guidance.")
@@ -848,7 +872,9 @@ class MiniMaxH3Pipeline:
         total_reference_duration = sum(video.shape[1] for video in video_sources) / fps
         if total_reference_duration > 15:
             raise ValueError(f"MiniMax H3 reference videos must total at most 15 seconds (found {total_reference_duration:.2f}s)")
-        soundtrack_sources = (audio_guide, audio_guide2) if self.fixed_prompt is None and "K" in (audio_prompt_type or "") else (None, None)
+        soundtrack = "S" in (audio_prompt_type or "")  # the audio is the soundtrack: condition on it rather than reference it
+        soundtrack_excerpts = "1" in (audio_prompt_type or "")  # K1: soundtrack excerpts become independent audio references
+        soundtrack_sources = (audio_guide, audio_guide2, audio_guide3) if self.fixed_prompt is None and "K" in (audio_prompt_type or "") and not soundtrack and not soundtrack_excerpts else (None, None, None)
         soundtracks = [self._load_audio_reference(soundtrack_sources[index]) if soundtrack_sources[index] is not None else None for index in range(len(video_sources))]
         soundtracks = self._limit_audio_references(soundtracks)
         for index, source in enumerate(video_sources):
@@ -856,13 +882,24 @@ class MiniMaxH3Pipeline:
         if self.fixed_prompt is not None:
             self._add_image_reference(input_ref_images[0], width, height, 100, presentation, visual_latents, refs)
         reference_sources = []
-        if self.reference_mode and self.fixed_prompt is None and not refinement_mode and "A" in (audio_prompt_type or ""):
+        if self.reference_mode and self.fixed_prompt is None and not refinement_mode and "A" in (audio_prompt_type or "") and not soundtrack:
             reference_sources.append(audio_guide if audio_guide is not None else waveform)
         if self.reference_mode and self.fixed_prompt is None and not refinement_mode and "B" in (audio_prompt_type or ""):
             reference_sources.append(audio_guide2)
+        if self.reference_mode and self.fixed_prompt is None and not refinement_mode and "D" in (audio_prompt_type or ""):
+            reference_sources.append(audio_guide3)
+        if self.reference_mode and self.fixed_prompt is None and not refinement_mode and "K" in (audio_prompt_type or "") and soundtrack_excerpts:
+            import soundfile as sf
+            from shared.utils.utils import get_video_info
+
+            source_fps, _, _, source_frames = get_video_info(video_guide)
+            sample_rate = sf.info(audio_guide).samplerate
+            for start, duration in parse_excerpts(custom_settings[H3_AUDIO_EXCERPTS_SETTING], fps, source_frames / source_fps, "Audio Reference Positions"):
+                audio, _ = sf.read(audio_guide, start=round(start * sample_rate), frames=round(duration * sample_rate), dtype="float32", always_2d=True)  # read only the excerpt
+                reference_sources.append(self._waveform(audio, sample_rate))
         for reference_audio in self._prepare_audio_references(reference_sources):
             self._add_audio_reference(reference_audio, presentation, audio_latents, refs)
-        if (refinement_mode or not self.reference_mode or self.fixed_prompt is not None) and any(flag in (audio_prompt_type or "") for flag in "AK") and waveform is not None:
+        if (refinement_mode or soundtrack or not self.reference_mode or self.fixed_prompt is not None) and any(flag in (audio_prompt_type or "") for flag in "AK") and waveform is not None:
             condition_start = round(history_count / fps * AUDIO_SAMPLE_RATE)
             condition_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)
             condition_waveform = waveform[..., condition_start:condition_start + condition_samples]
@@ -873,8 +910,8 @@ class MiniMaxH3Pipeline:
             audio_ref_count = sum(ref["kind"] in ("audio", "video_audio") for ref in refs)
             if not self.audio_only and audio_ref_count > visual_ref_count:
                 raise ValueError(f"MiniMax H3 requires at least as many image and video references as audio references (found {visual_ref_count} visual and {audio_ref_count} audio)")
-            if len(refs) > 12 or sum(ref["kind"] == "image" for ref in refs) > 9 or sum(ref["kind"] in ("video", "video_audio") for ref in refs) > 2 or sum(ref["kind"] in ("audio", "video_audio") for ref in refs) > 2:
-                raise ValueError("WanGP supports at most 12 MiniMax H3 references: 9 images, 2 videos, and 2 audio clips")
+            if len(refs) > 12 or sum(ref["kind"] == "image" for ref in refs) > 9 or sum(ref["kind"] in ("video", "video_audio") for ref in refs) > 3 or sum(ref["kind"] in ("audio", "video_audio") for ref in refs) > 3:
+                raise ValueError("MiniMax H3 supports at most 12 references: 9 images, 3 videos, and 3 audio clips")
 
         source_latents = editable_mask = None
         if video_to_video:
@@ -1142,7 +1179,7 @@ class MiniMaxH3Pipeline:
                                                1.0 - VISUAL_COND_TIMESTEP if preserve_input_mask_values or keep_grouped_rows_fixed else None)
                     video_velocity = audio_velocity = video_denoised = audio_velocity_tail = None
                     if callback is not None:
-                        preview = video[0].detach().cpu() if not self.audio_only and (not offline_spectrum or spectrum.replaying) else None
+                        preview = video[0].detach() if not self.audio_only and (not offline_spectrum or spectrum.replaying) else None
                         callback(step, preview, False, denoising_extra=pass_extra, **({"pass_no": pass_no} if pass_no >= 0 else {}))
 
             try:
@@ -1407,8 +1444,8 @@ class MiniMaxH3Pipeline:
                               freeze_audio=True, stage_solver=H3_PHASE_2_SAMPLE_SOLVER, use_cache=False)
             phase_2_presentation = phase_2_visual_latents = phase_2_reference_presentation = phase_2_reference_latents = phase_2_refs = None
 
-        audio_refinement = "none" if self.audio_only else (custom_settings or {}).get(H3_AUDIO_REFINEMENT_SETTING, "none")
-        if pdd or not self.reference_mode and any(flag in (audio_prompt_type or "") for flag in "AK"):
+        audio_refinement = "none" if self.audio_only or image_outputs else (custom_settings or {}).get(H3_AUDIO_REFINEMENT_SETTING, "none")
+        if pdd or soundtrack or not self.reference_mode and any(flag in (audio_prompt_type or "") for flag in "AK"):
             audio_refinement = "none"
         if audio_refinement != "none":
             refinement_steps = H3_AUDIO_REFINEMENT_STEPS
@@ -1446,7 +1483,7 @@ class MiniMaxH3Pipeline:
                 offload.set_step_no_for_lora(self.transformer, lora_step)
 
         if set_progress_status is not None:
-            set_progress_status("Decoding H3 Stereo Audio" if self.audio_only or decoded_video is not None or frozen_target_video is not None else "VAE Decoding of Video and Audio")
+            set_progress_status("VAE Decoding of Image" if image_outputs else "Decoding H3 Stereo Audio" if self.audio_only or decoded_video is not None or frozen_target_video is not None else "VAE Decoding of Video and Audio")
         self._check_abort()
         self._use_shared_components()
         context = payload = presentation = visual_latents = audio_latents = refs = keyframes = audio_keyframes = source_latents = source_noise = source_buffer = editable_mask = None
@@ -1458,6 +1495,10 @@ class MiniMaxH3Pipeline:
             else:
                 decoded_video = frozen_target_video[:, :target_frames].cpu()
         video = None
+        if image_outputs:
+            audio = None
+            self._check_abort()
+            return {"x": decoded_video}
         if set_progress_status is not None:
             set_progress_status("Decoding H3 Stereo Audio")
         decoded_audio = self.audio_vae.decode(audio)[0]

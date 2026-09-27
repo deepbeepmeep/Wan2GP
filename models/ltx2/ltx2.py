@@ -1142,6 +1142,7 @@ class LTX2:
             trans = self.model
         return trans, None
 
+    @generation_progress
     def upscale_video(
         self,
         sample: torch.Tensor,
@@ -1618,7 +1619,10 @@ class LTX2:
         _append_injected_ref_entries(guiding_images, guiding_images_stage2)
 
         tiling_config = _build_tiling_config(VAE_tile_size, fps)
-        interrupt_check = lambda: self._interrupt
+        def interrupt_check():
+            if callback is not None:
+                callback(-1, None, False, True)
+            return self._interrupt
         text_connectors = text_connectors or getattr(self, "_text_connectors", None)
         editanything_ref_images = input_ref_images if editanything else None
 

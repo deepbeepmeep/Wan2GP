@@ -5,6 +5,7 @@ import contextlib
 import copy
 import dataclasses
 import io
+import json
 import logging
 import mimetypes
 import sys
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from shared.utils.gallery_media import disambiguate_gallery_media_ids, gallery_media_ids
+from shared.utils.setting_names import split_settings, unknown_settings_error
 
 if TYPE_CHECKING:
     from shared.api import SessionJob
@@ -42,6 +44,7 @@ _DEEPY_MODEL_DEF_STRING_LIMIT = 256
 _TOOLBOX_ACTIONS = {
     "add_to_gallery",
     "create_color_frame",
+    "create_mask",
     "image_channels",
     "inspect_media",
     "inspect_video",
@@ -76,6 +79,7 @@ _TOOLBOX_MEDIA_PARAMETERS = {
     "merge_videos": ("video_first", "video_second"),
     "get_media_details": ("media_id",),
     "image_channels": ("media_id",),
+    "create_mask": ("media_id",),
 }
 _POSTPROCESS_PATH_PARAMETERS = {
     "audio_media_id": "audio_path",
@@ -84,8 +88,8 @@ _POSTPROCESS_PATH_PARAMETERS = {
 }
 _MCP_MEDIA_SETTING_KEYS = {
     "image_start", "image_end", "image_refs", "image_guide", "image_mask",
-    "video_guide", "video_guide2", "video_mask", "video_source",
-    "audio_guide", "audio_guide2", "audio_source",
+    "video_guide", "video_guide2", "video_guide3", "video_mask", "video_source",
+    "audio_guide", "audio_guide2", "audio_guide3", "audio_source",
     "replace_voice_sample", "replace_voice_sample2", "custom_guide",
 }
 _GALLERY_LOCK = threading.RLock()
@@ -452,7 +456,7 @@ def _media_settings(session, *, media_id: str | None = None, path: str | None = 
         settings = record.get("settings") if isinstance(record.get("settings"), dict) else {}
         if not settings:
             settings = _extract_media_settings(session, resolved_path)
-        return {"status": "done", "source": "gallery", "media_id": media_id, "media_type": record["media_type"], "filename": Path(resolved_path).name, "settings": _json_safe(settings)}
+        return {"status": "done", "source": "gallery", "media_id": media_id, "media_type": record["media_type"], "filename": Path(resolved_path).name, **_reusable_media_settings(settings)}
     if not allow_read_file_system:
         raise PermissionError("Direct filesystem paths are disabled for this MCP server. Use a media_id returned by wangp_list_gallery.")
     if _is_media_id(path):
@@ -461,7 +465,12 @@ def _media_settings(session, *, media_id: str | None = None, path: str | None = 
     media_type = _mcp_media_type(resolved_path)
     if not media_type:
         raise ValueError(f"Unsupported media file extension: {Path(resolved_path).suffix}")
-    return {"status": "done", "source": "filesystem", "media_id": "", "path": resolved_path, "media_type": media_type, "filename": Path(resolved_path).name, "settings": _json_safe(_extract_media_settings(session, resolved_path))}
+    return {"status": "done", "source": "filesystem", "media_id": "", "path": resolved_path, "media_type": media_type, "filename": Path(resolved_path).name, **_reusable_media_settings(_extract_media_settings(session, resolved_path))}
+
+
+def _reusable_media_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    settings, metadata = split_settings(settings)
+    return {"settings": _json_safe(settings), **({"metadata": _json_safe(metadata)} if metadata else {})}
 
 
 def _compact_model_metadata(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -476,7 +485,7 @@ def _compact_model_metadata(records: list[dict[str, Any]]) -> list[dict[str, Any
 def _compact_deepy_model_metadata(record: dict[str, Any]) -> dict[str, Any]:
     compact = {key: copy.deepcopy(record[key]) for key in ("model_type", "name", "family", "family_label", "base_model_type", "finetune", "main_output", "outputs", "inputs") if record.get(key) not in (None, "", [], {})}
     compact["capabilities"] = [key for key, enabled in record.get("capabilities", {}).items() if enabled]
-    compact.update({key: copy.deepcopy(record[key]) for key in ("accelerated", "size", "specialities", "matched_specialities", "unmatched_specialities", "word_matches") if key in record})
+    compact.update({key: copy.deepcopy(record[key]) for key in ("accelerated", "size", "specialities", "matched_specialities", "unmatched_specialities", "word_matches", "substring_matches") if key in record})
     if record.get("sliding_window"):
         compact["capabilities"].append("sliding_window")
     compact["media_inputs"] = {kind: [key for key, enabled in values.items() if enabled] for kind, values in record.get("media_inputs", {}).items() if isinstance(values, dict) and any(values.values())}
@@ -591,6 +600,23 @@ def _strip_deepy_fixed_image_mode(session, settings: dict[str, Any], model_type:
     return stripped
 
 
+def _deepy_prompt_mode(session, model_type: str, mode: Any = None) -> str:
+    # A Deepy task is one generation: separate-request modes become one prompt,
+    # or one sliding window per line/paragraph on sliding-window video models.
+    if mode not in (None, "G", "PG"):
+        return mode
+    if (session.get_model_def(model_type) or {}).get("sliding_window", False):
+        return "W" if mode == "G" else "PW"
+    return "FG"
+
+
+def _deepy_task_settings(session, settings: dict[str, Any], model_type: str | None = None) -> dict[str, Any]:
+    stripped = _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(settings), model_type)
+    if "multi_prompts_gen_type" in stripped:
+        stripped["multi_prompts_gen_type"] = _deepy_prompt_mode(session, str(model_type or stripped.get("model_type", "") or ""), stripped["multi_prompts_gen_type"])
+    return stripped
+
+
 def _relevant_deepy_general_properties(tool_id: str, general_properties: dict[str, Any]) -> dict[str, Any]:
     if tool_id in _DEEPY_VIDEO_TOOL_IDS:
         keys = ("width", "height", "num_frames", "seed")
@@ -616,7 +642,7 @@ def _deepy_template_settings(session, tool_id: str, template: str) -> dict[str, 
     effective_settings = session.prepare_settings_for_export(template_settings)
     if not general_properties["use_template_properties"]:
         effective_settings = _apply_deepy_general_properties(tool_id, effective_settings, general_properties)
-    effective_settings = _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(effective_settings))
+    effective_settings = _deepy_task_settings(session, effective_settings)
     result = {
         "tool_id": tool_id,
         "template": resolved_template,
@@ -733,10 +759,12 @@ def _validate_generation_media(session, settings, model_type, path):
         "image_guide": (has_control and image_output, control_active, "an enabled Control Image mode"),
         "video_guide": (has_control and not image_output, control_active, "an enabled Control Video mode"),
         "video_guide2": (any("+" in value for value in guide_choices) and not image_output, control_active and "+" in video_flags, "an enabled two-video mode"),
+        "video_guide3": (any("*" in value for value in guide_choices) and not image_output, control_active and "*" in video_flags, "an enabled three-video mode"),
         "image_mask": (has_mask and image_output, mask_active, "an enabled Control Image mask mode"),
         "video_mask": (has_mask and not image_output, mask_active, "an enabled Control Video mask mode"),
         "audio_guide": (has_audio and (audio_choices is None or any("A" in value for value in audio_values)), "A" in audio_flags, "audio_prompt_type containing A"),
         "audio_guide2": (has_audio and (any("B" in value for value in audio_values) if audio_choices is not None else not model_def.get("one_speaker_only", False) and not model_def.get("audio_only", False)), "B" in audio_flags, "audio_prompt_type containing B"),
+        "audio_guide3": (has_audio and audio_choices is not None and any("D" in value for value in audio_values), "D" in audio_flags, "audio_prompt_type containing D"),
         "custom_guide": (model_def.get("custom_guide") is not None, True, "a declared custom guide"),
     }
     for key in sorted(supplied & checks.keys()):
@@ -1355,7 +1383,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
         if view == "definition":
             result = _mcp_model_definition(session.get_model_def(model_type), property_name=property, string_limit=_DEEPY_MODEL_DEF_STRING_LIMIT if compact_model_tools else None)
         elif view == "defaults":
-            result = _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(session.get_exported_default_settings(model_type)), model_type)
+            result = _deepy_task_settings(session, session.get_exported_default_settings(model_type), model_type)
         else:
             result = _compact_deepy_model_schema(session.get_model_schema(model_type))
         if result is None:
@@ -1414,7 +1442,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
     def wangp_get_default_settings(model_type: str) -> dict[str, Any]:
         """Return pristine model defaults generated from WanGP and the model handler, filtered to relevant fields and without fixed metadata such as type or settings version. User-saved UI defaults are not included. Do not call this after a template query because template settings already include these model defaults."""
 
-        return _strip_deepy_fixed_image_mode(session, _strip_deepy_settings_metadata(session.get_exported_default_settings(model_type)), model_type)
+        return _deepy_task_settings(session, session.get_exported_default_settings(model_type), model_type)
 
     @api_tool()
     def wangp_model_settings(model_type: str, setting_id: str | None = None) -> dict[str, Any]:
@@ -1668,7 +1696,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
             source = resolved_source
             manifest = isinstance(source, dict) and "tasks" in source
             tasks = source["tasks"] if manifest else source if isinstance(source, list) else [source]
-            root = "source.tasks" if manifest else "source"
+            root = "settings.tasks" if manifest else "settings"
             if not isinstance(tasks, list) or not tasks:
                 raise ValueError(f"{root} must be a non-empty task list. Nothing was submitted.")
             for index, task in enumerate(tasks):
@@ -1682,16 +1710,37 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                         break
                 if not isinstance(settings, dict):
                     raise ValueError(f"{path} must be a settings object. Nothing was submitted.")
+                defaults_call = f' See wangp_model(model_type="{settings.get("model_type") or "<model_type>"}", action="defaults", arguments={{}}) for setting names and value formats.'
+                nested = [key for key, value in settings.items() if isinstance(value, dict) and key != "custom_settings" or key == "resolution" and not isinstance(value, str)]
+                if nested:
+                    expected = f'must be a "WIDTHxHEIGHT" string such as "1280x720", not {json.dumps(settings["resolution"])}' if nested[0] == "resolution" else "must be a single value, not an object; only custom_settings holds nested values"
+                    raise ValueError(f"{path}.{nested[0]} {expected}.{defaults_call} Nothing was submitted.")
                 if str(settings.get("mode", "") or "").startswith("edit_"):
                     continue
                 model_key = "base_model_type" if "model_type" not in settings and "base_model_type" in settings else "model_type"
                 model_type = settings.get(model_key)
                 if not isinstance(model_type, str) or not model_type.strip():
                     raise ValueError(f"{path}.{model_key} must be a non-empty string for generation. Nothing was submitted.")
+                if session.get_model_metadata(model_type.strip()) is None:
+                    raise ValueError(f'{path}.{model_key}: unknown model {model_type.strip()!r}. Use wangp_deepy_templates(tool_id="...") for the configured default model, or wangp_models(query="...") to find one. Nothing was submitted.')
+                unknown_error = unknown_settings_error(settings)
+                if unknown_error:
+                    if "accelerator profile" in unknown_error:
+                        defaults_call = f' Profiles: wangp_model(model_type="{model_type.strip()}", action="saved_settings", arguments={{}}).'
+                    raise ValueError(f"{path}: {unknown_error}{defaults_call} Nothing was submitted.")
                 _validate_generation_media(session, settings, model_type.strip(), path)
+                custom_settings = settings.get("custom_settings")
+                if custom_settings:
+                    declared = [setting["id"] for setting in session._ensure_runtime().module.get_model_custom_settings(session.get_model_def(model_type.strip()))]
+                    unknown = [str(key) for key in custom_settings if key not in declared] if isinstance(custom_settings, dict) else [""]
+                    if unknown:
+                        allowed = ", ".join(declared[:5]) + (", ..." if len(declared) > 5 else "") if declared else "none"
+                        raise ValueError(f"{path}.custom_settings.{unknown[0]} is not a custom setting of {model_type.strip()} (declared: {allowed}); prompt, resolution and other settings go directly in the settings. Nothing was submitted.")
+                if not str(settings.get("prompt") or "").strip():
+                    raise ValueError(f"{path}.prompt is empty; give the complete prompt, otherwise WanGP uses the model's default prompt. Nothing was submitted.")
                 properties = _deepy_general_properties(session)
                 outputs = (session.get_model_metadata(model_type.strip()) or {}).get("main_output", [])
-                defaults = {"seed": properties["seed"]}
+                defaults = {"seed": properties["seed"], "multi_prompts_gen_type": _deepy_prompt_mode(session, model_type.strip())}
                 if "image" in outputs or "video" in outputs:
                     defaults["resolution"] = f"{properties['width']}x{properties['height']}"
                     if "video" in outputs and settings.get("image_mode", 0) not in (1, 2):
@@ -1701,6 +1750,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                 for key, value in defaults.items():
                     if settings.get(key) is None:
                         settings[key] = value
+                if compact_model_tools:  # Deepy writes final prompts itself; a template's enhancer must not rewrite them
+                    settings["prompt_enhancer"] = ""
         if api_version == 2 or long_text_active:
             resolved_source = deepy_long_text.resolve_prompt_references(resolved_source, file_access_policy, read_only=api_version == 2)
         record = jobs.submit(_resolve_generation_media(session, resolved_source, allow_read_file_system, file_access_policy))

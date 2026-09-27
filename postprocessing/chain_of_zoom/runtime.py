@@ -4,6 +4,8 @@ optimized by DeepBeepMeep
 """
 
 from __future__ import annotations
+from shared.utils.media_control import checkpoint_modules
+from shared.utils.media_control import controlled_model_loading, loading_callback
 
 import gc
 import math
@@ -145,6 +147,7 @@ class ChainOfZoomRuntime:
         self.vlm_vision_batch = COZ_VLM_VISION_BATCH
         self.vlm_prompt_batch = COZ_VLM_PROMPT_BATCH
 
+    @controlled_model_loading
     def load(self, paths: CoZPaths, profile, init_pipe, lm_decoder_engine: str = "legacy", vlm_vision_batch: int = COZ_VLM_VISION_BATCH, vlm_prompt_batch: int = COZ_VLM_PROMPT_BATCH) -> None:
         lm_decoder_engine = _normalize_vlm_lm_engine(lm_decoder_engine)
         vlm_vision_batch = int(vlm_vision_batch)
@@ -235,7 +238,7 @@ class ChainOfZoomRuntime:
             kwargs["budgets"]["vlm_llm"] = 0
         kwargs.setdefault("coTenantsMap", {}).update({"clip_l": ["clip_g"], "clip_g": ["clip_l"]})
         kwargs["pinnedMemory"] = False
-        self.offloadobj = offload.profile(pipe, profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=self.dtype, verboseLevel=-1, **kwargs)
+        self.offloadobj = offload.profile(pipe, loading_callback=loading_callback(), profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=self.dtype, verboseLevel=-1, **kwargs)
         offload_registry.register_offloadobj("Chain-of-Zoom", self.offloadobj, self.release)
         self.profile = profile
         self.paths = paths
@@ -304,10 +307,12 @@ class ChainOfZoomRuntime:
         image_grid_thw = torch.cat([inputs["image_grid_thw"] for inputs in inputs_batch], dim=0).to(self.device)
         if self.use_vllm_decoder:
             pixel_values = pixel_values.type(self.vlm_visual.dtype)
-            image_embeds = self.vlm_visual(pixel_values, grid_thw=image_grid_thw)
+            with checkpoint_modules(self.vlm_visual.blocks):
+                image_embeds = self.vlm_visual(pixel_values, grid_thw=image_grid_thw)
             merge_size = self.vlm_visual.spatial_merge_size
         else:
-            image_embeds = torch.cat(self.vlm.model.get_image_features(pixel_values, image_grid_thw), dim=0)
+            with checkpoint_modules(self.vlm.model.visual.blocks):
+                image_embeds = torch.cat(self.vlm.model.get_image_features(pixel_values, image_grid_thw), dim=0)
             merge_size = self.vlm.model.visual.spatial_merge_size
         tokens_per_image = (image_grid_thw.prod(-1) // merge_size**2).tolist()
         job_sizes = []
@@ -389,43 +394,44 @@ class ChainOfZoomRuntime:
         current_inputs_embeds = inputs_embeds
         current_position_ids = position_ids
         cache_position = torch.arange(input_ids.shape[1], device=self.device, dtype=torch.long)
-        for _ in range(COZ_VLM_MAX_NEW_TOKENS):
-            output = self.vlm(
-                input_ids=current_input_ids,
-                inputs_embeds=current_inputs_embeds,
-                attention_mask=attention_mask,
-                position_ids=current_position_ids,
-                image_grid_thw=image_grid_thw,
-                past_key_values=past_key_values,
-                use_cache=True,
-                cache_position=cache_position,
-                logits_to_keep=1,
-            )
-            logits = output.logits[:, -1, :]
-            if repetition_penalty != 1.0:
-                previous_tokens = torch.cat([input_ids] + generated, dim=1) if generated else input_ids
-                for row_no in range(input_ids.shape[0]):
-                    previous_ids = torch.unique(previous_tokens[row_no])
-                    previous_scores = logits[row_no, previous_ids]
-                    logits[row_no, previous_ids] = torch.where(previous_scores < 0, previous_scores * repetition_penalty, previous_scores / repetition_penalty)
-            next_token = logits.argmax(dim=-1, keepdim=True)
-            if forced_eos_token_id is not None:
-                next_token = torch.where(finished, torch.full_like(next_token, forced_eos_token_id), next_token)
-            generated.append(next_token)
-            past_key_values = output.past_key_values
-            del output, logits
-            if eos_token_ids:
-                token_finished = torch.zeros_like(finished)
-                for eos_token_id in eos_token_ids:
-                    token_finished |= next_token == int(eos_token_id)
-                finished |= token_finished
-                if bool(finished.all()):
-                    break
-            attention_mask = torch.cat([attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=1)
-            cache_position = cache_position[-1:] + 1
-            current_input_ids = next_token
-            current_inputs_embeds = None
-            current_position_ids = cache_position.view(1, 1, -1).expand(3, input_ids.shape[0], -1) + rope_deltas.view(1, input_ids.shape[0], 1).to(self.device)
+        with checkpoint_modules(self.vlm.model.language_model.layers):
+            for _ in range(COZ_VLM_MAX_NEW_TOKENS):
+                output = self.vlm(
+                    input_ids=current_input_ids,
+                    inputs_embeds=current_inputs_embeds,
+                    attention_mask=attention_mask,
+                    position_ids=current_position_ids,
+                    image_grid_thw=image_grid_thw,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    cache_position=cache_position,
+                    logits_to_keep=1,
+                )
+                logits = output.logits[:, -1, :]
+                if repetition_penalty != 1.0:
+                    previous_tokens = torch.cat([input_ids] + generated, dim=1) if generated else input_ids
+                    for row_no in range(input_ids.shape[0]):
+                        previous_ids = torch.unique(previous_tokens[row_no])
+                        previous_scores = logits[row_no, previous_ids]
+                        logits[row_no, previous_ids] = torch.where(previous_scores < 0, previous_scores * repetition_penalty, previous_scores / repetition_penalty)
+                next_token = logits.argmax(dim=-1, keepdim=True)
+                if forced_eos_token_id is not None:
+                    next_token = torch.where(finished, torch.full_like(next_token, forced_eos_token_id), next_token)
+                generated.append(next_token)
+                past_key_values = output.past_key_values
+                del output, logits
+                if eos_token_ids:
+                    token_finished = torch.zeros_like(finished)
+                    for eos_token_id in eos_token_ids:
+                        token_finished |= next_token == int(eos_token_id)
+                    finished |= token_finished
+                    if bool(finished.all()):
+                        break
+                attention_mask = torch.cat([attention_mask, attention_mask.new_ones((attention_mask.shape[0], 1))], dim=1)
+                cache_position = cache_position[-1:] + 1
+                current_input_ids = next_token
+                current_inputs_embeds = None
+                current_position_ids = cache_position.view(1, 1, -1).expand(3, input_ids.shape[0], -1) + rope_deltas.view(1, input_ids.shape[0], 1).to(self.device)
         generated_ids = torch.cat(generated, dim=1)
         prompts = self.vlm_processor.batch_decode(generated_ids.cpu(), skip_special_tokens=True, clean_up_tokenization_spaces=False)
         del input_ids, attention_mask, image_grid_thw, inputs_embeds, image_embeds, position_ids, rope_deltas, generated_ids, generated, finished, past_key_values
@@ -441,7 +447,8 @@ class ChainOfZoomRuntime:
             current_step = progress_start + batch_no + 1
             _report_progress(progress_callback, phase, current_step, progress_total)
             ids = tokenizer(prompts[start:start + COZ_CLIP_TEXT_BATCH_SIZE], padding="max_length", max_length=COZ_CLIP_MAX_LENGTH, truncation=True, return_tensors="pt").input_ids
-            output = text_encoder(ids.to(self.device), output_hidden_states=True)
+            with checkpoint_modules(text_encoder.text_model.encoder.layers):
+                output = text_encoder(ids.to(self.device), output_hidden_states=True)
             hidden_batches.append(output.hidden_states[-2].to(self.dtype).cpu())
             pooled_batches.append(output[0].to(self.dtype).cpu())
             del ids, output
@@ -456,7 +463,8 @@ class ChainOfZoomRuntime:
             current_step = progress_start + batch_no + 1
             _report_progress(progress_callback, phase, current_step, progress_total)
             ids = self.tokenizer_t5(prompts[start:start + COZ_T5_TEXT_BATCH_SIZE], padding="max_length", max_length=COZ_T5_MAX_LENGTH, truncation=True, add_special_tokens=True, return_tensors="pt").input_ids
-            batches.append(self.t5(ids.to(self.device))[0].to(self.dtype).cpu())
+            with checkpoint_modules(self.t5.encoder.block):
+                batches.append(self.t5(ids.to(self.device))[0].to(self.dtype).cpu())
             del ids
         return torch.cat(batches)
 
@@ -598,7 +606,8 @@ class ChainOfZoomRuntime:
         _report_progress(progress_callback, _coz_phase("VAE Encode", step_label))
         x_full = torch.from_numpy(np.array(up_image)).permute(2, 0, 1).unsqueeze(0).to(device=self.device, dtype=self.dtype).div_(127.5).sub_(1.0)
         generator = torch.Generator(device=self.device).manual_seed(seed)
-        z_full = self.vae.encode(x_full).latent_dist.sample(generator) * self.vae.config.scaling_factor
+        with checkpoint_modules(module for module in self.vae.modules() if not module._modules):
+            z_full = self.vae.encode(x_full).latent_dist.sample(generator) * self.vae.config.scaling_factor
         del x_full
 
         # phase 4: one-step OSEDiff on each tile, Gaussian-blended accumulation
@@ -607,10 +616,10 @@ class ChainOfZoomRuntime:
         norm = torch.zeros_like(z_full, dtype=torch.float32)
         timestep = torch.tensor([COZ_TIMESTEP], device=self.device, dtype=self.dtype)
         diffusion_phase = _coz_phase("Diffusion", step_label)
+        _report_progress(progress_callback, diffusion_phase, 0, total_tiles)
         for tile_no, (y0, x0) in enumerate(positions):
             if _abort_requested(abort_callback):
                 return None
-            _report_progress(progress_callback, diffusion_phase, tile_no + 1, total_tiles)
             prompt_emb, pooled_emb = embeds_cache[prompts[tile_no]]
             patch = z_full[:, :, y0:y0 + tile_h, x0:x0 + tile_w]
             pred_v = self.transformer(patch, timestep, prompt_emb.to(device=self.device, dtype=self.dtype), pooled_emb.to(device=self.device, dtype=self.dtype))
@@ -618,6 +627,7 @@ class ChainOfZoomRuntime:
             z_acc[:, :, y0:y0 + tile_h, x0:x0 + tile_w] += tile_out * weights
             norm[:, :, y0:y0 + tile_h, x0:x0 + tile_w] += weights
             del patch, pred_v, tile_out
+            _report_progress(progress_callback, diffusion_phase, tile_no + 1, total_tiles)
         embeds_cache.clear()
         z_full = (z_acc / (norm + 1e-10)).to(self.dtype)
         del z_acc, norm
@@ -626,7 +636,8 @@ class ChainOfZoomRuntime:
         if _abort_requested(abort_callback):
             return None
         _report_progress(progress_callback, _coz_phase("VAE Decode", step_label))
-        output = self.vae.decode(z_full / self.vae.config.scaling_factor, return_dict=False)[0].clamp(-1, 1)
+        with checkpoint_modules(module for module in self.vae.modules() if not module._modules):
+            output = self.vae.decode(z_full / self.vae.config.scaling_factor, return_dict=False)[0].clamp(-1, 1)
         del z_full
         output = output[0].float().add_(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8).permute(1, 2, 0).cpu().numpy()
         return Image.fromarray(output)

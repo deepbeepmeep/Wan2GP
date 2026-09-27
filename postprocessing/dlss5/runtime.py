@@ -144,6 +144,24 @@ def _gpu_series() -> int:
     except (OSError, subprocess.TimeoutExpired):
         return 0
     series = [int(match.group(1)) for match in re.finditer(r"GeForce\s+RTX\s+(\d{2})\d{2}", result.stdout, re.IGNORECASE)]
+    if not series:
+        # Workstation / datacenter cards carry no GeForce tag (e.g. RTX PRO
+        # 5000 Blackwell, RTX 5000 Ada, RTX A6000, L40S), so the GeForce-only
+        # match above reads them as series 0 and they falsely report
+        # "RTX 30+/40+ required". Tier them by architecture instead; GeForce
+        # behavior is unchanged.
+        up = result.stdout.upper()
+        if any(k in up for k in ("PRO 6000", "PRO 5000", "PRO 4000", "B100", "B200", "GB100", "H100", "H200")):
+            return 50
+        if "ADA" in up or "L40" in up or " L4" in up:
+            return 40
+        if "RTX A" in up or any(k in up for k in (" A40", " A30", " A16", " A10", " A80")):
+            return 30
+        if "QUADRO" in up:
+            return 20
+        match = re.search(r"RTX\D*?(\d{2})\d{2}", up)
+        if match:
+            return int(match.group(1))
     return max(series, default=0)
 
 

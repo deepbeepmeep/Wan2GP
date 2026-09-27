@@ -84,6 +84,31 @@ def _norm_text(text):
     return re.sub(r"\s+", " ", str(text or "").lower()).strip()
 
 
+_MUSIC_JUNK = frozenset({
+    "music", "music intro", "music outro", "intro music", "outro music",
+    "instrumental", "instrumental music", "background music",
+    "thanks for watching", "thank you for watching", "please subscribe",
+    "subscribe", "like and subscribe", "silence", "applause", "laughter",
+    "end of song", "end of music", "song ends", "music ends", "the end",
+})
+
+
+def clean_music_segments(segments):
+    """Drop Whisper music-description hallucinations (not sung words).
+
+    Catches cues like 'Music Outro', 'Thanks for watching!' that Whisper
+    emits over pure music. Only exact short matches are dropped, so real
+    lyric lines containing such words are preserved.
+    """
+    cleaned = []
+    for s in segments or []:
+        text = _norm_text(re.sub(r"[^\w\s]", "", s.get("text", "") if isinstance(s, dict) else s))
+        if text and len(text.split()) <= 8 and text in _MUSIC_JUNK:
+            continue
+        cleaned.append(s)
+    return cleaned
+
+
 def _word_set(text):
     return set(w for w in re.split(r"\s+", _norm_text(text)) if w)
 
@@ -287,7 +312,7 @@ def write_aligned_lyrics_srt(lyrics_text, words, srt_path):
     return srt_path
 
 
-def align_lyrics_to_segments(lyrics_text, segments, min_ratio=0.5, max_lines_per_block=2, max_chars_per_block=160):
+def align_lyrics_to_segments(lyrics_text, segments, min_ratio=0.6, max_lines_per_block=2, max_chars_per_block=160):
     """Align input lyric lines to Whisper segment timestamps.
 
     Used when word timestamps are unavailable (DTW often fails on sung
@@ -323,23 +348,33 @@ def align_lyrics_to_segments(lyrics_text, segments, min_ratio=0.5, max_lines_per
             line_time[li] = (segs[best_j][0], segs[best_j][1])
             pos = best_j + 1
             hits += 1
-    if hits < max(2, len(lines) // 2):
+    if hits < 2:
         return None
-    # Interpolate unmatched lines between matched neighbors
-    known = [(li, t) for li, t in enumerate(line_time) if t is not None]
-    for li in range(len(lines)):
+    # Spread unmatched runs across their gaps so every lyric line gets a
+    # sensible slot (e.g. a verse Whisper couldn't hear still lands in the
+    # verse's time span instead of being dropped or crammed).
+    li = 0
+    while li < len(lines):
         if line_time[li] is not None:
+            li += 1
             continue
-        prev = max([k for k in known if k[0] < li], default=None)
-        nxt = min([k for k in known if k[0] > li], default=None)
-        if prev is not None and nxt is not None:
-            f = (li - prev[0]) / (nxt[0] - prev[0])
-            s = prev[1][1] + (nxt[1][0] - prev[1][1]) * f
-            line_time[li] = (s, s + 0.5)
-        elif prev is not None:
-            line_time[li] = (prev[1][1], prev[1][1] + 0.5)
-        elif nxt is not None:
-            line_time[li] = (max(0.0, nxt[1][0] - 0.5), nxt[1][0])
+        j = li
+        while j < len(lines) and line_time[j] is None:
+            j += 1
+        k = j - li
+        prev_end = line_time[li - 1][1] if li > 0 else 0.0
+        next_start = line_time[j][0] if j < len(lines) else None
+        if next_start is not None:
+            per = max(next_start - prev_end, k * 0.5) / k
+            for m in range(k):
+                s = prev_end + m * per
+                e = next_start if m == k - 1 else s + per
+                line_time[li + m] = (s, max(s + 0.5, e))
+        else:
+            for m in range(k):
+                s = prev_end + m * 4.0
+                line_time[li + m] = (s, s + 3.5)
+        li = j
     # Group into cue blocks, enforce monotonic non-overlap
     cues, block, bstart, bend, block_len = [], [], None, None, 0
     for li, ln in enumerate(lines):

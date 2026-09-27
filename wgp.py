@@ -8421,14 +8421,14 @@ def generate_media(
                     video_path = audio_path
                     if server_config.get("save_lyrics_srt", False):
                         try:
-                            from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt, write_segment_aligned_lyrics_srt, is_hallucinated_repetition, pick_lyrics_base
+                            from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt, write_segment_aligned_lyrics_srt, is_hallucinated_repetition, pick_lyrics_base, clean_music_segments
                             srt_path = os.path.splitext(audio_path)[0] + ".srt"
                             done = False
                             try:
                                 set_progress_status("Transcribing vocals for .srt")
                                 from shared.deepy.transcription import transcribe_media
                                 res = transcribe_media(audio_path, timestamp_type="word", model_name="large-v3", check_cancelled=lambda: gen.get("abort", False), decode_options={"condition_on_previous_text": False, "temperature": 0.2})
-                                segments = res.get("segments") or []
+                                segments = clean_music_segments(res.get("segments") or [])
                                 words = [w for s in segments for w in (s.get("words") or [])]
                                 try:
                                     alt_lyrics = str(original_alt_prompts[0] or "") if original_alt_prompts else ""
@@ -8569,14 +8569,14 @@ def generate_media(
 
                 if not audio_only and not is_image and server_config.get("save_lyrics_srt", False) and isinstance(video_path, str):
                     try:
-                        from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt, write_segment_aligned_lyrics_srt, is_hallucinated_repetition, pick_lyrics_base
+                        from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt, write_segment_aligned_lyrics_srt, is_hallucinated_repetition, pick_lyrics_base, clean_music_segments
                         srt_path = os.path.splitext(video_path)[0] + ".srt"
                         done = False
                         try:
                             set_progress_status("Transcribing audio for .srt")
                             from shared.deepy.transcription import transcribe_media
                             res = transcribe_media(video_path, timestamp_type="word", model_name="large-v3", check_cancelled=lambda: gen.get("abort", False), decode_options={"condition_on_previous_text": False, "temperature": 0.2})
-                            segments = res.get("segments") or []
+                            segments = clean_music_segments(res.get("segments") or [])
                             words = [w for s in segments for w in (s.get("words") or [])]
                             try:
                                 alt_lyrics = str(original_alt_prompts[0] or "") if original_alt_prompts else ""

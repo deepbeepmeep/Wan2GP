@@ -196,7 +196,7 @@ def _serialize_segments(segments: list[dict[str, Any]], timestamp_type: str | No
     return serialized
 
 
-def transcribe_media(source_path: str, *, timestamp_type: str | None = None, audio_track_no: int | None = None, device: str | None = None, model_name: str = "medium", language: str | None = None, prepared_model: list | None = None, check_cancelled=lambda: None, duration_seconds: float | None = None) -> dict[str, Any]:
+def transcribe_media(source_path: str, *, timestamp_type: str | None = None, audio_track_no: int | None = None, device: str | None = None, model_name: str = "medium", language: str | None = None, prepared_model: list | None = None, check_cancelled=lambda: None, duration_seconds: float | None = None, decode_options: dict[str, Any] | None = None) -> dict[str, Any]:
     normalized_timestamp_type = normalize_timestamp_type(timestamp_type)
     source_path = str(source_path or "").strip()
     if len(source_path) == 0 or not os.path.isfile(source_path):
@@ -229,6 +229,7 @@ def transcribe_media(source_path: str, *, timestamp_type: str | None = None, aud
             fp16=device.type == "cuda",
             word_timestamps=normalized_timestamp_type == "word",
             language=language,
+            **(decode_options or {}),
         )
         check_cancelled()
         transcribed = time.perf_counter()

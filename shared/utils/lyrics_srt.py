@@ -256,6 +256,98 @@ def write_aligned_lyrics_srt(lyrics_text, words, srt_path):
     return srt_path
 
 
+def align_lyrics_to_segments(lyrics_text, segments, min_ratio=0.5, max_lines_per_block=2, max_chars_per_block=160):
+    """Align input lyric lines to Whisper segment timestamps.
+
+    Used when word timestamps are unavailable (DTW often fails on sung
+    vocals): each exact lyric line inherits its matching segment's timing.
+    Returns cue list or None when too few lines match.
+    """
+    segs = []
+    for s in segments or []:
+        try:
+            start, end = float(s.get("start", None)), float(s.get("end", None))
+        except (TypeError, ValueError):
+            continue
+        text = _norm_text(s.get("text", ""))
+        if not text or not end > start or start < 0:
+            continue
+        segs.append((start, end, text))
+    if not segs:
+        return None
+    lines = _split_lyric_lines(lyrics_text)
+    if not lines:
+        return None
+    norm_lines = [_norm_text(ln) for ln in lines]
+    # Monotonic best-match scan: each line matches at/after the last hit
+    line_time = [None] * len(lines)
+    pos, hits = 0, 0
+    for li, nl in enumerate(norm_lines):
+        best, best_j = min_ratio, -1
+        for j in range(pos, min(pos + 6, len(segs))):
+            r = difflib.SequenceMatcher(None, nl, segs[j][2], autojunk=False).ratio()
+            if r > best:
+                best, best_j = r, j
+        if best_j >= 0:
+            line_time[li] = (segs[best_j][0], segs[best_j][1])
+            pos = best_j + 1
+            hits += 1
+    if hits < max(2, len(lines) // 2):
+        return None
+    # Interpolate unmatched lines between matched neighbors
+    known = [(li, t) for li, t in enumerate(line_time) if t is not None]
+    for li in range(len(lines)):
+        if line_time[li] is not None:
+            continue
+        prev = max([k for k in known if k[0] < li], default=None)
+        nxt = min([k for k in known if k[0] > li], default=None)
+        if prev is not None and nxt is not None:
+            f = (li - prev[0]) / (nxt[0] - prev[0])
+            s = prev[1][1] + (nxt[1][0] - prev[1][1]) * f
+            line_time[li] = (s, s + 0.5)
+        elif prev is not None:
+            line_time[li] = (prev[1][1], prev[1][1] + 0.5)
+        elif nxt is not None:
+            line_time[li] = (max(0.0, nxt[1][0] - 0.5), nxt[1][0])
+    # Group into cue blocks, enforce monotonic non-overlap
+    cues, block, bstart, bend, block_len = [], [], None, None, 0
+    for li, ln in enumerate(lines):
+        if block and (len(block) >= max_lines_per_block or block_len + len(ln) > max_chars_per_block):
+            cues.append((bstart, bend, "\n".join(block)))
+            block, bstart, bend, block_len = [], None, None, 0
+        block.append(ln)
+        block_len += len(ln) + 1
+        bstart = line_time[li][0] if bstart is None else bstart
+        bend = line_time[li][1]
+    if block:
+        cues.append((bstart, bend, "\n".join(block)))
+    fixed = []
+    for start, end, text in cues:
+        end = max(start + 0.5, end)
+        if fixed:
+            start = max(start, fixed[-1][1])
+            end = max(start + 0.5, end)
+        fixed.append((start, end, text))
+    return fixed or None
+
+
+def write_segment_aligned_lyrics_srt(lyrics_text, segments, srt_path):
+    """Write input lyrics aligned to Whisper segment timestamps as .srt."""
+    cues = align_lyrics_to_segments(lyrics_text, segments)
+    if not cues:
+        return None
+    lines = []
+    for i, (start, end, text) in enumerate(cues, 1):
+        lines.append(str(i))
+        lines.append(f"{format_srt_timestamp(start)} --> {format_srt_timestamp(end)}")
+        lines.append(text)
+        lines.append("")
+    os.makedirs(os.path.dirname(os.path.abspath(srt_path)), exist_ok=True)
+    with open(srt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines).strip() + "\n")
+    return srt_path
+
+
 def format_srt_timestamp(seconds):
     """Format seconds as HH:MM:SS,mmm."""
     if seconds < 0:

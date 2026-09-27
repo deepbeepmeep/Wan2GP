@@ -19,7 +19,7 @@ _WORD_NORM_RE = re.compile(r"^[^a-z0-9']+|[^a-z0-9']+$")
 _SECTION_RE = re.compile(r"^\s*(\[.+?\])\s*(.*)$")
 
 
-def parse_lyrics_blocks(lyrics_text, max_lines_per_block=2, max_chars_per_block=160):
+def parse_lyrics_blocks(lyrics_text, max_lines_per_block=1, max_chars_per_block=160):
     """Split lyrics text into display blocks for SRT cues."""
     if lyrics_text is None:
         return []
@@ -221,7 +221,7 @@ def _split_lyric_lines(lyrics_text):
     return lines
 
 
-def align_lyrics_to_words(lyrics_text, words, max_lines_per_block=2, max_chars_per_block=160):
+def align_lyrics_to_words(lyrics_text, words, max_lines_per_block=1, max_chars_per_block=160):
     """Force-align input lyric lines to Whisper word timestamps.
 
     Returns a list of (start, end, text) cues with the exact input lyrics
@@ -341,7 +341,7 @@ def write_aligned_lyrics_srt(lyrics_text, words, srt_path):
     return srt_path
 
 
-def align_lyrics_to_segments(lyrics_text, segments, min_ratio=0.6, max_lines_per_block=2, max_chars_per_block=160):
+def align_lyrics_to_segments(lyrics_text, segments, min_ratio=0.6, max_lines_per_block=1, max_chars_per_block=160):
     """Align input lyric lines to Whisper segment timestamps.
 
     Used when word timestamps are unavailable (DTW often fails on sung

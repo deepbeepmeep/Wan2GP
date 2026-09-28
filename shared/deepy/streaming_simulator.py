@@ -117,9 +117,9 @@ class DeepyStreamingSimulator:
         if payload:
             yield payload
 
-        tool_id, payload = assistant_chat.add_tool_call(self.session, assistant_id, "list_files", {"path": "@workspace/docs", "extensions": [".md"]}, tool_label="Preparing Test File Listing", request_pending=True)
+        tool_id, payload = assistant_chat.add_tool_call(self.session, assistant_id, "list_files", {"path": "@workspace/docs", "pattern": "*.md"}, tool_label="Preparing Test File Listing", request_pending=True)
         yield payload
-        yield assistant_chat.update_tool_call(self.session, assistant_id, tool_id, status="running", status_text="Running", tool_label="List Test Files", arguments={"path": "@workspace/docs", "extensions": [".md"]}, request_pending=False)
+        yield assistant_chat.update_tool_call(self.session, assistant_id, tool_id, status="running", status_text="Running", tool_label="List Test Files", arguments={"path": "@workspace/docs", "pattern": "*.md"}, request_pending=False)
         result = {
             "status": "ok",
             "entries": [{"index": index, "name": f"reference_{index}.md", "path": "@workspace/docs/DEEPY_INCREMENTAL_STREAMING_SPEC.md", "size_bytes": 1000 + index} for index in range(24 * max(1, scale))],

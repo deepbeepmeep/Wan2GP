@@ -230,6 +230,15 @@ export class LayerManager {
 		width: number,
 		height: number
 	): void {
+		// Gradio can resend identical options on a visibility/label update.
+		// Recreating the layers here would erase strokes without a value change.
+		const previous = this.layer_options;
+		if (
+			previous.disabled === layer_options.disabled &&
+			previous.allow_additional_layers === layer_options.allow_additional_layers &&
+			previous.layers.length === layer_options.layers.length &&
+			previous.layers.every((name, index) => name === layer_options.layers[index])
+		) return;
 		this.layer_options = layer_options;
 		this.reset_layers(width, height);
 	}
@@ -1233,7 +1242,7 @@ export class ImageEditor {
 		for (const tool of this.tools.values()) {
 			if (tool?.on) {
 				tool.on("change", () => {
-					this.notify("change");
+					this.notify("change", tool.name !== "brush");
 				});
 			}
 		}
@@ -1338,7 +1347,7 @@ export class ImageEditor {
 			empty
 		);
 		if (empty) {
-			this.app?.renderer?.clear({ clearColor: [0, 0, 0, 0] });
+			this.app?.renderer?.clear({ target: this.app.canvas, clearColor: [0, 0, 0, 0] });
 			this.app?.render?.();
 			this.wangp_release_surface();
 			this.wangp_stop_ticker();
@@ -1355,7 +1364,9 @@ export class ImageEditor {
 			this.wangp_release_after_export = true;
 			return;
 		}
-		this.app.renderer.clear({ clearColor: [0, 0, 0, 0] });
+		// Drawing/extraction may leave a mask texture bound as the render target.
+		// Only the display surface is disposable when the editor is hidden.
+		this.app.renderer.clear({ target: this.app.canvas, clearColor: [0, 0, 0, 0] });
 		this.wangp_resize_renderer(1, 1);
 		this.app.renderer.textureGC?.run?.();
 	}
@@ -2040,10 +2051,10 @@ export class ImageEditor {
 		);
 	}
 
-	private notify(event: "change" | "input"): void {
+	private notify(event: "change" | "input", background_changed = true): void {
 		if (event === "change" || event === "input") {
 			this.wangp_value_dirty = true;
-			this.wangp_source_image_clean = false;
+			if (background_changed) this.wangp_source_image_clean = false;
 		}
 		this.wangp_update_overlay?.();
 		this.wangp_request_render();

@@ -25,6 +25,12 @@ def write_config(config, filename):
     """Serialize writers and replace the file only after the complete JSON is ready."""
     with config_lock:
         text = json.dumps(config, indent=4)
+        # Compare under the same lock as replacement. Read the actual file so
+        # another writer or an external edit cannot leave a stale cache here.
+        if os.path.exists(filename):
+            with open(filename, encoding="utf-8") as reader:
+                if reader.read() == text:
+                    return
         fd, temporary = tempfile.mkstemp(prefix=f".{os.path.basename(filename)}.", suffix=".tmp", dir=os.path.dirname(os.path.abspath(filename)))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as writer:

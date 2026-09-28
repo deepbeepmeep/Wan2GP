@@ -52,6 +52,7 @@ _SHARED_PERSISTENCE_BINDING_KEY = "__shared_persistence__"
 MMAUDIO_METHOD = "mmaudio"
 CUSTOM_SOUNDTRACK_METHOD = "custom"
 REMOVE_BACKGROUND_METHOD = "remove_background"
+REMOVE_VOCALS_METHOD = "remove_vocals"
 SEEDVC_ONE_SPEAKER_METHOD = "seedvc_one_speaker"
 SEEDVC_TWO_SPEAKERS_METHOD = "seedvc_two_speakers"
 LEGACY_SEEDVC_METHODS = {

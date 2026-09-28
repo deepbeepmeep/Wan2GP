@@ -38,7 +38,7 @@ Speaker 1:
 [whispering] Parce que tu as garde la cle.
 ```
 
-WanGP generates every turn as a separate H3 segment, dynamically compiles the full six-section Ref2VA prompt, removes unexpected speech before and after the requested line with Whisper, then joins the turns. Audio Reference 1 belongs to Speaker 1 and Audio Reference 2 to Speaker 2. A speaker without an uploaded reference uses their first generated turn as the voice reference for later turns.
+WanGP generates every turn as a separate H3 segment, dynamically compiles the full six-section Ref2VA prompt, removes unexpected speech before and after the requested line with Whisper, then joins the turns. Audio References 1 to 3 belong to Speakers 1 to 3. A speaker without an uploaded reference uses their first generated turn as the voice reference for later turns.
 """
 
 _SPEAKER_HEADER = re.compile(r"^\s*Speaker\s*(\d+)\s*(?:\{([^{}\n]*)\})?\s*:\s*", re.IGNORECASE | re.MULTILINE)
@@ -348,7 +348,7 @@ def _generated_reference(audio: torch.Tensor, sample_rate: int) -> _VoiceReferen
     return _VoiceReference(waveform=audio[..., -samples:].detach().float().cpu(), sample_rate=sample_rate)
 
 
-def generate_dialogue(pipeline, input_prompt: str, *, audio_guide=None, audio_guide2=None, input_waveform=None,
+def generate_dialogue(pipeline, input_prompt: str, *, audio_guide=None, audio_guide2=None, audio_guide3=None, input_waveform=None,
                       input_waveform_sample_rate=None, audio_prompt_type="", duration_seconds=None,
                       sampling_steps=20, seed=0, shift=12.0, callback=None, VAE_tile_size=None, fps=24,
                       sample_solver="euler", attention_sparsity=1.0, loras_slists=None, loras_selected=None,
@@ -366,6 +366,9 @@ def generate_dialogue(pipeline, input_prompt: str, *, audio_guide=None, audio_gu
     if "B" in prompt_type:
         reference_speakers.append(2)
         reference_sources.append(audio_guide2)
+    if "D" in prompt_type:
+        reference_speakers.append(3)
+        reference_sources.append(audio_guide3)
     reference_waveforms = pipeline._prepare_audio_references(reference_sources)
     references = {speaker: _VoiceReference(waveform=waveform[0].detach().to(device="cpu", non_blocking=False), sample_rate=H3_DIALOGUE_AUDIO_SAMPLE_RATE)
                   for speaker, waveform in zip(reference_speakers, reference_waveforms)}

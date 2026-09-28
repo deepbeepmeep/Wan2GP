@@ -179,10 +179,18 @@ class LTXUpsamplerRuntime:
 
             step_count = 8
 
-            def step_callback(step_idx, _latent=None, _force_refresh=False, **_kwargs):
-                phase = f"{window_label} - Distilled refinement" if window_label else "Distilled refinement"
-                _report(progress_callback, phase, int(step_idx) + 1, step_count)
+            def step_callback(step_idx=-1, _latent=None, _force_refresh=False, read_state=False, **kwargs):
+                if callable(abort_callback) and abort_callback():
+                    self.model._interrupt = True
+                    return
+                if read_state:
+                    return
+                phase = kwargs.get("progress_title", "Distilled Refinement")
+                phase = f"{window_label} - {phase}" if window_label else phase
+                _report(progress_callback, phase, int(step_idx) + 1, kwargs.get("override_num_inference_steps", step_count))
 
+            step_callback.checkpoint = lambda: step_callback(read_state=True)
+            self.model._interrupt = False
             window_output = self.model.upscale_video(
                 input_window,
                 prompt=prompt,

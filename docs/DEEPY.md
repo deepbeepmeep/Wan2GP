@@ -9,7 +9,7 @@ Use Deepy when you want to work toward an outcome instead of manually operating 
 ## Choose Deepy Zero or Deepy Prime
 
 - **Deepy Zero** is fast and lightweight. Use it for focused tasks such as generating one asset, editing selected media, extracting a clip, resizing a file, or producing a transcript. It works well with the smaller supported Qwen models.
-- **Deepy Prime** is for projects that need planning or several connected actions. Use it when Deepy must compare compatible models, combine multiple media assets, inspect intermediate results, manage project files, or work with external MCP services. Prime requires Qwen3.8 VL 27B locally or a configured remote LLM.
+- **Deepy Prime** is for projects that need planning or several connected actions. Use it when Deepy must compare compatible models, combine multiple media assets, inspect intermediate results, manage project files, or work with external MCP services. Prime requires a local Qwen3.8 VL model (9B or 27B) or a configured remote LLM.
 
 Both versions share generation features, galleries, media references, and saved sessions. Both offer a dedicated video-with-references template. Choose the assistant in **Configuration > Prompt Enhancer / Deepy**.
 
@@ -25,7 +25,8 @@ Supported local choices are:
 
 - `Qwen3.5VL Abliterated 4B`
 - `Qwen3.5VL Abliterated 9B`
-- `Qwen3.8VL Uncensored 27B` (required for local Deepy Prime)
+- `Qwen3.8VL Uncensored 9B` (supports local Deepy Prime)
+- `Qwen3.8VL Uncensored 27B` (supports local Deepy Prime)
 
 For a remote Prime engine, see [Remote LLMs](REMOTE_LLMS.md). Once Deepy is enabled, **Ask Deepy** appears in the Gradio left dock. The CLI and standalone Web app use the same saved configuration.
 
@@ -80,10 +81,11 @@ You can ask Deepy to:
 - create speech from a description or voice sample, generate songs, and generate sound from a description
 - inspect images and video frames or compare several visuals
 - report useful media details such as dimensions, duration, FPS, frame count, and audio tracks
-- extract images, clips, or audio; transcribe audio or video; mute or replace audio; resize or crop media; compose assets side by side; and merge videos
+- extract images, clips, or audio; transcribe audio or video; mute or replace a video soundtrack; resize or crop media; compose assets side by side; and merge videos
 - find available LoRAs, explain the active tool defaults, and answer WanGP usage questions
 
 Prime is especially useful for requests with dependencies. It can create an intermediate asset, inspect it, revise it if necessary, and use the accepted result in the next stage.
+Prime can use `remux_media` to mix stems into one audio stream, package separate selectable audio tracks, or add selectable subtitle tracks to a video. Subtitle files may be SRT, VTT, ASS, or SSA in an authorized workspace path; use `subtitle_tracks` with optional language, title, and default status. Existing video subtitle tracks are retained unless `include_video_subtitles=false`. With a video and subtitles but no audio inputs, compatible existing audio is copied; incompatible audio is converted only when the chosen container requires it. MP4/MOV subtitles use `mov_text`; MKV retains compatible subtitles or converts incompatible ones. Audio-only mixes follow the configured standalone WAV/MP3 format unless you request a supported output extension; separate audio-only tracks use M4A.
 
 ## Everyday workflow
 
@@ -130,8 +132,8 @@ When the latest item is selected, new output is selected automatically. If you a
 
 The chat and generation progress bars show what Deepy and WanGP are doing.
 
-- **Pause** suspends Deepy's current turn without losing it. A generation or tool operation already underway is allowed to finish, then Deepy pauses before the next action. This is useful when another WanGP task needs the GPU.
-- **Resume** continues the same turn from where it paused.
+- **Pause** suspends Deepy's current turn without losing it. Running media generation and postprocessing pause at their next processing checkpoint; other tools finish before Deepy pauses. The Generate panel reflects the same paused state. Postprocessing retains its GPU state while paused.
+- **Resume** continues the same turn and its paused media operation. You can resume from either chat or the Generate panel.
 - **Stop** ends Deepy's current turn. Depending on the **Auto-abort** setting, it may also cancel or remove generation work started by Deepy.
 - **Abort** cancels the active WanGP generation.
 
@@ -244,55 +246,11 @@ For an app-like view on iPhone, open the Deepy address in Safari and choose **Sh
 
 ### Protect network access
 
-Authentication is optional and off by default. `--auth` enables one password-only login for **all Gradio and Deepy web access**, including APIs, galleries, downloads, uploads and live connections. No username is needed.
-
-```powershell
-# Generate a new password and print it in the terminal
-python wgp.py --listen --auth
-
-# Choose a fixed passphrase
-python wgp.py --listen --auth --auth-password "your long private passphrase"
-
-# The same options work with the standalone Deepy Web app
-python wgp.py --deepy-server --listen --auth
-```
-
-Open the usual Gradio or Deepy address and enter the password. A login covers both interfaces on the same hostname. Browser sessions expire after 24 hours; restarting WanGP invalidates every session. A generated password also changes at each launch. To avoid putting a fixed passphrase in command history, set `WANGP_AUTH_PASSWORD` in the launch environment and use `--auth`. An explicit `--auth-password` takes precedence. Passwords supplied by you are not printed by WanGP.
-
-Login attempts are limited across all clients and web interfaces in this process. The first four failures have no delay. After failure 5, wait 30 seconds; each further failure adds 30 seconds, reaching 450 seconds after failure 19. From failure 20, only one attempt every ten minutes is allowed. Only one password check can run at a time. Requests during the waiting period do not extend it. A successful login resets the failure counter. Existing signed-in sessions keep working during a cooldown. Restarting WanGP resets the counter as well as all sessions.
-
-Choose protection according to how the server is reached:
-
-- **Only this PC:** the default localhost access usually needs no application password or certificate.
-- **Trusted private LAN:** authentication is useful on shared networks. HTTPS protects the passphrase and generated media from network interception.
-- **VPN-only access:** application authentication can be optional if firewall/VPN rules restrict access to trusted users and the entire connection is protected. Keep public port forwarding closed. A VPN ending at your router may leave the final LAN connection unencrypted.
-- **Public access, including NAT port forwarding:** enable authentication and trusted HTTPS. NAT alone does not protect a forwarded port. Forward only the HTTPS port; never expose a password login over plain HTTP.
-
-Network MCP has a **separate OAuth login**, enabled with `--mcp-auth`. The web password and browser cookie do not authorize MCP clients. See [MCP authentication](API.md#mcp-authentication-and-https).
+See [Authentication, HTTPS, and Reverse Proxies](AUTHENTICATION.md) for the shared Gradio/Deepy password login, session behavior, and network protection.
 
 ### Set up HTTPS
 
-The certificate options apply to Gradio, Deepy and network MCP. Obtain a certificate and private key for the exact hostname clients will use. Public access needs a certificate trusted by those clients, commonly issued for your domain by a public certificate authority or managed by an HTTPS reverse proxy. For a private LAN, [mkcert](https://github.com/FiloSottile/mkcert) can create a local certificate; each client device must trust that local certificate authority. Keep its CA private key and the server private key private.
-
-Serve HTTPS directly on the main port:
-
-```powershell
-python wgp.py --listen --auth --server-port 7860 --ssl-certfile C:\certs\wangp.pem --ssl-keyfile C:\certs\wangp-key.pem
-```
-
-Open `https://<certificate-hostname>:7860/`, or `/deepy/` for the mobile Web app. Add `--deepy-server` for standalone Deepy at `/`.
-
-To redirect HTTP on the main port to a separate HTTPS port:
-
-```powershell
-python wgp.py --listen --auth --server-port 7860 --https-port 7861 --ssl-certfile C:\certs\wangp.pem --ssl-keyfile C:\certs\wangp-key.pem
-```
-
-Use `https://<certificate-hostname>:7861/`. The HTTP port redirects; it does not serve a second unencrypted application. Alternatively, set `WANGP_SSL_CERT` and `WANGP_SSL_KEY` in the launch environment. Command-line certificate paths take precedence. Missing, mismatched or unreadable certificate/key files stop startup.
-
-An HTTPS reverse proxy can manage certificates instead. Keep its WanGP backend private, preserve the original Host header and forward the correct scheme from a trusted local proxy. Configure proxy authentication separately if you want another access restriction.
-
-Browser microphone recording can require trusted HTTPS even over a VPN. Native phone keyboard dictation does not use Deepy's microphone access.
+See [HTTPS certificates](AUTHENTICATION.md#https-certificates) and [reverse proxy setup](AUTHENTICATION.md#hosting-behind-a-reverse-proxy), including `--public-url` for RunPod, Nginx, Traefik, and Cloudflare.
 
 ## Voice input and transcription
 
@@ -362,7 +320,8 @@ This selects the language and vision model that understands requests, plans work
 
 - **Qwen3.5VL Abliterated 4B** starts quickly and uses the least memory, but is less reliable with long instructions and multi-step decisions. **Recommended for:** Deepy Zero on limited hardware and simple, direct requests.
 - **Qwen3.5VL Abliterated 9B** understands more complex instructions and media better than 4B, with higher VRAM and RAM use. **Recommended for:** the best general Deepy Zero experience when it fits comfortably.
-- **Qwen3.8VL Uncensored 27B** offers the strongest local planning and is required for local Deepy Prime, but needs considerably more memory and takes longer to load. **Recommended for:** local Prime and complex multimedia projects.
+- **Qwen3.8VL Uncensored 9B** runs local Deepy Prime in about 6.5 GB of VRAM with its default GGUF Q4_K_M, or about 11 GB with GGUF Q8_0, which stays closest to the full-precision model. It follows instructions and multi-step tool use about as well as the 27B and remembers earlier parts of long conversations reliably, but has less general knowledge, thinks longer before answering, and understands images less accurately than the 27B. **Recommended for:** local Prime on 8 to 12 GB GPUs.
+- **Qwen3.8VL Uncensored 27B** offers the strongest local planning, knowledge and image understanding for Deepy Prime, but needs considerably more memory and takes longer to load. **Recommended for:** local Prime and complex multimedia projects when it fits.
 - **A remote LLM** avoids loading the language model on the WanGP GPU and may provide stronger reasoning, but adds network latency and sends conversation content to the configured provider. Remote engines require Prime. **Recommended for:** Prime when local memory is insufficient or a supported remote engine is preferred. Review [Remote LLMs](REMOTE_LLMS.md) before using one with private media or instructions.
 
 Changing the engine can require new model downloads and a runtime reload.
@@ -384,13 +343,19 @@ For Qwen3.8 27B:
 
 If Deepy frequently unloads other models, runs out of memory, or leaves too little VRAM for media generation, select a smaller model or lower quantization before reducing the context window drastically.
 
-### Speculative Decoding (MTP)
+### Speculative Decoding
 
 Speculative decoding can generate Deepy's text faster by predicting several tokens ahead. More draft tokens can improve speed for some requests but use more VRAM, and the fastest setting varies by model and workload.
 
-- **Auto** enables the feature only on supported models when WanGP detects enough VRAM: normally at least 12 GB for Qwen3.5 9B and 24 GB for Qwen3.8 27B. **Recommended for:** nearly everyone.
-- **Disabled** saves the extra VRAM and avoids spending memory on acceleration. **Recommended for:** tight-memory systems or when Auto prevents a generation model from fitting.
-- **Enabled with 2, 3, or 4 draft tokens** lets you tune for speed manually. Higher is not always faster. **Recommended for:** users willing to benchmark repeated, representative prompts; start with 2.
+Choose a method and **Number of Tokens** on the row above **KV Cache Quantization**. Only compatible methods appear; switching to an incompatible model, quantization, or decoder resets the method to **Auto**.
+
+- **Auto** enables MTP on supported models when WanGP detects enough VRAM: normally at least 12 GB for Qwen3.5 9B and 24 GB for Qwen3.8 27B. The token count is automatic.
+- **Disabled** adds no draft-model VRAM and disables the token control. Use it when memory is tight or prediction is slower for your workload.
+- **MTP** supports 1–8 draft tokens on Qwen3.5 9B and Qwen3.8/Bonsai 27B. Start with 2.
+- **DSpark** supports 1–7 draft tokens on Qwen3.8/Bonsai 27B with the vLLM decoder (including Auto decoder selection).
+- **DFlash2** supports 1–7 draft tokens on Qwen3.8 Q2, Q3 and Q4, and 1–5 on Bonsai PTQ1, with the vLLM decoder (including Auto decoder selection). WanGP selects the Qwen drafter for Q2/Q3/Q4 and the Bonsai-adapted drafter for PTQ1 automatically.
+
+Each method label includes its estimated additional VRAM: approximately 0.5–1 GiB for MTP and 4–5 GiB for DSpark or DFlash2 at roughly 32K context. Auto adds between zero and the MTP cost. Longer context, draft count, and model choice affect actual usage. Compare representative prompts before choosing a prediction method: Disabled can be fastest, especially with Bonsai.
 
 This setting changes response speed, not the quality or speed of image, video, or audio generation.
 
@@ -398,7 +363,7 @@ This setting changes response speed, not the quality or speed of image, video, o
 
 These controls affect the shared local language model's output style. They are normally best left at their defaults.
 
-- **Prompt Enhancer Usage** chooses whether normal WanGP generations enhance prompts automatically or only when you click the enhancer button. Automatic enhancement can add detail but can also reinterpret carefully written prompts. **Recommendation:** use **On-Demand Button Only** when prompt fidelity matters; use **Automatic on Generation** when you routinely start from short ideas.
+- **Prompt Enhancer Usage** chooses whether normal WanGP generations enhance prompts automatically or only when you click the enhancer button. The manual button is available in both modes when the enhancer is enabled. Automatic enhancement can add detail but can also reinterpret carefully written prompts. **Recommendation:** use **Manual Button Only** when prompt fidelity matters; use **Manual Button + Automatic on Generation** when you routinely start from short ideas.
 - **Sampling Temperature** controls creativity. Lower values are more consistent and literal; higher values are more varied but more likely to wander. **Recommendation:** keep the default `0.6`; try `0.3-0.5` for precise instructions or `0.7-0.9` for ideation.
 - **Sampling Top-p** controls how broad the model's word choices can be. Lower values narrow responses; higher values add variety. **Recommendation:** keep the default `0.9` and adjust temperature first.
 - **Randomize Prompt Enhancer Seed** allows different wording and ideas on repeated requests. Disabling it improves repeatability when the prompt and settings are unchanged. **Recommendation:** keep it enabled for creative work; disable it when comparing configuration changes.
@@ -555,7 +520,7 @@ Create a portrait for an introduction video, generate a short speech explaining 
 - Put recurring model-specific choices in a linked template instead of repeating them in every prompt.
 - Specify a time, frame, or audio track when the source contains several possible references.
 - Ask for word timestamps when segment timestamps are not precise enough.
-- Use **Pause** to temporarily free local resources without abandoning the turn.
+- Use **Pause** to temporarily suspend work without abandoning the turn.
 - Use saved sessions and copied gallery media when a project must remain portable after source files move.
 - You can ask Deepy WanGP-specific questions instead of searching the manuals yourself.
 

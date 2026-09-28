@@ -23,7 +23,7 @@
 .wangp-workspace-viewer header button:hover {background:#ffffff30;}
 .wv-toolbar {display:flex;align-items:center;gap:8px;padding:12px 24px;border-bottom:1px solid var(--border-color-primary,#dce5eb);}
 .wv-toolbar [role=tablist] {display:flex;gap:4px;}
-.wv-toolbar [aria-selected=true] {background:#155d7e;color:white;border-color:#155d7e;}
+.wv-toolbar [aria-selected=true],.wv-toolbar [aria-selected=true]:hover {background:#155d7e;color:white;border-color:#155d7e;}
 .wv-spacer {flex:1;}
 .wangp-workspace-viewer [data-activity] {font-size:12px;opacity:.8;text-align:right;}
 .wangp-workspace-viewer [data-protect][aria-pressed=true] {background:#155d7e;color:white;border-color:#155d7e;}
@@ -49,9 +49,17 @@
 .wv-empty {text-align:center;padding:50px 15px;opacity:.65;}
 .wv-content aside {width:34%;min-width:280px;max-width:550px;border-left:1px solid var(--border-color-primary,#dce5eb);display:flex;flex-direction:column;padding:16px;gap:12px;background:var(--background-fill-primary,#fff);}
 .wv-content h3 {font-size:13px;margin:0;opacity:.7;font-weight:600;}
-.wv-preview {max-height:34%;flex-shrink:0;overflow:hidden;display:flex;justify-content:center;background:#10293508;border-radius:8px;}
+.wv-preview {position:relative;min-height:46px;max-height:34%;flex-shrink:0;overflow:hidden;display:flex;justify-content:center;background:#10293508;border-radius:8px;}
 .wv-preview:empty {display:none;}
+.wv-preview-actions {position:absolute;top:8px;right:8px;display:flex;gap:0;border:1px solid var(--border-color-primary,#cbd9e2);border-radius:var(--radius-sm,4px);background:var(--block-background-fill,#fff);}
+.wv-preview-actions a,.wv-preview-actions button {display:flex;padding:var(--spacing-xxs,1px);border:1px solid transparent;border-radius:var(--radius-xs,2px);background:transparent;color:var(--block-label-text-color,#163d52);}
+.wv-preview-actions svg {width:14px;height:14px;}
+.wv-preview-actions a:hover,.wv-preview-actions button:hover {background:var(--background-fill-secondary,#e8f1f7);}
+.wv-preview-actions a:focus-visible {outline:3px solid #309ee7;outline-offset:-3px;}
+.wv-preview:fullscreen {width:100%;height:100%;max-height:none;align-items:center;border-radius:0;background:var(--background-fill-primary,#fff);}
+.wv-preview:fullscreen>.wv-media {width:100%;height:100%;}
 .wv-preview img,.wv-preview video {max-width:100%;max-height:100%;object-fit:contain;}
+.wv-preview>img {width:100%;}
 .wv-preview audio {width:100%;}
 .wv-content iframe {border:0;width:100%;flex:1;min-height:100px;background:white;padding:10px;border-radius:7px;}
 .wv-rubber {position:absolute;border:1px solid #1582cd;background:#208dd430;pointer-events:none;z-index:2;}

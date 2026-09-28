@@ -420,6 +420,7 @@ class IndexTTS2Pipeline:
         two_speaker: bool,
         default_emotion: str,
         auto_split_tokens: Optional[int],
+        speaker_count: int = 2,
     ) -> list[dict]:
         normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
         normalized = re.sub(r"\n(?:[ \t]*\n)+", "\n\n", normalized)
@@ -455,9 +456,9 @@ class IndexTTS2Pipeline:
                     "(or any two numeric speaker IDs)."
                 )
             speaker_ids = sorted({speaker_id for speaker_id, _ in raw_chunks})
-            if len(speaker_ids) != 2:
-                raise ValueError("Two-speaker mode requires exactly two speaker IDs. Use Speaker 1: and Speaker 2:.")
-            speaker_id_to_slot = {speaker_ids[0]: 1, speaker_ids[1]: 2}
+            if len(speaker_ids) != speaker_count:
+                raise ValueError(f"{speaker_count}-speaker mode requires exactly {speaker_count} speaker IDs. Use Speaker 1: to Speaker {speaker_count}:.")
+            speaker_id_to_slot = {speaker_id: index + 1 for index, speaker_id in enumerate(speaker_ids)}
         else:
             speaker_id_to_slot = {1: 1}
             for block in blocks:
@@ -522,6 +523,7 @@ class IndexTTS2Pipeline:
         *,
         alt_prompt: Optional[str] = None,
         audio_guide2: Optional[str] = None,
+        audio_guide3: Optional[str] = None,
         audio_prompt_type: str = "A",
         duration_seconds: float = 0.0,
         pause_seconds: float = 0.0,
@@ -544,6 +546,7 @@ class IndexTTS2Pipeline:
                     audio_guide,
                     alt_prompt=alt_prompt,
                     audio_guide2=audio_guide2,
+                    audio_guide3=audio_guide3,
                     audio_prompt_type=audio_prompt_type,
                     duration_seconds=duration_seconds,
                     pause_seconds=pause_seconds,
@@ -669,11 +672,13 @@ class IndexTTS2Pipeline:
         if audio_prompt_type == "2":
             if audio_guide2 is None or not os.path.isfile(str(audio_guide2)):
                 raise ValueError("Two-speaker mode requires a second speaker reference audio file.")
+            speaker_audios = [str(audio_guide), str(audio_guide2)] + ([str(audio_guide3)] if "D" in raw_audio_prompt_type else [])
             segments = self._parse_segment_plan(
                 text,
                 two_speaker=True,
                 default_emotion=default_emotion,
                 auto_split_tokens=auto_split_tokens,
+                speaker_count=len(speaker_audios),
             )
             cg_shared_kwargs = self._compute_shared_cg_settings(
                 segments,
@@ -688,9 +693,9 @@ class IndexTTS2Pipeline:
                 if hasattr(self.model, "precache_emotion_texts") and unique_emo_texts:
                     self.model.precache_emotion_texts(unique_emo_texts)
                 if hasattr(self.model, "precache_reference_audio"):
-                    self.model.precache_reference_audio([str(audio_guide), str(audio_guide2)], verbose=False)
+                    self.model.precache_reference_audio(speaker_audios, verbose=False)
                 if hasattr(self.model, "precache_emotion_audio"):
-                    self.model.precache_emotion_audio([str(audio_guide), str(audio_guide2)], verbose=False)
+                    self.model.precache_emotion_audio(speaker_audios, verbose=False)
             except RuntimeError as exc:
                 if _ABORT_ERROR in str(exc) or self._abort_requested() or self._early_stop_requested():
                     self.model._clear_persistent_generation_cache()
@@ -713,7 +718,7 @@ class IndexTTS2Pipeline:
                         return None
 
                     speaker_slot = int(segment["speaker"])
-                    speaker_audio = str(audio_guide) if speaker_slot == 1 else str(audio_guide2)
+                    speaker_audio = speaker_audios[speaker_slot - 1]
                     segment_emo_text = _effective_segment_emotion_text(segment)
                     use_emo_text = len(segment_emo_text) > 0
                     segment_text = str(segment["text"]).strip()

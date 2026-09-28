@@ -410,6 +410,7 @@ def bind_editor(
     save_inputs_handler: Callable,
     target_state,
     generation_inputs: list,
+    bind_model_change: bool = True,
 ):
     action_outputs = _action_outputs(ui, state, model_choice_target)
     delete_outputs = _delete_outputs(ui, state, model_choice_target)
@@ -461,12 +462,13 @@ def bind_editor(
         outputs=delete_outputs,
         show_progress="hidden",
     )
-    model_choice_target.change(
-        fn=lambda model_target_value: toolbar_button_updates(deps_factory(), str(model_target_value or "").split("|", 1)[0].strip()),
-        inputs=[model_choice_target],
-        outputs=[toolbar_button],
-        show_progress="hidden",
-    )
+    if bind_model_change:
+        model_choice_target.change(
+            fn=lambda model_target_value: toolbar_button_updates(deps_factory(), str(model_target_value or "").split("|", 1)[0].strip()),
+            inputs=[model_choice_target],
+            outputs=[toolbar_button],
+            show_progress="hidden",
+        )
     auto_id_inputs = [state, ui.mode, ui.original_id, ui.source_model_type, ui.id_text, ui.auto_id, ui.name_text, ui.description_text]
     ui.auto_id.change(fn=lambda *values: refresh_auto_id(deps_factory(), *values, update_interactivity=True), inputs=auto_id_inputs, outputs=[ui.id_text], queue=False, show_progress="hidden")
     ui.name_text.input(fn=lambda *values: refresh_auto_id(deps_factory(), *values, event_kind="input"), inputs=auto_id_inputs, outputs=[ui.id_text], queue=False, show_progress="hidden")
@@ -2034,11 +2036,14 @@ def get_javascript() -> str:
             const app = document.querySelector("gradio-app");
             return app ? (app.shadowRoot || app) : document;
         }
-        function installEnhancerDefaultTooltips() {
+        function installEnhancerDefaultTooltips(scope = root()) {
             const text = "Copy the system prompt defined by the source model into this field.";
-            root().querySelectorAll(".wangp-finetune-editor-enhancer-default-btn, .wangp-finetune-editor-enhancer-default-btn button").forEach((button) => {
+            const selector = ".wangp-finetune-editor-enhancer-default-btn, .wangp-finetune-editor-enhancer-default-btn button";
+            const buttons = [...scope.querySelectorAll(selector)];
+            if (scope.matches?.(selector)) buttons.push(scope);
+            buttons.forEach((button) => {
                 button.removeAttribute("title");
-                button.setAttribute("aria-label", text);
+                if (button.getAttribute("aria-label") !== text) button.setAttribute("aria-label", text);
             });
         }
         function markdownSnippet(action) {
@@ -2081,6 +2086,10 @@ def get_javascript() -> str:
             insertMarkdown(button.closest(".wangp-markdown-editor-toolbar"), button.getAttribute("data-wangp-md-action") || "");
         });
         installEnhancerDefaultTooltips();
-        new MutationObserver(installEnhancerDefaultTooltips).observe(root(), { childList: true, subtree: true });
+        new MutationObserver(mutations => {
+            for (const mutation of mutations) for (const node of mutation.addedNodes) {
+                if (node.nodeType === 1) installEnhancerDefaultTooltips(node);
+            }
+        }).observe(root(), { childList: true, subtree: true });
     })();
     """

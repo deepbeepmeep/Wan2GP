@@ -741,10 +741,10 @@ class DeepyController:
         custom_system_prompt_key = DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY
         if file_access_policy.read_enabled:
             access = "read/write" if file_access_policy.write_enabled else "read-only"
-            scope = "Reading is allowed everywhere; writing remains limited to output and selected folders." if file_access_policy.read_everywhere else "Use @alias/path from wangp_io roots; plain paths use @outputs."
-            file_access_instructions = f"Filesystem {access} access is enabled. {scope} Use wangp_io for file discovery, text access, ZIP creation or extraction, and downloads. When a directory listing has_more, repeat the same filters with offset=next_offset."
+            scope = "Reading is allowed everywhere; writing remains limited to output and selected folders." if file_access_policy.read_everywhere else "Use @alias/path from list_files roots; plain paths use @outputs."
+            file_access_instructions = f"Filesystem {access} access is enabled. {scope} Use list_files without a path to discover roots, list_files with a path to navigate one directory, rg for recursive search, and query_file for one file's metadata or text. Directory listings return bounded pages; when has_more is true, repeat the same filters with cursor=next_cursor."
         else:
-            file_access_instructions = "Filesystem access is disabled. Use Gallery/media ids rather than direct paths; wangp_io can only inspect or download Gallery media."
+            file_access_instructions = "Filesystem access is disabled. Use Gallery/media ids rather than direct paths."
         system_prompt = f"{system_prompt}\n\n{file_access_instructions}"
         experimental_instructions = long_text_system_instructions(file_access_policy)
         if experimental_instructions:
@@ -1177,8 +1177,7 @@ class DeepyController:
             cancelled_job_id = self._cancel_active_prime_job(session, "Stop")
             self._debug_log(f"Stop requested worker_active=True active_prime_mcp_job={cancelled_job_id or 'none'}")
             status_text = "Stopping generation..." if cancelled_job_id else "Interrupting the current assistant task..."
-            status = {"visible": True, "kind": "queued", "text": status_text}
-            return assistant_chat.build_sync_event(session, status=status), gr.update(), gr.update(), gr.update()
+            return assistant_chat.build_status_event(status_text, kind="stop_pending", session=session), gr.update(), gr.update(), gr.update()
         cancelled_user_text = self._cancel_next_queued_request(session)
         if cancelled_user_text:
             chat_event = assistant_chat.build_sync_event(session)

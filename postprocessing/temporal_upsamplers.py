@@ -379,6 +379,9 @@ def temporal_upsample(temporal_upsampling, sample, previous_last_frame, fps, *, 
     name = handler.query_temporal_upsampler_def()["name"]
     persistent = handler.persistent_models() if hasattr(handler, "persistent_models") else False
     borrowed_context = compatible_loaded_model(handler, temporal_upsampling, loaded_model_context)
+    if borrowed_context is None and hasattr(handler, "download"):
+        from shared.utils.download import process_files_def
+        handler.download(kwargs.get("process_files") or process_files_def, temporal_upsampling=temporal_upsampling)
     with attention_shared_state():
         try:
             core_offloadobj = loaded_model_context.offloadobj if loaded_model_context is not None else main_offloadobj

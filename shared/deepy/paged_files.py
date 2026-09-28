@@ -10,6 +10,7 @@ from pathlib import Path
 
 from shared.deepy import long_text
 from shared.deepy.media_registry import detect_media_type
+from shared.mcp_paging import PAGE_SIZE
 
 
 def directory_entries(policy, path="", pattern="*", media_type="all"):
@@ -31,6 +32,13 @@ def directory_entries(policy, path="", pattern="*", media_type="all"):
             if kind == "directory" or not match:
                 continue
         yield {"path": policy.virtualize_path(entry), "type": kind}
+
+
+def list_directory_page(pages, policy, *, path="", pattern="*", media_type="all", limit=PAGE_SIZE, cursor=None, summary_only=False):
+    """Use the same bounded, snapshot-backed listing for MCP v2 and Deepy Zero."""
+    filters = {"path": path, "pattern": pattern, "media_type": media_type}
+    records = None if cursor else directory_entries(policy, **filters)
+    return pages.page(["io", "list", filters], records, key="entries", limit=limit, cursor=cursor, metadata={"complete": True}, summary_only=summary_only)
 
 
 def rg_records(policy, arguments, metadata):

@@ -1,5 +1,8 @@
-"""Wake Gradio's existing scheduler on enqueue/completion instead of polling."""
+"""Wake Gradio queues on new work and reuse SSE across chained callbacks."""
+import ast
 import asyncio
+import inspect
+import textwrap
 from asyncio import TimeoutError
 from functools import wraps
 from queue import Queue
@@ -79,6 +82,45 @@ class WakeupQueue(queueing.Queue):
         self._notify_work()
 
 
+async def _reuse_idle_stream(app, request, session_hash):
+    # Negotiate reuse with clients that handle early results and idle-close
+    # races. Older clients may close their stream immediately on completion.
+    if not request.url.path.endswith('/queue/data') or request.query_params.get('stream_reuse') != '1':
+        return False
+    queue = app.get_blocks()._queue
+    if queue.stopped:
+        return False
+    await queue.pending_messages_per_session[session_hash].wait(0.25)
+    return bool(queue.pending_event_ids_session.get(session_hash)) and not queue.stopped
+
+
+def _with_stream_reuse(fn):
+    # Keep upstream SSE delivery and cleanup. Give an idle session a short
+    # opportunity to enqueue its next callback before sending close_stream.
+    # Results are yielded BEFORE this wait, so it never delays a completed job.
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    matches = 0
+
+    class ReuseStream(ast.NodeTransformer):
+        def visit_Assign(self, node):
+            nonlocal matches
+            if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == 'CloseStreamMessage':
+                matches += 1
+                return [*ast.parse('if await _reuse_idle_stream(app, request, session_hash):\n    continue').body, node]
+            return node
+
+    ReuseStream().visit(tree)
+    if matches != 1:
+        raise RuntimeError('Gradio stream reuse requires the pinned Gradio 5.29 SSE helper')
+    names = fn.__code__.co_freevars
+    factory = ast.parse(f'def factory({", ".join(names)}):\n    pass').body[0]
+    factory.body = [*tree.body, ast.Return(value=ast.Name(id=fn.__name__, ctx=ast.Load()))]
+    module = ast.fix_missing_locations(ast.Module(body=[factory], type_ignores=[]))
+    namespace = {**fn.__globals__, '_reuse_idle_stream': _reuse_idle_stream}
+    exec(compile(module, fn.__code__.co_filename, 'exec'), namespace)
+    return namespace['factory'](*(cell.cell_contents for cell in fn.__closure__ or ()))
+
+
 def _patch_message_delivery(app):
     # Both /queue/data and /call/... share this closure. Leave the complete SSE
     # protocol (errors, heartbeats, cancellation, close messages) in upstream code.
@@ -92,6 +134,7 @@ def _patch_message_delivery(app):
             original = cell.cell_contents
             if getattr(original, '_wangp_message_wakeup', False):
                 continue
+            original = _with_stream_reuse(original)
 
             @wraps(original)
             async def queue_data_helper(request, session_hash, process_msg, _original=original):

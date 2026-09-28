@@ -9,6 +9,7 @@ Chain-of-Zoom checkpoint loads unchanged.
 """
 
 from __future__ import annotations
+from shared.utils.media_control import inference_checkpoint
 
 import math
 
@@ -255,6 +256,7 @@ class SD3Transformer(nn.Module):
         temb = self.time_text_embed(timestep, pooled_projections)
         encoder_states = self.context_embedder(encoder_hidden_states)
         for block in self.transformer_blocks:
+            inference_checkpoint()
             hidden_states, encoder_states = block(hidden_states, encoder_states, temb)
         hidden_states = self.norm_out(hidden_states, temb)
         hidden_states = self.proj_out(hidden_states)

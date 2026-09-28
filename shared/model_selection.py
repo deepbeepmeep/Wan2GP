@@ -49,8 +49,21 @@ def _normalized(text):
     return " ".join(text.casefold().split())
 
 
+def _singular(word):
+    # Plural-tolerant comparison: "infographic" matches "infographics".
+    if len(word) > 3 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _key(text):
+    return " ".join(_singular(word) for word in text.casefold().split())
+
+
 def _words(text):
-    return set(re.findall(r"\w+", text.casefold()))
+    return {_singular(word) for word in re.findall(r"\w+", text.casefold())}
 
 
 def speciality_catalog(records):
@@ -65,34 +78,46 @@ def speciality_catalog(records):
     return [{"name": name, **({"aliases": sorted(item["aliases"])} if item["aliases"] else {}), **({"description": " ".join(sorted(item["descriptions"]))} if item["descriptions"] else {})} for name, item in sorted(catalog.items())]
 
 
-def rank_models(records, specialities, preferences):
+def rank_models(records, specialities, preferences, main_output=None):
     if not isinstance(specialities, list) or any(not isinstance(term, str) or not term.strip() for term in specialities):
         raise ValueError("specialities must be a list of non-empty strings")
     terms = list(dict.fromkeys(_normalized(term) for term in specialities))
+    keys = {term: _key(term) for term in terms}
     ranked = []
     for record in records:
         names, words = set(), set()
         for speciality in record.get("specialities", []):
-            names.update(_normalized(value) for value in [speciality["name"], *speciality.get("aliases", [])])
+            names.update(_key(value) for value in [speciality["name"], *speciality.get("aliases", [])])
             words.update(_words(" ".join([speciality["name"], *speciality.get("aliases", []), speciality.get("description", "")])))
-        matched = [term for term in terms if term in names]
-        word_matches = {term: sorted(_words(term) & words) for term in terms if term not in names and _words(term) & words}
-        if terms and not matched and not word_matches:
+        matched = [term for term in terms if keys[term] in names]
+        word_matches = {term: sorted(_words(term) & words) for term in terms if keys[term] not in names and _words(term) & words}
+        # Last resort: a query word of 4+ letters inside a speciality word, or the reverse.
+        substring_matches = {}
+        for term in terms:
+            if keys[term] not in names and term not in word_matches:
+                found = sorted({word for query in _words(term) if len(query) >= 4 for word in words if len(word) >= 4 and (query in word or word in query)})
+                if found:
+                    substring_matches[term] = found
+        if terms and not matched and not word_matches and not substring_matches:
             continue
         speed = preferences["speed"]
         score = int(speed == "fast" and record["accelerated"] in ("native", "profiles") or speed == "standard" and record["accelerated"] in ("none", "profiles"))
         score += int(preferences["size"] != "any" and record.get("size") == {"smaller": "lighter", "larger": "large"}.get(preferences["size"]))
-        ranked.append((len(matched), len(word_matches), score, record, matched, word_matches))
+        # Models dedicated to the requested output rank before multimodal models that can also produce it.
+        dedicated = int(main_output is not None and list(record.get("main_output") or []) == [main_output])
+        ranked.append((len(matched), len(word_matches), len(substring_matches), dedicated * 10 + score, record, matched, word_matches, substring_matches))
     exact = any(item[0] == len(terms) for item in ranked)
     if exact:
         ranked = [item for item in ranked if item[0] == len(terms)]
-    ranked.sort(key=lambda item: (-item[0], -item[1], -item[2], item[3]["name"].casefold(), item[3]["model_type"]))
+    ranked.sort(key=lambda item: (-item[0], -item[1], -item[2], -item[3], item[4]["name"].casefold(), item[4]["model_type"]))
     result = []
-    for _, _, _, record, matched, word_matches in ranked:
+    for _, _, _, _, record, matched, word_matches, substring_matches in ranked:
         item = dict(record)
         if not exact:
             item.update(matched_specialities=matched, unmatched_specialities=[term for term in terms if term not in matched])
             if word_matches:
                 item["word_matches"] = word_matches
+            if substring_matches:
+                item["substring_matches"] = substring_matches
         result.append(item)
     return result, "exact" if exact else "partial" if result else "none"

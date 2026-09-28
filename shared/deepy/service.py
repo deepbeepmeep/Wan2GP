@@ -68,10 +68,10 @@ class DeepyService(WorkspaceSupport, GenerationRuntime):
             gallery, workspaces = self.gallery_snapshot(), self.workspace_snapshot()
         return {"cursor": cursor, "display_settings": self.display_settings(), "chat": chat.build_sync_event(self._session), "gallery": gallery, "workspaces": workspaces, "progress": progress, "busy": busy, "restoration": self._restoration, "sessions": self._deps.controller.list_saved_sessions(), "active_session_id": self._session.storage_session_id, "active_session_title": self._session.storage_title, "multi_session": self._deps.controller.multi_session_enabled(), "deepy_type": self._deps.controller.get_deepy_type()}
 
-    def events_after(self, cursor):
+    def events_after(self, cursor, timeout=15):
         with self._condition:
             if cursor == self._revision and not self._closing:
-                self._condition.wait(timeout=15)
+                self._condition.wait(timeout=timeout)
             expired = cursor > self._revision or (self._events and cursor < self._events[0]["id"] - 1)
             if not expired:
                 return [event for event in self._events if event["id"] > cursor]
@@ -251,7 +251,7 @@ class DeepyService(WorkspaceSupport, GenerationRuntime):
         controller = self._deps.controller
         if action == "abort":
             with self._mutation_lock:
-                if self.generation_running and self._progress is not None and not self._generation_aborting:
+                if self.generation_running and not self._generation_aborting:
                     self._generation_aborting = True
                     self._generation_event("status", "Aborting generation…")
                     self.command("abort_client_id", self._active_generation_client_id)

@@ -11,6 +11,7 @@ from html import escape
 from pathlib import Path
 
 from shared.utils.cancellation import cancellation_context
+from shared.utils.download_progress import download_operation
 
 
 _tracked_progress = ContextVar("wangp_tqdm_progress", default=None)
@@ -119,6 +120,11 @@ class WangpProgress:
                 amount = f"{index}" + (f" / {total}" if total is not None else "") + f" {unit}"
             elif total is None and ratio == 0:
                 ratio = None
+            if title.removeprefix("Stopping… ").startswith("Loading ") and " - " in title:
+                title, subtask = title.rsplit(" - ", 1)
+                title += "..."
+                if bar_text is None:
+                    bar_text = subtask
             phase, separator, suffix = title.rpartition(" | ")
             if separator and _timing.fullmatch(suffix):
                 title, timing = phase, suffix
@@ -137,7 +143,8 @@ class WangpProgress:
         width = f"{percentage:.2f}%" if percentage is not None else "0%"
         value = f' aria-valuenow="{percentage:.1f}"' if percentage is not None else ""
         track = "progress-track" + (" indeterminate" if percentage is None and active and "status-only" not in classes else "")
-        percent = f"{percentage:.0f}%" if percentage is not None else ""
+        has_subtask_label = bool(text) and title.removeprefix("Stopping… ").lower().startswith(("downloading", "loading "))
+        percent = f"{percentage:.0f}%" if percentage is not None and not has_subtask_label else ""
         complete = percentage == 100 and (download is None or download.get("finished_at") is not None)
         tooltip = escape(title + ("\n" + text if text else ""))
         details = escape(" · ".join(item for item in (amount, speed, counter, timing) if item))
@@ -237,13 +244,13 @@ class WangpProgress:
             if runs is None:
                 progress.status("Preparing…")
             else:
-                progress(0, desc="Preparing Prompt Enhancer")
+                progress(0, desc="Preparing")
             if runs is not None:
                 *args, request = args
                 runs[request.session_hash] = progress
 
             def work():
-                with progress.track(), cancellation_context(progress.check_cancelled if runs is not None else None):
+                with progress.track(), download_operation(progress.gen), cancellation_context(progress.check_cancelled if runs is not None else None):
                     return fn(*args, **kw, progress=progress)
 
             unchanged = [gr.update() for _ in outputs]
@@ -264,9 +271,13 @@ class WangpProgress:
                         wait([future], timeout=0.1)
                     try:
                         result = future.result()
-                    except Exception:
+                    except Exception as exc:
                         yield *unchanged, *restore, gr.update(value="", visible=False)
                         if progress.gen["abort"]:
+                            return
+                        from shared.utils.download import DownloadError
+                        if isinstance(exc, DownloadError):
+                            gr.Warning(str(exc))
                             return
                         raise
                 values = [result] if len(outputs) == 1 else result

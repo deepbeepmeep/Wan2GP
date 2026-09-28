@@ -224,10 +224,14 @@ class FlashVSRBridge:
     def query_download_def(self, enabled_only: bool = True) -> dict[str, Any] | None:
         if enabled_only and not self.enabled():
             return None
+        _, variant = self.settings()
+        files = [self.TRANSFORMER_FILENAME, self.LQ_PROJ_FILENAME, self.POSI_PROMPT_FILENAME]
+        if variant != "full":
+            files.append(self.TCDECODER_FILENAME)
         return {
             "repoId": "DeepBeepMeep/Wan2.1",
-            "sourceFolderList": ["FlashVSR", ""],
-            "fileList": [[self.TRANSFORMER_FILENAME, self.LQ_PROJ_FILENAME, self.TCDECODER_FILENAME, self.POSI_PROMPT_FILENAME], [self.VAE_FILENAME]],
+            "sourceFolderList": ["FlashVSR", ""] if variant == "full" else ["FlashVSR"],
+            "fileList": [files, [self.VAE_FILENAME]] if variant == "full" else [files],
         }
 
     def _locate_flashvsr_file(self, filename: str) -> str:
@@ -252,19 +256,9 @@ class FlashVSRBridge:
         return WanVAE.get_VAE_tile_size(vae_config, device_mem_capacity, mixed_precision, output_height=output_height, output_width=output_width)
 
     def download(self, process_files: Callable[..., Any], send_cmd=None, status_text: str | None = None, spatial_upsampling=None) -> bool:
-        flashvsr_def = self.query_download_def()
-        if flashvsr_def is None:
-            return False
-        _, variant = self.settings()
-        required = [os.path.join("FlashVSR", self.TRANSFORMER_FILENAME), os.path.join("FlashVSR", self.LQ_PROJ_FILENAME), os.path.join("FlashVSR", self.POSI_PROMPT_FILENAME)]
-        required.append(self.VAE_FILENAME if variant == "full" else os.path.join("FlashVSR", self.TCDECODER_FILENAME))
-        if all(self.files_locator.locate_file(path, error_if_none=False) is not None for path in required):
-            return False
-        from shared.utils.download import send_download_status
+        from shared.utils.download import process_files_def_if_needed
 
-        send_download_status(send_cmd, status_text)
-        process_files(**flashvsr_def)
-        return True
+        return process_files_def_if_needed(self.query_download_def(), process_files=process_files, send_cmd=send_cmd, status_text=status_text)
 
     def load_upsampler(self, spatial_upsampling, *, process_files: Callable[..., Any], init_pipe: Callable[..., int], profile, progress_callback=None, **kwargs):
         scale = self.scale_for_upsampling(spatial_upsampling)

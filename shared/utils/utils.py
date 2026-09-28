@@ -46,7 +46,7 @@ def has_image_file_extension(filename):
 def has_audio_file_extension(filename):
     filename = strip_virtual_media_suffix(filename)
     extension = os.path.splitext(filename)[-1].lower()
-    return extension in [".wav", ".mp3", ".aac"]
+    return extension in [".wav", ".mp3", ".aac", ".flac"]
 
 def resample(video_fps, video_frames_count, max_target_frames_count, target_fps, start_target_frame ):
     import math
@@ -353,6 +353,9 @@ def resolve_rembg_home():
     return os.path.abspath(rembg_home)
 
 def new_rembg_session(*args, **kwargs):
+    if kwargs.get("model_name", args[0] if args else "u2net") == "u2net":
+        from preprocessing.rembg.assets import ensure_assets
+        ensure_assets()
     os.environ["U2NET_HOME"] = resolve_rembg_home()
     return new_session(*args, **kwargs)
 

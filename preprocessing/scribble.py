@@ -146,3 +146,6 @@ class ScribbleVideoAnnotator(ScribbleAnnotator):
             anno_frame = super().forward(np.array(frame))
             ret_frames.append(anno_frame)
         return ret_frames
+
+def query_download_def():
+    return {"repoId": "DeepBeepMeep/Wan2.1", "sourceFolderList": ["scribble"], "fileList": [["netG_A_latest.pth"]]}

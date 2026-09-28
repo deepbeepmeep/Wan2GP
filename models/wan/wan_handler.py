@@ -1022,13 +1022,10 @@ class family_handler():
 
                 download_def.append(magic_mask.query_download_def())
         elif base_model_type == "vista4d":
-            download_def += [
-                {
-                    "repoId": "DeepBeepMeep/Wan2.1",
-                    "sourceFolderList": ["depth", "sam3"],
-                    "fileList": [["depth_anything_v3_vitl_bf16.safetensors"], ["sam3.1_multiplex_bf16.safetensors", "bpe_simple_vocab_16e6.txt.gz"]],
-                }
-            ]
+            from preprocessing.depth_anything_v3.assets import query_download_def as query_depth_files
+            from preprocessing.sam3.assets import query_download_def as query_sam3_files
+
+            download_def += [query_depth_files(), query_sam3_files()]
 
         return download_def
 

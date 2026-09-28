@@ -108,6 +108,10 @@
 
 	let get_data_inflight: Promise<ImageBlobs | { id: string }> | null = null;
 
+	export function get_metadata(): { background: string | null } {
+		return { background: background_image || background ? "present" : null };
+	}
+
 	export async function get_data(): Promise<ImageBlobs | { id: string }> {
 		while (get_data_inflight) {
 			try {

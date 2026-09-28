@@ -1045,6 +1045,7 @@ class ScenemaAudioPipeline(LTXAudioTTSPipelineBase):
         input_waveform=None,
         input_waveform_sample_rate=None,
         audio_guide2: Optional[str] = None,
+        audio_guide3: Optional[str] = None,
         audio_prompt_type: str = "",
         custom_settings=None,
         duration_seconds: Optional[float] = None,
@@ -1095,6 +1096,15 @@ class ScenemaAudioPipeline(LTXAudioTTSPipelineBase):
             speaker_ref_waveforms[2] = (reference_waveform, reference_rate)
             if not seedvc_enabled:
                 speaker_ref_latents[2] = self._encode_reference_waveform(self._reference_tail_waveform(reference_waveform, reference_rate), reference_rate)
+        if "D" in audio_prompt_type and audio_guide3:
+            if set_progress_status is not None:
+                set_progress_status("Encoding Speaker 3 Reference")
+            reference_waveform, reference_rate = self._waveform_from_input(None, None, audio_guide3)
+            if reference_waveform is None or reference_rate <= 0:
+                raise ValueError("Scenema Audio could not encode the third reference audio.")
+            speaker_ref_waveforms[3] = (reference_waveform, reference_rate)
+            if not seedvc_enabled:
+                speaker_ref_latents[3] = self._encode_reference_waveform(self._reference_tail_waveform(reference_waveform, reference_rate), reference_rate)
 
         if self._interrupt:
             return None

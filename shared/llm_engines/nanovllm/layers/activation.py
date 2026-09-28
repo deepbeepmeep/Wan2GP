@@ -5,7 +5,7 @@ import torch.nn.functional as F
 try:
     import triton
     import triton.language as tl
-    from triton.language.extra.cuda import libdevice
+    from triton.language.extra import libdevice
 except ImportError:
     triton = None
 
@@ -35,14 +35,18 @@ class SiluAndMul(nn.Module):
     def forward_list(self, x_list: list[torch.Tensor]) -> torch.Tensor:
         x = x_list[0]
         x_list.clear()
-        if self.use_triton and x.is_cuda and triton is not None:
-            x = x.contiguous()
-            output = torch.empty((*x.shape[:-1], x.shape[-1] // 2), device=x.device, dtype=x.dtype)
-            _silu_mul_kernel[(triton.cdiv(output.numel(), 256),)](x, output, output.shape[-1], output.numel(), 256)
-            return output
-        gate, value = x.chunk(2, -1)
-        F.silu(gate, inplace=True).mul_(value)
-        return gate.contiguous()
+        return silu_mul(x, self.use_triton)
+
+
+def silu_mul(x, use_triton=True):
+    if use_triton and x.is_cuda and triton is not None:
+        x = x.contiguous()
+        output = torch.empty((*x.shape[:-1], x.shape[-1] // 2), device=x.device, dtype=x.dtype)
+        _silu_mul_kernel[(triton.cdiv(output.numel(), 256),)](x, output, output.shape[-1], output.numel(), 256)
+        return output
+    gate, value = x.chunk(2, -1)
+    F.silu(gate, inplace=True).mul_(value)
+    return gate.contiguous()
 
 
 # Register after definitions to preserve Triton's line-number-sensitive cache keys.

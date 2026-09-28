@@ -11,9 +11,64 @@ gradio-app {
     width: 100%;
 }
 
-/* Hide the preview-close toggle; reference galleries have explicit clear controls. */
+.gallery-container .icon-button-wrapper.wangp-video-actions {
+    position: absolute;
+    right: auto;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    flex-direction: column;
+    gap: 0;
+    font-size: 13px;
+}
+/* Gradio also sets overflow on its outer block. Keep focus on the frame
+   icons from scrolling that wrapper and clipping the fullscreen control. */
+.block:has(.wangp-video-actions) {
+    overflow: clip !important;
+}
+.wangp-video-actions button[hidden],
+.wangp-video-actions [role="status"]:empty {
+    display: none;
+}
+.wangp-video-actions [role="status"]:not(:empty) {
+    position: absolute;
+    right: 32px;
+    top: 0;
+    width: 230px;
+    padding: 8px 10px;
+    color: var(--body-text-color);
+    background: var(--background-fill-primary);
+    border: 1px solid var(--border-color-primary);
+    border-radius: 4px;
+}
+
+/* The preview cross removes the selected item only in the reference gallery. */
 .gallery-container > .preview button[aria-label="Close"] {
     display: none;
+}
+.amg-remove-selected .gallery-container > .preview button[aria-label="Close"] {
+    display: flex;
+}
+
+/* The preview has its own thumbnail strip; no background grid or blur layer. */
+.gallery-container > .preview {
+    background: var(--background-fill-primary);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+/* The outer wrapper must not scroll when Chrome reveals a focused thumbnail. */
+.block:has(> .gallery-container) {
+    overflow: clip;
+}
+
+/* Chrome puts its buffering spinner beside the public controls enclosures.
+   Hide that inherited layer, then restore both enclosures so the native
+   playback, timeline, volume and fullscreen controls remain available. */
+.gallery-container video[data-testid="detailed-video"]::-webkit-media-controls {
+    visibility: hidden;
+}
+.gallery-container video[data-testid="detailed-video"]::-webkit-media-controls-enclosure,
+.gallery-container video[data-testid="detailed-video"]::-webkit-media-controls-overlay-enclosure {
+    visibility: visible;
 }
 
 .wangp-voice-prompt textarea:disabled {
@@ -108,15 +163,16 @@ h2 {
 #queue_html_container .pastel-row {
     background-color: hsl(var(--item-hue, 0), 80%, 92%);
 }
+#queue_html_container .pastel-row td,
+#queue_html_container .pastel-row td * {
+    color: #111827;
+}
 #queue_html_container .alternating-grey-row.even-row {
     background-color: #F8FAFC; /* Light mode grey */
 }
 @media (prefers-color-scheme: dark) {
     #queue_html_container tr:hover td {
          background-color: rgba(255, 255, 255, 0.1) !important;
-    }
-    #queue_html_container .pastel-row {
-        background-color: hsl(var(--item-hue, 0), 35%, 25%);
     }
     #queue_html_container .alternating-grey-row.even-row {
         background-color: #2a3748; /* Dark mode grey */
@@ -428,12 +484,33 @@ overflow-wrap: anywhere;
 user-select: text;
 }
 .compact_text {padding: calc(1px * var(--wangp-ui-scale))}
-#video_input .video-container .container {
-    flex-direction: row !important;
-    display: flex !important;
+/* Keep the compact settings label beside the prompt without shrinking the drop target. */
+.wangp-settings-upload > button[aria-dropeffect] {
+    padding-left: 50%;
 }
-#video_input .video-container .container .controls {
-    overflow: visible !important;
+.wangp-settings-upload > button[aria-dropeffect] > .wrap {
+    margin-inline: 0;
+    max-width: 100%;
+    white-space: nowrap;
+}
+.wangp-settings-upload > label.float {
+    display: block;
+    max-width: calc(50% - var(--block-label-margin));
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.wangp-settings-upload > label.float > span {
+    display: inline-block;
+    vertical-align: middle;
+}
+/* Let the preview shrink inside fixed-height video inputs so the trim
+   timeline, duration, actions and source selector stay inside the block. */
+.video-container > .wrap {
+    min-height: 0;
+}
+.video-container > .wrap video {
+    object-fit: contain;
 }
 .tabitem {padding-top:0px}
 .rule-row { margin-bottom: calc(8px * var(--wangp-ui-scale)); align-items: center !important; display: flex; gap: calc(8px * var(--wangp-ui-scale)); }
@@ -468,6 +545,12 @@ user-select: text;
 .header-markdown-group .prose {
     margin-top: 0 !important;
     margin-bottom: 0 !important;
+}
+/* Keep the description and attention line steady while callbacks are pending. */
+.header-markdown-group div.html-container,
+.header-markdown-group div:has(> [data-testid="markdown"]) {
+    opacity: 1;
+    transition: none;
 }
 
 .wangp-transparent-group,

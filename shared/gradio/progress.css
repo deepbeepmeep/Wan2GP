@@ -82,7 +82,7 @@
     line-height: 1;
 }
 .wangp-progress .progress-label > span { display: block; color: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wangp-progress .progress-covered { color: #10202e; clip-path: inset(0 calc(100% - var(--progress)) 0 0); }
+.wangp-progress .progress-covered { color: var(--block-background-fill); clip-path: inset(0 calc(100% - var(--progress)) 0 0); }
 .wangp-progress.status-only .progress-heading { grid-area: 1 / 1 / -1 / -1; justify-content: flex-start; }
 .wangp-progress.status-only .progress-caption { grid-column: 1 / -1; justify-content: flex-start; }
 .wangp-progress.status-only .progress-timing { display: none; }

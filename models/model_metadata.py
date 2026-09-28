@@ -158,6 +158,9 @@ def infer_media_inputs(model_def):
         },
         "audio": {
             "prompt": bool(model_def.get("any_audio_prompt", False)),
+            "reference": bool(model_def.get("reference_audio_enabled", False)),
+            # A control audio drives the output and is kept as its soundtrack.
+            "control": bool(model_def.get("output_audio_is_input_audio", False)) or _choice_values_contain(model_def.get("audio_prompt_type_sources", None), "S"),
             "output": bool(model_def.get("audio_only", False) or model_def.get("returns_audio", False)),
         },
     }
@@ -171,7 +174,7 @@ def infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs):
         "text_to_video": "video" in main_outputs and "text" in inputs,
         "image_to_video": "video" in main_outputs and image_inputs["start"],
         "video_to_video": "video" in main_outputs and (video_inputs["continue"] or video_inputs["control"] or video_inputs["reference"]),
-        "text_to_image": "image" in main_outputs and "text" in inputs,
+        "text_to_image": "image" in main_outputs and "text" in inputs and not model_def.get("one_image_ref_needed", False),
         "image_to_image": "image" in main_outputs and (image_inputs["start"] or image_inputs["reference"] or image_inputs["control"]),
         "text_to_audio": "audio" in main_outputs and "text" in inputs,
         "audio_to_audio": "audio" in main_outputs and audio_inputs["prompt"],

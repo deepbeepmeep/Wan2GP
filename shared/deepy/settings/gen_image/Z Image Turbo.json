@@ -1,6 +1,7 @@
 {
     "settings_version": 2.55,
     "model_type": "z_image",
+    "prompt_enhancer": "T",
     "prompt": "",
     "image_mode": 1,
     "resolution": "1280x720",

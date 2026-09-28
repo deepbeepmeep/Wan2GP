@@ -1,15 +1,51 @@
 import inspect
 import os, shutil, sys, time
 from tempfile import NamedTemporaryFile, TemporaryDirectory
-from shared.utils.download_progress import DownloadCancelled, check_download_cancelled, download_context, install_hf_download_patch
+from shared.utils.download_progress import DownloadCancelled, check_download_cancelled, download_context, download_operation, install_hf_download_patch, resolve_download_gen
+
+
+class DownloadError(Exception):
+    """An asset transfer failed; stop the operation before trying to load it."""
+
+
+def generation_downloads(get_gen_info, get_offloadobj=lambda: None):
+    from functools import wraps
+
+    def decorate(fn):
+        signature = inspect.signature(fn)
+
+        @wraps(fn)
+        def run(*args, **kwargs):
+            bound = signature.bind(*args, **kwargs)
+            arguments = bound.arguments
+            gen = get_gen_info(arguments["state"])
+            from shared.utils.media_control import MediaControl, MediaProcessingAborted
+            with download_operation(gen), MediaControl(gen, arguments["send_cmd"], get_offloadobj) as control:
+                arguments["send_cmd"] = control.send_cmd
+                try:
+                    return fn(*bound.args, **bound.kwargs)
+                except (DownloadCancelled, MediaProcessingAborted):
+                    gen["abort"] = True
+                    return True  # The queue/API reports this as cancellation from gen["abort"].
+                except DownloadError as exc:
+                    arguments["send_cmd"]("error", str(exc))
+                    return False
+        return run
+    return decorate
 
 
 def _hf_download(*, gen=None, show_filename=True, file_index=1, file_count=1, **kwargs):
     from huggingface_hub import hf_hub_download
 
+    gen = resolve_download_gen(gen)
     install_hf_download_patch()
-    with download_context(gen, kwargs["filename"], show_filename, file_index, file_count):
-        return hf_hub_download(**kwargs)
+    try:
+        with download_context(gen, kwargs["filename"], show_filename, file_index, file_count):
+            return hf_hub_download(**kwargs)
+    except DownloadCancelled:
+        raise
+    except Exception as exc:
+        raise DownloadError(f"Unable to Download {kwargs['filename']} From {kwargs['repo_id']}: {exc}") from exc
 
 # Global variables to track download progress
 _start_time = None
@@ -123,6 +159,7 @@ def process_files_def(repoId=None, sourceFolderList=None, fileList=None, targetF
     from huggingface_hub import HfApi, snapshot_download
     from shared.utils import files_locator as fl
 
+    gen = resolve_download_gen(gen)
     check_download_cancelled(gen)
     if targetFolderList is None:
         targetFolderList = [None] * len(sourceFolderList)
@@ -193,6 +230,7 @@ def send_download_status(send_cmd=None, status_text=None):
 
 
 def process_files_def_if_needed(download_def, send_cmd=None, status_text=None, gen=None, show_filename=True, process_files=None):
+    gen = resolve_download_gen(gen)
     check_download_cancelled(gen)
     if download_def is None or len(download_def_missing_files(download_def)) == 0:
         return False
@@ -209,11 +247,9 @@ def process_files_def_if_needed(download_def, send_cmd=None, status_text=None, g
 
 
 def query_audio_background_replacement_download_def():
-    return {
-        "repoId": "DeepBeepMeep/Wan2.1",
-        "sourceFolderList": ["roformer"],
-        "fileList": [["model_bs_roformer_ep_317_sdr_12.9755.ckpt", "model_bs_roformer_ep_317_sdr_12.9755.yaml", "download_checks.json"]],
-    }
+    from preprocessing.roformer.assets import query_download_def
+
+    return query_download_def()
 
 
 def download_audio_background_replacement(send_cmd=None, status_text="Downloading audio background replacement model files...", gen=None, process_files=None):
@@ -234,6 +270,7 @@ _download_compat_warnings = set()
 
 def download_url(url, filename, gen=None, show_filename=True):
     """Call the active downloader, including older plugin replacements."""
+    gen = resolve_download_gen(gen)
     downloader = download_file
     parameters = inspect.signature(downloader, follow_wrapped=False).parameters
     kwargs = {"gen": gen, "show_filename": show_filename}
@@ -258,6 +295,7 @@ def download_url(url, filename, gen=None, show_filename=True):
 def download_file(url, filename, gen=None, show_filename=True):
     from shared.utils import files_locator as fl
 
+    gen = resolve_download_gen(gen)
     check_download_cancelled(gen)
     url = url.split("|")[0]
     if url.startswith("https://huggingface.co/") and "/resolve/main/" in url:

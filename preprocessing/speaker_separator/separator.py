@@ -127,6 +127,8 @@ class OptimizedPyannote31SpeakerSeparator:
         self.hf_token = hf_token
         self._overlap_pipeline = None
         self.use_sherpa_onnx = USE_SHERPA_ONNX_SPEAKER_DIARIZATION
+        from .assets import download_speaker_separator
+        download_speaker_separator(use_sherpa=self.use_sherpa_onnx)
         if self.use_sherpa_onnx:
             self._init_sherpa_onnx_pipeline()
             return

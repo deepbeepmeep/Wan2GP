@@ -1573,6 +1573,11 @@
     color: #973232;
 }
 
+#assistant_chat_html .chat__tool-status--interrupted {
+    background: rgba(250, 204, 21, 0.16);
+    color: #facc15;
+}
+
 .chat__pre {
     margin: 10px 0 0;
     padding: 12px 13px;

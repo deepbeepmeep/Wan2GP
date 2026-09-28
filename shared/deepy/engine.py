@@ -18,7 +18,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
-from PIL import Image, ImageColor
+from PIL import Image, ImageColor, ImageDraw
 
 from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io, media_descriptor, token_id_descriptor
 from shared.utils.audio_video import extract_audio_tracks
@@ -51,7 +51,9 @@ from shared.deepy.config import (
 from shared.deepy import DEFAULT_COMPACTION_PROMPT as ASSISTANT_COMPACTION_PROMPT, ZERO_SYSTEM_PROMPT as ASSISTANT_SYSTEM_PROMPT
 from shared.deepy.debug_bootstrap import capture_external_logs
 from shared import extra_settings
-from shared.deepy import filesystem as deepy_filesystem, long_text as deepy_long_text, media_registry, session_store, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
+from shared.deepy import filesystem as deepy_filesystem, image_channels as deepy_image_channels, long_text as deepy_long_text, media_registry, session_store, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
+from shared.deepy.paged_files import list_directory_page
+from shared.mcp_paging import PAGE_SIZE, ResultPages
 from shared.utils.gallery_media import gallery_media_ids
 from postprocessing import catalog as postprocessing_catalog
 from shared.gradio import assistant_chat
@@ -495,6 +497,7 @@ class AssistantSessionState:
     steering_deadline: float = 0.0
     assistant_thought_active: bool = False
     assistant_action_active: bool = False
+    media_tool_active: bool = False
     assistant_compaction_active: bool = False
     pause_requested: bool = False
     paused: bool = False
@@ -534,6 +537,8 @@ class AssistantSessionState:
     chat_status: dict[str, Any] | None = None
     remote_usage_stats: dict[str, Any] | None = None
     file_access_policy: Any | None = None
+    file_list_pages: Any | None = None
+    file_list_policy_signature: tuple[Any, ...] | None = None
     seen_video_gallery_paths: list[str] = field(default_factory=list)
     seen_audio_gallery_paths: list[str] = field(default_factory=list)
     generated_client_ids: list[str] = field(default_factory=list)
@@ -593,6 +598,10 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
         if callable(close_backend):
             close_backend()
     session.remote_backends.clear()
+    if session.file_list_pages is not None:
+        session.file_list_pages.close()
+        session.file_list_pages = None
+        session.file_list_policy_signature = None
     if session.prime_toolbox is not None:
         close_prime_toolbox = getattr(session.prime_toolbox, "close", None)
         if callable(close_prime_toolbox):
@@ -903,7 +912,7 @@ def _summarize_interrupted_committed_messages(messages: list[dict[str, Any]]) ->
                 tool_name = mapped_tool_name or tool_name
                 status = str(payload.get("status", "") or "").strip()
                 identifiers = [f"{key}={payload[key]}" for key in ("job_id", "output_file", "media_id") if payload.get(key) not in (None, "")]
-            if tool_name == "wangp_get_deepy_template_settings" and isinstance(payload.get("settings"), dict):
+            if tool_name in {"wangp_get_deepy_template_settings", "wangp_deepy_templates"} and isinstance(payload.get("settings"), dict):
                 retained_template = {key: payload.get(key) for key in ("tool_id", "template", "general_properties_active") if payload.get(key) is not None}
                 retained_template["settings"] = payload["settings"]
                 if isinstance(payload.get("general_properties"), dict):
@@ -1178,13 +1187,13 @@ def request_assistant_interrupt(session: AssistantSessionState, interruption_kin
         session.steering_pending = False
         session.steering_deadline = 0.0
     preserve_pending_action = interruption_kind == "session_switch" or str(session.pending_reset_mode or "") == session_store.RESET_MODE_NEW
-    if not preserve_pending_action:
-        clear_pending_action_replay(session, persist=True)
     session.pause_requested = False
     session.paused = False
     session.paused_runtime_snapshot = None
     session.interrupt_requested = True
     session.pause_resume_event.set()
+    if not preserve_pending_action:
+        clear_pending_action_replay(session, persist=True)
 
 
 STEERING_THOUGHT_GRACE_SECONDS = 5.0
@@ -1217,7 +1226,7 @@ def mark_assistant_paused(session: AssistantSessionState) -> bool:
             return False
         session.paused = True
         if session.current_turn is not None and "presentation_started_at" in session.current_turn:
-            session.current_turn["presentation_pause_started_at"] = time.monotonic()
+            session.current_turn.setdefault("presentation_pause_started_at", time.monotonic())
         return True
 
 
@@ -1433,6 +1442,7 @@ class DeepyZeroTools:
         self.record_file_metadata = record_file_metadata
         self.get_server_config = get_server_config
         self.file_access_policy_override = None
+        self._file_list_pages: ResultPages | None = None
         self._vision_query_callback: Callable[..., dict[str, Any]] | None = None
         self._vision_is_remote = False
         self._vision_max_images = deepy_vision.VISION_MAX_IMAGES
@@ -2777,15 +2787,17 @@ class DeepyZeroTools:
         self._update_tool_progress("running", "Queued", {"status": "queued", "client_id": client_id, "prompt": prompt, "resolution": resolution})
         task["priority"] = True
         gen["inline_queue"] = task
-        self.send_cmd("load_queue_trigger", {"client_id": client_id})
         self._log(f"Queued {activity_label} for {client_id}")
 
-        with capture_external_logs():
+        from shared.deepy.media_pause import MediaToolPause
+        with capture_external_logs(), MediaToolPause(self.session, gen, [client_id], self.send_cmd) as media_pause:
+            self.send_cmd("load_queue_trigger", {"client_id": client_id})
             queue_wait_started_at = time.time()
             queue_wait_suspended = False
             queue_wait_suspend_logged = False
             activity_console_label = activity_label.capitalize()
             while True:
+                media_pause.poll()
                 if self._is_interrupted():
                     return self._interrupted_result(client_id, task, force_cancel_queue=True)
                 queue_errors = gen.get("queue_errors", None) or {}
@@ -2826,6 +2838,7 @@ class DeepyZeroTools:
                 time.sleep(0.25)
 
             while True:
+                media_pause.poll()
                 if self._is_interrupted():
                     return self._interrupted_result(client_id, task, force_cancel_queue=True)
                 queue_errors = gen.get("queue_errors", None) or {}
@@ -3101,6 +3114,21 @@ class DeepyZeroTools:
         return result
 
     @assistant_tool(
+        display_name="Remove Vocals",
+        description="Create an instrumental audio copy of a previously resolved audio item by separating and removing its vocal stem.",
+        parameters={
+            "media_id": {
+                "type": "string",
+                "description": "The media id for the source audio returned by Resolve Media.",
+            },
+        },
+    )
+    def remove_vocals(self, media_id: str) -> dict[str, Any]:
+        from postprocessing.audio_processors import REMOVE_VOCALS_METHOD
+
+        return self.postprocessing(media_id, REMOVE_VOCALS_METHOD)
+
+    @assistant_tool(
         display_name="Generate Image",
         description="Queue and generate an image from a text prompt inside WanGP, then wait until the output image is available.",
         parameters={
@@ -3320,7 +3348,7 @@ class DeepyZeroTools:
         parameters={
             **copy.deepcopy(gen_video._assistant_tool["parameters"]),
             "image_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "Image media IDs supplying subject identity or appearance.", "required": False},
-            "video_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 2, "description": "Video media IDs supplying appearance or motion; only when the selected template supports video references.", "required": False},
+            "video_refs": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 3, "description": "Video media IDs supplying appearance or motion; only when the selected template supports video references.", "required": False},
         },
     )
     def gen_video_with_refs(
@@ -3346,8 +3374,8 @@ class DeepyZeroTools:
                 sources[name].append(media["path"])
         if not sources["image_refs"] and not sources["video_refs"]:
             return {"status": "error", "error": "Supply image_refs or video_refs. For text or start/end-frame video without references, use gen_video."}
-        video_mode = "V+-U" if len(sources["video_refs"]) == 2 else "V-U"
-        if sources["video_refs"] and (len(sources["video_refs"]) > 2 or not model_def.get("reference_video_enabled", False) or video_mode not in [value for label, value in model_def["guide_custom_choices"]["choices"]]):
+        video_mode = ("V-U", "V-U", "V+-U", "V+*-U")[min(len(sources["video_refs"]), 3)]
+        if sources["video_refs"] and (len(sources["video_refs"]) > 3 or not model_def.get("reference_video_enabled", False) or video_mode not in [value for label, value in model_def["guide_custom_choices"]["choices"]]):
             return {"status": "error", "error": "The selected reference template does not support this video-reference input. Choose a compatible template in Deepy Settings."}
         for name, value in (("image_start", image_start), ("image_end", image_end)):
             media, error = self._resolve_image_media(value or "", name)
@@ -3364,9 +3392,8 @@ class DeepyZeroTools:
             # Keep the template's image-reference mode when images are supplied.
             image_mode = "".join(flag for flag in task["video_prompt_type"] if flag in "KI") if sources["image_refs"] else ""
             task["video_prompt_type"] = image_mode + video_mode
-            task["video_guide"] = sources["video_refs"][0]
-            if len(sources["video_refs"]) == 2:
-                task["video_guide2"] = sources["video_refs"][1]
+            for key, video in zip(("video_guide", "video_guide2", "video_guide3"), sources["video_refs"]):
+                task[key] = video
         try:
             task = deepy_tool_settings.apply_tool_loras(tool_name, variant, task, loras)
         except (TypeError, ValueError) as exc:
@@ -3885,7 +3912,7 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Create Color Frame",
-        description="Create a solid-color image with the requested width and height, rounded to the nearest multiple of 16, and add it to WanGP galleries. Use this for blank frames, color cards, or transition plates.",
+        description="Create a solid-color image with the requested width and height, rounded to the nearest multiple of 16, and add it to WanGP galleries. Use this for blank frames, color cards, transition plates, or box masks: a black frame with white boxes marks the regions to regenerate.",
         parameters={
             "width": {
                 "type": "integer",
@@ -3900,10 +3927,22 @@ class DeepyZeroTools:
                 "description": "Optional fill color. Accepts common names like black, white, red, or hex values like #000000.",
                 "required": False,
             },
+            "boxes": {
+                "type": "array",
+                "items": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 1000}, "minItems": 4, "maxItems": 4},
+                "minItems": 1,
+                "description": "Optional rectangles drawn over the fill, each [x_min,y_min,x_max,y_max] in integers 0..1000 relative to the frame.",
+                "required": False,
+            },
+            "box_color": {
+                "type": "string",
+                "description": "Color of the boxes; defaults to white.",
+                "required": False,
+            },
         },
         pause_runtime=False,
     )
-    def create_color_frame(self, width: int, height: int, color: str = "black") -> dict[str, Any]:
+    def create_color_frame(self, width: int, height: int, color: str = "black", boxes: list[list[int]] | None = None, box_color: str = "white") -> dict[str, Any]:
         try:
             width = int(width)
             height = int(height)
@@ -3927,13 +3966,18 @@ class DeepyZeroTools:
         output_path = self._resolve_direct_output_path(output_name, True, False)
         try:
             image = Image.new("RGB", (width, height), rgb_color)
+            if boxes:
+                draw = ImageDraw.Draw(image)
+                for x_min, y_min, x_max, y_max in boxes:
+                    draw.rectangle((round(x_min * width / 1000), round(y_min * height / 1000), round(x_max * width / 1000) - 1, round(y_max * height / 1000) - 1), fill=ImageColor.getrgb(box_color)[:3])
             image.save(output_path)
         except Exception as exc:
             result = {"status": "error", "width": width, "height": height, "color": resolved_color, "output_file": "", "error": str(exc)}
             self._update_tool_progress("error", "Error", result)
             self._set_status(f"Color frame creation failed: {exc}", kind="error")
             return result
-        settings = self._build_direct_image_settings(f'Created solid {resolved_color} image at {width}x{height}', width, height, prompt=f"A solid {resolved_color} image at {width}x{height}.")
+        boxes_text = f" with {len(boxes)} {box_color} box{'es' if len(boxes) > 1 else ''}" if boxes else ""
+        settings = self._build_direct_image_settings(f'Created solid {resolved_color} image at {width}x{height}{boxes_text}', width, height, prompt=f"A solid {resolved_color} image at {width}x{height}{boxes_text}.")
         media_record = self._record_direct_media(output_path, settings, is_image=True, audio_only=False, label="Color frame")
         result = {
             "status": "done",
@@ -3947,6 +3991,150 @@ class DeepyZeroTools:
         }
         self._update_tool_progress("done", "Done", result)
         self._set_status("Color frame created.", kind="tool")
+        return result
+
+    @assistant_tool(
+        display_name="Create Mask",
+        description="Create a black/white mask of the named objects in an image or video with Magic Mask (SAM3 keyword segmentation), and add it to WanGP galleries. White marks the objects; invert=true marks everything else. Use the returned media_id as image_mask or video_mask.",
+        parameters={
+            "media_id": {"type": "string", "description": "Source image or video ID."},
+            "keywords": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "description": "Objects to mask, e.g. [\"the woman\", \"the dog\"]."},
+            "invert": {"type": "boolean", "description": "Mask everything except the named objects. Defaults to false.", "required": False},
+            "video_length": {"type": ["integer", "string"], "description": "Videos only: mask just the start of the video, as a frame count or seconds such as \"5s\". Omit to mask the whole video.", "required": False},
+        },
+    )
+    def create_mask(self, media_id: str, keywords: list[str], invert: bool = False, video_length: int | str | None = None) -> dict[str, Any]:
+        from shared import magic_mask
+        from shared.utils.download import process_files_def
+
+        self._sync_recent_media()
+        source_media = self._resolve_media_record_input(media_id)
+        if source_media is None:
+            return {"status": "error", "media_id": str(media_id or "").strip(), "output_file": "", "error": "Unknown media id."}
+        media_type = source_media.get("media_type")
+        if media_type not in {"image", "video"}:
+            return {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": f"media_id must reference an image or video, not a {media_type or 'unknown media type'}."}
+        source_path = str(source_media.get("path", "")).strip()
+        max_time_seconds = None
+        if video_length is not None and media_type == "video":
+            text = str(video_length).strip().lower()
+            try:
+                max_time_seconds = float(text[:-1]) if text.endswith("s") else int(text) / get_video_info(source_path)[0]
+            except ValueError:
+                return {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": 'video_length must be a frame count or seconds such as "5s".'}
+        label = ", ".join(keywords)
+        self._set_status(f"Creating {'inverted ' if invert else ''}mask for {label}...", kind="tool")
+        self._update_tool_progress("running", "Masking", {"status": "running", "media_id": source_media.get("media_id", ""), "keywords": keywords, "invert": invert})
+        try:
+            process_files_def(**magic_mask.query_download_def())
+            if media_type == "image":
+                _, mask_image, _ = magic_mask.generate_image_mask(source_path, keywords, negative_mask=invert)
+                output_path = self._resolve_direct_output_path(f"{os.path.splitext(os.path.basename(source_path))[0]}_mask.png", True, False)
+                mask_image.save(output_path)
+            else:
+                output_dir = os.path.dirname(self._resolve_direct_output_path("mask.mp4", False, False))
+                output_path, _ = magic_mask.generate_video_mask(source_path, keywords, negative_mask=invert, output_dir=output_dir, max_time_seconds=max_time_seconds)
+        except Exception as exc:
+            result = {"status": "error", "media_id": source_media.get("media_id", ""), "output_file": "", "error": str(exc)}
+            self._update_tool_progress("error", "Error", result)
+            self._set_status(f"Mask creation failed: {exc}", kind="error")
+            return result
+        comments = f'{"Inverted mask" if invert else "Mask"} of {label} in "{os.path.basename(source_path)}"'
+        if media_type == "image":
+            width, height = mask_image.size
+            settings = self._build_direct_image_settings(comments, width, height, prompt=f"A black and white mask of {label}.")
+        else:
+            settings = self._build_deepy_settings(f"A black and white mask video of {label}.", comments)
+            self._update_video_metadata_fields(output_path, settings)
+        media_record = self._record_direct_media(output_path, settings, is_image=media_type == "image", audio_only=False, label=f"{media_type.capitalize()} mask")
+        result = {"status": "done", "media_id": "" if media_record is None else media_record.get("media_id", ""), "source_media_id": source_media.get("media_id", ""), "media_type": media_type, "keywords": keywords, "invert": invert, "output_file": output_path, "error": ""}
+        self._update_tool_progress("done", "Done", result)
+        self._set_status("Mask created.", kind="tool")
+        return result
+
+    @assistant_tool(
+        display_name="Image Channels",
+        description="Convert an image to RGB or RGBA, extract its color channels as grayscale PNGs, or combine grayscale channel images into an RGB/RGBA PNG. RGB to RGBA adds opaque alpha; it does not remove a background.",
+        parameters={
+            "operation": {"type": "string", "enum": ["convert", "extract", "combine"], "description": "convert, extract, or combine."},
+            "media_id": {"type": "string", "description": "Base image ID. Required for convert/extract; optional for combine if R, G, and B sources are supplied.", "required": False},
+            "mode": {"type": "string", "enum": ["RGB", "RGBA"], "description": "Output mode. convert defaults to RGBA; combine infers RGBA when an alpha source is present.", "required": False},
+            "channels": {"type": "array", "items": {"type": "string", "enum": ["R", "G", "B", "A"]}, "minItems": 1, "maxItems": 4, "uniqueItems": True, "description": "Channels to extract. Omit to extract every channel present.", "required": False},
+            "channel_sources": {"type": "object", "properties": {channel: {"type": "string", "description": f"8-bit grayscale image ID supplying {channel}."} for channel in "RGBA"}, "additionalProperties": False, "description": "For combine, grayscale image IDs that supply or replace selected channels. Their dimensions must match the base image or one another.", "required": False},
+            "background": {"type": "string", "description": "Required matte color when an image with alpha is converted or combined into RGB, e.g. #FFFFFF.", "required": False},
+        },
+        pause_runtime=False,
+    )
+    def image_channels(self, operation: str, media_id: str | None = None, mode: str | None = None, channels: list[str] | None = None, channel_sources: dict[str, str] | None = None, background: str | None = None) -> dict[str, Any]:
+        if self.session is None:
+            return {"status": "error", "output_files": [], "error": "Assistant session is not available."}
+        operation = str(operation or "").strip().lower()
+        if operation not in {"convert", "extract", "combine"}:
+            return {"status": "error", "output_files": [], "error": "operation must be convert, extract, or combine."}
+        if not isinstance(channel_sources, (dict, type(None))):
+            return {"status": "error", "output_files": [], "error": "channel_sources must be an object keyed by R, G, B, or A."}
+        if operation in {"convert", "extract"} and not str(media_id or "").strip():
+            return {"status": "error", "output_files": [], "error": "media_id is required for convert and extract."}
+        source, error = self._resolve_image_media(media_id, "media_id") if media_id else (None, None)
+        if error is not None:
+            return {**error, "output_files": []}
+        channel_records = {}
+        for channel, source_id in (channel_sources or {}).items():
+            if channel not in "RGBA" or not str(source_id or "").strip():
+                return {"status": "error", "output_files": [], "error": "channel_sources must use R, G, B, or A with a nonempty image ID."}
+            record, error = self._resolve_image_media(source_id, f"channel_sources.{channel}")
+            if error is not None:
+                return {**error, "output_files": []}
+            channel_records[channel] = record
+        source_paths = {str(record["path"]) for record in ([source] if source is not None else []) + list(channel_records.values())}
+        self._set_status("Processing image channels...", kind="tool")
+        self._update_tool_progress("running", "Processing", {"status": "running", "operation": operation})
+        output_paths = []
+        created_paths = []
+        try:
+            images = deepy_image_channels.render_image_channels(
+                operation, None if source is None else source["path"], mode, channels,
+                {channel: record["path"] for channel, record in channel_records.items()}, background,
+            )
+            origin = source or next(iter(channel_records.values()))
+            stem = os.path.splitext(os.path.basename(origin["path"]))[0]
+            for suffix, _image in images:
+                output_path = self._resolve_direct_output_path(f"{stem}_{suffix}.png", True, False)
+                if os.path.normcase(output_path) in {os.path.normcase(path) for path in source_paths} or output_path in output_paths or os.path.exists(output_path):
+                    raise ValueError("The output path already exists or matches an input image.")
+                output_paths.append(output_path)
+            for output_path, (_suffix, image) in zip(output_paths, images):
+                created_paths.append(output_path)
+                image.save(output_path, format="PNG")
+        except (OSError, ValueError, TypeError, StopIteration) as exc:
+            for output_path in created_paths:
+                if os.path.isfile(output_path):
+                    os.unlink(output_path)
+            result = {"status": "error", "operation": operation, "output_files": [], "error": str(exc)}
+            self._update_tool_progress("error", "Error", result)
+            self._set_status(f"Image channel processing failed: {exc}", kind="error")
+            return result
+        media_ids = []
+        for output_path, (suffix, image) in zip(output_paths, images):
+            comments = f'{operation.capitalize()} image channels from "{os.path.basename(origin["path"])}" ({suffix})'
+            settings = self._build_direct_media_settings(origin, comments, fallback_prompt=comments)
+            settings["resolution"] = f"{image.width}x{image.height}"
+            record = self._record_direct_media(output_path, settings, is_image=True, audio_only=False, label=f"Image {suffix.replace('_', ' ')}")
+            media_ids.append("" if record is None else record.get("media_id", ""))
+        result = {"status": "done", "operation": operation, "error": ""}
+        if operation == "extract":
+            result["channel_outputs"] = [
+                {"channel": suffix[-1], "output_file": path, "media_id": media_id}
+                for path, media_id, (suffix, _image) in zip(output_paths, media_ids, images)
+            ]
+        else:
+            result["color_mode"] = images[0][1].mode
+        if len(output_paths) == 1:
+            result.update(output_file=output_paths[0], media_id=media_ids[0])
+        else:
+            result.update(output_files=output_paths, media_ids=media_ids)
+        self._update_tool_progress("done", "Done", result)
+        self._set_status("Image channel processing finished.", kind="tool")
         return result
 
     @assistant_tool(
@@ -4547,7 +4735,95 @@ class DeepyZeroTools:
         },
         pause_runtime=False,
     )
-    def replace_audio(self, video_id: str, audio_id: str) -> dict[str, Any]:
+    def replace_audio(self, video_id: str = "", audio_id: str = "", *, audio_ids: list[str] | None = None, mode: str = "replace", include_video_audio: bool = False, gains_db: list[float] | None = None, output_extension: str | None = None, subtitle_tracks: list[dict] | None = None, include_video_subtitles: bool = True) -> dict[str, Any]:
+        if audio_ids is not None or subtitle_tracks is not None:
+            self._sync_recent_media()
+            if audio_ids is None:
+                audio_ids = []
+            if not isinstance(audio_ids, list) or (not audio_ids and mode != "copy"):
+                return {"status": "error", "error": "audio_ids must contain audio files for this mode."}
+            if mode == "copy" and not video_id:
+                return {"status": "error", "error": "copy requires a video_id."}
+            if subtitle_tracks and not video_id:
+                return {"status": "error", "error": "Subtitle tracks require a video_id."}
+            video_media = None
+            if video_id:
+                video_media, error_result = self._resolve_video_media(video_id, "video_id")
+                if error_result is not None:
+                    return error_result
+            audio_media = []
+            for index, source_id in enumerate(audio_ids):
+                source_media, error_result = self._resolve_audio_media(source_id, f"audio_ids[{index}]")
+                if error_result is not None:
+                    return error_result
+                audio_media.append(source_media)
+            video_path = str(video_media["path"]) if video_media else None
+            audio_paths = [str(source["path"]) for source in audio_media]
+            _, video_container = self._get_video_output_settings()
+            standalone_audio_codec = self._get_standalone_audio_output_codec()
+            requested_extension = str(output_extension or "").strip().lower().lstrip(".")
+            if video_media:
+                allowed_extensions = {"mkv"} if mode == "multitrack" else {"mp4", "mov", "mkv"}
+                if requested_extension and requested_extension not in allowed_extensions:
+                    return {"status": "error", "error": f"Video {mode} output_extension must be one of: {', '.join(sorted(allowed_extensions))}."}
+                if requested_extension:
+                    suffix = "." + requested_extension
+                elif mode == "multitrack":
+                    suffix = ".mkv"
+                else:
+                    suffix = deepy_video_tools.get_video_container_extension(video_container)
+            else:
+                allowed_extensions = {"m4a"} if mode == "multitrack" else {"wav", "mp3", "flac", "m4a"}
+                if requested_extension and requested_extension not in allowed_extensions:
+                    return {"status": "error", "error": f"Audio {mode} output_extension must be one of: {', '.join(sorted(allowed_extensions))}."}
+                if mode == "multitrack":
+                    suffix = ".m4a"
+                else:
+                    configured_extension = deepy_video_tools.get_audio_standalone_extension(standalone_audio_codec).lstrip(".")
+                    if requested_extension and requested_extension != configured_extension:
+                        standalone_audio_codec = {"wav": "wav", "mp3": "mp3_192", "flac": "flac", "m4a": "alac"}[requested_extension]
+                    suffix = deepy_video_tools.get_audio_standalone_extension(standalone_audio_codec)
+            base_path = video_path or audio_paths[0]
+            base_name = os.path.splitext(os.path.basename(base_path))[0]
+            output_path = self._resolve_direct_output_path(f"{base_name}_remux_{mode}{suffix}", False, not bool(video_media))
+            self._set_status("Remuxing Media...", kind="tool")
+            self._update_tool_progress("running", "Remuxing", {"status": "running", "mode": mode, "video_id": video_id, "audio_ids": audio_ids})
+            try:
+                output_path = deepy_video_tools.remux_media(audio_paths, output_path, mode=mode, video_path=video_path, include_video_audio=include_video_audio, gains_db=gains_db, audio_codec=self._get_video_audio_output_codec(), standalone_audio_codec=standalone_audio_codec, subtitle_tracks=subtitle_tracks, include_video_subtitles=include_video_subtitles)
+                source_media = video_media or audio_media[0]
+                comment = f"{mode.title()} media"
+                if audio_paths:
+                    comment += " from " + ", ".join(os.path.basename(path) for path in audio_paths)
+                if include_video_audio:
+                    comment += " with the original video soundtrack"
+                if subtitle_tracks:
+                    comment += f" with {len(subtitle_tracks)} subtitle track(s)"
+                settings = self._build_direct_media_settings(source_media, comment)
+                if video_media:
+                    self._update_video_metadata_fields(output_path, settings)
+                else:
+                    self._update_audio_metadata_fields(output_path, settings)
+                label = {"copy": "Remuxed Video", "mix": "Mixed Audio", "multitrack": "Multitrack Audio", "replace": "Video With Replaced Audio"}[mode]
+                # WanGP's embedded audio metadata writer currently supports WAV and MP3.
+                persist_metadata = bool(video_media) or os.path.splitext(output_path)[1].lower() in {".wav", ".mp3"}
+                media_record = self._record_direct_media(output_path, settings, is_image=False, audio_only=not bool(video_media), label=label, persist_metadata=persist_metadata)
+            except Exception as exc:
+                result = {"status": "error", "mode": mode, "output_file": "", "error": str(exc)}
+                self._update_tool_progress("error", "Error", result)
+                self._set_status(f"Media Remux Failed: {exc}", kind="error")
+                return result
+            result = {
+                "status": "done", "mode": mode,
+                "media_id": "" if media_record is None else media_record.get("media_id", ""),
+                "source_video_id": "" if video_media is None else video_media.get("media_id", ""),
+                "source_audio_ids": [source.get("media_id", "") for source in audio_media],
+                "audio_track_count": (sum(stream.get("codec_type") == "audio" for stream in ffmpeg.probe(video_path).get("streams", [])) if mode == "copy" else len(audio_paths) + int(include_video_audio) if mode == "multitrack" else 1),
+                "subtitle_track_count": (sum(stream.get("codec_type") == "subtitle" for stream in ffmpeg.probe(video_path).get("streams", [])) if video_path and include_video_subtitles else 0) + len(subtitle_tracks or []),
+                "output_file": output_path, "error": "",
+            }
+            self._update_tool_progress("done", "Done", result)
+            self._set_status("Media Remux Complete.", kind="tool")
+            return result
         self._sync_recent_media()
         video_media, error_result = self._resolve_video_media(video_id, "video_id")
         if error_result is not None:
@@ -4847,16 +5123,33 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="List Files",
-        description="List files directly inside a filesystem directory, optionally filtering by file extensions. Returns filenames, extensions, full paths, and byte sizes.",
+        description="List authorized roots or one directory using bounded, snapshot-backed pages. Continue with the same filters and cursor=next_cursor when has_more is true. Use rg for recursive searches.",
         parameters={
-            "path": {"type": "string", "description": "Existing directory path."},
-            "extensions": {"type": "array", "items": {"type": "string"}, "description": "Optional extensions such as ['png', 'mp4', 'wav'].", "required": False},
+            "path": {"type": "string", "description": "Authorized directory; omit to list roots.", "required": False, "default": ""},
+            "pattern": {"type": "string", "description": "Filename glob within one directory, such as *.mp4.", "required": False, "default": "*"},
+            "media_type": {"type": "string", "description": "Optional media filter.", "enum": ["all", "image", "video", "audio", "txt", "other"], "required": False, "default": "all"},
+            "limit": {"type": "integer", "description": "Entries per page, from 1 to 100.", "minimum": 1, "maximum": 100, "required": False, "default": PAGE_SIZE},
+            "cursor": {"type": "string", "description": "next_cursor from the previous page; keep filters unchanged.", "required": False},
+            "summary_only": {"type": "boolean", "description": "Return the stored count without entries.", "required": False, "default": False},
         },
         pause_runtime=False,
         requires_file_system=True,
     )
-    def list_files(self, path: str, extensions: list[str] | None = None) -> dict[str, Any]:
-        return deepy_filesystem.list_files(path, extensions, self._file_access_policy())
+    def list_files(self, path: str = "", pattern: str = "*", media_type: str = "all", limit: int = PAGE_SIZE, cursor: str | None = None, summary_only: bool = False) -> dict[str, Any]:
+        policy = self._file_access_policy()
+        if self.session is None:
+            if self._file_list_pages is None:
+                self._file_list_pages = ResultPages()
+            pages = self._file_list_pages
+        else:
+            signature = (policy.mode, policy.read_everywhere, tuple((alias, str(root)) for alias, root in policy.mounts))
+            if self.session.file_list_pages is None or self.session.file_list_policy_signature != signature:
+                if self.session.file_list_pages is not None:
+                    self.session.file_list_pages.close()
+                self.session.file_list_pages = ResultPages()
+                self.session.file_list_policy_signature = signature
+            pages = self.session.file_list_pages
+        return list_directory_page(pages, policy, path=path, pattern=pattern, media_type=media_type, limit=limit, cursor=cursor, summary_only=summary_only)
 
     @assistant_tool(
         display_name="Query File",
@@ -5066,6 +5359,7 @@ class DeepyZeroTools:
             if media_type == "image":
                 with Image.open(media_path) as image_handle:
                     width, height = image_handle.size
+                    color_details = deepy_image_channels.image_color_details(image_handle)
                 result = {
                     "status": "done",
                     "media_id": media_record.get("media_id", ""),
@@ -5082,11 +5376,13 @@ class DeepyZeroTools:
                     "audio_track_count": 0,
                     "sample_rate": None,
                     "channels": None,
+                    **color_details,
                     "error": "",
                 }
             elif media_type == "video":
                 fps, width, height, frame_count = get_video_info(media_path)
                 audio_track_count = int(extract_audio_tracks(media_path, query_only=True))
+                subtitle_streams = [stream for stream in ffmpeg.probe(media_path).get("streams", []) if stream.get("codec_type") == "subtitle"]
                 result = {
                     "status": "done",
                     "media_id": media_record.get("media_id", ""),
@@ -5101,6 +5397,8 @@ class DeepyZeroTools:
                     "duration_seconds": (float(frame_count) / float(fps)) if fps > 0 else None,
                     "has_audio": audio_track_count > 0,
                     "audio_track_count": audio_track_count,
+                    "subtitle_track_count": len(subtitle_streams),
+                    "subtitle_tracks": [{"codec": stream.get("codec_name", ""), "language": stream.get("tags", {}).get("language", ""), "title": stream.get("tags", {}).get("title", stream.get("tags", {}).get("handler_name", ""))} for stream in subtitle_streams],
                     "sample_rate": None,
                     "channels": None,
                     "error": "",
@@ -5336,7 +5634,20 @@ class DeepyZeroTools:
                 "answer": "",
                 "error": "Deepy vision inspection is not available.",
             }
-        return self._vision_query_callback(media_records[0] if len(media_records) == 1 else media_records, question, frame_no if media_inputs is None else None)
+        result = self._vision_query_callback(media_records[0] if len(media_records) == 1 else media_records, question, frame_no if media_inputs is None else None)
+        if isinstance(result, dict) and result.get("status") == "done":
+            image_details = []
+            for record in media_records:
+                if record.get("media_type") != "image" or not os.path.isfile(record.get("path", "")):
+                    continue
+                with Image.open(record["path"]) as image_handle:
+                    image_details.append({"media_id": record.get("media_id", ""), **deepy_image_channels.image_color_details(image_handle)})
+            if image_details:
+                result = dict(result)
+                result["source_image_details"] = image_details
+                if len(media_records) == 1:
+                    result.update({key: value for key, value in image_details[0].items() if key != "media_id"})
+        return result
 
     @assistant_tool(
         display_name="Inspect Video",
@@ -6245,20 +6556,15 @@ class AssistantEngine:
                 )
             )
             self.session.recorded_budget_events.clear()
-        user_text_normalized = re.sub(r"\s+", " ", str(user_text or "").strip().lower())
-        interruption_query = (
-            "interrupt" in user_text_normalized
-            or "resume" in user_text_normalized
-            or "keep on" in user_text_normalized
-            or "keep going" in user_text_normalized
-            or "what were you doing" in user_text_normalized
-        )
-        if interruption_query and len(self.session.interruption_history) > 0:
+        # Requests interrupted since the last completed turn: shown until a turn completes after seeing them.
+        if len(self.session.interruption_history) > 0:
             lines = [
                 "<wangp_runtime_update>",
                 "Hidden WanGP runtime state. This is environment metadata, not a user message.",
-                "Interrupted requests recorded in this chat:",
+                "Interrupted requests since the last completed answer, with their completed steps.",
             ]
+            for entry in self.session.interruption_history:
+                entry["shown"] = True
             entries = list(self.session.interruption_history[-12:])
             retained_blocks = []
             retained_chars = 0
@@ -8194,6 +8500,9 @@ class AssistantEngine:
         if steering_after_action:
             self._set_status("Steering accepted. Applying the new instructions at the action boundary...", kind="queued")
         result = self._virtualize_tool_result(result)
+        if result.get("status") == "interrupted" and not self.session.interrupt_requested:
+            with self.session.turn_lock:
+                request_assistant_interrupt(self.session)
         self._log(f"Tool result: {_json_dumps(result)}")
         # This ordered block update includes final status and attachments. Full transcript
         # recovery remains available through the publication queue and client sync request.
@@ -9190,3 +9499,5 @@ class AssistantEngine:
             if self.debug_enabled:
                 self._log("Clearing interruption notice after a successful follow-up turn.")
             self.session.interruption_notice = ""
+        if turn_completed and not self.session.interrupt_requested:
+            self.session.interruption_history[:] = [entry for entry in self.session.interruption_history if not entry.get("shown")]

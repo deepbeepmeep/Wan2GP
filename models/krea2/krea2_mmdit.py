@@ -8,6 +8,7 @@ from einops import rearrange
 from torch import Tensor
 
 from shared.attention import pay_attention
+from shared.utils.lora_mapping import convert_lora_keys
 
 
 def rope(pos: Tensor, dim: int, theta: float = 1e4, ntk: float = 1.0) -> Tensor:
@@ -441,7 +442,7 @@ class SingleStreamBlock(nn.Module):
 
 class SingleStreamDiT(nn.Module):
     def preprocess_loras(self, model_type, sd):
-        """Map common Diffusers/Kohya Krea2 LoRA names to this model."""
+        """Map adapter names, DoRA magnitudes and linear LoKr factors to MMGP."""
         replacements = (
             ("final_layer", "last"),
             ("img_in", "first"),
@@ -499,7 +500,15 @@ class SingleStreamDiT(nn.Module):
                 key = key.replace(source, target)
             return key
 
-        return {map_key(key): value for key, value in sd.items()}
+        mapped = {}
+        for key, value in sd.items():
+            key = map_key(key)
+            if key.endswith(".magnitude"):
+                # AI Toolkit stores output-row magnitudes as [out]; MMGP uses [out, 1].
+                key = key.removesuffix(".magnitude") + ".dora_scale"
+                value = value.reshape(-1, 1)
+            mapped[key] = value
+        return convert_lora_keys(mapped, dict(self.named_modules()), compose_lokr=True)
 
     def __init__(self, config: SingleMMDiTConfig):
         super().__init__()

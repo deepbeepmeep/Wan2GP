@@ -36,6 +36,7 @@ from .assets import (
     QWEN35_VARIANT_SPECS,
     QWEN35_VISION_FILENAME,
     QWEN38_VARIANT_27B,
+    QWEN38_VARIANT_9B,
 )
 from .qwen3_5 import load_qwen35_model_class
 from .progress import EnhancementProgress
@@ -45,6 +46,8 @@ UPSTREAM_MODELING_FILENAME = "modeling_qwen3_5.py"
 enhancer_quantization_GGUF = "gguf"
 enhancer_quantization_GGUF_Q3 = "gguf_q3"
 enhancer_quantization_GGUF_Q2 = "gguf_q2"
+enhancer_quantization_GGUF_PTQ1 = "gguf_ptq1"
+enhancer_quantization_GGUF_Q8 = "gguf_q8"
 enhancer_quantization_SAFETENSORS = "safetensors"
 enhancer_quantization_QUANTO_INT8 = "quanto_int8"
 QWEN35_GGUF_LLAMACPP_ENV = "WGP_GGUF_LLAMACPP_CUDA"
@@ -67,6 +70,8 @@ QWEN35_VARIANT_ALIASES = {
     "27b": QWEN38_VARIANT_27B,
     "qwen3.8-27b": QWEN38_VARIANT_27B,
     "qwen3.8-27b uncensored": QWEN38_VARIANT_27B,
+    "qwen3.8-9b": QWEN38_VARIANT_9B,
+    "qwen3.8-9b uncensored": QWEN38_VARIANT_9B,
 }
 
 
@@ -82,12 +87,12 @@ def get_qwen35_assets_dir_name(variant: str | None = None) -> str:
 
 
 def get_qwen35_prompt_enhancer_variant(model_no) -> str:
-    return {3: QWEN35_VARIANT_4B, 4: QWEN35_VARIANT_9B, 5: QWEN38_VARIANT_27B}[int(model_no)]
+    return {3: QWEN35_VARIANT_4B, 4: QWEN35_VARIANT_9B, 5: QWEN38_VARIANT_27B, 6: QWEN38_VARIANT_9B}[int(model_no)]
 
 
 def get_qwen35_quantization(backend: str, variant: str | None = None) -> str:
     spec = get_qwen35_variant_spec(variant)
-    if backend in (enhancer_quantization_GGUF_Q2, enhancer_quantization_GGUF_Q3):
+    if backend in (enhancer_quantization_GGUF_Q2, enhancer_quantization_GGUF_Q3, enhancer_quantization_GGUF_PTQ1, enhancer_quantization_GGUF_Q8):
         quantization = backend.rsplit("_", 1)[-1]
         if f"text_gguf_{quantization}_filename" not in spec:
             raise ValueError(f"{spec['display_name']} does not provide a GGUF {quantization.upper()} checkpoint.")
@@ -100,6 +105,8 @@ def _get_qwen35_gguf_filename(spec: dict, backend: str) -> str:
         enhancer_quantization_GGUF: "text_gguf_filename",
         enhancer_quantization_GGUF_Q3: "text_gguf_q3_filename",
         enhancer_quantization_GGUF_Q2: "text_gguf_q2_filename",
+        enhancer_quantization_GGUF_PTQ1: "text_gguf_ptq1_filename",
+        enhancer_quantization_GGUF_Q8: "text_gguf_q8_filename",
     }[backend]
     return spec[key]
 
@@ -153,15 +160,23 @@ def get_qwen35_modeling_path() -> str:
 
 
 def ensure_qwen35_prompt_enhancer_assets(process_files_def, backend: str = enhancer_quantization_QUANTO_INT8, variant: str | None = None, speculative_decoding: bool = False):
+    from .block_draft import BLOCK_DRAFT_METHODS, ensure_block_draft_assets
+    if speculative_decoding in BLOCK_DRAFT_METHODS:
+        ensure_block_draft_assets(process_files_def, speculative_decoding, variant, backend)
+        speculative_decoding = False
     spec = get_qwen35_variant_spec(variant)
     backend = get_qwen35_quantization(backend, variant=variant)
     repo_subfolder = spec.get("repo_subfolder", "")
     qwen35_shared_files = list(spec["root_files"])
     if spec["root_repo"] == spec.get("gguf_repo"):
-        checkpoint_filename = spec["text_int8_filename"]
-        if backend in (enhancer_quantization_GGUF, enhancer_quantization_GGUF_Q3, enhancer_quantization_GGUF_Q2):
-            checkpoint_filename = _get_qwen35_gguf_filename(spec, backend)
-        qwen35_shared_files += [spec["vision_filename"], checkpoint_filename]
+        gguf_backend = backend in (enhancer_quantization_GGUF, enhancer_quantization_GGUF_Q3, enhancer_quantization_GGUF_Q2, enhancer_quantization_GGUF_PTQ1, enhancer_quantization_GGUF_Q8)
+        checkpoint_filename = _get_qwen35_gguf_filename(spec, backend) if gguf_backend else spec["text_int8_filename"]
+        qwen35_shared_files.append(spec["vision_filename"])
+        checkpoint_folder = spec.get("gguf_repo_subfolder", repo_subfolder)
+        if checkpoint_folder == repo_subfolder:
+            qwen35_shared_files.append(checkpoint_filename)
+        else:
+            process_files_def(repoId=spec["gguf_repo"], sourceFolderList=[checkpoint_folder], targetFolderList=[spec["assets_dir_name"]], fileList=[[checkpoint_filename]])
         if speculative_decoding:
             mtp_filename = spec.get("text_gguf_q3_mtp_filename" if backend == enhancer_quantization_GGUF_Q3 else "text_mtp_filename")
             if mtp_filename:
@@ -171,11 +186,13 @@ def ensure_qwen35_prompt_enhancer_assets(process_files_def, backend: str = enhan
         download_def["targetFolderList"] = [spec["assets_dir_name"]]
     process_files_def(**download_def)
     if spec["root_repo"] != spec.get("gguf_repo"):
-        if backend not in (enhancer_quantization_GGUF, enhancer_quantization_GGUF_Q3, enhancer_quantization_GGUF_Q2):
+        if backend not in (enhancer_quantization_GGUF, enhancer_quantization_GGUF_Q3, enhancer_quantization_GGUF_Q2, enhancer_quantization_GGUF_PTQ1, enhancer_quantization_GGUF_Q8):
             raise ValueError(f"{spec['display_name']} supports only the GGUF backend.")
         gguf_files = [spec["vision_filename"], _get_qwen35_gguf_filename(spec, backend)]
         if speculative_decoding and backend == enhancer_quantization_GGUF_Q3:
             gguf_files.append(spec["text_gguf_q3_mtp_filename"])
+        if speculative_decoding and backend == enhancer_quantization_GGUF_PTQ1:
+            gguf_files.append(spec["text_gguf_ptq1_mtp_filename"])
         process_files_def(repoId=spec["gguf_repo"], sourceFolderList=[spec.get("gguf_repo_subfolder", "")], fileList=[gguf_files])
     if spec.get("text_repo") and spec.get("text_required_files"):
         process_files_def(repoId=spec["text_repo"], sourceFolderList=[repo_subfolder], fileList=[list(spec["text_required_files"])])
@@ -382,6 +399,10 @@ def alias_qwen35_text_embedding_for_mmgp(text_model: torch.nn.Module) -> torch.n
     embedding_model.weight = source_embedding.weight
     for name, buffer in source_embedding._buffers.items():
         embedding_model._buffers[name] = buffer
+    if hasattr(source_embedding, "prism_transform"):
+        from shared.qtypes.prism import PrismHadamard
+        transform = source_embedding.prism_transform
+        embedding_model.prism_transform = PrismHadamard(transform.signs, transform.inverse, transform.grouped_shape)
     if hasattr(source_embedding, "_gguf_default_dtype"):
         embedding_model._gguf_default_dtype = source_embedding._gguf_default_dtype
     embedding_model.eval()
@@ -1127,6 +1148,8 @@ __all__ = [
     "enhancer_quantization_GGUF",
     "enhancer_quantization_GGUF_Q3",
     "enhancer_quantization_GGUF_Q2",
+    "enhancer_quantization_GGUF_PTQ1",
+    "enhancer_quantization_GGUF_Q8",
     "enhancer_quantization_SAFETENSORS",
     "enhancer_quantization_QUANTO_INT8",
     "QWEN35_TEXT_GGUF_FILENAME",

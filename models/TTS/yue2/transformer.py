@@ -5,6 +5,7 @@ from dataclasses import replace
 import torch
 from torch import nn
 import torch.nn.functional as F
+from mmgp import offload
 
 from shared.attention import pay_attention
 from shared.llm_engines.nanovllm.models.qwen3 import Qwen3ForCausalLM
@@ -145,6 +146,10 @@ class AcousticBackbone(nn.Module):
 class YuE2Acoustic(nn.Module):
     _offload_hooks = ["synthesize"]
 
+    def preprocess_loras(self, model_type, sd):
+        # Native YuE2 adapters omit the weight suffix required by MMGP.
+        return {key + ".weight" if key.endswith((".lora_A", ".lora_B")) else key: value for key, value in sd.items()}
+
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -157,7 +162,7 @@ class YuE2Acoustic(nn.Module):
         self.engine = "legacy"
         self.abort_fn = lambda: False
 
-    def forward(self, state_list, raw_t, cache, cos, sin, position_embedding):
+    def forward(self, state_list, raw_t, cache, cos, sin, position_embedding, hum_features=None):
         state = state_list.pop()
         t = torch.sigmoid(raw_t.to(dtype=state.dtype))
         shift = self.config.timestep_shift
@@ -165,7 +170,9 @@ class YuE2Acoustic(nn.Module):
         x = self.vae2llm(F.pad(state, (0, 0, 1, 1))[None])
         del state
         x.add_(self.time_embedder(t.reshape(1))[None]).add_(position_embedding)
-        for layer, layer_cache in zip(self.model.layers, cache):
+        for index, (layer, layer_cache) in enumerate(zip(self.model.layers, cache)):
+            if hum_features is not None and index in hum_features:
+                x.add_(hum_features[index])
             x_list = [x]
             x = None
             x = layer(x_list, layer_cache, cos, sin, self.engine)
@@ -176,22 +183,23 @@ class YuE2Acoustic(nn.Module):
         return self.llm2vae(self.model.norm(x_list))[0, 1:-1]
 
     @torch.inference_mode()
-    def synthesize(self, noise, cache_list, ar_length, steps, report):
+    def synthesize(self, noise, cache_list, ar_length, steps, report, hum_features=None):
         cache = cache_list.pop()
         state = noise.to(device="cuda", dtype=self.vae2llm.weight.dtype)
         length = len(state) + 2
         positions = torch.arange(ar_length, ar_length + length, device=state.device)[None]
         cos, sin = self.rotary(positions)
         pos = self.latent_pos_embed(torch.arange(length, device=state.device))[None]
-        raw_steps = torch.logit(torch.arange(2 * steps, 0, -1, dtype=torch.float64) / (2 * steps)).clamp(-20, 20).to(state.device)
+        raw_steps = torch.logit(torch.arange(2 * steps, 0, -1, dtype=torch.float64, device="cpu") / (2 * steps)).clamp(-20, 20).to(state.device)
         try:
             for step in range(steps):
+                offload.set_step_no_for_lora(self, step)
                 # The integrator retains state, but transfers ownership of the midpoint.
-                first = self([state], raw_steps[2 * step], cache, cos, sin, pos)
+                first = self([state], raw_steps[2 * step], cache, cos, sin, pos, hum_features)
                 first.div_(2 * steps)
                 mid_list = [state - first]
                 del first
-                state.sub_(self(mid_list, raw_steps[2 * step + 1], cache, cos, sin, pos).div_(steps))
+                state.sub_(self(mid_list, raw_steps[2 * step + 1], cache, cos, sin, pos, hum_features).div_(steps))
                 report(step)
             return state.float().cpu()
         finally:

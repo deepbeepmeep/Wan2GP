@@ -194,6 +194,10 @@ class LongCatModel:
                 self.audio_encoder.eval().requires_grad_(False)
                 self.audio_feature_extractor = AutoFeatureExtractor.from_pretrained(whisper_folder, local_files_only=True)
             else:
+                from models.wan.multitalk.assets import query_download_def
+                from shared.utils.download import process_files_def_if_needed
+
+                process_files_def_if_needed(query_download_def())
                 wav2vec_folder = fl.locate_folder("chinese-wav2vec2-base")
                 self.audio_encoder_name = "wav2vec2"
                 self.audio_encoder = Wav2Vec2ModelWrapper(wav2vec_folder)

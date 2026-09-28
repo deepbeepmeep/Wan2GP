@@ -1,3 +1,4 @@
+from shared.utils.media_control import inference_checkpoint
 import logging
 from typing import Optional
 
@@ -241,7 +242,9 @@ class Encoder1D(nn.Module):
         # downsampling
         hs = [self.conv_in(x)]
         for i_level in range(self.num_layers):
+            inference_checkpoint()
             for i_block in range(self.num_res_blocks):
+                inference_checkpoint()
                 h = self.down[i_level].block[i_block](hs[-1])
                 if len(self.down[i_level].attn) > 0:
                     h = self.down[i_level].attn[i_block](h)
@@ -332,7 +335,9 @@ class Decoder1D(nn.Module):
 
         # upsampling
         for i_level in reversed(range(self.num_layers)):
+            inference_checkpoint()
             for i_block in range(self.num_res_blocks + 1):
+                inference_checkpoint()
                 h = self.up[i_level].block[i_block](h)
                 if len(self.up[i_level].attn) > 0:
                     h = self.up[i_level].attn[i_block](h)

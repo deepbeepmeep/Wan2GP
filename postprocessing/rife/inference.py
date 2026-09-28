@@ -29,7 +29,6 @@ def process_frames(model, device, frames, multiplier, *, previous_last_frame=Non
     total = frames.shape[1] + int(prefix)
     pos = 0
     last_report = -float("inf")
-    last_abort_check = -float("inf")
 
     def read(index):
         if prefix and index == 0:
@@ -37,12 +36,7 @@ def process_frames(model, device, frames, multiplier, *, previous_last_frame=Non
         return get_frame(frames, index - int(prefix))
 
     def cancelled():
-        nonlocal last_abort_check
-        now = time.monotonic()
-        if abort_callback is None or now - last_abort_check < 1 / 3:
-            return False
-        last_abort_check = now
-        return abort_callback()
+        return abort_callback is not None and abort_callback()
 
     if cancelled():
         return None

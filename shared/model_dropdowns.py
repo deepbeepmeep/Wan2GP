@@ -66,7 +66,11 @@ class DropdownDeps:
 
 def compact_name(family_name, model_name):
     if model_name.startswith(family_name):
-        return model_name[len(family_name):].strip()
+        suffix = model_name[len(family_name):]
+        version = family_name.rsplit(" ", 1)[-1]
+        if suffix.startswith(".") and version.isdigit():
+            return version + suffix
+        return suffix.strip()
     return model_name
 
 

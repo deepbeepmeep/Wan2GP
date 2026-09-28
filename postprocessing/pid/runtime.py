@@ -1,3 +1,5 @@
+from shared.utils.media_control import checkpoint_modules
+from shared.utils.media_control import controlled_model_loading, loading_callback
 import gc
 import os
 from contextlib import nullcontext
@@ -476,7 +478,8 @@ class PiDUpsampler:
         input_ids = caption_token["input_ids"].to(device)
         attention_mask = caption_token["attention_mask"].to(device)
         caption_token = None
-        caption_embs = self.text_encoder(input_ids, attention_mask)[0]
+        with checkpoint_modules(self.text_encoder.layers):
+            caption_embs = self.text_encoder(input_ids, attention_mask)[0]
         select_index = [0] + list(range(-_MODEL_MAX_LENGTH + 1, 0))
         caption_embs = caption_embs[:, select_index].to(dtype=self.dtype)
         del input_ids, attention_mask
@@ -500,7 +503,7 @@ class PiDUpsampler:
 
     def encode_lq_image(self, lq_image):
         autocast_ctx = torch.autocast(device_type="cuda", dtype=self.dtype) if lq_image.device.type == "cuda" else nullcontext()
-        with autocast_ctx:
+        with autocast_ctx, checkpoint_modules(module for module in self.vae.modules() if not module._modules):
             lq_image = lq_image.to(dtype=self.dtype)
             if self.backbone == "qwen":
                 latent = self.vae.encode(lq_image.unsqueeze(2)).latent_dist.mode()
@@ -747,6 +750,7 @@ class PiDUpsamplerSession:
         self.persistent_models = bool(persistent_models)
         self.attention_mode = attention_mode
 
+    @controlled_model_loading
     def ensure_loaded(self):
         self._runtime.load(self.backbone, init_pipe=self.init_pipe, profile=self.profile, dtype=self.dtype, ckpt_types=self.ckpt_types, version=self.version)
 
@@ -803,7 +807,7 @@ class PiDRuntime:
         profile_no = init_pipe(pipe, kwargs, profile)
         _apply_pid_offload_budgets(pipe, kwargs)
         kwargs["pinnedMemory"] = False
-        self.offloadobj = offload.profile(pipe, profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=dtype, verboseLevel=-1, **kwargs)
+        self.offloadobj = offload.profile(pipe, loading_callback=loading_callback(), profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=dtype, verboseLevel=-1, **kwargs)
         offload_registry.register_offloadobj("PiD", self.offloadobj, self.release)
         self.backbone = backbone
         self.profile = profile

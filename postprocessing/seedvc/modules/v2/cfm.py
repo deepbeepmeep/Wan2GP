@@ -1,3 +1,4 @@
+from shared.utils.media_control import current_control, inference_checkpoint
 import torch
 from tqdm import tqdm
 
@@ -73,7 +74,11 @@ class CFM(torch.nn.Module):
         prompt_x = torch.zeros_like(x)
         prompt_x[..., :prompt_len] = prompt[..., :prompt_len]
         x[..., :prompt_len] = 0
+        control = current_control()
+        if control is not None:
+            control.send_cmd("progress", [(0, len(t_span) - 1), "SeedVC Denoising", len(t_span) - 1])
         for step in tqdm(range(1, len(t_span))):
+            inference_checkpoint()
             if random_voice:
                 cfg_dphi_dt = self.estimator(
                     torch.cat([x, x], dim=0),
@@ -128,6 +133,8 @@ class CFM(torch.nn.Module):
             if step < len(t_span) - 1:
                 dt = t_span[step + 1] - t
             x[:, :, :prompt_len] = 0
+            if control is not None:
+                control.send_cmd("progress", [(step, len(t_span) - 1), "SeedVC Denoising", len(t_span) - 1])
 
         return x
 

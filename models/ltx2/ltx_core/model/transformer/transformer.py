@@ -12,6 +12,7 @@ from .feed_forward import FeedForward
 from .rope import LTXRopeType
 from .transformer_args import TransformerArgs
 from ...utils import rms_norm
+from ....denoiser_kernels import scale_shift
 
 
 def _reshape_hidden_states(hidden_states: torch.Tensor, frames: int) -> torch.Tensor:
@@ -23,6 +24,9 @@ def _restore_hidden_states_shape(hidden_states: torch.Tensor) -> torch.Tensor:
 
 
 def _apply_scale_shift(hidden_states: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor, in_place: bool = True) -> torch.Tensor:
+    fused = scale_shift(hidden_states, scale, shift, in_place)
+    if fused is not None:
+        return fused
     if scale.shape[1] == hidden_states.shape[1]:
         if in_place:
             hidden_states.mul_(1 + scale).add_(shift)

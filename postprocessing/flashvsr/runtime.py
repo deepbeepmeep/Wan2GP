@@ -2,6 +2,7 @@
 # I am sure you are a nice person and as you copy this code, you will give me officially proper credits:
 # Please link to https://github.com/deepbeepmeep/Wan2GP and @deepbeepmeep on twitter  
 from __future__ import annotations
+from shared.utils.media_control import controlled_model_loading, loading_callback
 
 import gc
 import math
@@ -448,6 +449,7 @@ class FlashVSRRuntime:
         self.timestep_mod: torch.Tensor | None = None
         self.profile = None
 
+    @controlled_model_loading
     def load(self, paths: FlashVSRPaths, variant: str, profile, init_pipe) -> None:
         require_sparge_attention()
         variant = variant or FLASHVSR_VARIANT_TINY_LONG
@@ -482,7 +484,7 @@ class FlashVSRRuntime:
         kwargs = {"coTenantsMap": FLASHVSR_COTENANTS_MAP}
         profile_no = init_pipe(pipe, kwargs, profile)
         kwargs["pinnedMemory"] = False
-        self.offloadobj = offload.profile(pipe, profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=self.dtype, verboseLevel=-1, **kwargs)
+        self.offloadobj = offload.profile(pipe, loading_callback=loading_callback(), profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=self.dtype, verboseLevel=-1, **kwargs)
         offload_registry.register_offloadobj("FlashVSR", self.offloadobj, self.release)
         log_sparse_backend()
 

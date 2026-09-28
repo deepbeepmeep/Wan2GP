@@ -128,7 +128,7 @@ Properties set in `{...}` are remembered for that speaker and reused when the sa
 
 ## Voice References
 
-The voice dropdown uses SeedVC for references. `Speaker 1 reference using SeedVC` applies the first audio reference. `Two Speakers references using SeedVC` applies the first reference to Speaker 1 and the second reference to Speaker 2. Additional speakers are supported, but only the first two can use uploaded reference audio.
+The voice dropdown uses SeedVC for references. `Speaker 1 reference using SeedVC` applies the first audio reference. `Two Speakers references using SeedVC` applies the first reference to Speaker 1 and the second reference to Speaker 2, and `Three Speakers references using SeedVC` adds the third reference for Speaker 3. Additional speakers are supported, but only the first three can use uploaded reference audio.
 """
 
 DRAMABOX_INFOS = """
@@ -154,7 +154,7 @@ Her voice breaks into a brittle laugh, "Hahaha, I should have left when I had th
 
 ## Dialogue
 
-Use `Speaker N:` blocks for dialogue. Any number of speakers is supported. Speaker 1 and Speaker 2 can use uploaded voice references; other speakers reuse the last 10 seconds of their first generated segment as their reference for later segments.
+Use `Speaker N:` blocks for dialogue. Any number of speakers is supported. Speakers 1 to 3 can use uploaded voice references; other speakers reuse the last 10 seconds of their first generated segment as their reference for later segments.
 
 ```text
 Speaker 1:
@@ -172,6 +172,30 @@ Use the voice reference mode to condition on a short reference clip. DramaBox us
 
 Enable `Remove Unexpected Words` to trim generated words at the beginning of each segment when Whisper alignment can match them against the text inside double quotes. Segments without complete double quotes are left unchanged.
 """
+
+
+SCENEMA_OVERVIEW_INFOS = """Generate expressive speech from text with performance cues, or from Scenema `<speak>` XML, including dialogues with any number of speakers. Put a cue such as `[Soft, close to the microphone]` before each sentence, and define each speaker's voice with properties such as `Speaker 1{voice="...", gender="female"}:`.
+
+- **Text or <speak> XML:** voices come only from the prompt descriptions.
+- **Speaker 1 / Two Speakers / Three Speakers references using SeedVC:** after generation, SeedVC converts the speech of Speakers 1 to 3 to the matching uploaded reference voice (upload order). Other speakers keep their generated voice, stabilized across their turns. **SeedVC Steps** and **SeedVC CFG Rate** trade conversion speed against fidelity to the reference.
+
+**Pace** scales the time planned for each chunk: higher values give slower, more spacious delivery. Max Duration caps the output, and Early Stop returns the chunks already completed. See the prompt help for the full cue, property and XML syntax."""
+
+SCENEMA_DEEPY_INFOS = "Speech or dialogue from `prompt`: `[cue]` before sentences, `Speaker N{voice=\"...\", gender=\"male\"}:` blocks, or Scenema `<speak>` XML. `audio_prompt_type`: empty = voices from descriptions; `A2` / `AB2` / `ABD2` convert Speakers 1 / 1-2 / 1-3 to `audio_guide` / `audio_guide2` / `audio_guide3` with SeedVC. `custom_settings.pace` (default 1.5) slows or speeds delivery. Max duration caps output."
+
+SCENEMA_DEEPY_PROMPT_INFOS = "One performance cue in square brackets before each sentence, e.g. '[Soft, close to the microphone] The lights are on.' Dialogue: 'Speaker 1{voice=\"A tired older man\", gender=\"male\"}:' then cued lines; properties persist for that speaker. Keep spoken words outside brackets."
+
+DRAMABOX_OVERVIEW_INFOS = """Generate dramatic, expressive speech, including whispers, laughter and emotional reactions, from scene-style prompts: a compact voice or delivery description followed by the spoken words in double quotes. Every line becomes its own audio segment, and `Speaker N:` blocks create dialogues with any number of speakers.
+
+- **Text prompt:** voices come from the descriptions; a speaker's later segments reuse their first generated segment as a voice reference.
+- **Speaker 1 / 1 and 2 / 1, 2 and 3 voice references:** Speakers 1 to 3 follow the matching uploaded voice (upload order), within a 10-second reference budget.
+- **Remove Unexpected Words:** DramaBox sometimes adds invented words at the start of a segment; this option uses Whisper to trim them when the segment's quoted text can be matched.
+
+**Target Duration** of 0 plans each segment from its text; **Auto Duration Multiplier** stretches those estimates. CFG, STG and Guidance Rescale control how strictly the audio follows the prompt, and the negative prompt lists sounds to avoid. Early Stop returns the segments already completed."""
+
+DRAMABOX_DEEPY_INFOS = "Expressive speech from `prompt` lines: voice/delivery description then quoted words; `Speaker N:` blocks for dialogue. `audio_prompt_type`: empty = voices from descriptions; `A` / `AB` / `ABD` condition Speakers 1 / 1-2 / 1-3 on `audio_guide` / `audio_guide2` / `audio_guide3`; add `0` (Remove Unexpected Words) to trim invented words at segment starts. `duration_seconds` 0 = automatic."
+
+DRAMABOX_DEEPY_PROMPT_INFOS = "Each line: compact voice/delivery description, then the words in double quotes, e.g. 'A tired woman speaks close to the microphone, \"I waited until the hallway went quiet.\"' Actions and sounds go outside the quotes, never alone on a line. Dialogue: 'Speaker 1:' block headers."
 
 
 def _get_scenema_model_def():
@@ -200,20 +224,25 @@ def _get_scenema_model_def():
         "any_audio_prompt": True,
         "audio_prompt_choices": True,
         "audio_prompt_type_sources": {
-            "selection": ["", "A2", "AB2"],
+            "selection": ["", "A2", "AB2", "ABD2"],
             "labels": {
                 "": "Text or <speak> XML",
                 "A2": "Speaker 1 reference using SeedVC",
                 "AB2": "Two Speakers references using SeedVC",
+                "ABD2": "Three Speakers references using SeedVC",
             },
-            "letters_filter": "AB2",
+            "letters_filter": "ABD2",
             "custom_flags": {"2": "SeedVC"},
             "default": "",
         },
         "audio_guide_label": "Speaker 1 reference voice (optional for multi-speaker)",
         "audio_guide2_label": "Speaker 2 reference voice (optional)",
+        "audio_guide3_label": "Speaker 3 reference voice (optional)",
         "custom_settings": [one.copy() for one in SCENEMA_CUSTOM_SETTINGS],
+        "infos": SCENEMA_OVERVIEW_INFOS,
         "prompt_infos": SCENEMA_INFOS,
+        "deepy_infos": SCENEMA_DEEPY_INFOS,
+        "deepy_prompt_infos": SCENEMA_DEEPY_PROMPT_INFOS,
         "prompt_description": "Speech text or Scenema <speak> XML",
         "text_prompt_enhancer_instructions": SCENEMA_SPEECH_PROMPT,
         "text_prompt_enhancer_instructions1": SCENEMA_DIALOGUE_PROMPT,
@@ -264,20 +293,25 @@ def _get_dramabox_model_def():
         "any_audio_prompt": True,
         "audio_prompt_choices": True,
         "audio_prompt_type_sources": {
-            "selection": ["", "A", "AB"],
+            "selection": ["", "A", "AB", "ABD"],
             "labels": {
                 "": "Text prompt",
                 "A": "Speaker 1 voice reference",
                 "AB": "Speaker 1 and 2 voice references",
+                "ABD": "Speaker 1, 2 and 3 voice references",
             },
-            "letters_filter": "AB",
+            "letters_filter": "ABD",
             "default": "",
         },
         "audio_prompt_type_custom_option": {"label": "Remove Unexpected Words", "flag": "0"},
         "audio_guide_label": "Speaker 1 reference voice (optional)",
         "audio_guide2_label": "Speaker 2 reference voice (optional)",
+        "audio_guide3_label": "Speaker 3 reference voice (optional)",
         "custom_settings": [one.copy() for one in DRAMABOX_CUSTOM_SETTINGS],
+        "infos": DRAMABOX_OVERVIEW_INFOS,
         "prompt_infos": DRAMABOX_INFOS,
+        "deepy_infos": DRAMABOX_DEEPY_INFOS,
+        "deepy_prompt_infos": DRAMABOX_DEEPY_PROMPT_INFOS,
         "prompt_description": "DramaBox scene prompt",
         "text_prompt_enhancer_instructions": DRAMABOX_SPEECH_PROMPT,
         "text_prompt_enhancer_instructions1": DRAMABOX_DIALOGUE_PROMPT,
@@ -460,6 +494,10 @@ class family_handler:
                 return "DramaBox Audio Speaker 2 reference mode requires a second reference audio file."
             if "B" in audio_prompt_type and not re.search(r"(?im)^\s*Speaker\s*2\s*(?:\{[^\n{}]*\})?\s*:", str(inputs.get("prompt", "") or "")):
                 return "DramaBox Audio two-reference mode requires a Speaker 2: block."
+            if "D" in audio_prompt_type and inputs.get("audio_guide3") is None:
+                return "DramaBox Audio Speaker 3 reference mode requires a third reference audio file."
+            if "D" in audio_prompt_type and not re.search(r"(?im)^\s*Speaker\s*3\s*(?:\{[^\n{}]*\})?\s*:", str(inputs.get("prompt", "") or "")):
+                return "DramaBox Audio three-reference mode requires a Speaker 3: block."
             custom_settings = {"duration_multiplier": float(custom_settings.get("duration_multiplier", DRAMABOX_DEFAULT_CUSTOM_SETTINGS["duration_multiplier"]))}
             inputs["alt_scale"] = alt_scale
             inputs["custom_settings"] = custom_settings
@@ -633,7 +671,7 @@ class family_handler:
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
         if _is_dramabox(base_model_type):
             audio_prompt_type = str(ui_defaults.get("audio_prompt_type", "") or "").upper()
-            ui_defaults["audio_prompt_type"] = ("AB" if "B" in audio_prompt_type and "A" in audio_prompt_type else "A" if "A" in audio_prompt_type else "") + ("0" if "0" in audio_prompt_type else "")
+            ui_defaults["audio_prompt_type"] = ("ABD" if all(flag in audio_prompt_type for flag in "ABD") else "AB" if "B" in audio_prompt_type and "A" in audio_prompt_type else "A" if "A" in audio_prompt_type else "") + "".join(flag for flag in "0VN" if flag in audio_prompt_type)  # keep wgp audio options
             ui_defaults["alt_prompt"] = ""
             ui_defaults.setdefault("duration_seconds", DRAMABOX_DEFAULT_DURATION_SECONDS)
             ui_defaults.setdefault("num_inference_steps", 30)
@@ -651,7 +689,7 @@ class family_handler:
             return
 
         audio_prompt_type = str(ui_defaults.get("audio_prompt_type", "") or "").upper()
-        ui_defaults["audio_prompt_type"] = "AB2" if "2" in audio_prompt_type and "B" in audio_prompt_type else "A2" if "2" in audio_prompt_type and "A" in audio_prompt_type else ""
+        ui_defaults["audio_prompt_type"] = ("ABD2" if "2" in audio_prompt_type and "D" in audio_prompt_type else "AB2" if "2" in audio_prompt_type and "B" in audio_prompt_type else "A2" if "2" in audio_prompt_type and "A" in audio_prompt_type else "") + "".join(flag for flag in "VN" if flag in audio_prompt_type)  # keep wgp audio options
         ui_defaults["alt_prompt"] = ""
         ui_defaults.setdefault("duration_seconds", model_def.get("duration_slider", {}).get("default", SCENEMA_DEFAULT_DURATION_SECONDS))
         custom_settings = ui_defaults.get("custom_settings", None)

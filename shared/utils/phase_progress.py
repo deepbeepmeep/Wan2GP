@@ -1,10 +1,11 @@
 """Layer/tile progress scoped to one generation, with throttled UI and abort polling."""
+from shared.utils.media_control import current_control, inference_checkpoint, checkpoint_modules, MediaProcessingAborted
 
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 from inspect import signature
-from time import monotonic
+from time import monotonic, sleep
 
 from tqdm import tqdm
 
@@ -21,7 +22,6 @@ class _GenerationProgress:
         self.pipeline = pipeline
         self.callback = callback
         self.set_status = set_status
-        self.next_poll = 0.0
         self.next_update = 0.0
         self.prompt_no = 0
         self.prompt_total = 1
@@ -30,11 +30,12 @@ class _GenerationProgress:
         self.vae_encoding_enabled = False
 
     def check_abort(self):
-        now = monotonic()
-        if now >= self.next_poll:
-            self.next_poll = now + 1 / 3
-            if self.pipeline._interrupt:
-                raise GenerationAborted
+        inference_checkpoint()
+        checkpoint = getattr(self.callback, "checkpoint", None)
+        if checkpoint is not None:
+            checkpoint()
+        if self.pipeline._interrupt:
+            raise GenerationAborted
 
 
 def generation_progress(method):
@@ -51,7 +52,7 @@ def generation_progress(method):
             state.check_abort()
             result = method(self, *args, **kwargs)
             return None if self._interrupt else result
-        except GenerationAborted:
+        except (GenerationAborted, MediaProcessingAborted):
             return None
         finally:
             _generation.reset(token)
@@ -60,6 +61,7 @@ def generation_progress(method):
 
 
 def check_abort():
+    inference_checkpoint()
     state = _generation.get()
     if state is not None:
         state.check_abort()
@@ -75,14 +77,17 @@ def set_phase_status(title):
 
 
 class PhaseProgress:
-    def __init__(self, total, title="VAE Decoding", unit="tiles", next_status=None):
+    def __init__(self, total, title="VAE Decoding", unit="tiles", next_status=None,
+                 completion_hold=0.0):
         self.state = _generation.get()
         self.total = total
         self.title = title
         self.unit = unit
         self.next_status = next_status
+        self.completion_hold = completion_hold
         self.completed = 0
         self.started = False
+        self.last_reported_completed = None
 
     def _report(self):
         if self.state is None:
@@ -94,6 +99,7 @@ class PhaseProgress:
             if self.state.callback is not None:
                 self.state.callback(self.completed - 1, None, not self.started, override_num_inference_steps=self.total, progress_unit=self.unit, progress_title=self.title)
                 self.started = True
+                self.last_reported_completed = self.completed
 
     def advance(self, count=1):
         self.completed += count
@@ -105,10 +111,23 @@ class PhaseProgress:
 
     def __exit__(self, exc_type, exc_value, traceback):
         if exc_type is None:
+            if self.state is not None and self.state.pipeline._interrupt:
+                raise GenerationAborted
+            terminal_update_pending = (self.state is not None and self.state.callback is not None
+                    and self.total > 0 and self.completed >= self.total
+                    and self.last_reported_completed != self.completed)
+            if terminal_update_pending:
+                # Fast final blocks can finish before the next throttled update.
+                # Report completion before replacing this phase's status.
+                remaining = self.state.next_update - monotonic()
+                if remaining > 0:
+                    sleep(remaining + 0.001)
             self._report()
             # A final-layer/tile abort must not start the next (possibly expensive) phase.
             if self.state is not None and self.state.pipeline._interrupt:
                 raise GenerationAborted
+            if terminal_update_pending and self.completion_hold > 0:
+                sleep(self.completion_hold)
             if self.next_status is not None and self.state is not None and self.state.set_status is not None:
                 self.state.set_status(self.next_status)
 
@@ -141,27 +160,40 @@ def text_encoding_prompts(total, inherit=False):
 
 
 @contextmanager
-def text_encoding_progress(layers, next_status="Preparing Conditioning", prompt_count=1):
+def text_encoding_progress(layers, next_status="Preparing Conditioning", prompt_count=1,
+                           complete_on_success=False, completion_hold=0.0, title=None):
     state = _generation.get()
-    if state is None or state.text_phase_active:
+    if state is None:
+        with checkpoint_modules(entry[0] if isinstance(entry, tuple) else entry for entry in layers):
+            yield
+        return
+    if state.text_phase_active:
         yield
         return
     state.prompt_no += prompt_count
     total = max(state.prompt_total, prompt_count)
-    title = "Encoding Text Prompt"
-    if total > 1:
+    title = title or "Encoding Text Prompt"
+    if total > 1 and prompt_count:
         title += f" {state.prompt_no}/{total}"
+    weighted_layers = [entry if isinstance(entry, tuple) else (entry, 1) for entry in layers]
+    layer_count = sum(count for _, count in weighted_layers)
     handles = []
-    with PhaseProgress(len(layers), title, "layers", next_status) as progress, tqdm(total=len(layers), desc=title, mininterval=1 / 3, leave=False) as bar:
-        def completed(*_):
-            bar.update()
-            progress.advance()
+    with PhaseProgress(layer_count, title, "layers", next_status,
+                       completion_hold=completion_hold) as progress, tqdm(total=layer_count, desc=title, mininterval=1 / 3, leave=False) as bar:
+        def completed(count):
+            bar.update(count)
+            progress.advance(count)
 
         try:
             state.text_phase_active = True
-            for layer in layers:
-                handles.append(layer.register_forward_hook(completed))
+            for layer, count in weighted_layers:
+                handles.append(layer.register_forward_hook(lambda *_, count=count: completed(count)))
             yield
+            if complete_on_success and progress.completed < layer_count:
+                # Some MMGP whole-model paths execute a wrapped stage without
+                # invoking its Python forward hooks. A successful conditioning
+                # call establishes that the stage finished.
+                completed(layer_count - progress.completed)
         finally:
             state.text_phase_active = False
             for handle in handles:
@@ -171,7 +203,7 @@ def text_encoding_progress(layers, next_status="Preparing Conditioning", prompt_
 @contextmanager
 def vae_decoding_progress(total, decoder, count=1, cleanup=None, title="VAE Decoding", next_status=None):
     """Track actual decoder calls and allow cancellation within an untiled decode."""
-    if _generation.get() is None:
+    if _generation.get() is None and current_control() is None:
         yield
         return
     handles = []
@@ -197,8 +229,13 @@ def vae_decoding_progress(total, decoder, count=1, cleanup=None, title="VAE Deco
 def vae_encoding_progress(total, encoder, count=1, cleanup=None, enabled=True):
     """Count encoder tiles with the same throttling and cancellation as decoding."""
     state = _generation.get()
-    if state is None or not (state.vae_encoding_enabled and enabled):
-        yield
+    if not enabled or (state is None and current_control() is None) or (state is not None and not state.vae_encoding_enabled):
+        try:
+            with checkpoint_modules(module for module in encoder.modules() if not module._modules):
+                yield
+        finally:
+            if cleanup is not None:
+                cleanup()
         return
     with vae_decoding_progress(total, encoder, count, cleanup, title="VAE Encoding", next_status="Preparing Conditioning"):
         yield

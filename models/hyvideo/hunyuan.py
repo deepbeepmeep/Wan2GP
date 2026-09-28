@@ -448,6 +448,10 @@ class Inference(object):
             wav2vec._model_dtype = torch.float32
             wav2vec.requires_grad_(False)
         if avatar:
+            from models.hyvideo.data_kits.assets import query_download_def
+            from shared.utils.download import process_files_def_if_needed
+
+            process_files_def_if_needed(query_download_def())
             align_instance = AlignImage("cuda", det_path= fl.locate_file("det_align/detface.pt"))
             align_instance.facedet.model.to("cpu")
             adapt_model(model, "audio_adapter_blocks")

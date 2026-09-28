@@ -423,14 +423,12 @@ class QwenImagePipeline(): #DiffusionPipeline
         else:
             image_latents = retrieve_latents(self.vae.encode(image), generator=generator, sample_mode="argmax")
         latents_mean = (
-            torch.tensor(self.vae.config.latents_mean)
+            torch.tensor(self.vae.config.latents_mean, device=image_latents.device, dtype=image_latents.dtype)
             .view(1, self.latent_channels, 1, 1, 1)
-            .to(image_latents.device, image_latents.dtype)
         )
         latents_std = (
-            torch.tensor(self.vae.config.latents_std)
+            torch.tensor(self.vae.config.latents_std, device=image_latents.device, dtype=image_latents.dtype)
             .view(1, self.latent_channels, 1, 1, 1)
-            .to(image_latents.device, image_latents.dtype)
         )
         image_latents = (image_latents - latents_mean) / latents_std
 
@@ -491,11 +489,12 @@ class QwenImagePipeline(): #DiffusionPipeline
                 images = [images]
             all_image_latents = []
             for image in images:
-                image = image.to(device=device, dtype=dtype)
                 if image.shape[1] != self.latent_channels:
+                    image = image.to(device=device, dtype=self.vae.dtype)
                     image_latents = self._encode_vae_image(image=image, generator=generator)
                 else:
                     image_latents = image
+                image_latents = image_latents.to(device=device, dtype=dtype)
                 if batch_size > image_latents.shape[0] and batch_size % image_latents.shape[0] == 0:
                     # expand init_latents for batch_size
                     additional_image_per_prompt = batch_size // image_latents.shape[0]

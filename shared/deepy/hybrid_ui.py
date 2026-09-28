@@ -8,11 +8,40 @@ import gradio as gr
 from shared.deepy import ui_settings
 from shared.deepy.errors import DeepyBusy
 from shared.gradio.form_sync import GradioForm
+from shared.gradio.gallery_frames import bind_gallery_frames
 from shared.utils.form_sync import Saved
-from shared.utils.gallery_view import gallery_window
+from shared.utils.gallery_view import gallery_offset, gallery_window
+
+
+def bind_workspace_extract(service, state, validate_prompt, prompt_inputs, save_inputs, save_values, use_settings, outputs):
+    from shared.deepy.workspace_viewer_api import ViewerAction
+
+    trigger = gr.Textbox(visible=False, elem_id='wangp-workspace-extract-settings')
+
+    def extract(payload, state_value):
+        try:
+            selection = ViewerAction.model_validate_json(payload)
+            if len(selection.keys) != 1:
+                raise ValueError('Select one media item to extract its settings.')
+            with service._mutation_lock:
+                with service.gallery_lock:
+                    viewer = service.workspace_viewer
+                    entry = viewer._entry(selection.workspace, selection.source, selection.keys[0])
+                    if selection.revision != viewer._catalog(selection.source)['revision']:
+                        raise ValueError('The gallery changed. Reopen the workspace manager and select the media again.')
+                # use_settings acquires the same non-reentrant gallery lock itself.
+                # The original action reads the full lists from state; audio still needs a packed input.
+                return use_settings(state_value, '[]' if selection.source == 'audio' else [], entry['index'], selection.source)
+        except ValueError as exc:
+            raise gr.Error(str(exc)) from exc
+
+    trigger.input(validate_prompt, inputs=prompt_inputs, outputs=[prompt_inputs[3]], show_progress='hidden').then(
+        save_inputs, inputs=save_values, outputs=None, show_progress='hidden',
+    ).then(extract, inputs=[trigger, state], outputs=outputs, show_progress='hidden')
 
 
 def bind_gallery_sync(service, state, render_gallery, outputs, *, gallery, main):
+    bind_gallery_frames(service)
     gr.HTML('<span data-deepy-hybrid="/deepy/"></span>', visible=False)
     error = gr.Textbox(visible=False, elem_id='deepy_hybrid_error')
 
@@ -26,37 +55,51 @@ def bind_gallery_sync(service, state, render_gallery, outputs, *, gallery, main)
     # Gradio only preserves custom error display options on its queued path.
     error.input(show_error, inputs=[error], outputs=None, queue=True, show_progress='hidden', trigger_mode='multiple', api_name=False)
     trigger = gr.Button(visible=False, elem_id='deepy_hybrid_gallery_sync')
-    revision = gr.State(-1)
+    # A stale response can be discarded by the browser's selection guard. Only
+    # acknowledge revisions applied there, not responses completed on the server.
+    revision = gr.Number(-1, visible=False, precision=0)
     restored = gr.Textbox(visible=False)
     view = gr.Textbox(visible=False, elem_id='wangp-gallery-view')
     interaction = gr.Textbox(visible=False, elem_id='wangp-gallery-interaction')
 
-    def select(payload):
-        service.select_gallery_view(json.loads(payload))
+    def select(payload, state_value):
+        payload = json.loads(payload)
+        with service._mutation_lock:
+            if payload['sequence'] <= state_value.get('gallery_interaction_sequence', 0):
+                return
+            state_value['gallery_interaction_sequence'] = payload['sequence']
+            service.select_gallery_view(payload)
 
-    interaction.input(select, inputs=[interaction], outputs=None, queue=False, show_progress='hidden', trigger_mode='always_last')
+    interaction.input(select, inputs=[interaction, state], outputs=None, queue=False, show_progress='hidden', trigger_mode='always_last')
 
-    def refresh(state_value, seen, previous_restoration):
+    def refresh(state_value, seen, previous_restoration, previous_view):
         current = service.gallery_revision
         restoration = json.dumps(service._restoration)
         if seen == current and previous_restoration == restoration:
             return *((gr.update(),) * len(outputs)), current, restoration, gr.update()
         with service._mutation_lock:
+            updates = list(render_gallery(state_value))
             gen = state_value['gen']
             limit = service._deps.get_server_config()['clear_file_list']
-            video, selected, video_offset = gallery_window(gen['file_list'], gen['selected'], limit)
+            video, selected, video_offset = gallery_window(gen['file_list'], gen['selected'], limit, keep_selected=True)
+            if video_offset != gallery_offset(len(gen['file_list']), limit):
+                updates[outputs.index(gallery)] = gr.update(value=video, selected_index=selected)
             audio, _, audio_offset = gallery_window(gen['audio_file_list'], gen['audio_selected'], limit)
-            gallery_view = json.dumps({'workspace': service.workspace_id, 'video': video, 'audio': audio, 'video_offset': video_offset, 'audio_offset': audio_offset, 'selected': selected})
-            return *render_gallery(state_value), current, restoration, gallery_view
+            gallery_view = {'workspace': service.workspace_id, 'video': video, 'audio': audio, 'video_offset': video_offset, 'audio_offset': audio_offset, 'selected': selected, 'audio_selected': gen['audio_selected']}
+            gallery_view['gallery_sequence'] = state_value.get('gallery_interaction_sequence', 0)
+            previous = json.loads(previous_view) if previous_view else {}
+            if previous.get('workspace') == gallery_view['workspace']:
+                # Selection does not change the files. Avoid Gallery.postprocess
+                # and an audio render on every visual thumbnail click.
+                if previous.get('video') == video:
+                    updates[outputs.index(gallery)] = gr.update(selected_index=selected)
+                if all(previous.get(key) == gallery_view[key] for key in ('audio', 'audio_offset', 'audio_selected')):
+                    updates[4:7] = [gr.skip()] * 3
+            return *updates, current, restoration, json.dumps(gallery_view)
 
-    def restore_selection(state_value):
-        # Gradio resets selection to zero when an empty gallery first receives files.
-        # Apply the canonical selection after that value update has been rendered.
-        gen = state_value['gen']
-        _, selected, _ = gallery_window(gen['file_list'], gen['selected'], service._deps.get_server_config()['clear_file_list'])
-        return gr.update(selected_index=selected)
-
-    gr.on([main.load, trigger.click], refresh, inputs=[state, revision, restored], outputs=[*outputs, revision, restored, view], queue=False, show_progress='hidden', trigger_mode='always_last').then(restore_selection, inputs=[state], outputs=[gallery], queue=False, show_progress='hidden').then(fn=None, inputs=[restored], outputs=None, js='payload => window.__wangpAssistantChatNS.galleryRestored?.(JSON.parse(payload))')
+    # The patched Gallery applies explicit indices with the value, including its
+    # first population. A second response can restore an already obsolete index.
+    gr.on([main.load, trigger.click], refresh, inputs=[state, revision, restored, view], outputs=[*outputs, revision, restored, view], queue=False, show_progress='hidden', trigger_mode='always_last').success(fn=None, inputs=[restored, revision], outputs=None, js='(payload, revision) => window.__wangpAssistantChatNS.galleryRestored?.(JSON.parse(payload), revision)')
 
     # Reuse the existing preview renderer without requiring a generation request
     # in this page. New/reconnected pages also read the current shared preview.

@@ -118,12 +118,13 @@ QWEN3_TTS_DURATION_SLIDER = {
     "default": 20,
 }
 QWEN3_TTS_AUDIO_PROMPT_TYPE_SOURCES = {
-    "selection": ["A", "AB"],
+    "selection": ["A", "AB", "ABD"],
     "labels": {
         "A": "Voice cloning of 1 speaker",
         "AB": "Voice cloning of 2 speakers (Speaker 1 and Speaker 2)",
+        "ABD": "Voice cloning of 3 speakers (Speaker 1, 2 and 3)",
     },
-    "letters_filter": "AB",
+    "letters_filter": "ABD",
     "default": "A",
 }
 QWEN3_TTS_AUTO_SPLIT_SETTING_ID = "auto_split_every_s"
@@ -252,6 +253,10 @@ def get_qwen3_model_def(base_model_type: str) -> dict:
                 "default": default_speaker,
                 "label": "Speaker",
             },
+            "infos": "Speak the Text Prompt (`prompt`) with one of Qwen3's built-in voices, selected in **Speaker** (`model_mode`); each label gives the voice's style and native language. The optional **Instruction** (`alt_prompt`) adjusts the delivery, for example `calm, friendly, slightly husky`. Max duration caps the output; give the text enough time to finish.",
+            "prompt_infos": 'Write only the words to speak, with natural punctuation. Put delivery directions in Instruction rather than in the text, for example Instruction `excited, fast-paced` with the text "We did it! The launch window is open."',
+            "deepy_infos": "Built-in voices: speaker = `model_mode` (labels give style and language). `prompt` = words to speak; `alt_prompt` = optional delivery instruction. Max duration caps output.",
+            "deepy_prompt_infos": "Write only the words to speak, naturally punctuated. Put delivery in `alt_prompt`, e.g. 'calm, friendly, slightly husky'.",
             "alt_prompt": {
                 "label": "Instruction (optional)",
                 "placeholder": "calm, friendly, slightly husky",
@@ -285,8 +290,8 @@ def get_qwen3_model_def(base_model_type: str) -> dict:
                 "label": "Language",
             },
             "alt_prompt": {
-                "label": "Reference transcript(s) (optional, two-speaker: one per line)",
-                "placeholder": "Speaker 1 reference transcript\nSpeaker 2 reference transcript",
+                "label": "Reference transcript(s) (optional, multi-speaker: one per line)",
+                "placeholder": "Speaker 1 reference transcript\nSpeaker 2 reference transcript\nSpeaker 3 reference transcript",
                 "lines": 3,
             },
             "pause_between_sentences": True,
@@ -299,6 +304,11 @@ def get_qwen3_model_def(base_model_type: str) -> dict:
             "text_prompt_enhancer_max_tokens1": 512,
             "audio_guide_label": "Speaker 1 reference voice",
             "audio_guide2_label": "Speaker 2 reference voice",
+            "audio_guide3_label": "Speaker 3 reference voice",
+            "infos": "Clone one to three voices from short reference recordings and speak the Text Prompt (`prompt`) with them.\n\n- **Voice cloning of 1 speaker:** the whole text is spoken with the Speaker 1 reference voice.\n- **Voice cloning of 2 or 3 speakers:** write the script as `Speaker 1:`, `Speaker 2:` (and `Speaker 3:`) lines. Each speaker's lines use its own reference voice, in upload order, and the script must use exactly as many speaker numbers as reference voices.\n\n**Reference transcript(s)** (`alt_prompt`, one line per speaker in order) give the exact words spoken in each reference. With a transcript Qwen3 imitates the voice more closely; without one it only uses the overall character of the voice. Use short, clean references of a single speaker. **Language** (`model_mode`) selects the speech language, or Auto. **Pause between sentences** adds silence between turns and split segments, **Auto Split** cuts long text into segments of about that many seconds (0 keeps the automatic segmentation), and Max duration caps the assembled audio. Early Stop returns the segments already completed.",
+            "prompt_infos": 'Write only the words to speak, with natural punctuation in the target language; the delivery follows the reference voice. For a dialogue, start every turn with its speaker number:\n\n```text\nSpeaker 1: We should leave before the rain gets heavier.\nSpeaker 2: Give me one minute, I still need my jacket.\nSpeaker 3: Hurry, the bus is already at the corner.\n```\n\nUse as many speaker numbers as reference voices, and keep stage directions out of the text.',
+            "deepy_infos": "`prompt` = words to speak. `audio_prompt_type`: `A` clones `audio_guide`; `AB` / `ABD` make a dialogue with `audio_guide2` (and `audio_guide3`), and the script must use exactly 2 / 3 `Speaker N:` IDs in sample order. `alt_prompt` = optional exact transcripts of the samples, one line per speaker, for closer cloning. Language = `model_mode` or Auto; Max duration caps output.",
+            "deepy_prompt_infos": "Write only the words to speak, naturally punctuated; delivery follows the reference voice. Dialogue: one `Speaker N:` line per turn, e.g. 'Speaker 1: Ready?\nSpeaker 2: Almost.' No stage directions.",
         }
     return common
 
@@ -444,8 +454,8 @@ class family_handler:
             ui_defaults.setdefault(key, value)
         if base_model_type == "qwen3_tts_base":
             audio_prompt_type = str(ui_defaults.get("audio_prompt_type", "A") or "A").upper()
-            if audio_prompt_type not in ("A", "AB"):
-                ui_defaults["audio_prompt_type"] = "A"
+            if "".join(flag for flag in audio_prompt_type if flag in "ABD") not in ("A", "AB", "ABD"):  # only its own letters; keep wgp audio options
+                ui_defaults["audio_prompt_type"] = "A" + "".join(flag for flag in audio_prompt_type if flag not in "ABD")
 
         if settings_version < 2.44:
             if model_def.get("top_k_slider", False):
@@ -538,19 +548,18 @@ class family_handler:
             if "B" in audio_prompt_type:
                 if inputs.get("audio_guide2") is None:
                     return "Two-speaker mode requires Speaker 2 reference audio."
+                speaker_count = 3 if "D" in audio_prompt_type else 2
                 speaker_matches = list(re.finditer(r"Speaker\s*(\d+)\s*:", prompt_text, flags=re.IGNORECASE))
                 if not speaker_matches:
-                    return (
-                        "Two-speaker mode requires prompt lines using Speaker 1: and Speaker 2: "
-                    )
+                    return f"{speaker_count}-speaker mode requires prompt lines using Speaker 1: to Speaker {speaker_count}: "
                 speaker_ids = sorted({int(m.group(1)) for m in speaker_matches})
-                if len(speaker_ids) != 2:
+                if len(speaker_ids) != speaker_count:
                     return (
-                        "Two-speaker mode requires exactly two speaker IDs. Use Speaker 1: and Speaker 2:. "
+                        f"{speaker_count}-speaker mode requires exactly {speaker_count} speaker IDs. Use Speaker 1: to Speaker {speaker_count}:. "
                         "For headless settings, keep 'multi_prompts_gen_type' = 'FG'."
                     )
             elif has_speaker_syntax:
-                return "Speaker-tag dialogue requires two-speaker mode (set audio prompt mode to Dialogue)."
+                return "Speaker-tag dialogue requires a multi-speaker voice cloning mode."
             return None
 
         return None

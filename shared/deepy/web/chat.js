@@ -101,6 +101,9 @@ WAC.scheduleComposerLayout = function (scrollState) {
       WAC.composerResizeFrame = 0;
       const state = scroll?.scrollTop !== initialTop ? WAC.captureAutoscrollState() : WAC.composerResizeScrollState;
       WAC.syncComposerLayout();
+      // Pasting scrolls the caret line into view but not the field's bottom padding.
+      const input = WAC.requestInput();
+      if (input && input.selectionStart === input.value.length) input.scrollTop = input.scrollHeight;
       WAC.composerResizeScrollState = null;
       WAC.applyAutoscrollState(state);
     });
@@ -140,6 +143,7 @@ WAC.applyAutoscrollState = function (state) {
     // Writing even the current position can interrupt native touch/smooth scrolling.
     if (scroll.scrollTop !== top) scroll.scrollTop = top;
   }
+  if (scroll.clientHeight > 0) WAC.lastScrollState = WAC.captureAutoscrollState();
   WAC.syncJumpToBottom();
 };
 
@@ -949,7 +953,13 @@ WAC.consumePayload = function (payload) {
     return [];
   }
   const chatSessionId = typeof event.chat_session_id === 'string' ? event.chat_session_id : '';
-  if (chatSessionId && WAC.chatSessionId && chatSessionId !== WAC.chatSessionId) WAC.reset();
+  if (chatSessionId && WAC.chatSessionId && chatSessionId !== WAC.chatSessionId) {
+    // Saving the first request assigns a persistent session ID. Keep following it
+    // when this event acknowledges that request, despite resetting the old session.
+    const followedSubmission = WAC.syncAcknowledgesFollowedSubmission(event.messages || [event.message], event.acknowledged_submission_ids) ? WAC.followSubmissionId : '';
+    WAC.reset();
+    WAC.followSubmissionId = followedSubmission;
+  }
   if (chatSessionId) WAC.chatSessionId = chatSessionId;
   if (event.type === 'session_resume_ready') {
     WAC.prefillResumedSession(event.request_id);
@@ -1301,7 +1311,10 @@ WAC.scrollToBottomAfterLayout = function () {
 WAC.hideEmpty = function () {
   if (WAC.replayDepth > 0) return;
   const empty = WAC.empty();
+  const transcript = WAC.transcript();
   if (empty) empty.style.display = 'none';
+  // Show the transcript in the same frame, so the first message is laid out before scrolling to it.
+  if (transcript) transcript.style.display = 'flex';
 };
 
 WAC.showEmptyIfNeeded = function () {
@@ -1734,8 +1747,12 @@ WAC.queueStreamingReveal = function (live, text) {
   const now = performance.now();
   const reveal = WAC.streamingReveals.get(live) || { last: now, text: '' };
   reveal.text = text;
-  // Catch up a burst in roughly 700 ms, speeding up when more text arrives.
-  reveal.speed = Math.max(180, (text.length - live.__wangpStreamingMarkdown.source.length) / 0.7);
+  // Spread each chunk over the observed arrival interval (server cadence 250 ms) so slow decoding flows
+  // instead of bursting then pausing; a backlog still catches up within 700 ms.
+  const arrival = live.__wangpStreamingArrival;
+  const interval = arrival ? Math.min(700, 0.7 * arrival.interval + 0.3 * (now - arrival.at)) : 250;
+  live.__wangpStreamingArrival = { at: now, interval };
+  reveal.speed = (text.length - live.__wangpStreamingMarkdown.source.length) * 1000 / interval;
   WAC.streamingReveals.set(live, reveal);
   if (!WAC.shouldRevealStreamingText(live)) WAC.clearStreamingReveals(live, true);
   else if (!WAC.streamingRevealFrame) WAC.streamingRevealFrame = window.requestAnimationFrame(WAC.stepStreamingReveals);
@@ -1754,7 +1771,10 @@ WAC.stepStreamingReveals = function (now) {
     const scrollState = WAC.captureAutoscrollState();
     for (const { live, reveal, animate } of ready) {
       const start = live.__wangpStreamingMarkdown.source.length;
-      let end = animate ? Math.min(reveal.text.length, start + Math.max(1, Math.floor(reveal.speed * (now - reveal.last) / 1000))) : reveal.text.length;
+      // A fractional target keeps the pace; whole-word reveals may run ahead of it and then wait.
+      reveal.target = Math.min(reveal.text.length, (reveal.target ?? start) + reveal.speed * (now - reveal.last) / 1000);
+      let end = animate ? Math.floor(reveal.target) : reveal.text.length;
+      if (end <= start) { reveal.last = now; continue; }
       // Keep ordinary words together, without stalling on long URLs or unspaced text.
       const limit = Math.min(reveal.text.length, end + 32);
       while (end < limit && !/\s/u.test(reveal.text[end])) end += 1;
@@ -1868,8 +1888,11 @@ WAC.appendBlockText = function (event) {
   const current = WAC.currentBlockText(event, node);
   const start = Number(event.text_start);
   const end = Number(event.text_end);
-  if (Number.isFinite(end) && current.length >= end) return;
-  if (!Number.isFinite(start) || current.length !== start) return WAC.markSyncRequired(event);
+  // Python publishes code-point offsets; JS length counts UTF-16 code units.
+  let currentLength = 0;
+  for (const character of current) currentLength += 1;
+  if (Number.isFinite(end) && currentLength >= end) return;
+  if (!Number.isFinite(start) || currentLength !== start) return WAC.markSyncRequired(event);
   const scrollState = WAC.captureAutoscrollState();
   const suffix = String(event.text || '');
   const known = WAC.incrementalMessageState(event.message_id).blocks[String(event.block_id)];
@@ -2290,7 +2313,7 @@ WAC.renderStatus = function (status, restoreAnchor) {
     pauseNode.textContent = isPaused ? 'Resume' : kind === 'pause_pending' ? 'Pausing…' : kind === 'resuming' ? 'Resuming…' : 'Pause';
     pauseNode.setAttribute('aria-label', isPaused ? 'Resume Deepy' : 'Pause Deepy');
     pauseNode.dataset.mode = isPaused ? 'resume' : 'pause';
-    pauseNode.disabled = kind === 'pause_pending' || kind === 'resuming' || kind === 'session_loading';
+    pauseNode.disabled = kind === 'pause_pending' || kind === 'resuming' || kind === 'session_loading' || kind === 'stop_pending';
   }
   if (stopNode) {
     stopNode.hidden = kind === 'session_loading';
@@ -2412,6 +2435,7 @@ WAC.syncDisclosureBridge = function () {
 };
 
 WAC.handleScroll = function () {
+  if (WAC.scroll().clientHeight > 0) WAC.lastScrollState = WAC.captureAutoscrollState();
   // A pending resize must not restore an older position after the user has scrolled.
   if (WAC.composerResizeFrame) WAC.composerResizeScrollState = WAC.captureAutoscrollState();
   WAC.syncJumpToBottom();
@@ -2425,6 +2449,7 @@ WAC.syncScrollBridge = function () {
   }
   if (WAC.scrollNode) WAC.scrollNode.removeEventListener('scroll', WAC.handleScroll, { passive: true });
   WAC.scrollNode = scroll;
+  WAC.lastScrollState = WAC.captureAutoscrollState();
   WAC.scrollNode.addEventListener('scroll', WAC.handleScroll, { passive: true });
   // Media/layout changes can reach the bottom without changing scrollTop or firing scroll.
   WAC.jumpBottomResizeObserver?.disconnect();
@@ -2444,10 +2469,14 @@ WAC.installObserver = function () {
   if (WAC.observer) return;
   const target = document.querySelector('gradio-app') || document.body;
   if (!target) return;
+  const scope = '[id^="assistant_chat_"], #deepy_type_value, #deepy_type_choice';
+  const containsChat = node => node.nodeType === 1 && (node.matches(scope) || node.querySelector(scope));
+  // Retain Gradio mount/replacement detection, but do not refresh Deepy for
+  // unrelated galleries, playback clocks, progress bars, or form fields.
   WAC.observer = new MutationObserver((mutations) => {
-      const input = WAC.requestInput();
-      // Gradio measures the textarea on every key; its input handler already owns composer layout.
-      if (mutations.every((mutation) => mutation.type === 'attributes' && mutation.attributeName === 'style' && mutation.target === input)) return;
+      if (!mutations.some(mutation => mutation.target.closest?.(scope) ||
+          Array.from(mutation.addedNodes).some(containsChat) ||
+          Array.from(mutation.removedNodes).some(containsChat))) return;
       if (WAC.observerScheduled) return;
       WAC.observerScheduled = true;
       window.requestAnimationFrame(() => {
@@ -2460,9 +2489,28 @@ WAC.installObserver = function () {
         WAC.setQueuedEditButtonLabels(!!WAC.queuedEditMessageId);
         WAC.handleEventNodeMutation();
         WAC.readEventSource();
+        WAC.observeDockEnvironment();
       });
   });
-  WAC.observer.observe(target, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'data-theme', 'theme', 'style'] });
+  WAC.observer.observe(target, { childList: true, subtree: true });
+  // Geometry and theme have explicit, narrow sources instead of observing
+  // every class/style mutation on the page (including our own layout writes).
+  WAC.dockResizeObserver = new ResizeObserver(() => WAC.syncDockLayout());
+  WAC.themeObserver = new MutationObserver(() => WAC.syncThemeState());
+  WAC.observeDockEnvironment = function () {
+    const dock = WAC.dock();
+    const parent = dock?.parentElement;
+    if (WAC.observedDockParent !== parent) {
+      WAC.dockResizeObserver.disconnect();
+      WAC.observedDockParent = parent;
+      const candidates = [parent, parent?.closest('.column'), parent?.parentElement?.closest('.column')];
+      new Set(candidates.filter(Boolean)).forEach(node => WAC.dockResizeObserver.observe(node));
+    }
+    WAC.themeObserver.disconnect();
+    [document.documentElement, document.body, document.querySelector('gradio-app'), document.querySelector('.gradio-container')]
+      .filter(Boolean).forEach(node => WAC.themeObserver.observe(node, {attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'theme']}));
+  };
+  WAC.observeDockEnvironment();
 };
 
 
@@ -2476,7 +2524,8 @@ WAC.installDockBridge = function () {
   try { window.localStorage.removeItem('wangp-assistant-chat-open'); } catch (_error) {}
   document.addEventListener('beforeinput', (event) => {
     const input = WAC.requestInput();
-    if (input && event.target === input) WAC.composerResizeScrollState = WAC.captureAutoscrollState();
+    // A pending resize has already moved the layout; keep the intent captured before it.
+    if (input && event.target === input && !WAC.composerResizeFrame) WAC.composerResizeScrollState = WAC.captureAutoscrollState();
   }, true);
   document.addEventListener('input', (event) => {
     if (event.target && event.target.closest && event.target.closest('#deepy_type_choice')) WAC.syncDeepyTypePreview();

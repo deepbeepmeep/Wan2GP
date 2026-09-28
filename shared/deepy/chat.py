@@ -254,20 +254,27 @@ def build_reset_event(session=None) -> str:
     return _event_payload({"type": "reset"}, session)
 
 
-def _pause_aware_status(session, status: dict[str, Any] | None) -> dict[str, Any] | None:
+def _control_aware_status(session, status: dict[str, Any] | None) -> dict[str, Any] | None:
     if session is None:
         return status
+    turn = getattr(session, "current_turn", None)
+    interruption_kind = turn.get("interruption_kind", "interrupted") if isinstance(turn, dict) else "interrupted"
+    if getattr(session, "worker_active", False) and getattr(session, "interrupt_requested", False) and interruption_kind == "interrupted":
+        # Preserve the acknowledgement chosen by the stop handler across progress updates.
+        acknowledgement = status if status and status.get("kind") == "stop_pending" else session.chat_status
+        if acknowledgement and acknowledgement.get("kind") == "stop_pending":
+            return acknowledgement
     if bool(getattr(session, "paused", False)):
         return {"visible": True, "kind": "paused", "text": "Deepy is paused."}
     if bool(getattr(session, "pause_requested", False)):
-        text = "Pausing after the current tool finishes..." if bool(getattr(session, "assistant_action_active", False)) else "Pausing Deepy..."
+        text = "Pausing media processing at the next checkpoint..." if getattr(session, "media_tool_active", False) else ("Pausing after the current tool finishes..." if bool(getattr(session, "assistant_action_active", False)) else "Pausing Deepy...")
         return {"visible": True, "kind": "pause_pending", "text": text}
     return status
 
 
 def build_status_event(text: str | None, kind: str = "status", visible: bool = True, stats: dict[str, Any] | None = None, session=None) -> str:
     status = None if not visible or not text else {"visible": True, "kind": str(kind or "status"), "text": str(text or "").strip()}
-    status = _pause_aware_status(session, status)
+    status = _control_aware_status(session, status)
     if session is not None:
         session.chat_status = status
     event = {"type": "status", "status": status}
@@ -334,7 +341,7 @@ def build_pending_upload_event(session) -> str:
 def build_sync_event(session, status: dict[str, Any] | None | object = _UNSET, stats: dict[str, Any] | None = None, acknowledged_submission_ids: list[str] | tuple[str, ...] | None = None) -> str:
     if status is _UNSET:
         status = getattr(session, "chat_status", None)
-    status = _pause_aware_status(session, status)
+    status = _control_aware_status(session, status)
     session.chat_status = status
     while True:
         revision = int(session.chat_revision or 0)
@@ -647,8 +654,8 @@ def update_tool_call(session, message_id: str, tool_id: str, status: str | None 
 
 def complete_tool_call(session, message_id: str, tool_id: str, result: dict[str, Any]) -> str | None:
     status = str((result or {}).get("status", "")).strip().lower()
-    failed = status in {"error", "failed", "interrupted"}
-    return update_tool_call(session, message_id, tool_id, status="error" if failed else "done", result=result, status_text="Interrupted" if status == "interrupted" else ("Error" if failed else "Done"))
+    failed = status in {"error", "failed"}
+    return update_tool_call(session, message_id, tool_id, status="interrupted" if status == "interrupted" else ("error" if failed else "done"), result=result, status_text="Interrupted" if status == "interrupted" else ("Error" if failed else "Done"))
 
 
 def upsert_assistant_content_block(session, message_id: str, content_id: str | None, text: str, streaming: bool = True) -> tuple[str, str | None]:
@@ -1190,11 +1197,13 @@ def _event_payload(event: dict[str, Any], session=None, revision: int | None = N
     if payload.get("status"):
         payload["status"] = {**payload["status"], "text": _clean_display_filename(str(payload["status"]["text"]))}
     if session is not None:
-        session.chat_event_sequence = int(getattr(session, "chat_event_sequence", 0) or 0) + 1
         payload["chat_session_id"] = str(session.chat_session_id)
         payload["revision"] = int(session.chat_revision if revision is None else revision)
-        payload["sequence"] = session.chat_event_sequence
-        payload["sequence_start"] = session.chat_event_sequence
+        # Status/stats can be coalesced away and are not transcript mutations.
+        if event["type"] not in {"status", "stats", "session_catalog", "session_resume_ready"}:
+            session.chat_event_sequence = int(getattr(session, "chat_event_sequence", 0) or 0) + 1
+            payload["sequence"] = session.chat_event_sequence
+            payload["sequence_start"] = session.chat_event_sequence
         if event["type"] in {"sync", "status", "reset"}:
             turn = getattr(session, "current_turn", None)
             durations = getattr(session, "chat_turn_durations", {})
@@ -1861,7 +1870,9 @@ def _render_tool_block(tool_record: dict[str, Any], attachment_html: str = "") -
     label = _clean_display_filename(str(tool_record.get("label", "")).strip()) or _friendly_tool_label(name)
     status = str(tool_record.get("status", "running")).strip().lower()
     status_label = str(tool_record.get("status_text", "")).strip() or {"running": "Running", "done": "Done", "error": "Error"}.get(status, status.title() or "Running")
-    status_class = {"running": "running", "done": "done", "error": "error"}.get(status, "running")
+    status_class = {"running": "running", "done": "done", "error": "error", "interrupted": "interrupted"}.get(status, "running")
+    if status_label.casefold() == "interrupted":
+        status_class = "interrupted"
     label_html = html.escape(label).replace("_", "_<wbr>")
     status_html = html.escape(_clean_display_filename(status_label)).replace("_", "_<wbr>")
     request_pending = bool(tool_record.get("request_pending", False))

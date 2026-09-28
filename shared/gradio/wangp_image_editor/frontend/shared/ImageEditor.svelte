@@ -140,17 +140,20 @@
 			editor.wangp_source_image_clean &&
 			layer_options.disabled &&
 			background_image &&
-			!has_drawn
+			!fixed_canvas &&
+			border_region === 0
 		) {
-			const next_layers = dirty.layers
-				? layers?.length
-					? (await editor.get_blobs({ background: false, layers: true, composite: false })).layers
-					: [await empty_mask_blob(editor.width, editor.height)]
-				: [];
+			// A brush stroke changes the mask, not the original background file.
+			const has_layers = has_drawn || !!layers?.length;
+			const export_layers = dirty.layers && has_layers;
+			const export_composite = dirty.composite && has_layers;
+			const rendered = export_layers || export_composite
+				? await editor.get_blobs({ background: false, layers: export_layers, composite: export_composite })
+				: { layers: [], composite: null };
 			return {
 				background: dirty.background ? source_image : null,
-				layers: next_layers,
-				composite: dirty.composite ? source_image : null
+				layers: !dirty.layers ? [] : export_layers ? rendered.layers : [await empty_mask_blob(editor.width, editor.height)],
+				composite: !dirty.composite ? null : export_composite ? rendered.composite : source_image
 			};
 		}
 		const blobs = await editor.get_blobs(dirty);
@@ -196,7 +199,6 @@
 			handle_tool_change({ tool: "image" });
 			background_image = false;
 			has_drawn = false;
-			released_value_key = null;
 			background_dirty = false;
 			layers_dirty = false;
 			editor.wangp_value_dirty = false;
@@ -216,7 +218,6 @@
 	 */
 	export function add_image(image: Blob | File): void {
 		synced_value_key = "";
-		released_value_key = null;
 		background_dirty = true;
 		layers_dirty = true;
 		editor.wangp_set_empty(false);
@@ -321,7 +322,6 @@
 		await editor.add_layers_from_url([], is_current, false);
 		if (!is_current()) return;
 		synced_value_key = "";
-		released_value_key = null;
 		has_drawn = false;
 		layers_dirty = true;
 	}
@@ -366,20 +366,7 @@
 					height: current_dimensions.height
 				};
 			}
-			if (released_value_key === current_value_key) {
-				await sync_value_from_props(
-					current_value_key,
-					background,
-					layers || [],
-					composite,
-					false,
-					true
-				);
-			}
 		} else {
-			if (!editor.wangp_editor_empty && synced_value_key) {
-				released_value_key = synced_value_key;
-			}
 			editor.wangp_release_surface();
 			crop?.wangp_release_surface();
 			if (current_subtool === "crop") {
@@ -452,7 +439,6 @@
 		brush.on("change", () => {
 			if (!clearing_value && !editor.wangp_editor_empty) {
 				synced_value_key = "";
-				released_value_key = null;
 				has_drawn = true;
 				layers_dirty = true;
 			}
@@ -533,28 +519,22 @@
 
 	function release_surfaces_if_hidden(): void {
 		if (pixi_target?.offsetParent === null) {
-			if (!editor.wangp_editor_empty && synced_value_key) {
-				released_value_key = synced_value_key;
-			}
 			editor.wangp_release_surface();
 			crop.wangp_release_surface();
 		}
 	}
 
 	let synced_value_key = "";
-	let released_value_key: string | null = null;
 	let value_sync_serial = 0;
 	async function sync_value_from_props(
 		next_key: string,
 		next_background: FileData | null,
 		next_layers: FileData[],
 		next_composite: FileData | null,
-		force_empty = false,
-		force_restore = false
+		force_empty = false
 	): Promise<void> {
 		const is_empty_value = empty_value(next_background, next_layers, next_composite);
 		if (
-			!force_restore &&
 			next_key === synced_value_key &&
 			!(force_empty && is_empty_value)
 		) return;
@@ -568,7 +548,6 @@
 			await clear_value(true, false, is_current);
 			if (!is_current()) return;
 			synced_value_key = next_key;
-			released_value_key = null;
 			return;
 		}
 
@@ -583,7 +562,6 @@
 		background_dirty = false;
 		layers_dirty = false;
 		synced_value_key = next_key;
-		released_value_key = null;
 		handle_tool_change({ tool: "draw" });
 		release_surfaces_if_hidden();
 	}
@@ -627,7 +605,6 @@
 		const _file = Array.isArray(files) ? files[0] : files;
 		background_dirty = true;
 		layers_dirty = true;
-		released_value_key = null;
 		editor.wangp_set_empty(false);
 		crop.wangp_set_empty(false);
 		editor.wangp_resize_to_element();
@@ -852,7 +829,6 @@
 		});
 		await clear_mask_layers();
 		synced_value_key = "";
-		released_value_key = null;
 		background_dirty = true;
 		layers_dirty = true;
 		handle_subtool_change({ tool: "image", subtool: null });

@@ -3434,6 +3434,7 @@ if not "video_output_codec" in server_config: server_config["video_output_codec"
 if not "hdr_video_crf" in server_config: server_config["hdr_video_crf"] = 8
 if not "video_container" in server_config: server_config["video_container"]= "mp4"
 if not "embed_source_images" in server_config: server_config["embed_source_images"]= False
+if not "save_lyrics_srt" in server_config: server_config["save_lyrics_srt"]= False
 if not "keep_resolution_on_model_switch" in server_config: server_config["keep_resolution_on_model_switch"]= True
 if not "enable_4k_resolutions" in server_config: server_config["enable_4k_resolutions"]= 0
 if not "max_reserved_loras" in server_config: server_config["max_reserved_loras"]= -1
@@ -8481,6 +8482,70 @@ def generate_media(
                     audio_path = os.path.join(output_dir, file_name)
                     audio_path = save_audio_file(audio_path, sample.squeeze(0), output_audio_sampling_rate, audio_codec)
                     video_path = audio_path
+                    if server_config.get("save_lyrics_srt", False):
+                        try:
+                            from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt, write_segment_aligned_lyrics_srt, is_hallucinated_repetition, pick_lyrics_base_multi, clean_music_segments
+                            srt_path = os.path.splitext(audio_path)[0] + ".srt"
+                            done = False
+                            try:
+                                set_progress_status("Transcribing vocals for .srt")
+                                from shared.deepy.transcription import transcribe_media
+                                res = transcribe_media(audio_path, timestamp_type="word", model_name="turbo", check_cancelled=lambda: gen.get("abort", False), decode_options={"condition_on_previous_text": False, "temperature": 0.2})
+                                segments = clean_music_segments(res.get("segments") or [])
+                                words = [w for s in segments for w in (s.get("words") or [])]
+                                try:
+                                    alt_lyrics = str(original_alt_prompts[0] or "") if original_alt_prompts else ""
+                                except Exception:
+                                    alt_lyrics = ""
+                                try:
+                                    enhanced_lyrics = prompt_parser.serialize_prompt_units("", prompts, multi_prompts_gen_type) if prompt_was_enhanced else ""
+                                except Exception:
+                                    enhanced_lyrics = ""
+                                lyrics_base, scored = pick_lyrics_base_multi([enhanced_lyrics, save_prompt, alt_lyrics], words, segments)
+                                if words:
+                                    done = write_aligned_lyrics_srt(lyrics_base, words, srt_path) is not None
+                                if not done and segments:
+                                    activity = [(s.get("start"), s.get("end")) for s in segments]
+                                    done = write_segment_aligned_lyrics_srt(lyrics_base, segments, srt_path, activity_spans=activity) is not None
+                                if not done and segments and not is_hallucinated_repetition(segments):
+                                    try:
+                                        span = float(segments[-1].get("end", 0) or 0) - float(segments[0].get("start", 0) or 0)
+                                    except (TypeError, ValueError):
+                                        span = 0.0
+                                    try:
+                                        media_duration, _ = get_media_duration_and_audio_layouts(audio_path)
+                                    except Exception:
+                                        media_duration = None
+                                    if scored or (media_duration and span >= 0.5 * float(media_duration)):
+                                        done = write_segments_srt(segments, srt_path) is not None
+                            except (InterruptedError, KeyboardInterrupt):
+                                done = True  # aborted: don't write fallback, don't fail generation
+                            except Exception:
+                                pass
+                            if not done:
+                                try:
+                                    duration, _ = get_media_duration_and_audio_layouts(audio_path)
+                                except Exception:
+                                    duration = None
+                                if not duration:
+                                    try:
+                                        num_samples = sample.squeeze(0).shape[-1]
+                                        duration = float(num_samples) / float(output_audio_sampling_rate)
+                                    except Exception:
+                                        duration = None
+                                if duration:
+                                    try:
+                                        alt_lyrics = str(original_alt_prompts[0] or "") if original_alt_prompts else ""
+                                    except Exception:
+                                        alt_lyrics = ""
+                                    try:
+                                        enhanced_lyrics = prompt_parser.serialize_prompt_units("", prompts, multi_prompts_gen_type) if prompt_was_enhanced else ""
+                                    except Exception:
+                                        enhanced_lyrics = ""
+                                    lyrics_base, _ = pick_lyrics_base_multi([enhanced_lyrics, save_prompt, alt_lyrics])
+                                    write_lyrics_srt(lyrics_base, float(duration), srt_path)
+                        except Exception:
+                            pass
                 elif is_image:
                     image_path = os.path.join(output_dir, file_name)
                     sample =  sample.transpose(1,0)  #c f h w -> f c h w 

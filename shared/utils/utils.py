@@ -85,7 +85,14 @@ def get_file_creation_date(file_path):
     return datetime.fromtimestamp(stat.st_birthtime if hasattr(stat, 'st_birthtime') else stat.st_mtime)
 
 def sanitize_file_name(file_name, rep =""):
-    return file_name.replace("/",rep).replace("\\",rep).replace("*",rep).replace(":",rep).replace("|",rep).replace("?",rep).replace("<",rep).replace(">",rep).replace("\"",rep).replace("\n",rep).replace("\r",rep) 
+    import re
+    # Windows forbids <>:"/\|?* and control chars 0x00-0x1F (incl. \t \n \r).
+    # Missing \t caused OSError Errno 22 when prompt text was used in output filenames.
+    file_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', rep, file_name)
+    # Windows also disallows trailing spaces/dots
+    if rep == "":
+        file_name = file_name.rstrip(". ")
+    return file_name
 
 def truncate_for_filesystem(s, max_bytes=None):
     if max_bytes is None:

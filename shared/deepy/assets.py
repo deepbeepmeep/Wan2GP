@@ -10,6 +10,8 @@ WHISPER_MEDIUM_WEIGHTS_FILENAME = "model.safetensors"
 WHISPER_MEDIUM_REQUIRED_FILES = (WHISPER_MEDIUM_CONFIG_FILENAME, WHISPER_MEDIUM_WEIGHTS_FILENAME)
 WHISPER_LARGE_V3_FOLDER = "whisper-large-v3"
 WHISPER_LARGE_V3_REPO = "DeepBeepMeep/LongCat"
+WHISPER_TURBO_FOLDER = "whisper-large-v3-turbo"
+WHISPER_TURBO_REPO = "openai/whisper-large-v3-turbo"
 
 
 def query_deepy_download_defs() -> list[dict[str, Any]]:

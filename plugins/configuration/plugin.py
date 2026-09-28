@@ -671,7 +671,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.save_lyrics_srt_choice = gr.Checkbox(
                         value=self.server_config.get("save_lyrics_srt", False),
                         label="Save Lyrics .srt",
-                        info="Writes .srt alongside audio/video: transcribed vocals with real timestamps, fallback to evenly-timed input lyrics"
+                        info="Writes .srt alongside song files: transcribed vocals with real timestamps, fallback to evenly-timed input lyrics"
                     )
                     self.video_save_path_choice = gr.Textbox(label="Video Output Folder (requires restart)", value=self.save_path)
                     self.image_save_path_choice = gr.Textbox(label="Image Output Folder (requires restart)", value=self.image_save_path)

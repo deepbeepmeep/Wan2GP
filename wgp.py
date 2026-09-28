@@ -8648,62 +8648,6 @@ def generate_media(
                     else:
                         save_video( tensor=output_video_frames, save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1),  codec_type= server_config.get("video_output_codec", None), container= container)
 
-                if not audio_only and not is_image and server_config.get("save_lyrics_srt", False) and isinstance(video_path, str):
-                    try:
-                        from shared.utils.lyrics_srt import write_lyrics_srt, write_segments_srt, write_aligned_lyrics_srt, write_segment_aligned_lyrics_srt, is_hallucinated_repetition, pick_lyrics_base_multi, clean_music_segments
-                        srt_path = os.path.splitext(video_path)[0] + ".srt"
-                        done = False
-                        try:
-                            set_progress_status("Transcribing audio for .srt")
-                            from shared.deepy.transcription import transcribe_media
-                            res = transcribe_media(video_path, timestamp_type="word", model_name="turbo", check_cancelled=lambda: gen.get("abort", False), decode_options={"condition_on_previous_text": False, "temperature": 0.2})
-                            segments = clean_music_segments(res.get("segments") or [])
-                            words = [w for s in segments for w in (s.get("words") or [])]
-                            try:
-                                alt_lyrics = str(original_alt_prompts[0] or "") if original_alt_prompts else ""
-                            except Exception:
-                                alt_lyrics = ""
-                            try:
-                                enhanced_lyrics = prompt_parser.serialize_prompt_units("", prompts, multi_prompts_gen_type) if prompt_was_enhanced else ""
-                            except Exception:
-                                enhanced_lyrics = ""
-                            lyrics_base, scored = pick_lyrics_base_multi([enhanced_lyrics, save_prompt, alt_lyrics], words, segments)
-                            if words:
-                                done = write_aligned_lyrics_srt(lyrics_base, words, srt_path) is not None
-                            if not done and segments:
-                                activity = [(s.get("start"), s.get("end")) for s in segments]
-                                done = write_segment_aligned_lyrics_srt(lyrics_base, segments, srt_path, activity_spans=activity) is not None
-                            if not done and segments and not is_hallucinated_repetition(segments):
-                                try:
-                                    span = float(segments[-1].get("end", 0) or 0) - float(segments[0].get("start", 0) or 0)
-                                except (TypeError, ValueError):
-                                    span = 0.0
-                                try:
-                                    media_duration, _ = get_media_duration_and_audio_layouts(video_path)
-                                except Exception:
-                                    media_duration = None
-                                if scored or (media_duration and span >= 0.5 * float(media_duration)):
-                                    done = write_segments_srt(segments, srt_path) is not None
-                        except (InterruptedError, KeyboardInterrupt):
-                            done = True  # aborted: don't write fallback, don't fail generation
-                        except Exception:
-                            pass
-                        if not done:
-                            video_duration = float(output_frame_count) / float(output_fps) if output_frame_count and output_fps else None
-                            if video_duration:
-                                try:
-                                    alt_lyrics = str(original_alt_prompts[0] or "") if original_alt_prompts else ""
-                                except Exception:
-                                    alt_lyrics = ""
-                                try:
-                                    enhanced_lyrics = prompt_parser.serialize_prompt_units("", prompts, multi_prompts_gen_type) if prompt_was_enhanced else ""
-                                except Exception:
-                                    enhanced_lyrics = ""
-                                lyrics_base, _ = pick_lyrics_base_multi([enhanced_lyrics, save_prompt, alt_lyrics])
-                                write_lyrics_srt(lyrics_base, video_duration, srt_path)
-                    except Exception:
-                        pass
-
                 end_time = time.time()
 
                 inputs.pop("send_cmd")

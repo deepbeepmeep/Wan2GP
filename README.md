@@ -63,7 +63,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-## 27th of September 2026: WanGP v13.14 — Community Release
+## 29th of September 2026: WanGP v13.141 — Community Release
 
 Thanks to **WanGP community** contributing code, testing and feedback!
 

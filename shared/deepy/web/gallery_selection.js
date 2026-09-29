@@ -4,20 +4,20 @@
     const value = document.querySelector('#wangp-gallery-view textarea')?.value;
     return value ? JSON.parse(value) : null;
   }
-  let sequence = 0, pendingWorkspace = null;
+  let sequence = 0, pendingView = null;
   function select(source, index = null) {
     const state = view();
     if (!state) return;
     const paths = state[source];
     if (index !== null && (index < 0 || index >= paths.length)) return;
-    pendingWorkspace = state.workspace;
-    window.__wangpAssistantChatNS.setBridgeValue('#wangp-gallery-interaction textarea', JSON.stringify({workspace: state.workspace, source, index: index === null ? null : index + state[source + '_offset'], path: index === null ? null : paths[index], sequence: ++sequence}));
+    pendingView = state;
+    window.__wangpAssistantChatNS.setBridgeValue('#wangp-gallery-interaction textarea', JSON.stringify({session: state.session, workspace: state.workspace, source, index: index === null ? null : index + state[source + '_offset'], path: index === null ? null : paths[index], sequence: ++sequence}));
   }
   window.WanGPGallerySelection = {
     audio: index => {const state = view(); if (state) select('audio', Number(index) - state.audio_offset);},
     acceptView(value) {
       const state = JSON.parse(value);
-      return state.workspace !== pendingWorkspace || state.gallery_sequence >= sequence;
+      return state.session !== pendingView?.session || state.workspace !== pendingView?.workspace || state.gallery_sequence >= sequence;
     }
   };
   function indexOf(thumb) {

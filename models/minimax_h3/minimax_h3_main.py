@@ -119,6 +119,24 @@ def probe_h3_checkpoint(filename):
             "hybrid_ref2va_blocks": hybrid_ref2va_blocks}
 
 
+def probe_h3_control_module(filenames, time_embed_dim):
+    """Return the control layers and input channels of an attached ControlNet-Union module."""
+    layers, control_in_dim = set(), 0
+    for path in filenames:
+        state_dict, _ = quant_router.load_metadata_state_dict(path)
+        for key, value in state_dict.items():
+            if key.startswith("blocks.") and ".control.adaln_proj.linear.weight" in key:
+                layers.add(int(key.split(".")[1]))
+                if value.shape[1] != time_embed_dim:
+                    raise ValueError(f"MiniMax H3 control module '{os.path.basename(path)}' uses AdaLN width {value.shape[1]} but the transformer uses {time_embed_dim}; "
+                                     "pair pruned control modules with pruned transformers and full modules with full transformers")
+            elif key == "control_patch_proj.weight":
+                control_in_dim = value.shape[1] // 4
+    if layers and (0 not in layers or not control_in_dim):
+        raise ValueError("Incomplete MiniMax H3 control module: it must include the layer-0 control block and control_patch_proj")
+    return tuple(sorted(layers)), control_in_dim
+
+
 def _resample_adaln_table(table, rows, dtype):
     if table.shape[0] != rows:
         position = torch.linspace(0, table.shape[0] - 1, rows)
@@ -142,10 +160,12 @@ def _load_transformer(filename, dtype, qkv_splitting=True, qkv_layout="interleav
               "and all other blocks plus the final layer use the FL2VA table.")
     if pdd and (int(pdd_num_steps) < 1 or int(pdd_block_size) < 1 or int(pdd_num_steps) % int(pdd_block_size)):
         raise ValueError(f"Invalid MiniMax H3 PDD grid={pdd_num_steps}, block={pdd_block_size}")
+    control_layers, control_in_dim = probe_h3_control_module(filenames[1:], checkpoint["time_embed_dim"])
     with init_empty_weights(include_buffers=True):
         transformer = MiniMaxH3Model(adaln_curve_grid=checkpoint["adaln_curve_grid"], time_embed_dim=checkpoint["time_embed_dim"], adaln_dtype=checkpoint["adaln_dtype"],
                                      hybrid_ref2va_blocks=hybrid_ref2va_blocks, pdd_num_steps=pdd_num_steps,
-                                     pdd_block_size=pdd_block_size, vdn=vdn, dtype=dtype, device="meta")
+                                     pdd_block_size=pdd_block_size, vdn=vdn, control_layers=control_layers,
+                                     control_in_dim=control_in_dim, dtype=dtype, device="meta")
     split_map = get_linear_split_map(transformer.attention_inner_size, qkv_layout=qkv_layout) if qkv_splitting and not any(path.lower().endswith(".gguf") for path in filenames) else None
     if split_map is not None:
         offload.split_linear_modules(transformer, split_map)

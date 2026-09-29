@@ -207,7 +207,7 @@ Only flags listed in `model_def["image_prompt_types_allowed"]` survive settings 
 | `V` | A control video or control image is used (`video_guide` in video mode, `image_guide` in image mode). |
 | `+` | A second control or reference video is used (`video_guide2`). |
 | `*` | A third reference video is used (`video_guide3`), with `+`. |
-| `-` | The guide videos are reference videos (appearance or motion references) rather than control videos, for example H3 Ref2VA `V-U` for one reference video, `V+-U` for two and `V+*-U` for three. H3 Ref2VA `V1-U` takes up to three excerpts from one reference video instead. |
+| `-` | The guide videos are reference videos (appearance or motion references) rather than control videos, for example H3 Ref2VA `V-U` for one reference video, `V+-U` for two and `V+*-U` for three. H3 Ref2VA `V1-U` takes up to three excerpts from one reference video instead. With sliding windows, every window receives the whole reference video; without `-`, a control video is split so that each window receives its own section. |
 | `R` | Sparse video-to-video: one frame is taken from the control video for each sliding window. |
 | `\|` | Cap the video length at the control video's length (**Capped By: Control Length**). |
 | `G` | Guide/denoise against the control media. Enables `denoising_strength`. |

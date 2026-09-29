@@ -127,6 +127,9 @@ footer .built-with > img {
     --color-accent: var(--studio-accent);
     --color-accent-soft: var(--studio-soft);
 }
+.wangp-studio-field:has(video) {
+    --block-label-background-fill: var(--studio-soft);
+}
 .wangp-studio-field [data-testid="block-info"] {
     background: transparent;
     color: var(--studio-label);

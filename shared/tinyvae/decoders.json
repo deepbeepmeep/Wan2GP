@@ -140,6 +140,8 @@
     "hunyuan_1_5_i2v": "taehv1_5",
     "minimax_h3_fl2va": "taeh3",
     "minimax_h3_fl2va_pruned": "taeh3",
+    "minimax_h3_control": "taeh3",
+    "minimax_h3_control_pruned": "taeh3",
     "minimax_h3_ref2va_pruned": "taeh3",
     "minimax_h3_ref2va": "taeh3"
   }

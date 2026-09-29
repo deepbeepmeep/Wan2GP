@@ -47,6 +47,7 @@ from .components.packing import (
 
 VISUAL_COND_TIMESTEP = MINIMAX_H3_KEYFRAME_NOISE_AUG
 AUDIO_COND_TIMESTEP = 1.0
+CONTROL_ROW_CHUNK = 4096
 
 
 def patchify_video(latent, patch_size=(1, 2, 2)):
@@ -73,6 +74,18 @@ def _grouped_video_timestep_rows(timestep, timestep_indices, video_start, target
         block_rows.append((video_start + fixed_rows, video_start + target_video_rows,
                            current_row * 3 + MINIMAX_H3_VIDEO_TAG))
     return timestep, timestep_indices, head_rows, block_rows
+
+
+def _frame_video_timestep_rows(timestep, timestep_indices, sigma_video, target_video_rows):
+    # Embed one timestep per latent frame and broadcast it over that frame's spatial rows.
+    timestep_count = timestep.shape[0]
+    frame_timesteps = 1.0 - sigma_video.to(device=timestep.device, dtype=torch.float32).flatten()
+    timestep, remap = torch.unique(torch.cat((timestep, frame_timesteps)), sorted=True, return_inverse=True)
+    timestep_indices = remap[:timestep_count][timestep_indices]
+    frame_rows = remap[-frame_timesteps.numel():]
+    rows_per_frame = target_video_rows // frame_timesteps.numel()
+    head_rows = [(index * rows_per_frame, (index + 1) * rows_per_frame, int(row)) for index, row in enumerate(frame_rows)]
+    return timestep, timestep_indices, head_rows, frame_rows
 
 
 def pack_audio(latent):
@@ -414,6 +427,20 @@ class DiTBlock(nn.Module):
         return hidden, signature
 
 
+class ControlBlock(DiTBlock):
+    """VideoX-Fun ControlNet-Union block attached to the main block it feeds (only one control stream is kept alive)."""
+
+    def __init__(self, hidden, *args, first=False, dtype=None, device=None, **kwargs):
+        super().__init__(hidden, *args, dtype=dtype, device=device, **kwargs)
+        if first:
+            self.before_proj = nn.Linear(hidden, hidden, bias=True, dtype=dtype, device=device)
+        self.after_proj = nn.Linear(hidden, hidden, bias=True, dtype=dtype, device=device)
+
+
+def _chunk_rows(start, stop, chunk=CONTROL_ROW_CHUNK):
+    return ((offset, min(stop, offset + chunk)) for offset in range(start, stop, chunk))
+
+
 class FinalLayer(nn.Module):
     def __init__(self, hidden, time_dim, video_dim, audio_dim, eps, apply_silu=True,
                  adaln_dtype=None, pdd_num_steps=None, dtype=None, device=None):
@@ -556,7 +583,7 @@ class MiniMaxH3Model(nn.Module):
                  final_norm_eps=1e-5, sigma_shift_video=12.0, sigma_shift_audio=3.0,
                  ffn_chunk_size=2048, adaln_curve_grid=None, adaln_dtype=torch.float32, image_model=None,
                  hybrid_ref2va_blocks=None, pdd_num_steps=None, pdd_block_size=None, vdn=False,
-                 dtype=None, device=None, **kwargs):
+                 control_layers=(), control_in_dim=0, dtype=None, device=None, **kwargs):
         super().__init__()
         self._interrupt = False
         self.cache = None
@@ -594,9 +621,19 @@ class MiniMaxH3Model(nn.Module):
                                                dtype=dtype, device=device) for _ in range(num_layers)])
         self.final_layer = FinalLayer(hidden_size, time_embed_dim, video_dim, audio_latents_dim,
                                       final_norm_eps, **curve, pdd_num_steps=pdd_num_steps, dtype=dtype, device=device)
+        self.control_layers = tuple(control_layers)
+        for index, layer in enumerate(self.control_layers):
+            self.blocks[layer].control = ControlBlock(hidden_size, num_attention_heads, attention_head_dim, ffn_hidden_size,
+                                                      time_embed_dim, norm_eps, qk_norm_eps, **curve, first=index == 0,
+                                                      ffn_chunk_size=ffn_chunk_size, sol_attention=self.sol_attention,
+                                                      dtype=dtype, device=device)
         fp32_modules = [self.video_patch_proj, self.audio_patch_proj, self.final_layer.video_out, self.final_layer.audio_out]
+        if self.control_layers:
+            self.control_patch_proj = nn.Linear(control_in_dim * math.prod(self.patch_size), hidden_size, bias=True, dtype=torch.float32, device=device)
+            fp32_modules.append(self.control_patch_proj)
         if self.use_adaln_curves:
-            for module in (*[block.adaln_proj.linear for block in self.blocks], self.final_layer.adaln_proj.linear):
+            adaln_modules = [block.adaln_proj.linear for block in self.blocks] + [self.blocks[layer].control.adaln_proj.linear for layer in self.control_layers]
+            for module in (*adaln_modules, self.final_layer.adaln_proj.linear):
                 module._lock_dtype = adaln_dtype
         else:
             fp32_modules.extend((self.time_embedder.proj_in, self.time_embedder.proj_out))
@@ -651,6 +688,26 @@ class MiniMaxH3Model(nn.Module):
         payload["layout_signature"], payload["layout"] = signature, layout
         return layout
 
+    def _control_stream(self, hidden, control_rows, video_indices):
+        # The control stream is the packed sequence with the control embeddings on the video rows, re-based on the main input.
+        if control_rows.shape[0] != video_indices.numel():
+            raise ValueError(f"MiniMax H3 control rows ({control_rows.shape[0]}) must match the packed video rows ({video_indices.numel()})")
+        stream = hidden.clone()
+        for start, stop in _chunk_rows(0, video_indices.numel()):
+            rows = control_rows[start:stop].to(device=hidden.device, dtype=torch.float32)
+            stream.index_copy_(0, video_indices[start:stop], self.control_patch_proj(rows).to(hidden.dtype))
+        before_proj = self.blocks[self.control_layers[0]].control.before_proj
+        for start, stop in _chunk_rows(0, stream.shape[0]):
+            stream[start:stop] = before_proj(stream[start:stop]).add_(hidden[start:stop])
+        return stream
+
+    @staticmethod
+    def _add_control_skip(hidden, stream, after_proj, row_ranges, scale):
+        # Skips are applied in row chunks so no full-sequence skip tensor is ever materialized.
+        for first, last in row_ranges:
+            for start, stop in _chunk_rows(first, last):
+                hidden[start:stop].add_(after_proj(stream[start:stop]), alpha=scale)
+
     def _time_embedding(self, timesteps, table=None):
         if not self.use_adaln_curves:
             return self.time_embedder(timesteps)
@@ -666,8 +723,10 @@ class MiniMaxH3Model(nn.Module):
         sigma_video = sigma_video.flatten()
         if sigma_video.numel() not in (1, latent_t):
             raise ValueError(f"MiniMax H3 received {sigma_video.numel()} video sigmas for {latent_t} latent frames")
-        if sigma_video.numel() > 1 and not bool((sigma_video == sigma_video[0]).all()):
+        if not self.control_layers and sigma_video.numel() > 1 and not bool((sigma_video == sigma_video[0]).all()):
             raise ValueError("MiniMax H3 requires one uniform video sigma")
+        # A clean first-frame ControlNet anchor must not set the text/audio prefix's noise level.
+        base_video_sigma = sigma_video.max() if self.control_layers else sigma_video[0]
         audio_t = audio_x.shape[-1]
         text_tags = payload["text_token_tags"].view(-1).cpu()
         layout = self._layout(text_tags, latent_t, latent_h, latent_w, audio_t, payload)
@@ -679,9 +738,9 @@ class MiniMaxH3Model(nn.Module):
         if spectrum is not None and spectrum.forecasting:
             timestep, timestep_indices = build_row_timesteps(
                 layout,
-                float(1.0 - sigma_video.flatten()[0]),
+                float(1.0 - base_video_sigma),
                 float(1.0 - sigma_audio.flatten()[0]),
-                max(float(1.0 - sigma_video.flatten()[0]), VISUAL_COND_TIMESTEP),
+                max(float(1.0 - base_video_sigma), VISUAL_COND_TIMESTEP),
                 AUDIO_COND_TIMESTEP,
             )
             timestep, timestep_indices = timestep.to(device), timestep_indices.to(device)
@@ -695,6 +754,8 @@ class MiniMaxH3Model(nn.Module):
                 timestep, timestep_indices, video_row, _ = _grouped_video_timestep_rows(
                     timestep, timestep_indices, video_start, target_video_rows,
                     target_video_fixed_rows, target_video_mask_active)
+            if self.control_layers and target_video_order is None and sigma_video.numel() > 1:
+                timestep, timestep_indices, video_row, _ = _frame_video_timestep_rows(timestep, timestep_indices, sigma_video, target_video_rows)
             temb = self._time_embedding(timestep)
             audio_row = int(timestep_indices[audio_start + min(layout.num_target_condition_audio_latents,
                                                                max(audio_t - 1, 0))])
@@ -737,9 +798,9 @@ class MiniMaxH3Model(nn.Module):
 
         timestep, timestep_indices = build_row_timesteps(
             layout,
-            float(1.0 - sigma_video.flatten()[0]),
+            float(1.0 - base_video_sigma),
             float(1.0 - sigma_audio.flatten()[0]),
-            max(float(1.0 - sigma_video.flatten()[0]), VISUAL_COND_TIMESTEP),
+            max(float(1.0 - base_video_sigma), VISUAL_COND_TIMESTEP),
             AUDIO_COND_TIMESTEP,
         )
         timestep, timestep_indices = timestep.to(device), timestep_indices.to(device)
@@ -752,12 +813,7 @@ class MiniMaxH3Model(nn.Module):
                 timestep, timestep_indices, video_start, target_video_rows,
                 target_video_fixed_rows, target_video_mask_active)
         elif sigma_video.numel() == latent_t:
-            frame_timesteps = 1.0 - sigma_video.to(device=device, dtype=torch.float32)
-            timestep, remap = torch.unique(torch.cat((timestep, frame_timesteps)), sorted=True, return_inverse=True)
-            timestep_indices = remap[:timestep_indices.max().item() + 1][timestep_indices]
-            frame_rows = remap[-latent_t:]
-            video_head_row = [(index * (target_video_rows // latent_t), (index + 1) * (target_video_rows // latent_t), int(row))
-                              for index, row in enumerate(frame_rows)]
+            timestep, timestep_indices, video_head_row, frame_rows = _frame_video_timestep_rows(timestep, timestep_indices, sigma_video, target_video_rows)
         adaln_indices = timestep_indices * 3 + layout.token_tags.to(device).clamp_min(0)
         changes = torch.cat((torch.ones(1, dtype=torch.bool, device=device), adaln_indices[1:] != adaln_indices[:-1],
                              torch.ones(1, dtype=torch.bool, device=device))).nonzero().flatten()
@@ -794,29 +850,60 @@ class MiniMaxH3Model(nn.Module):
             for block in self.blocks:
                 block.attn.vdn.begin_forward(layout, latent_t, latent_h, latent_w, self.patch_size)
 
+        control_rows = payload.get("control_rows")
+        control_list = None
+        if control_rows is not None:
+            control_scale = float(payload["control_scale"])
+            # Keep appended conditions, audio, and anchored target frames free of direct control skips. Restoring anchors
+            # between denoising steps cannot undo pose features already shared with adjacent frames inside the transformer.
+            # The encoder prefix can also contain supplied image/audio embeddings.
+            # Apply prefix skips only to text, while retaining the full sequence in control attention.
+            control_row_ranges = [(start, stop) for start, stop, row in segments
+                                  if start < text_tags.numel() and row % 3 == MINIMAX_H3_TEXT_TAG]
+            rows_per_frame, first_frame = target_video_rows // latent_t, 0
+            for frame in payload.get("control_anchor_frames", ()):
+                if first_frame < frame:
+                    control_row_ranges.append((video_start + first_frame * rows_per_frame, video_start + frame * rows_per_frame))
+                first_frame = frame + 1
+            if first_frame < latent_t:
+                control_row_ranges.append((video_start + first_frame * rows_per_frame, layout.sequence_length))
+            control_list = [self._control_stream(hidden, control_rows, layout.video_indices.to(device))]
+
+        def run_block(block_index, h_list, residual_signature_elements=0):
+            nonlocal control_list
+            block = self.blocks[block_index]
+            block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] <= block_index <= self.hybrid_ref2va_blocks[1] else temb
+            control = block.control if control_list is not None and hasattr(block, "control") else None
+            if control is not None:
+                control_list = [control(control_list, block_temb, segments, rope)]
+                self._check_interrupt()
+            output = block(h_list, block_temb, segments, rope, residual_signature_elements) if residual_signature_elements else block(h_list, block_temb, segments, rope)
+            if control is not None:
+                self._add_control_skip(output[0] if residual_signature_elements else output, control_list[0], control.after_proj, control_row_ranges, control_scale)
+                if block_index == self.control_layers[-1]:
+                    control_list = None
+            return output
+
         if first_block_cache is None:
-            for block_index, block in enumerate(self.blocks):
+            for block_index in range(len(self.blocks)):
                 self._check_interrupt()
                 h_list = [hidden]
                 hidden = None
-                block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] <= block_index <= self.hybrid_ref2va_blocks[1] else temb
-                hidden = block(h_list, block_temb, segments, rope)
+                hidden = run_block(block_index, h_list)
         else:
             self._check_interrupt()
-            block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] == 0 else temb
-            hidden, signature = self.blocks[0]([hidden], block_temb, segments, rope,
-                                                residual_signature_elements=first_block_cache.MAX_SIGNATURE_ELEMENTS)
+            hidden, signature = run_block(0, [hidden], first_block_cache.MAX_SIGNATURE_ELEMENTS)
             if first_block_cache.should_compute(signature):
                 head_output = first_block_cache.capture_head_output(hidden[audio_start:])
                 for block_index in range(1, len(self.blocks)):
                     self._check_interrupt()
-                    block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] <= block_index <= self.hybrid_ref2va_blocks[1] else temb
                     h_list = [hidden]
                     hidden = None
-                    hidden = self.blocks[block_index](h_list, block_temb, segments, rope)
+                    hidden = run_block(block_index, h_list)
                 first_block_cache.store_tail_residual(hidden[audio_start:], head_output)
             else:
                 first_block_cache.apply_tail_residual(hidden[audio_start:])
+            control_list = None
 
         audio_row = int(timestep_indices[audio_start + min(layout.num_target_condition_audio_latents,
                                                            max(audio_t - 1, 0))])

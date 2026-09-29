@@ -91,6 +91,14 @@ Thanks to **WanGP community** contributing code, testing and feedback!
 
 - **H3 Learns to Hold Still**: select **Text to Image** for a single still. The prompt enhancer gains dedicated image prompts, including reference-based edits. 
 
+- **H3 Ref2VA Frames Injection**: Ref2VA should be now on par with Fl2VA. But keep in mind, you will get better results with Fl2VA for Start,End,Injected Frames and Text2Video
+
+- **H3 In-Context LoRAs**: **Use Control Video as In-Context Guide** enables compatible face/character-swap LoRAs. The previous editing mode is renamed **Denoise Control Video (Video-to-Video Edit)**.
+
+- **H3 ControlNet-Union 2.0**: **FL2VA 33B and Pruned 20B** gain pose, depth, edge, shape and recoloring controls, plus inpainting and spatial outpainting. 
+
+- **Floating Generate Buttons**: controls float on the right until their normal position is visible; Edit Mode buttons float too. Enabled by default in **Configuration / General**.
+
 - **Three Voices, One Conversation**: three uploaded voice references now work with **H3 Audio, Qwen3 TTS Base, OmniVoice, KugelAudio, IndexTTS2/2.5, DramaBox and Scenema**. Use `Speaker 1:` through `Speaker 3:`; Scenema applies its references through SeedVC.
 
 - **Krea 2 Real and HD VAEs**: Krea 2 and compatible Qwen Image 20B/Edit models gain a *VAE* dropdown: try **Real** for photographic textures or **HD** for detail and contrast.

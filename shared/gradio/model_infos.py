@@ -6,6 +6,8 @@ import markdown as markdown_module
 from markdown.extensions import Extension
 from markdown.treeprocessors import Treeprocessor
 
+from shared.utils.markdown import EscapeHtmlExtension
+
 
 class _SafeHelpLinks(Treeprocessor):
     def run(self, root):
@@ -28,12 +30,12 @@ class _SafeHelpLinksExtension(Extension):
 
 
 def _render_markdown(markdown: str) -> str:
-    source = html.escape(str(markdown or "").strip(), quote=False)
+    source = str(markdown or "").strip()
     if not source:
         return ""
     return markdown_module.markdown(
         source,
-        extensions=["tables", "fenced_code", "sane_lists", _SafeHelpLinksExtension()],
+        extensions=["tables", "fenced_code", "sane_lists", EscapeHtmlExtension(), _SafeHelpLinksExtension()],
         output_format="html5",
     )
 

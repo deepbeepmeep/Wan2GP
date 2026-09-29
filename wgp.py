@@ -174,7 +174,7 @@ AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
 target_mmgp_version = "3.8.2"
-WanGP_version = "13.14"
+WanGP_version = "13.141"
 settings_version = 2.79
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2669,6 +2669,7 @@ if not Path(config_load_filename).is_file():
         "audio_profile": 3.5,
         "preload_model_policy": [],
         "UI_theme": "default",
+        "floating_generate_button": True,
         "checkpoints_paths": fl.default_checkpoints_paths,
         "loras_root": DEFAULT_LORA_ROOT,
         "save_queue_if_crash": 1,
@@ -7351,7 +7352,7 @@ def generate_media(
     # Image Ref (non background and non positioned frames) are boxed in a white canvas in order to keep their own width/height ratio
     frames_to_inject = []
     any_background_ref  = 0
-    custom_frames_injection = model_def.get("custom_frames_injection", False) and image_refs is not None and len(image_refs) > 0
+    custom_frames_injection = model_def.get("custom_frames_injection", False) and "F" in video_prompt_type and image_refs is not None and len(image_refs) > 0
     if "K" in video_prompt_type: 
         any_background_ref = 2 if model_def.get("all_image_refs_are_background_ref", False) or custom_frames_injection else 1
     fit_canvas = server_config.get("fit_canvas", 0)
@@ -7549,6 +7550,7 @@ def generate_media(
         source_video_frames_count = 0  # number of frames to use in source video (processing starts source_video_overlap_frames_count frames before )
         frames_already_processed = []
         frames_already_processed_count = 0
+        retained_video_frames = 0  # output timeline at generation FPS, before temporal upsampling
         external_audio_trim_ranges = []
         overlapped_latents = None
         pre_video_guide_is_hdr = False
@@ -7747,7 +7749,7 @@ def generate_media(
                         image_size  = image_end_tensor.shape[-2:]
                         sample_fit_canvas = None
                 image_end_list= None
-            image_end_frame_position = current_video_length - tail_trim_frames - 1 if image_end_tensor is not None and model_def.get("image_end_frame_position", False) else None
+            image_end_frame_position = current_video_length - tail_trim_frames - 1 if model_def.get("image_end_frame_position", False) else None  # also locates an injected frame used as the window's end image
             window_start_frame = guide_start_frame - (reuse_frames if window_no > 1 else source_video_overlap_frames_count)
             guide_end_frame = guide_start_frame + current_video_length - (source_video_overlap_frames_count if window_no == 1 else reuse_frames)
             alignment_shift = source_video_frames_count if reset_control_aligment else 0
@@ -8278,8 +8280,9 @@ def generate_media(
                     overridden_inputs = samples.get("overridden_inputs", None)
                     output_audio_sampling_rate = samples.get("audio_sampling_rate", audio_sampling_rate)
                     input_fills_window = input_waveform is not None and input_waveform.shape[0] >= int(round(current_video_length * input_waveform_sample_rate / fps))
+                    keep_input_audio = (model_def.get("output_audio_is_input_audio", False) or "S" in audio_prompt_type) and output_new_audio_filepath is not None and "O" not in audio_prompt_type
                     if generated_audio is not None:
-                        if (model_def.get("output_audio_is_input_audio", False) or "S" in audio_prompt_type) and output_new_audio_filepath is not None and "O" not in audio_prompt_type and input_fills_window:
+                        if keep_input_audio and input_fills_window:
                             drop_generated_audio = True
                         elif input_fills_window:
                             output_new_audio_filepath = None
@@ -8337,7 +8340,7 @@ def generate_media(
                     window_overlap_frames = source_video_overlap_frames_count if window_no == 1 else reuse_frames
                     trim_first_frames = min(sliding_window_trim_first_frames, max(0, sample.shape[1] - 1)) if window_overlap_frames == 0 else 0
                     if trim_first_frames > 0:
-                        audio_trim_start_frame = frames_already_processed_count + (prefix_video.shape[1] if prefix_video is not None and window_no == 1 else 0)
+                        audio_trim_start_frame = retained_video_frames + (prefix_video.shape[1] if prefix_video is not None and window_no == 1 else 0)
                         external_audio_trim_ranges.append((audio_trim_start_frame, trim_first_frames))
                         sample = sample[:, trim_first_frames:]
                         if generated_audio is not None:
@@ -8380,12 +8383,20 @@ def generate_media(
                 num_frames_generated = guide_start_frame - (source_video_frames_count - source_video_overlap_frames_count) 
                 if drop_generated_audio: generated_audio = None
                 if generated_audio is not None:
-                    committed_audio_samples = int(round((num_frames_generated - sample.shape[1]) * output_audio_sampling_rate / fps))
+                    # generated audio starts after the Source Video frames (its overlap frames were already removed from the sample)
+                    source_audio_frames = source_video_frames_count if video_source is not None else 0
+                    committed_audio_samples = int(round(max(0, retained_video_frames - source_audio_frames) * output_audio_sampling_rate / fps))
                     if full_generated_audio is None:
-                        full_generated_audio = append_sliding_window_audio(output_new_audio_data, output_new_audio_filepath, generated_audio, output_audio_sampling_rate, committed_audio_samples) if output_new_audio_data is not None or output_new_audio_filepath is not None else generated_audio
+                        # a kept soundtrack file is aligned with the start of the Source Video unless control alignment is reset: skip the source part
+                        prefix_start_samples = 0 if reset_control_aligment or output_new_audio_data is not None else int(round(source_audio_frames * output_audio_sampling_rate / fps))
+                        full_generated_audio = append_sliding_window_audio(output_new_audio_data, output_new_audio_filepath, generated_audio, output_audio_sampling_rate, committed_audio_samples,
+                                                                           prefix_start_samples=prefix_start_samples, keep_existing=keep_input_audio and output_new_audio_data is None,
+                                                                           trim_ranges=shift_audio_trim_ranges(external_audio_trim_ranges, source_audio_frames), video_fps=fps) if output_new_audio_data is not None or output_new_audio_filepath is not None else generated_audio
                     else:
                         full_generated_audio = np.concatenate([full_generated_audio, generated_audio], axis=0)
                     output_new_audio_data = full_generated_audio
+                if not (audio_only or is_image):
+                    retained_video_frames += sample.shape[1]
 
 
                 if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 and (not upsampler_api.is_vae_upsampling(spatial_upsampling) or upsampler_api.has_post_model_process_vae_upsampling(spatial_upsampling)):
@@ -11605,6 +11616,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
     global inputs_names #, advanced
     plugin_data = gr.State({})
     edit_mode = tab_id=='edit'
+    floating_generate_button = server_config.get("floating_generate_button", True)
 
     if update_form:
         model_type = ui_defaults.get("model_type", state_dict["model_type"])
@@ -11685,7 +11697,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
     launch_loras = update_loras_url_cache(get_lora_dir(model_type), launch_loras)
     with gr.Row():
         column_kwargs = {'elem_id': 'edit-tab-content'} if tab_id == 'edit' else {}
-        with gr.Column(**column_kwargs):
+        with gr.Column(**column_kwargs, elem_classes=["wangp-actions-column"] if floating_generate_button else None):
             with gr.Column(visible=False, elem_id="image-modal-container") as modal_container:
                 modal_html_display = gr.HTML()
                 modal_action_input = gr.Text(elem_id="modal_action_input", visible=False)
@@ -12886,7 +12898,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         config = gr.Text(value=config_value, interactive=False, visible=False)
 
             if not update_form:
-                with gr.Row(visible=(tab_id == 'edit')):
+                with gr.Row(visible=(tab_id == 'edit'), elem_classes=["wangp-settings-actions"] if floating_generate_button else None):
                     edit_btn = gr.Button("Apply Edits", elem_id="edit_tab_apply_button")
                     cancel_btn = gr.Button("Cancel", elem_id="edit_tab_cancel_button")
                     silent_cancel_btn = gr.Button("Silent Cancel", elem_id="silent_edit_tab_cancel_button", visible=False)
@@ -12917,7 +12929,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             mode = gr.Text(value="", visible = False)
 
-        with gr.Column(visible=(tab_id == 'generate')):
+        with gr.Column(visible=(tab_id == 'generate'), elem_classes=["wangp-actions-column"] if floating_generate_button else None):
             if not update_form:
                 if tab_id == 'generate' and default_state is None:
                     global _deepy_hybrid
@@ -13027,25 +13039,27 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             video_info_add_videos_btn = gr.Button("Import Videos / Images / Audio Files", size ="sm")
  
             if not update_form:
-                generate_btn = gr.Button("Generate")
                 generate_trigger = gr.Text(visible = False) 
                 add_to_queue_trigger = gr.Text(visible = False)
                 js_trigger_index = gr.Text(visible=False, elem_id="js_trigger_for_edit_refresh")
 
-                with gr.Column(visible= False) as current_gen_column:
-                    with gr.Row() as current_gen_buttons_row:
-                        onemoresample_btn = gr.Button("One More Sample", visible = True, size='md', min_width=1)
-                        onemorewindow_btn = gr.Button("Extend this Sample", visible = False, size='md', min_width=1)
-                        pause_btn = gr.Button("Pause", visible = True, size='md', min_width=1)
-                        resume_btn = gr.Button("Resume", visible = False, size='md', min_width=1)
-                        abort_btn = gr.Button("Abort", visible = True, size='md', min_width=1)
-                        earlystop_btn = gr.Button("Early Stop", visible = False, size='md', min_width=1)
+                with gr.Column(elem_classes=["wangp-settings-actions"] if floating_generate_button else None):
+                    generate_btn = gr.Button("Generate")
+                    with gr.Column(visible=False, elem_id=f"wangp-{tab_id}-current-actions" if floating_generate_button else None) as current_gen_column:
+                        with gr.Row() as current_gen_buttons_row:
+                            onemoresample_btn = gr.Button("One More", visible = True, size='md', min_width=1, elem_classes=["wangp-action-tooltip", "wangp-action-more"])
+                            onemorewindow_btn = gr.Button("Extend", visible = False, size='md', min_width=1, elem_classes=["wangp-action-tooltip", "wangp-action-extend"])
+                            pause_btn = gr.Button("Pause", visible = True, size='md', min_width=1, elem_classes=["wangp-action-tooltip", "wangp-action-pause"])
+                            resume_btn = gr.Button("Resume", visible = False, size='md', min_width=1, elem_classes=["wangp-action-tooltip", "wangp-action-resume"])
+                            abort_btn = gr.Button("Abort", visible = True, size='md', min_width=1, elem_classes=["wangp-action-tooltip", "wangp-action-abort"])
+                            earlystop_btn = gr.Button("Early Stop", visible = False, size='md', min_width=1)
+                    add_to_queue_btn = gr.Button("Add New Prompt To Queue", visible=False)
+                with gr.Column(elem_classes=["wangp-generation-details"]) if floating_generate_button else current_gen_column:
                     with gr.Accordion("Preview", open=False):
                         preview = gr.HTML(value=refresh_preview(state_dict), label="Preview", show_label= False)
                         preview_trigger = gr.Text(visible= False)
                     with gr.Accordion("Current Prompt and Media", open=True, visible=False) as gen_info_accordion:
                         gen_info = gr.HTML(visible=False, min_height=1)
-                add_to_queue_btn = gr.Button("Add New Prompt To Queue", visible=False)
                 with gr.Accordion("Queue Management", open=False) as queue_accordion:
                     with gr.Row():
                         queue_html = gr.HTML(

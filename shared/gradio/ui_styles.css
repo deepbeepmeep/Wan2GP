@@ -11,6 +11,87 @@ gradio-app {
     width: 100%;
 }
 
+/* Keep actions at the bottom of their column, floating until their slot is in
+   view. Native sticky positioning also follows wrapping, tab and form updates. */
+.gradio-container:has(.wangp-settings-actions) {
+    /* Clip without creating an unscrolled ancestor that traps sticky bars. */
+    overflow: clip;
+}
+.wangp-actions-column {
+    align-self: flex-start;
+}
+.wangp-settings-actions {
+    position: sticky !important;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    z-index: 20;
+    flex: 0 0 auto !important;
+    padding: 8px;
+    box-sizing: border-box;
+    border: 1px solid transparent;
+    border-radius: 18px;
+    background: transparent;
+}
+.wangp-settings-actions.is-floating {
+    border-color: color-mix(in srgb, var(--studio-border, var(--border-color-primary)) 20%, transparent);
+    background: color-mix(in srgb, var(--studio-surface, var(--background-fill-primary)) 60%, transparent);
+    -webkit-backdrop-filter: blur(16px) saturate(130%);
+    backdrop-filter: blur(16px) saturate(130%);
+    box-shadow: 0 6px 22px rgb(0 0 0 / 8%);
+}
+.wangp-settings-actions button {
+    min-width: min(100%, 104px) !important;
+}
+.wangp-action-tooltip {
+    position: relative;
+    overflow: visible !important;
+}
+.wangp-action-tooltip::after {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: min(240px, calc(100vw - 32px));
+    padding: 6px 9px;
+    border-radius: 6px;
+    background: var(--body-text-color);
+    color: var(--body-background-fill);
+    font-size: 12px;
+    font-weight: normal;
+    line-height: 1.4;
+    white-space: normal;
+    text-align: left;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 120ms ease, visibility 0s;
+    z-index: 50;
+}
+.wangp-action-tooltip:is(:hover, :focus-visible)::after {
+    opacity: 1;
+    visibility: visible;
+    transition-delay: 500ms;
+}
+.wangp-action-more::after {
+    content: "Generate one more result with the current prompt.";
+    left: 0;
+    transform: none;
+}
+.wangp-action-extend::after { content: "Extend the current video by one more window."; }
+.wangp-action-pause::after { content: "Pause generation until you choose Resume."; }
+.wangp-action-resume::after { content: "Continue the paused generation."; }
+.wangp-action-abort::after {
+    content: "Stop the current generation.";
+    left: auto;
+    right: 0;
+    transform: none;
+}
+/* Preview visibility still follows the same Gradio generation-state column,
+   although its contents now stay beside the gallery rather than in the bar. */
+.gradio-container:not(:has(#wangp-generate-current-actions:not(.hide))) .wangp-generation-details {
+    display: none;
+}
+
 .gallery-container .icon-button-wrapper.wangp-video-actions {
     position: absolute;
     right: auto;

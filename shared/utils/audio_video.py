@@ -69,7 +69,8 @@ def resample_audio_array(audio_data, source_sample_rate, target_sample_rate):
     return (resampled.T if audio_array.ndim == 2 else resampled[0]).astype(np.float32, copy=False)
 
 
-def append_sliding_window_audio(existing_audio_data, existing_audio_path, generated_audio, audio_sampling_rate, committed_audio_samples, existing_audio_sample_rate=None):
+def append_sliding_window_audio(existing_audio_data, existing_audio_path, generated_audio, audio_sampling_rate, committed_audio_samples, existing_audio_sample_rate=None, prefix_start_samples=0, keep_existing=False, trim_ranges=(), video_fps=None):
+    # keep_existing: a kept soundtrack also replaces the generated audio of the current window for as long as it lasts
     generated_audio = np.asarray(generated_audio, dtype=np.float32)
     if generated_audio.size == 0:
         return generated_audio
@@ -82,7 +83,10 @@ def append_sliding_window_audio(existing_audio_data, existing_audio_path, genera
         return generated_audio
     if prefix_sample_rate != int(audio_sampling_rate):
         prefix_audio = resample_audio_array(prefix_audio, prefix_sample_rate, audio_sampling_rate)
-    prefix_audio = prefix_audio[:max(0, int(committed_audio_samples))]
+    prefix_start_samples, committed_audio_samples = max(0, int(prefix_start_samples)), max(0, int(committed_audio_samples))
+    prefix_audio = prefix_audio[prefix_start_samples:]
+    prefix_audio = trim_audio_ranges(prefix_audio, trim_ranges, video_fps, audio_sampling_rate)
+    prefix_audio = prefix_audio[:committed_audio_samples + (generated_audio.shape[0] if keep_existing else 0)]
     if prefix_audio.size == 0:
         return generated_audio
     if prefix_audio.ndim != generated_audio.ndim:
@@ -90,7 +94,7 @@ def append_sliding_window_audio(existing_audio_data, existing_audio_path, genera
         generated_audio = generated_audio[:, None] if generated_audio.ndim == 1 else generated_audio
     if prefix_audio.ndim == 2 and prefix_audio.shape[1] != generated_audio.shape[1]:
         prefix_audio = np.repeat(prefix_audio[:, :1], generated_audio.shape[1], axis=1) if prefix_audio.shape[1] == 1 else prefix_audio[:, :generated_audio.shape[1]]
-    return np.concatenate([prefix_audio, generated_audio], axis=0)
+    return np.concatenate([prefix_audio, generated_audio[max(0, prefix_audio.shape[0] - committed_audio_samples):]], axis=0)
 
 
 def create_silent_wav_file(output_dir=None, duration_seconds=0.0, sample_rate=16000, prefix="null_audio_"):

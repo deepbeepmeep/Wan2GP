@@ -13,6 +13,8 @@ _MAP_DIR = Path(__file__).with_name("lora_affine_maps")
 _ARCHITECTURES = {
     "minimax_h3_fl2va": "fl2va",
     "minimax_h3_fl2va_pruned": "fl2va",
+    "minimax_h3_control": "fl2va",
+    "minimax_h3_control_pruned": "fl2va",
     "minimax_h3_ref2va": "ref2va",
     "minimax_h3_ref2va_pruned": "ref2va",
     "viggle_animate": "viggle",

@@ -951,7 +951,9 @@ class DeepyPrimeTools:
                 continue
             try:
                 decoded = json.loads(value)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as error:
+                if value.lstrip()[:1] in ("{", "["):  # malformed JSON object/array: point at the fault instead of a generic type error
+                    return f"{name} is not valid JSON: {error.msg} at character {error.pos}, near {value[max(0, error.pos - 40):error.pos + 20]!r}. Nothing was executed; fix that spot and repeat the call with {name} as an object."
                 continue
             if isinstance(decoded, dict) and "object" in kinds or isinstance(decoded, list) and "array" in kinds:
                 arguments[name] = decoded

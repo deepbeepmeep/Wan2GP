@@ -15,6 +15,7 @@ from markdown.extensions.tables import TableExtension, TableProcessor
 
 from shared.deepy import video_tools as deepy_video_tools
 from shared.utils.gallery_media import gallery_media_ids
+from shared.utils.markdown import EscapeHtmlExtension
 from shared.deepy.config import DEEPY_TYPE_PRIME, normalize_deepy_type
 
 
@@ -90,7 +91,7 @@ class _ChatTableExtension(TableExtension):
         md.parser.blockprocessors.register(_ChatTableProcessor(md.parser, self.getConfigs()), "table", 75)
 
 
-_MARKDOWN_EXTENSIONS = ["extra", "nl2br", "sane_lists", "fenced_code", _ChatTableExtension()]
+_MARKDOWN_EXTENSIONS = ["extra", "nl2br", "sane_lists", "fenced_code", _ChatTableExtension(), EscapeHtmlExtension()]
 _MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<path>[^)]+)\)")
 _DOWNLOAD_MARKDOWN_TOKEN_RE = re.compile(r"(?P<fence>```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$))|(?P<link>!?\[(?:\\.|`[^`\n]*`|[^\]\n])*\]\([^\n)]*\))|(?P<code>`[^`\n]+`)")
 _DOWNLOAD_LINK_RE = re.compile(r"!?\[(?:\\.|`[^`\n]*`|[^\]\n])*\]\([^\n)]*\)")
@@ -1221,7 +1222,6 @@ def _markdown_to_html(text: str) -> str:
     text = str(text or "").strip()
     if len(text) == 0:
         return ""
-    text = html.escape(text, quote=False)
     rendered = markdown.markdown(text, extensions=_MARKDOWN_EXTENSIONS, output_format="html5")
     rendered = re.sub(r'<a href="(https?://[^"]+)"', r'<a href="\1" target="_blank" rel="noopener noreferrer"', rendered)
     rendered = re.sub(r'<a href="(/wangp_api/gallery/media/[^"]+)"', r'<a href="\1" target="_blank" rel="noopener noreferrer"', rendered)

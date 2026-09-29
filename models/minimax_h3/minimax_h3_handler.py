@@ -43,6 +43,9 @@ FL2VA_PRUNED_ARCHITECTURE = "minimax_h3_fl2va_pruned"
 REF2VA_ARCHITECTURE = "minimax_h3_ref2va"
 REF2VA_PRUNED_ARCHITECTURE = "minimax_h3_ref2va_pruned"
 TTS_REF2VA_PRUNED_ARCHITECTURE = "minimax_h3_tts_ref2va_pruned"
+CONTROL_ARCHITECTURE = "minimax_h3_control"
+CONTROL_PRUNED_ARCHITECTURE = "minimax_h3_control_pruned"
+CONTROL_ARCHITECTURES = (CONTROL_ARCHITECTURE, CONTROL_PRUNED_ARCHITECTURE)
 FIRST_BLOCK_CACHE_THRESHOLDS = (0.06, 0.08, 0.10, 0.12, 0.14)
 LEGACY_FIRST_BLOCK_CACHE_THRESHOLDS = {1.5: 0.06, 1.75: 0.08, 2.0: 0.10, 2.25: 0.12, 2.5: 0.14}
 FIRST_BLOCK_CACHE_STRENGTHS = [
@@ -55,9 +58,9 @@ FIRST_BLOCK_CACHE_STRENGTHS = [
 
 FL2VA_DEEPY_INFOS = """Generate video and stereo sound from `prompt`. `image_start` / `image_end` anchor the opening / ending; together they constrain the transition. `video_source` continues an existing video; sliding windows carry overlapping video and audio forward.
 
-Control Video (`video_guide`) guides frames: lower Denoising Strength preserves more source content; Whole Frame at strength 1 gives full freedom. A mask selects the edited area. For motion/appearance references, use Ref2VA Reference Video. Inject Frames uses ordered `image_refs` and explicit positions (`1` = first frame, `L` = last frame of the window, `X` = skip a window without consuming an image).
+Control Video (`video_guide`) is split across sliding windows, each window receiving its own section. `GV` (Denoise Control Video) edits its frames: lower Denoising Strength preserves more source content; Whole Frame at strength 1 gives full freedom. A mask selects the edited area. `VU` (In-Context Guide) supplies its unchanged frames as `<Video 1>` for LoRAs trained on FL2VA to transform a source video; name it `<Video 1>` in the prompt. Without such a LoRA, FL2VA is not trained to follow `VU`; for motion/appearance references, use Ref2VA Reference Video. Inject Frames uses ordered `image_refs` and explicit positions (`1` = first frame, `L` = last frame of the window, `X` = skip a window without consuming an image). A frame on a window's first or last frame acts as its start or end image; frames inside the overlap are unused. Per window, pictures are numbered: start or continued frame (`<Picture 1>`), end image, then that window's injected frames by time.
 
-`audio_prompt_type`: empty = generate video and audio; `A` = `audio_guide` is the soundtrack; `K` = the control video's audio track is the soundtrack; `2` = keep control frames and generate their audio. The video follows a soundtrack and WanGP keeps it as the output audio when it covers the video; a shorter one permits generated sound afterward. Match visible action and speech to supplied audio.
+`audio_prompt_type`: empty = generate video and audio; `A` = `audio_guide` is the soundtrack; `K` = the control video's audio track is the soundtrack (`GV` or `VU`); `2` = keep control frames and generate their audio (`GV`). The video follows a soundtrack and WanGP keeps it as the output audio when it covers the video; a shorter one permits generated sound afterward. For visible speech in soundtrack mode, identify the character and explicitly request `speaking with natural lip movements synchronized` or equivalent lip-sync wording, without mentioning a supplied audio track. No transcript is required; exact lip sync is not guaranteed.
 
 Use `capabilities` for window limits. WanGP rounds overlap to compatible values (1, 18, 35, ...); `video_length` sets total duration across windows. Read `prompt_infos` for H3's structured prompt syntax.
 """
@@ -78,17 +81,20 @@ Start and end images are placed at those exact points in the video. For general 
 ### Control Video / Frames Injection
 
 - **Generate without using a Control Video:** generate normally from the prompt and any start/end images.
-- **Use Control Video:** use an uploaded video to guide the result. Lower **Denoising Strength** values keep the result closer to the control video; `1.0` gives the model full freedom. At `1.0` with **Whole Frame** selected, the control video does not affect the result, so WanGP skips that work. Choose **Masked Area** or **Non Masked Area** to limit editing to part of the frame. **Masking Strength** controls how strongly the rest of the frame stays close to the control video. Use a lower masking strength (<0.75) to facilitate continuity with masked areas.
-- **Inject Frames:** add images at specific points in the generated video. Add the images under **Reference Images**, then enter one position per image in the same order. Position `1` means the first frame; `L` means the last frame of a sliding-window segment. Each `X` skips a window without consuming an image.
+- **Use Control Video as In-Context Guide:** H3 receives the control video's unchanged frames as `<Video 1>` and generates a new video from them. Choose this mode with LoRAs trained on FL2VA to transform a source video: name the video `<Video 1>` in the prompt and say what to change and what to keep. FL2VA is not trained to follow this input on its own; without such a LoRA, use Ref2VA with **Reference Video**.
+- **Denoise Control Video (Video-to-Video Edit):** use an uploaded video to guide the result. Lower **Denoising Strength** values keep the result closer to the control video; `1.0` gives the model full freedom. At `1.0` with **Whole Frame** selected, the control video does not affect the result, so WanGP skips that work. Choose **Masked Area** or **Non Masked Area** to limit editing to part of the frame. **Masking Strength** controls how strongly the rest of the frame stays close to the control video. Use a lower masking strength (<0.75) to facilitate continuity with masked areas.
+- **Inject Frames:** add images at specific points in the generated video. Add the images under **Reference Images**, then enter one position per image in the same order. Position `1` means the first frame; `L` means the last frame of a sliding-window segment. Each `X` skips a window without consuming an image. An injected frame on a window's first or last frame acts as that window's start or end image; one inside the sliding-window overlap is not used, because the overlap already continues the previous window.
 
-For motion or appearance transfer from a video reference, use Ref2VA with **Reference Video**. FL2VA Control Video uses denoising-based editing.
+Both control video modes are split across sliding windows: each window receives only its own section of the control video. For motion or appearance transfer from a video reference, use Ref2VA with **Reference Video**.
 
 ### Audio Source
 
 - **Generate Video and Audio from Text Prompt:** let H3 create both.
 - **Generate Video based on Soundtrack and Text Prompt (Soundtrack Kept):** upload a soundtrack and H3 will create the video around it. If the soundtrack covers the whole video, WanGP uses the original audio in the final file. If it ends early, H3 generates the remaining sound.
-- **Generate Video based on Control Video + its Audio Track and Text Prompt (Soundtrack Kept):** select **Use Control Video**. H3 uses both its frames and its existing audio track, which is kept as the soundtrack like an uploaded one; the visual changes follow the denoising and mask settings.
-- **Generate Audio based on Control Video and Text Prompt:** select **Use Control Video**. WanGP keeps the control video's frames unchanged and asks H3 to create a new soundtrack.
+- **Generate Video based on Control Video + its Audio Track and Text Prompt (Soundtrack Kept):** select one of the control video modes. H3 uses both its frames and its existing audio track, which is kept as the soundtrack like an uploaded one; with **Denoise Control Video**, the visual changes follow the denoising and mask settings.
+- **Generate Audio based on Control Video and Text Prompt:** select **Denoise Control Video**. WanGP keeps the control video's frames unchanged and asks H3 to create a new soundtrack.
+
+For visible speech in soundtrack mode, identify the character and explicitly request synchronized speaking, for example `The woman is speaking with natural lip movements synchronized.` You do not need to write the spoken words or mention a supplied audio track. See the prompt guidance for examples; supplying speech alone does not guarantee visible speaking or exact lip sync.
 
 ### Longer videos
 
@@ -97,13 +103,13 @@ Sliding windows can continue a video beyond one generation. Choose any overlap a
 H3 is designed for 24 FPS, although WanGP can generate at another frame rate. MiniMax documents an official duration of 4–15 seconds per generation window; longer videos are possible through sliding windows.
 """
 
-REF2VA_DEEPY_INFOS = """Generate video and 32 kHz stereo audio from `prompt` and references. Ordered `image_refs` guide identity, objects or setting; reference flags in `video_prompt_type`: `I` preserves chosen output dimensions, `KI` derives them from the first image. `image_start` / `image_end` are timeline anchors shown before general image references. `video_source` and sliding windows provide continuation.
+REF2VA_DEEPY_INFOS = """Generate video and 32 kHz stereo audio from `prompt` and references. Ordered `image_refs` guide identity, objects or setting; reference flags in `video_prompt_type`: `I` preserves chosen output dimensions, `KI` derives them from the first image. `image_start` / `image_end` are timeline anchors shown before general image references. `FI` injects the first `image_refs` at `frames_positions` (`1` = first frame, `L` = window end, `X` = skip a window); remaining images are references; not with `GV`. Per window, pictures are numbered: start or continued frame (`<Picture 1>`), end image, that window's injected frames by time, then references. `video_source` and sliding windows provide continuation.
 
-`video_guide`, `video_guide2` and `video_guide3` supply up to three reference videos for appearance, motion or camera; choose the corresponding video mode. `V1-U` instead takes up to three excerpts from `video_guide` at `custom_settings.h3_video_excerpt_positions`: frame numbers or seconds such as `5.2s`, each optionally followed by `/duration` (default 3s), for example `3 5.2s/4s 12s`. Reference videos preserve the chosen output size. Depth or Generic Control uses the control video's aspect ratio. Use Reference Video for motion transfer to image-reference characters. Generic Control edits through denoising: lower strength preserves more source content; at strength 1 without a mask, the source supplies no visual conditioning. Generic Control does not supply a video reference.
+`video_guide`, `video_guide2` and `video_guide3` supply up to three reference videos for appearance, motion or camera; choose the corresponding video mode. `V1-U` instead takes up to three excerpts from `video_guide` at `custom_settings.h3_video_excerpt_positions`: frame numbers or seconds such as `5.2s`, each optionally followed by `/duration` (default 3s), for example `3 5.2s/4s 12s`. Reference videos preserve the chosen output size and are given whole to every sliding window. Control videos (`VU`, `GV`) use the control video's aspect ratio and are split across sliding windows, each window receiving its own section. Use Reference Video for motion transfer to image-reference characters; for depth, pose or edge control use the MiniMax H3 FL2VA ControlNet-Union model. `VU` supplies the control video's unchanged frames as `<Video 1>`: an in-context guide for LoRAs that transform a source video, such as character swap; name it `<Video 1>` in the prompt and state what to do with it. `GV` (Denoise Control Video) edits through denoising: lower strength preserves more source content; at strength 1 without a mask, the source supplies no visual conditioning. `GV` does not supply a video reference.
 
-`audio_prompt_type`: empty = no audio input. References, whose voice or sound H3 reuses in newly generated audio: `A` = `audio_guide`, `AB` = two audio guides, `ABD` = three audio guides, `K` = reference-video soundtracks (not with excerpts);  `K1` = up to three soundtrack excerpts at `custom_settings.h3_audio_excerpt_positions`, same syntax, independent of the video excerpts; the prompt defines each reference's role. Soundtrack, kept as the output audio and followed by the video across sliding windows: `AS` = `audio_guide`, `KS` = the whole audio track of the reference video or of a control video (`GV`, `DV`). `K` / `K1` need reference videos (`K1` a single one or excerpts from one); `KS` also accepts a control video. A kept soundtrack is not a reference: give it no <Audio N> label.
+`audio_prompt_type`: empty = no audio input. References, whose voice or sound H3 reuses in newly generated audio: `A` = `audio_guide`, `AB` = two audio guides, `ABD` = three audio guides, `K` = reference-video soundtracks (not with excerpts);  `K1` = up to three soundtrack excerpts at `custom_settings.h3_audio_excerpt_positions`, same syntax, independent of the video excerpts; the prompt defines each reference's role. Soundtrack, kept as the output audio and followed by the video across sliding windows: `AS` = `audio_guide`, `KS` = the whole audio track of the reference video or of a control video (`GV`, `VU`). `K` / `K1` need reference videos (`K1` a single one or excerpts from one); `KS` also accepts a control video. A kept soundtrack is not a reference: give it no <Audio N> label.
 
-Limits: 9 reference images; 3 videos, each at least 2s; one video keeps its first 15s (362 frames), and videos above 15s combined keep an equal share each (7.3s for two, 4.5s for three); 3 audio references, each at least 2s. Audio above 15s combined is split evenly: 15s for one reference, 7.5s each for two, 5s each for three. Image + video reference count must cover audio reference count. At most 12 uploaded reference files; a video soundtrack shares its video's file. Keep backgrounds when scene context matters; optional background removal isolates subjects. Read `prompt_infos` for Ref2VA's six-section syntax.
+Limits: 9 reference images (injected frames not counted); 3 videos, each at least 2s, a `VU` control counting as one but split per window instead of trimmed; one reference video keeps its first 15s (362 frames), and videos above 15s combined keep an equal share each (7.3s for two, 4.5s for three); 3 audio references, each at least 2s. Audio above 15s combined is split evenly: 15s for one reference, 7.5s each for two, 5s each for three. Image + video reference count must cover audio reference count. At most 12 uploaded reference files; a video soundtrack shares its video's file. Keep backgrounds when scene context matters; optional background removal isolates subjects. Read `prompt_infos` for Ref2VA's six-section syntax.
 """
 
 REF2VA_INFOS = """## Ref2VA — Reference to Video and Audio
@@ -112,8 +118,8 @@ Ref2VA generates a new video with native 32 kHz stereo audio from text plus mult
 
 ### Reference limits
 
-- **Images:** up to 9.
-- **Videos:** up to 3 clips, each at least 2 seconds long. A single video keeps its first 15 seconds (362 frames). When several videos total more than 15 seconds, each keeps an equal share: about 7.3 seconds for two and 4.5 seconds for three. A reference video's soundtrack is trimmed with its video.
+- **Images:** up to 9. Injected frames are not counted.
+- **Videos:** up to 3 clips, each at least 2 seconds long. An in-context control video counts as one of them, but it is split across sliding windows instead of being trimmed. A single reference video keeps its first 15 seconds (362 frames). When several videos total more than 15 seconds, each keeps an equal share: about 7.3 seconds for two and 4.5 seconds for three. A reference video's soundtrack is trimmed with its video.
 - **Audio:** up to 3 inputs, each at least 2 seconds long. When their combined duration exceeds 15 seconds, WanGP splits the 15 seconds evenly: 15 seconds for one reference, 7.5 seconds each for two, 5 seconds each for three.
 - **Audio requires matching visual references:** the combined number of reference images and videos must be at least the number of reference audio clips.
 - **Video soundtracks:** selecting reference-video soundtracks uses one audio-reference slot per selected video; soundtrack excerpts use one slot per excerpt. Each video excerpt counts as one reference video. A soundtrack shares its video's uploaded file, so it does not add another file to the mixed-input count.
@@ -126,9 +132,9 @@ Ref2VA generates a new video with native 32 kHz stereo audio from text plus mult
 - **Use Reference Videos Soundtrack(s) as Audio References:** the same, using each reference video's audio track. Not available with excerpts: use the soundtrack excerpt choice below.
 - **Use Up to 3 Excerpts from Reference-Video Soundtrack:** takes audio references from the reference video's soundtrack at the positions entered in **Audio Reference Positions**, independently of any video excerpts. Requires a single reference video or excerpts from one.
 - **Generate Video based on Soundtrack and Text Prompt (Soundtrack Kept):** upload a speech or music track that must be heard exactly as it is. H3 creates the video around it and WanGP keeps the original audio in the final file, in sync across sliding windows.
-- **Generate Video based on Reference / Control Video + its Audio Track and Text Prompt (Soundtrack Kept):** the same, using the whole audio track of the reference video or of the control video. A reference video (or its excerpts) still guides appearance and motion; a Generic Control or Depth video drives the generation in sync with its own audio. Requires a single reference video, excerpts from one, or a control video.
+- **Generate Video based on Reference / Control Video + its Audio Track and Text Prompt (Soundtrack Kept):** the same, using the whole audio track of the reference video or of the control video. A reference video (or its excerpts) still guides appearance and motion; a control video (in-context or denoised) drives the generation in sync with its own audio. Requires a single reference video, excerpts from one, or a control video.
 
-A kept soundtrack is not a reference: describe its speech and sounds in the prompt as they occur, without an `<Audio N>` label.
+A kept soundtrack is not a reference: do not mention a supplied audio track or assign it an `<Audio N>` label in the prompt. For visible speech, identify the character and include `speaking with natural lip movements synchronized` or equivalent lip-sync wording. No transcript is required; see the prompt guidance for examples.
 
 ### Excerpts from one Reference Video
 
@@ -142,10 +148,14 @@ Each excerpt lasts at least 2 seconds, the excerpts total at most 15 seconds, an
 ### Choosing a video input
 
 - **Reference Video:** reuse subjects, appearance, or motion without changing the selected output resolution. Choose this mode to transfer motion from a video to characters supplied in reference images; describe the subject replacements in the prompt. Reference videos do not use Denoising Strength.
-- **Depth Control:** reuse the scene's depth and layout.
-- **Generic Control:** edit the source video using the prompt and **Denoising Strength**, with output dimensions based on its aspect ratio. Lower strength preserves more source content. At `1.0` with **Whole Frame** selected, the source video supplies no visual conditioning. Choose **Masked Area** or **Non Masked Area** to edit part of the frame. This mode does not supply the video as a motion/appearance reference.
+- **Use Control Video as In-Context Guide:** H3 receives the control video's unchanged frames as `<Video 1>` and generates a new video from them. Choose this mode for LoRAs that transform a source video, such as a character swap: name the video `<Video 1>` in the prompt and say what to change and what to keep. Without such a LoRA, it behaves like a Reference Video that follows the control video section by section.
+- **Denoise Control Video (Video-to-Video Edit):** edit the source video using the prompt and **Denoising Strength**. Lower strength preserves more source content. At `1.0` with **Whole Frame** selected, the source video supplies no visual conditioning. Choose **Masked Area** or **Non Masked Area** to edit part of the frame. This mode does not supply the video as a motion/appearance reference.
 
-Reference videos adapt to your chosen output size and guide the result creatively, without guaranteeing exact motion reproduction. Depth Control supplies a depth guide; Generic Control edits the source through denoising. Control videos define the output size.
+Reference videos adapt to your chosen output size and guide the result creatively, without guaranteeing exact motion reproduction. Each sliding window receives the whole reference video (up to its first 15 seconds).
+
+To follow a video's depth, pose, edges or shapes, use the **MiniMax H3 FL2VA ControlNet-Union** model instead.
+
+Control videos define the output size and are split across sliding windows: each window receives only its own section, so a long control video can drive a long generation. A window can be longer than 15 seconds; MiniMax documents 4–15 seconds per window, so longer windows may lose quality.
 
 ### Reference-image size
 
@@ -159,12 +169,67 @@ Background removal is disabled by default. After selecting reference images, use
 
 Ref2VA also supports optional start and end images. These are shown to the prompt before the general reference images: with a start image and one reference image, the start image is `<Picture 1>` and the reference image is `<Picture 2>`.
 
+### Injected frames
+
+Select **Inject Frames at chosen Positions** in **Reference Images** to place images at exact moments of the video, and enter one position per image under **Positions of Injected Frames**: `1` is the first frame, `L` the last frame of a sliding-window segment, and `X` skips a window without consuming an image. Add the injected images first; any images beyond the positions are ordinary reference images for identity, objects or style. Injected frames combine with reference videos and in-context control videos, but not with **Denoise Control Video**. The output size follows the first injected image unless a control video defines it.
+
+An injected frame on a window's first or last frame acts as that window's start or end image; one inside the sliding-window overlap is not used, because the overlap already continues the previous window. In each window, pictures are numbered in this order: the start image or the frame continued from the previous window (`<Picture 1>`), the end image, the injected frames of that window in time order, then the reference images. The numbering restarts in every window, so describe each window separately when injected frames or reference images change the count, and declare each injected frame at its time in the window.
+
 For longer videos, choose any sliding-window overlap amount and WanGP will round it to the nearest H3-compatible value (1, 18, 35, 52...). It automatically carries the overlapping video and audio into the next window while keeping the selected references available.
 
 H3 is designed for 24 FPS, although WanGP can generate at another frame rate. MiniMax documents an official duration of 4–15 seconds per generation window; longer videos are possible through sliding windows.
 
 See the [MiniMax H3 model card](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/README.md) for the upstream specifications and prompting guidance.
 """
+
+CONTROL_INFOS = """## FL2VA ControlNet-Union — Control Video to Video and Audio
+
+This model adds the VideoX-Fun ControlNet-Union 2.0 branch to MiniMax H3 FL2VA. A control video drives the structure and motion of the generated video, while the text prompt defines its content, style and sound. The output takes the control video's aspect ratio and H3 still generates synchronized stereo sound.
+
+### Control Video
+
+- **Transfer Human Motion:** WanGP extracts an Open Pose skeleton from the control video. Use it to animate new characters with the same body movements.
+- **Transfer Depth:** a depth map keeps the scene layout, camera movement and object placement while the prompt restyles everything.
+- **Transfer Canny Edges:** fine outlines preserve shapes and silhouettes closely; this is the strictest structural guide.
+- **Transfer Shapes:** softer scribble-like outlines keep the overall composition with more freedom for details.
+- **Recolorize:** a grayscale version of the video keeps its lighting and content; describe the colors in the prompt.
+- **Use Control Video as is:** normally, upload an already prepared control map (Pose, Depth, Canny, HED, MLSD, Scribble, Layout or Gray). With **Spatial Outpainting** enabled, supply the original video instead: its picture is kept as context while ControlNet generates the new borders. No Video Mask is needed for border expansion alone.
+- **Perform Inpainting:** regenerate only the masked area of the video from the prompt, without a control map.
+
+**Control Strength** scales the control branch: `1.0` follows the control video closely, lower values give the prompt more freedom and `0` disables it.
+
+### Masks
+
+With a Video Mask, only the masked area is regenerated and follows the control map, while the rest of the source video is kept as a reference for the model. The kept area is guided rather than copied pixel for pixel, so fine details can still drift. Masks require one of the preprocessing modes above, or **Use Control Video as is** with Spatial Outpainting enabled, because WanGP needs the original video to know what to keep.
+
+### Spatial Outpainting
+
+Select **Use Control Video as is**, supply the original video, enable **Spatial Outpainting**, then set the top, bottom, left and right expansion or choose a target aspect ratio. Describe the complete scene and the surroundings you want to add. The requested resolution is the final expanded canvas; use a larger resolution if you want to retain the source's detail.
+
+The original rectangle is visible context for ControlNet's inpainting branch, and the new borders are automatically masked for generation. This uses ControlNet conditioning; **Denoising Strength** and **Mask Denoising Mode** from ordinary FL2VA are not used. **Control Strength** controls how strongly the visible context guides the result. The original area can still change slightly.
+
+To also edit an area inside the original picture, add a Video Mask or select **Perform Inpainting** with a mask, then enable Spatial Outpainting. Pose, depth, edge, shape and grayscale modes can likewise combine expansion with an explicit mask; their unmasked area supplies the original picture. For outpainting with **Use Control Video as is**, upload the original RGB video rather than a pose/depth/edge map. Sliding windows retain their existing overlap and extend each matching source-video section.
+
+### Start / End Images, Continuation and Audio
+
+A start image, an end image or a video to continue can be combined with the control video. H3 anchors those frames while the control branch drives the rest; the control model was trained without such anchors, so keep them consistent with the control video (for example the first frame of the source video). Sliding windows split long control videos: each window receives its own section.
+
+- **Generate Video and Audio from Text Prompt:** H3 creates new sound matching the prompt and motion.
+- **Generate Video based on Soundtrack and Text Prompt:** an uploaded soundtrack is kept and the video follows it.
+- **Generate Video based on Control Video + its Audio Track:** keep the control video's own soundtrack, for example the music of a dance video.
+
+A kept soundtrack stays in the saved output, but visible speech also depends on the prompt and the pose guide. Identify the character and explicitly request synchronized speaking, for example `The woman is speaking with natural lip movements synchronized.` You do not need to write the spoken words or mention a supplied audio track. A pose guide showing a still mouth or a lowered face can compete with speaking motion; keeping the soundtrack does not guarantee exact lip sync.
+
+### Recommended settings
+
+The branch is guidance-distilled: keep **Guidance** at 1. Upstream demonstrations use 40 steps; 20 steps already give usable results. Keep each window within 15 seconds (362 frames), the duration the control branch was trained on. Two-phase generation and text-to-image are not available with this model.
+
+See the [ControlNet-Union 2.0 model card](https://huggingface.co/alibaba-pai/MiniMax-H3-Fun-Controlnet-Union-2.0) for upstream details.
+"""
+
+CONTROL_DEEPY_INFOS = """Generate video and stereo sound from `prompt` guided by a control video (`video_guide`) through the ControlNet-Union branch; the output uses the control video's aspect ratio. `video_prompt_type`: `PV` = Open Pose motion, `DV` = depth, `EV` = Canny edges, `SV` = soft shapes/scribble, `CV` = grayscale recolorize, `V` = video already a control map (HED, MLSD, layout...), `MV` = inpainting only. Add `A` (masked area) or `NA` (non-masked area) with `video_mask` to regenerate only part of the frame; masks need a preprocessing mode or `V` with spatial outpainting enabled. `control_net_weight` (0-2, default 1) sets control strength. Long control videos are split across sliding windows (max 362 frames each). `image_start` / `image_end` / `video_source` anchor frames and should match the control video. `audio_prompt_type`: empty = generate audio; `A` = keep `audio_guide` as soundtrack; `K` = keep the control video's soundtrack. For visible speech in soundtrack mode, identify the speaker and explicitly request `speaking with natural lip movements synchronized` or equivalent lip-sync wording, without mentioning a supplied audio track. No transcript is required; face pose can compete with speech, and exact lip sync is not guaranteed. Guidance stays 1. Read `prompt_infos` for H3's structured prompt syntax."""
+
+CONTROL_DEEPY_INFOS += """\n\nSpatial outpainting: use `video_prompt_type: V` (Use Control Video as is), the original RGB `video_guide`, and `video_guide_outpainting` as four space-separated percentages (top bottom left right), e.g. `0 0 25 25`. No `video_mask` is needed for borders alone. Alternatively, set `video_guide_outpainting_ratio`, e.g. `16:9`, with `video_guide_outpainting: 0 0 0 0` for balanced expansion; `#` disables expansion. `resolution` is the final canvas. Enabling expansion routes the visible source and automatic border mask through ControlNet inpainting, not FL2VA denoising; no Grouped Rows requirement. With expansion disabled, `V` retains its normal prepared-control-map behavior. For simultaneous interior edits, use `VA` or `MVA` plus `video_mask`; masked pose/depth/edge/shape/grayscale modes also support expansion. Describe the completed scene and new surroundings; the original rectangle is guided, not copied pixel for pixel."""
 
 H3_PHASE_INFOS = """
 ### How to use one phase, two phases, and tiling
@@ -370,13 +435,15 @@ def _get_audio_generator_model_def(model_def):
 class family_handler:
     @staticmethod
     def query_supported_types():
-        return [FL2VA_ARCHITECTURE, FL2VA_PRUNED_ARCHITECTURE,
+        return [FL2VA_ARCHITECTURE, FL2VA_PRUNED_ARCHITECTURE, CONTROL_ARCHITECTURE, CONTROL_PRUNED_ARCHITECTURE,
                 REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, TTS_REF2VA_PRUNED_ARCHITECTURE, VIGGLE_ARCHITECTURE]
 
     @staticmethod
     def query_family_maps():
         return {
             FL2VA_PRUNED_ARCHITECTURE: FL2VA_ARCHITECTURE,
+            CONTROL_ARCHITECTURE: FL2VA_ARCHITECTURE,
+            CONTROL_PRUNED_ARCHITECTURE: FL2VA_ARCHITECTURE,
             REF2VA_ARCHITECTURE: FL2VA_ARCHITECTURE,
             REF2VA_PRUNED_ARCHITECTURE: FL2VA_ARCHITECTURE,
             VIGGLE_ARCHITECTURE: FL2VA_ARCHITECTURE,
@@ -439,6 +506,35 @@ class family_handler:
                     "labels": {"": "No Input Audio", "A": "Use Custom Audio", "K": "Reuse Control Video Audio"},
                     "letters_filter": "AK", "label": "Control Audio", "show_label": True, "default": "",
                 },
+            })
+            return result
+        if base_model_type in CONTROL_ARCHITECTURES:
+            pruned = base_model_type == CONTROL_PRUNED_ARCHITECTURE
+            result = family_handler.query_model_def(FL2VA_PRUNED_ARCHITECTURE if pruned else FL2VA_ARCHITECTURE, model_def)
+            for key in ("guide_custom_choices", "custom_frames_injection", "one_image_ref_only", "switch_threshold"):
+                result.pop(key)
+            result.update({
+                "profiles_dir": result["profiles_dir"] + [CONTROL_ARCHITECTURE],  # main blocks are FL2VA: its LoRA accelerator profiles apply
+                "specialities": [{"name": "control video", "aliases": ["pose transfer", "depth control", "canny control", "controlnet"],
+                                  "description": "Drive motion and structure with a pose, depth, edge, shape or grayscale control video."},
+                                 {"name": "video inpainting", "description": "Regenerate a masked area of a video."},
+                                 {"name": "video outpainting", "description": "Extend the video canvas using ControlNet's visible-source and border-mask conditioning."}],
+                "infos": CONTROL_INFOS + H3_SPEED_INFOS + H3_STANDARD_SAMPLER_INFOS + H3_COMMON_RUNTIME_INFOS + (PRUNED_INFOS if pruned else ""),
+                "deepy_infos": CONTROL_DEEPY_INFOS,
+                "prompt_infos": FL2VA_PROMPT_INFOS, "deepy_prompt_infos": FL2VA_DEEPY_PROMPT_INFOS,
+                "v2i_switch_supported": False, "image_outputs": False,
+                "guidance_max_phases": 1, "lock_guidance_phases": True, "lora_multiplier_phases": 1, "phase_2_spatial_tiling": False,
+                "custom_settings": [setting for setting in result["custom_settings"] if setting["id"] == H3_AUDIO_REFINEMENT_SETTING],
+                "sliding_window_defaults": {**result["sliding_window_defaults"], "window_max": 362},
+                "guide_preprocessing": {
+                    "selection": ["", "PV", "DV", "EV", "SV", "CV", "V", "MV"],
+                    "labels": {"V": "Use Control Video as is"},
+                    "label": "Control Video",
+                },
+                "mask_preprocessing": {"selection": ["", "A", "NA"]},
+                "control_net_weight_name": "Control", "control_net_weight_size": 1,
+                "video_guide_label": "Control Video",
+                "audio_prompt_type_sources": {**result["audio_prompt_type_sources"], "selection": ["", "A", "K"], "letters_filter": "AK"},
             })
             return result
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE:
@@ -525,6 +621,8 @@ class family_handler:
             "multimedia_generation": True,
             "image_end_frame_position": True,
             "control_video_trim_disabled": True,
+            "extract_guide_from_window_start": True,  # sliding windows get pure window-aligned guide frames; continuation comes through input_video
+            "prompt_enhancer_picture_labels": True,  # enhancer images are labelled with the <Picture N> the pipeline presents
             "infos": (REF2VA_INFOS if reference_mode else FL2VA_INFOS) + (H3_PDD_RUNTIME_INFOS if pdd else H3_RUNTIME_INFOS) + (PRUNED_INFOS if pruned else "") + (H3_VDN_INFOS if vdn else "") + model_def.get("infos", ""),
             "prompt_infos": REF2VA_PROMPT_INFOS if reference_mode else FL2VA_PROMPT_INFOS,
             "prompt_enhancer_button_label": "Write",
@@ -593,12 +691,14 @@ class family_handler:
                 "end_frames_always_enabled": True,
                 "image_ref_choices": {
                     "choices": [("Generate without Reference Images", ""),
+                                ("First Reference Image is the Main Subject / Landscape, defines Output Dimensions, and may be followed by other Reference Images", "KI"),
                                 ("Use Reference Images", "I"),
-                                ("First Reference Image is the Main Subject / Landscape, defines Output Dimensions, and may be followed by other Reference Images", "KI")],
-                    "letters_filter": "KI",
+                                ("Inject Frames at chosen Positions, any Images beyond the Positions are Reference Images", "FI")],
+                    "letters_filter": "KFI",
                     "default": "",
                     "label": "Reference Images",
                 },
+                "custom_frames_injection": True,
                 "reference_image_enabled": True,
                 "return_image_refs_tensor": False,
                 "fit_into_canvas_image_refs": 0,
@@ -610,9 +710,10 @@ class family_handler:
                                 ("Use Three Reference Videos", "V+*-U"),
                                 ("Use Up to 3 Excerpts from same Reference Video", "V1-U"),
                                 # ("Transfer Human Pose From Control Video", "PV"),
-                                ("Transfer Depth Map From Control Video", "DV"),
+                                # ("Transfer Depth Map From Control Video", "DV"),  # superseded by the FL2VA ControlNet-Union model
                                 # ("Transfer Edges Map From Control Video", "EV"),
-                                ("Provide Generic Control Video", "GV")],
+                                ("Denoise Control Video (Video-to-Video Edit)", "GV"),
+                                ("Use Control Video as In-Context Guide", "VU")],
                     "letters_filter": "GPDEV+*-U1",
                     "default": "",
                     "label": "Reference / Control Video",
@@ -667,9 +768,10 @@ class family_handler:
                 "audio_guide_window_slicing": True,
                 "guide_custom_choices": {
                     "choices": [("Generate without using a Control Video", ""),
-                                ("Use Control Video", "GV"),
+                                ("Use Control Video as In-Context Guide", "VU"),
+                                ("Denoise Control Video (Video-to-Video Edit)", "GV"),
                                 ("Inject Frames", "KFI")],
-                    "letters_filter": "GVKFI",
+                    "letters_filter": "GVUKFI",
                     "default": "",
                     "label": "Control Video / Frames Injection",
                 },
@@ -759,9 +861,9 @@ class family_handler:
         inputs["sliding_window_overlap"] = overlap
         from shared.utils.utils import get_outpainting_dims
 
-        grouped_masking = h3_grouped_masking_enabled(inputs.get("custom_settings"))
+        grouped_masking = base_model_type not in CONTROL_ARCHITECTURES and h3_grouped_masking_enabled(inputs.get("custom_settings"))
         outpainting = get_outpainting_dims(inputs.get("video_guide_outpainting"), inputs.get("video_guide_outpainting_ratio", "")) is not None
-        if outpainting and not grouped_masking:
+        if outpainting and base_model_type not in CONTROL_ARCHITECTURES and not grouped_masking:
             return "MiniMax H3 outpainting requires Mask Denoising Mode to be set to Grouped Rows"
         if grouped_masking and inputs.get("override_attention") == "sol":
             masked_control = inputs.get("video_mask") is not None or outpainting or "A" in (inputs.get("video_prompt_type") or "")
@@ -776,6 +878,14 @@ class family_handler:
         if base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, VIGGLE_ARCHITECTURE):
             video_prompt_type = inputs["video_prompt_type"]
             audio_prompt_type = inputs["audio_prompt_type"]
+            if base_model_type in CONTROL_ARCHITECTURES and "V" in video_prompt_type:
+                preprocessed = any(letter in video_prompt_type for letter in "PDESCM")
+                if outpainting and preprocessed and not ("A" in video_prompt_type and inputs.get("video_mask") is not None):
+                    return "MiniMax H3 ControlNet outpainting requires Use Control Video as is with the original video, or a preprocessing mode with a Video Mask to keep the original picture outside the mask"
+                if inputs.get("video_mask") is not None and "A" in video_prompt_type and not preprocessed and not outpainting:
+                    return "MiniMax H3 ControlNet masks need a preprocessing mode (Pose, Depth, Canny, Shapes, Recolorize or Inpainting) so the source video can be kept outside the mask"
+                if "M" in video_prompt_type and (inputs.get("video_mask") is None or "A" not in video_prompt_type):
+                    return "MiniMax H3 ControlNet inpainting requires a Video Mask"
             if "F" in inputs["video_prompt_type"]:
                 position_count = sum(pos.upper() != "X" for pos in (inputs["frames_positions"] or "").replace(",", " ").split())
                 image_count = len(inputs["image_refs"] or [])
@@ -785,10 +895,10 @@ class family_handler:
                 if "A" in audio_prompt_type or "K" in audio_prompt_type:
                     return "MiniMax H3 audio generation from Control Video cannot also use a source soundtrack"
                 if "G" not in video_prompt_type or "V" not in video_prompt_type or inputs["video_guide"] is None:
-                    return "MiniMax H3 audio generation from Control Video requires Use Control Video and a Control Video file"
+                    return "MiniMax H3 audio generation from Control Video requires Denoise Control Video and a Control Video file"
             if "K" in audio_prompt_type:
-                if "G" not in video_prompt_type or "V" not in video_prompt_type or inputs["video_guide"] is None:
-                    return "MiniMax H3 Control Video soundtrack mode requires Use Control Video and a Control Video file"
+                if "V" not in video_prompt_type or inputs["video_guide"] is None:
+                    return "MiniMax H3 Control Video soundtrack mode requires a Control Video mode and a Control Video file"
                 from shared.utils.audio_video import extract_audio_tracks
 
                 try:
@@ -801,6 +911,13 @@ class family_handler:
         video_prompt_type = inputs["video_prompt_type"]
         audio_prompt_type = inputs["audio_prompt_type"]
         image_count = len(inputs["image_refs"] or [])
+        if "F" in video_prompt_type:
+            if "G" in video_prompt_type:
+                return "MiniMax H3 frame injection cannot be combined with Denoise Control Video"
+            position_count = sum(pos.upper() != "X" for pos in (inputs["frames_positions"] or "").replace(",", " ").split())
+            if position_count == 0 or position_count > image_count:
+                return f"MiniMax H3 frame injection requires at least one position and one Reference Image per position (found {position_count} positions and {image_count} images)"
+            image_count -= position_count  # images beyond the injected frames are reference images
         videos = []
         if "V" in video_prompt_type and "G" not in video_prompt_type:
             videos.append(inputs["video_guide"])
@@ -808,7 +925,7 @@ class family_handler:
                 videos.append(inputs["video_guide2"])
             if "*" in video_prompt_type:
                 videos.append(inputs["video_guide3"])
-        soundtrack = "S" in audio_prompt_type  # a kept soundtrack conditions the video and is not an audio reference
+        soundtrack = "S" in audio_prompt_type or base_model_type == VIGGLE_ARCHITECTURE  # Viggle's A/K inputs are also kept soundtracks, not audio references
         audios = [inputs["audio_guide"]] if "A" in audio_prompt_type and not soundtrack and base_model_type != VIGGLE_ARCHITECTURE else []
         if "B" in audio_prompt_type:
             audios.append(inputs["audio_guide2"])
@@ -849,7 +966,7 @@ class family_handler:
 
         soundtrack_mode = "K" in audio_prompt_type
         if soundtrack_mode:
-            control_soundtrack = soundtrack and "V" in video_prompt_type and "-" not in video_prompt_type  # KS can keep a control video's own soundtrack (Generic Control or Depth)
+            control_soundtrack = soundtrack and "V" in video_prompt_type and "-" not in video_prompt_type  # KS can keep a control video's own soundtrack (In-Context or Denoise)
             soundtrack_videos = [inputs["video_guide"]] if control_soundtrack else videos if "-" in video_prompt_type else []
             video_kind = "Control" if control_soundtrack else "Reference"
             if not soundtrack_videos:
@@ -989,6 +1106,9 @@ class family_handler:
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE:
             return
+        if base_model_type in CONTROL_ARCHITECTURES:
+            # The former VU/UV outpainting choice is now V plus the existing spatial-outpainting settings.
+            ui_defaults["video_prompt_type"] = ui_defaults.get("video_prompt_type", "").replace("U", "")
         if settings_version < 2.75:
             ui_defaults["switch_threshold"] = H3_PHASE_2_NOISE_LEVEL_START_DEFAULT
         if settings_version < 2.74:
@@ -1069,3 +1189,5 @@ class family_handler:
         })
         if reference_mode:
             ui_defaults.update({"image_refs_relative_size": 100, "remove_background_images_ref": 0})
+        if base_model_type in CONTROL_ARCHITECTURES:
+            ui_defaults.update({"video_prompt_type": "PV", "control_net_weight": 1.0})

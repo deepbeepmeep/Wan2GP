@@ -1,5 +1,49 @@
 function() {
     console.log("[WanGP] main JS initialized");
+    // CSS positions the bars; this only distinguishes floating from landed.
+    let actionFrame = 0;
+    const actionResize = new ResizeObserver(scheduleActionAppearance);
+    const observedActions = new Set();
+    function scheduleActionAppearance() {
+        if (!actionFrame) actionFrame = requestAnimationFrame(updateActionAppearance);
+    }
+    function updateActionAppearance() {
+        actionFrame = 0;
+        const bars = document.querySelectorAll('.wangp-settings-actions');
+        for (const bar of bars) {
+            if (!observedActions.has(bar)) {
+                observedActions.add(bar);
+                actionResize.observe(bar);
+                actionResize.observe(bar.parentElement);
+            }
+            const rect = bar.getBoundingClientRect();
+            if (!rect.width || !rect.height) {
+                bar.classList.remove('is-floating');
+                continue;
+            }
+            // The previous visible sibling stays in normal flow while the bar
+            // sticks, so it marks the bar's landing position without a spacer.
+            let previous = bar.previousElementSibling;
+            while (previous && !previous.getBoundingClientRect().height) previous = previous.previousElementSibling;
+            const parentStyle = getComputedStyle(bar.parentElement);
+            const naturalTop = previous
+                ? previous.getBoundingClientRect().bottom + (parseFloat(parentStyle.rowGap) || 0)
+                : bar.parentElement.getBoundingClientRect().top + (parseFloat(parentStyle.paddingTop) || 0);
+            bar.classList.toggle('is-floating', rect.top < naturalTop - 1);
+        }
+        for (const bar of observedActions) {
+            if (!bar.isConnected) {
+                actionResize.unobserve(bar);
+                observedActions.delete(bar);
+            }
+        }
+    }
+    document.addEventListener('scroll', scheduleActionAppearance, {capture: true, passive: true});
+    window.addEventListener('resize', scheduleActionAppearance, {passive: true});
+    new MutationObserver(scheduleActionAppearance).observe(document.querySelector('gradio-app'), {
+        childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden']
+    });
+    scheduleActionAppearance();
     document.addEventListener('click', (event) => {
         const closeButton = event.target.closest('button[aria-label="Close"]');
         if (!closeButton || !closeButton.closest('.amg-remove-selected')) return;

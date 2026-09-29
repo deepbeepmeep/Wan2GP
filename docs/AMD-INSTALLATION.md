@@ -1,236 +1,144 @@
 # AMD Installation Guide for Windows (TheRock)
 
-This guide covers installation for AMD GPUs running under Windows using TheRock's official PyTorch wheels.
+This guide covers running WanGP on AMD Radeon GPUs under Windows with the official ROCm PyTorch wheels built by [TheRock](https://github.com/ROCm/TheRock).
 
 ## Supported GPUs
 
-Based on [TheRock's official support matrix](https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md), the following GPUs are supported on Windows:
+TheRock publishes Windows PyTorch wheels for the following architectures (see the [support matrix](https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md)). Each GPU is identified by its `gfx` target, which is used during installation.
 
-### **gfx110X-all** (RDNA 3):
-* AMD RX 7900 XTX (gfx1100)
-* AMD RX 7800 XT (gfx1101)
-* AMD RX 7700 XT (gfx1101)
-* AMD RX 7700S / Framework Laptop 16 (gfx1102)
-* AMD Radeon 780M Laptop iGPU (gfx1103)
+| Family   | Target  | Example GPUs                                   |
+| -------- | ------- | ---------------------------------------------- |
+| RDNA 4   | gfx1201 | RX 9070 XT, RX 9070, Radeon AI PRO R9700       |
+| RDNA 4   | gfx1200 | RX 9060 XT, RX 9060                            |
+| RDNA 3.5 | gfx1151 | Ryzen AI Max (Strix Halo)                      |
+| RDNA 3.5 | gfx1150 | Radeon 890M / 880M (Ryzen AI 9 HX 370 / 375)   |
+| RDNA 3.5 | gfx1152 | Ryzen AI 7 350                                 |
+| RDNA 3.5 | gfx1153 | Radeon 820M                                    |
+| RDNA 3   | gfx1100 | RX 7900 XTX, RX 7900 XT, RX 7900 GRE           |
+| RDNA 3   | gfx1101 | RX 7800 XT, RX 7700 XT                         |
+| RDNA 3   | gfx1102 | RX 7600 XT, RX 7600                            |
+| RDNA 3   | gfx1103 | Radeon 780M / 760M (Ryzen 7040 / 8040)         |
+| RDNA 2   | gfx1030 | RX 6950 XT, RX 6900 XT, RX 6800 XT, RX 6800    |
+| RDNA 2   | gfx1031 | RX 6750 XT, RX 6700 XT                         |
+| RDNA 2   | gfx1032 | RX 6650 XT, RX 6600 XT, RX 6600                |
+| RDNA 2   | gfx1034 | RX 6500 XT                                     |
+| RDNA 2   | gfx1035 | Radeon 680M                                    |
 
-### **gfx120X-all** (RDNA 4):
-* AMD RX 9060 XT (gfx1200)
-* AMD RX 9060 (gfx1200)
-* AMD RX 9070 XT (gfx1201)
-* AMD RX 9070 (gfx1201)
+RDNA 1 (gfx1010 - gfx1012) and the remaining RDNA 2 iGPUs (gfx1033, gfx1036) are published as well. On RDNA 2 and older, PyTorch has no flash attention kernel, so attention runs noticeably slower than on RDNA 3 and newer.
 
-### **gfx1151** (RDNA 3.5 APU):
-* AMD Strix Halo APUs
+To check the target of your GPU, run the following in a terminal (`clinfo` is installed with the AMD driver):
 
-### **gfx1150** (RDNA 3.5 APU): 
-* AMD Radeon 890M (Ryzen AI 9 HX 370 - Strix Point)
-
-### Also supported:
-### **gfx103X-dgpu**: (RDNA 2)
-
-<br>
-
-> **Note:** If your GPU is not listed above, it may not be supported by TheRock on Windows. Support status and future updates can be found in the [official documentation](https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md).
+```cmd
+clinfo | findstr gfx
+```
 
 ## Requirements
 
-- Python 3.11 (recommended for Wan2GP - TheRock currently supports Python 3.11, 3.12, and 3.13).
-- Windows 10/11
+- Windows 10 or 11 with the latest [AMD Adrenalin driver](https://www.amd.com/en/support/download/drivers.html)
+- Python 3.12 (the ROCm package index only carries a NumPy build for Python 3.12 and newer, and some WanGP dependencies have no Windows wheels beyond 3.12)
+- [Git](https://git-scm.com/install/windows)
 
-## Installation Environment
+## Automatic Installation
 
-This installation uses PyTorch wheels built by TheRock.
+`scripts\install.bat` detects AMD GPUs through `clinfo` and installs a Python 3.12 environment with ROCm PyTorch for the detected target(s), Triton and SageAttention 1. See the Installation section of the main [README](../README.md) for how to use the scripts.
 
-### Installing Python
+Environments created by older versions of the installer or of this guide (the `rocm65` option, or the per-family `rocm.nightlies.amd.com/v2/gfx...` indexes) should be replaced: create a new environment with `install.bat` and make it the active one with `manage.bat`.
 
-Download Python 3.11 from [python.org/downloads/windows](https://www.python.org/downloads/windows/). Press Ctrl+F and search for "3.11." to find the newest version available for installation.
+## Manual Installation
 
-Alternatively, you can use this direct link: [Python 3.11.9 (64-bit)](https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe).
+The commands below are for the Windows Command Prompt (CMD).
 
-After installing, make sure `python --version` works in your terminal and returns `3.11.9`
-
-If it doesn’t, you need to add Python to your PATH:
-
-* Press the `Windows` key, type `Environment Variables`, and select `Edit the system environment variables`.
-* In the `System Properties` window, click `Environment Variables…`.
-* Under `User variables`, find `Path`, then click `Edit` → `New` and add the following entries (replace `<username>` with your Windows username):
+### Step 1: Clone WanGP and create a virtual environment
 
 ```cmd
-C:\Users\<username>\AppData\Local\Programs\Python\Launcher\
-C:\Users\<username>\AppData\Local\Programs\Python\Python311\Scripts\
-C:\Users\<username>\AppData\Local\Programs\Python\Python311\
-```
-
-> **Note:** If Python still doesn't show the correct version after updating PATH, try signing out and signing back in to Windows to apply the changes.
-
-### Installing Git
-
-Download Git from [git-scm.com/downloads/windows](https://git-scm.com/install/windows) and install it. The default installation options are fine.
-
-
-## Installation Steps (Windows, using a Python `venv`)
-> **Note:** The following commands are intended for use in the Windows Command Prompt (CMD).  
-> If you are using PowerShell, some commands (like comments and activating the virtual environment) may differ.
-
-
-### Step 1: Download and set up Wan2GP Environment
-
-```cmd
-:: Navigate to your desired install directory
 cd \your-path-to-wan2gp
-
-:: Clone the repository
 git clone https://github.com/deepbeepmeep/Wan2GP.git
 cd Wan2GP
-
-:: Create virtual environment
-python -m venv wan2gp-env
-
-:: Activate the virtual environment
+py -3.12 -m venv wan2gp-env
 wan2gp-env\Scripts\activate
 ```
 
-> **Note:** If you have multiple versions of Python installed, use `py -3.11 -m venv wan2gp-env` instead of `python -m venv wan2gp-env` to ensure the correct version is used.
+### Step 2: Install ROCm PyTorch
 
-### Step 2: Install ROCm/PyTorch by TheRock
-
-**IMPORTANT:** Choose the correct index URL for your GPU family!
-
-#### For gfx110X-all (RX 7900 XTX, RX 7800 XT, etc.):
+Replace `gfx1201` with the target of your GPU from the table above:
 
 ```cmd
-pip install --pre torch torchaudio torchvision rocm[devel] --index-url https://rocm.nightlies.amd.com/v2/gfx110X-all/
+pip install "torch[device-gfx1201]==2.13.0+rocm10.0.0" "torchvision[device-gfx1201]==0.28.0+rocm10.0.0" torchaudio==2.11.0.2+rocm10.0.0 --index-url https://stable.repo.amd.com/rocm/whl-next/
 ```
 
-#### For gfx120X-all (RX 9060, RX 9070, etc.):
+The ROCm runtime is installed automatically as a dependency. On a system with several AMD GPUs (for example an iGPU and a dedicated card), list all targets: `torch[device-gfx1036,device-gfx1201]`, and the same for `torchvision`.
+
+Use `--index-url` exactly as shown. With `--extra-index-url`, pip prefers the newer CPU-only PyTorch from PyPI and silently installs that instead.
+
+### Step 3: Install WanGP dependencies
 
 ```cmd
-pip install --pre torch torchaudio torchvision rocm[devel] --index-url https://rocm.nightlies.amd.com/v2/gfx120X-all/
-```
-
-#### For gfx1151 (Strix Halo iGPU):
-
-```cmd
-pip install --pre torch torchaudio torchvision rocm[devel] --index-url https://rocm.nightlies.amd.com/v2/gfx1151/
-```
-
-#### For gfx1150 (Radeon 890M - Strix Point):
-
-```cmd
-pip install --pre torch torchaudio torchvision rocm[devel] --index-url https://rocm.nightlies.amd.com/v2-staging/gfx1150/
-```
-
-#### For gfx103X-dgpu (RDNA 2):
-
-```cmd
-pip install --pre torch torchaudio torchvision rocm[devel] --index-url https://rocm.nightlies.amd.com/v2-staging/gfx103X-dgpu/
-```
-
-This will automatically install the latest PyTorch, torchaudio, and torchvision wheels with ROCm support.
-
-### Step 3: Install Wan2GP Dependencies
-
-```cmd
-:: Install core dependencies
 pip install -r requirements.txt
 ```
 
-### Step 4: Verify Installation
+### Step 4: Verify the installation
 
 ```cmd
-python -c "import torch; print('PyTorch:', torch.__version__); print('ROCm available:', torch.cuda.is_available()); print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'No GPU')"
+python -c "import torch; print('PyTorch:', torch.__version__); print('GPU available:', torch.cuda.is_available()); print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'No GPU')"
 ```
 
 Expected output example:
+
 ```
-PyTorch: 2.11.0+rocm7.12.0
-ROCm available: True
+PyTorch: 2.13.0+rocm10.0.0
+GPU available: True
 Device: AMD Radeon RX 9070 XT
 ```
 
+If the PyTorch version does not end in `+rocm...`, a CPU-only build was installed: repeat Step 2.
+
+### Nightly builds (optional)
+
+TheRock also publishes nightly builds with newer PyTorch and ROCm versions. They may be unstable:
+
+```cmd
+pip install --pre "torch[device-gfx1201]" "torchvision[device-gfx1201]" torchaudio --index-url https://nightly.repo.amd.com/rocm/whl-next/
+```
+
+When using a nightly, install the `triton-windows` minor version that matches that PyTorch release instead of the one shown below.
+
 ## Attention Modes
 
-WanGP supports multiple attention implementations via [triton-windows](https://github.com/woct0rdho/triton-windows/).
-
-First, install `triton-windows` in your virtual environment.
-If you have an older version of Triton installed, uninstall it first.
-ROCm SDK needs to be initialized.
-Visual Studio environment should also be activated.
+- SDPA (default): PyTorch's built-in attention uses AOTriton flash attention kernels on RDNA 3 and newer. On GPUs where PyTorch still marks them experimental they are disabled unless `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1` is set; `wgp.py` sets it automatically.
+- SageAttention 1: requires Triton. Install both, then select Sage in the configuration menu:
 
 ```cmd
-pip uninstall triton
-pip install triton-windows
-rocm-sdk init
-"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
+pip install -U "triton-windows>=3.7,<3.8"
+pip install sageattention==1.0.6
 ```
 
-### Supported attention implementations
+`triton-windows` 3.7 matches PyTorch 2.13. It finds the ROCm SDK from the active environment, so no Visual Studio, `rocm-sdk init` or extra environment variables are needed.
 
-- **SageAttention V1** (Requires the `.post26` wheel or newer to fix Triton compilation issues without needing unofficial patches. Download it from [this](https://github.com/Comfy-Org/wheels/actions/runs/21343435018) URL)
+- FlashAttention-2: uses the Triton kernels from [aiter](https://github.com/ROCm/aiter), which the build installs from a bundled submodule. It requires `triton-windows` (see above). Nothing is compiled, so no Visual Studio is needed. Build it from source, then select Flash in the configuration menu:
 
-```cmd
-pip install "sageattention <2"
-```
-
-- **FlashAttention-2** (Only the Triton backend is supported): 
 ```cmd
 git clone https://github.com/Dao-AILab/flash-attention.git
 cd flash-attention
-pip install ninja
-pip install packaging
-set FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE && python setup.py install
+set FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
+pip install --no-build-isolation .
 ```
 
-- **SDPA Flash**: Available by default in PyTorch on post-RDNA2 GPUs via AOTriton.
+The variable is only needed for the build. At runtime flash-attn prints a one-time warning that it is falling back to the Triton implementation, which is expected.
 
-## Running Wan2GP
+## Running WanGP
 
-For future sessions, activate the environment every time if it isn't already activated, then run `python wgp.py`:
+Activate the environment and start WanGP:
 
 ```cmd
 cd \path-to\Wan2GP
 wan2gp-env\Scripts\activate
-:: Add the AMD-specific environment variables mentioned below here
 python wgp.py
 ```
 
-It is advised to set the following environment variables at the start of every new session (you can create a `.bat` file that activates your venv, sets these, then launches `wgp.py`):
-
-```cmd
-set ROCM_HOME=%ROCM_ROOT%
-set PATH=%ROCM_ROOT%\lib\llvm\bin;%ROCM_BIN%;%PATH%
-set CC=clang-cl
-set CXX=clang-cl
-set DISTUTILS_USE_SDK=1
-set FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
-set TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
-```
-
-MIOpen (AMD’s equivalent of NVIDIA’s cuDNN) is not yet fully stable on several architectures; it can cause out-of-memory errors (OOMs), crash the display driver, or significantly increase generation times. Currently, it is recommended to use fast mode by setting:
+If VAE encoding or decoding is very slow the first time a resolution is used, MIOpen (AMD's equivalent of cuDNN) may be benchmarking convolution kernels. Its fast find mode uses heuristics instead:
 
 ```cmd
 set MIOPEN_FIND_MODE=FAST
-```
-
-Alternatively, you can disable MIOpen entirely by editing `wgp.py` and adding the following line below `import torch` (around line 51):
-
-```cmd
-...
-:: /lines already in the file/
-:: ...
-:: import torch
-torch.backends.cudnn.enabled = False # <-- Add this here
-:: import gc
-:: ...
-...
-```
-
-To verify that it is disabled, or to enable verbose logging, you can set:
-
-```cmd
-set MIOPEN_ENABLE_LOGGING=1
-set MIOPEN_ENABLE_LOGGING_CMD=1
-set MIOPEN_LOG_LEVEL=5
 ```
 
 ## Troubleshooting
@@ -239,40 +147,29 @@ set MIOPEN_LOG_LEVEL=5
 
 If `torch.cuda.is_available()` returns `False`:
 
-1. **Verify your GPU is supported** - Check the [Supported GPUs](#supported-gpus) list above
-2. **Check AMD drivers** - Ensure you have the latest AMD Adrenalin drivers installed
-3. **Verify correct index URL** - Make sure you used the right GPU family index URL
+1. Check that your GPU is in the [Supported GPUs](#supported-gpus) list and that the `device-gfx...` target in Step 2 matches the output of `clinfo | findstr gfx`.
+2. Update the AMD Adrenalin driver.
 
 ### Installation Errors
 
-**"Could not find a version that satisfies the requirement":**
-- Double-check that you're using the correct `--index-url` for your GPU family. You can also try adding the `--pre` flag or replacing `/v2/` in the URL with `/v2/staging/`
-- Ensure you're using Python 3.11, and not 3.10
-
-**"No matching distribution found":**
-- Your GPU architecture may not be supported
-- Check that you've activated your virtual environment
+- "No solution found" or "Could not find a version that satisfies the requirement": check that the virtual environment uses Python 3.12 (`python --version`) and that the target name is spelled correctly (for example `device-gfx1201`, not `device-gfx120X`).
+- "No matching distribution found": the GPU architecture is not published for Windows, or the virtual environment is not activated.
 
 ### Performance Issues
 
-- **Monitor VRAM usage** - Reduce batch size or resolution if running out of memory
-- **Close GPU-intensive apps** - Apps with hardware acceleration enabled (browsers, Discord etc.).
+- Close applications that use GPU acceleration (browsers, Discord, etc.) to free VRAM.
+- Lower the resolution or pick a lower-VRAM memory profile in the configuration menu.
 
-### Known Issues
-
-Windows packages are new and may be unstable.
-
-Known issues are tracked at: https://github.com/ROCm/TheRock/issues/808
+Known issues with the ROCm Python wheels are tracked at https://github.com/ROCm/TheRock/issues/808.
 
 ## Additional Resources
 
 - [TheRock GitHub Repository](https://github.com/ROCm/TheRock/)
-- [Releases Documentation](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)
-- [Supported GPU Architectures](https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md)
-- [Roadmap](https://github.com/ROCm/TheRock/blob/main/ROADMAP.md)
+- [Release and installation documentation](https://github.com/ROCm/TheRock/blob/main/RELEASES.md)
+- [Supported GPU architectures](https://github.com/ROCm/TheRock/blob/main/SUPPORTED_GPUS.md)
 - [ROCm Documentation](https://rocm.docs.amd.com/)
 
-For additional troubleshooting guidance for Wan2GP, see [TROUBLESHOOTING.md](https://github.com/deepbeepmeep/Wan2GP/blob/main/docs/TROUBLESHOOTING.md).
+For additional troubleshooting guidance for WanGP, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ---
 

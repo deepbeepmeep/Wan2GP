@@ -6024,7 +6024,7 @@ def edit_media(
     temp_audio_tracks = []
     conditioning_audio_path = None
     if not source_is_image and not soundtrack_method and not api_suppress_source_audio:
-        audio_tracks, audio_metadata = extract_audio_tracks(video_source, temp_format="wav" if voice_method else None, codec_key=server_config.get("audio_output_codec", "aac_128"))
+        audio_tracks, audio_metadata = extract_audio_tracks(video_source, temp_format="wav")
         temp_audio_tracks = audio_tracks.copy()
         has_already_audio = len(temp_audio_tracks) > 0 
     if not source_is_image and source_audio_conditioning and not api_suppress_source_audio:

@@ -1108,3 +1108,4 @@ def read_image_metadata(image_path):
             return None
     except Exception as e:
         print(f"Error reading metadata: {e}"); return None
+

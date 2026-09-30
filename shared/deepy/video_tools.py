@@ -81,6 +81,14 @@ def _get_standalone_audio_encode_args(codec_key: str | None) -> list[str]:
     return get_standalone_audio_encode_args(codec_key)
 
 
+def _can_copy_audio_codec(codec: str, output_extension: str) -> bool:
+    return (
+        output_extension == ".mkv"
+        or (output_extension in {".mp4", ".mov"} and codec in {"aac", "alac"})
+        or (output_extension == ".mp4" and codec == "opus")
+    )
+
+
 def has_video_extension(path: str) -> bool:
     return os.path.splitext(str(path or "").strip())[1].lower() in VIDEO_EXTENSIONS
 
@@ -587,11 +595,16 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
             audio_streams = [stream for stream in ffmpeg.probe(video_path).get("streams", []) if stream.get("codec_type") == "audio"]
             for index, stream in enumerate(audio_streams):
                 codec = str(stream.get("codec_name", "")).lower()
-                if codec in {"aac", "alac"}:
+                if _can_copy_audio_codec(codec, output_extension):
                     command += [f"-c:a:{index}", "copy"]
                 else:
                     encode_args = _get_mp4_audio_encode_args(audio_codec)
-                    command += [f"-c:a:{index}" if arg == "-c:a" else f"-b:a:{index}" if arg == "-b:a" else arg for arg in encode_args]
+                    stream_options = {"-c:a", "-b:a", "-ar", "-vbr", "-sample_fmt"}
+                    command += [
+                        f"{arg}:{index}" if arg in {"-c:a", "-b:a"}
+                        else f"{arg}:a:{index}" if arg in stream_options else arg
+                        for arg in encode_args
+                    ]
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         _run_ffmpeg([*command, output_path])
         return output_path
@@ -600,7 +613,7 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
             raise ValueError("replace requires a video and exactly one audio file, without mixing options.")
         audio_stream = next(stream for stream in ffmpeg.probe(audio_paths[0]).get("streams", []) if stream.get("codec_type") == "audio")
         source_codec = str(audio_stream.get("codec_name", "")).lower()
-        copy_audio = output_extension == ".mkv" or (output_extension in {".mp4", ".mov"} and source_codec in {"aac", "alac"})
+        copy_audio = _can_copy_audio_codec(source_codec, output_extension)
         command = ["-i", video_path, "-i", audio_paths[0], *subtitle_inputs, "-map", "0:v:0", "-map", "1:a:0", *subtitle_args, "-c:v", "copy", *(["-c:a", "copy"] if copy_audio else _get_mp4_audio_encode_args(audio_codec))]
         video_duration = get_media_duration(video_path)
         if video_duration is not None and video_duration > 0:

@@ -290,6 +290,10 @@ def _get_audio_codec_settings(codec_key):
         "mp3_128": {"ext": "mp3", "format": "mp3", "bitrate": "128k"},
         "mp3_192": {"ext": "mp3", "format": "mp3", "bitrate": "192k"},
         "mp3_320": {"ext": "mp3", "format": "mp3", "bitrate": "320k"},
+        **{
+            f"opus_{bitrate}": {"ext": "opus", "format": "opus", "bitrate": f"{bitrate}k"}
+            for bitrate in (64, 96, 128, 192)
+        },
     }
     return settings.get(codec_key, settings["wav"])
 
@@ -381,16 +385,20 @@ def get_audio_codec_extension(codec_key):
     return _get_audio_codec_settings(codec_key)["ext"]
 
 
-def _run_ffmpeg_encode(input_path, output_path, codec, bitrate=None, sample_rate=None, drop_video=False):
-    cmd = [_ffmpeg_binary(), "-y", "-v", "error", "-i", input_path]
-    if drop_video:
-        cmd.append("-vn")
-    cmd += ["-c:a", codec]
-    if bitrate:
-        cmd += ["-b:a", bitrate]
-    if sample_rate:
-        cmd += ["-ar", str(int(sample_rate))]
-    cmd.append(output_path)
+def get_standalone_audio_encode_args(codec_key):
+    settings = _get_audio_codec_settings(codec_key)
+    if settings["format"] == "opus":
+        # Opus does not accept arbitrary model sample rates (e.g. 44100 Hz).
+        return ["-c:a", "libopus", "-b:a", settings["bitrate"], "-vbr", "on", "-ar", "48000"]
+    if settings["format"] == "flac":
+        return ["-c:a", "flac", "-sample_fmt", "s16"]
+    if settings["format"] == "wav":
+        return ["-c:a", "pcm_s16le"]
+    return ["-c:a", "libmp3lame", "-b:a", settings["bitrate"]]
+
+
+def _run_ffmpeg_encode(input_path, output_path, encode_args):
+    cmd = [_ffmpeg_binary(), "-y", "-v", "error", "-i", input_path, *encode_args, output_path]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
@@ -408,7 +416,7 @@ def save_audio_file(path, audio_data, sample_rate, codec_key="wav"):
     os.close(fd)
     try:
         write_wav_file(tmp_path, audio_data, sample_rate)
-        _run_ffmpeg_encode(tmp_path, path, "libmp3lame", bitrate=settings.get("bitrate"), sample_rate=sample_rate)
+        _run_ffmpeg_encode(tmp_path, path, get_standalone_audio_encode_args(codec_key))
     finally:
         try:
             os.remove(tmp_path)
@@ -1067,4 +1075,3 @@ def read_image_metadata(image_path):
             return None
     except Exception as e:
         print(f"Error reading metadata: {e}"); return None
-

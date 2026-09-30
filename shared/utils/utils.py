@@ -785,3 +785,4 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
         src_masks.append(src_mask)
     return src_videos, src_masks
 
+

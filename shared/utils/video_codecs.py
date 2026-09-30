@@ -19,9 +19,10 @@ SUPPORTED_VIDEO_CONTAINERS = {"mkv", "mov", "mp4"}
 CONFIG_VIDEO_CONTAINERS = {value for _, value in VIDEO_CONTAINER_CHOICES}
 PROFESSIONAL_VIDEO_CODECS = {"prores_422", "dnxhr_hq"}
 QUICKTIME_AUDIO_CODEC_KEYS = {"aac_128", "aac_192", "aac_256", "aac_320", "alac"}
-# ffmpeg muxes FLAC into MP4 and Matroska, but refuses it in MOV.
+OPUS_AUDIO_CODEC_KEYS = {"opus_64", "opus_96", "opus_128", "opus_192"}
+# ffmpeg muxes FLAC and Opus into MP4 and Matroska, but refuses them in MOV.
 CONTAINER_AUDIO_CODEC_KEYS = {
-    "mp4": QUICKTIME_AUDIO_CODEC_KEYS | {"flac"},
+    "mp4": QUICKTIME_AUDIO_CODEC_KEYS | {"flac"} | OPUS_AUDIO_CODEC_KEYS,
     "mov": QUICKTIME_AUDIO_CODEC_KEYS,
 }
 

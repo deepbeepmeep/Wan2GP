@@ -307,6 +307,10 @@ def get_mp4_audio_codec_settings(codec_key):
         "aac_320": {"codec": "aac", "bitrate": "320k", "ext": ".aac"},
         "alac": {"codec": "alac", "bitrate": None, "ext": ".m4a"},
         "flac": {"codec": "flac", "bitrate": None, "ext": ".flac", "sample_fmt": "s16"},
+        **{
+            f"opus_{bitrate}": {"codec": "libopus", "bitrate": f"{bitrate}k", "ext": ".opus", "sample_rate": 48000, "vbr": "on"}
+            for bitrate in (64, 96, 128, 192)
+        },
     }
     return settings.get(codec_key, settings["aac_128"])
 
@@ -318,6 +322,10 @@ def get_video_audio_encode_args(codec_key):
         args += ["-b:a", settings["bitrate"]]
     if settings.get("sample_fmt"):
         args += ["-sample_fmt", settings["sample_fmt"]]
+    if settings.get("sample_rate"):
+        args += ["-ar", str(settings["sample_rate"])]
+    if settings.get("vbr"):
+        args += ["-vbr", settings["vbr"]]
     return args
 
 
@@ -545,6 +553,10 @@ def extract_audio_tracks(source_video, verbose=False, query_only=False, codec_ke
             output_kwargs['b:a'] = audio_settings["bitrate"]
         if audio_settings.get("sample_fmt"):
             output_kwargs['sample_fmt'] = audio_settings["sample_fmt"]
+        if audio_settings.get("sample_rate"):
+            output_kwargs['ar'] = audio_settings["sample_rate"]
+        if audio_settings.get("vbr"):
+            output_kwargs['vbr'] = audio_settings["vbr"]
         ffmpeg.input(source_path, **time_args).output(temp_path, **output_kwargs).overwrite_output().run(cmd=_ffmpeg_binary(), quiet=not verbose)
 
     return file_paths, metadata
@@ -560,7 +572,9 @@ def combine_and_concatenate_video_with_audio_tracks(
     audio_codec_key="aac_128",
     verbose = False
 ):
-    audio_codec = get_mp4_audio_codec_settings(audio_codec_key)["codec"]
+    audio_settings = get_mp4_audio_codec_settings(audio_codec_key)
+    audio_codec = audio_settings["codec"]
+    output_sample_rate = audio_settings.get("sample_rate", audio_sampling_rate)
     inputs, filters, maps, idx = ['-i', video_path], [], ['-map', '0:v'], 1
     metadata_args = []
     sources = source_audio_tracks or []
@@ -628,7 +642,7 @@ def combine_and_concatenate_video_with_audio_tracks(
            *maps, *metadata_args,
            '-c:v', 'copy',
            *get_video_audio_encode_args(audio_codec_key),
-           '-ar', str(audio_sampling_rate),
+           '-ar', str(output_sample_rate),
            '-shortest', save_path_tmp]
 
     if verbose:

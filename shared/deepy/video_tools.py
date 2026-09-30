@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from shared.ffmpeg_setup import download_ffmpeg
 from shared.utils.audio_video import get_audio_codec_extension, get_standalone_audio_encode_args, get_video_audio_encode_args
-from shared.utils.video_codecs import get_video_container_extension, get_video_encode_args
+from shared.utils.video_codecs import CONTAINER_AUDIO_CODEC_KEYS, get_video_container_extension, get_video_encode_args, normalize_video_audio_codec
 from shared.utils.utils import get_video_frame, get_video_info
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi"}
 _THUMB_DATA_URL_CACHE: OrderedDict[str, str] = OrderedDict()
@@ -68,7 +68,12 @@ def get_audio_standalone_extension(codec_key: str | None) -> str:
     return "." + get_audio_codec_extension(codec_key)
 
 
-def _get_mp4_audio_encode_args(codec_key: str | None) -> list[str]:
+def _get_mp4_audio_encode_args(codec_key: str | None, *, container: str | None = None) -> list[str]:
+    if container is not None:
+        codec_key = normalize_video_audio_codec(codec_key)
+        allowed_codecs = CONTAINER_AUDIO_CODEC_KEYS.get(container)
+        if allowed_codecs is not None and codec_key not in allowed_codecs:
+            raise ValueError(f"{container.upper()} output does not support audio codec setting '{codec_key}'.")
     return get_video_audio_encode_args(codec_key)
 
 
@@ -598,7 +603,7 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
                 if _can_copy_audio_codec(codec, output_extension):
                     command += [f"-c:a:{index}", "copy"]
                 else:
-                    encode_args = _get_mp4_audio_encode_args(audio_codec)
+                    encode_args = _get_mp4_audio_encode_args(audio_codec, container=output_extension.lstrip("."))
                     stream_options = {"-c:a", "-b:a", "-ar", "-vbr", "-sample_fmt"}
                     command += [
                         f"{arg}:{index}" if arg in {"-c:a", "-b:a"}
@@ -614,7 +619,7 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
         audio_stream = next(stream for stream in ffmpeg.probe(audio_paths[0]).get("streams", []) if stream.get("codec_type") == "audio")
         source_codec = str(audio_stream.get("codec_name", "")).lower()
         copy_audio = _can_copy_audio_codec(source_codec, output_extension)
-        command = ["-i", video_path, "-i", audio_paths[0], *subtitle_inputs, "-map", "0:v:0", "-map", "1:a:0", *subtitle_args, "-c:v", "copy", *(["-c:a", "copy"] if copy_audio else _get_mp4_audio_encode_args(audio_codec))]
+        command = ["-i", video_path, "-i", audio_paths[0], *subtitle_inputs, "-map", "0:v:0", "-map", "1:a:0", *subtitle_args, "-c:v", "copy", *(["-c:a", "copy"] if copy_audio else _get_mp4_audio_encode_args(audio_codec, container=output_extension.lstrip(".")))]
         video_duration = get_media_duration(video_path)
         if video_duration is not None and video_duration > 0:
             command += ["-t", f"{video_duration:.6f}"]
@@ -666,7 +671,7 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
             filters.append(f"[{source}]volume={gain:g}dB[{label}]")
             labels.append(f"[{label}]")
         filters.append(f"{''.join(labels)}amix=inputs={len(sources)}:duration=longest:dropout_transition=0:normalize=1{',apad' if video_path else ''}[mixed]")
-        command = [*inputs, "-filter_complex", ";".join(filters), *maps, "-map", "[mixed]", *subtitle_args, *(_get_mp4_audio_encode_args(audio_codec) if video_path else _get_standalone_audio_encode_args(standalone_audio_codec))]
+        command = [*inputs, "-filter_complex", ";".join(filters), *maps, "-map", "[mixed]", *subtitle_args, *(_get_mp4_audio_encode_args(audio_codec, container=output_extension.lstrip(".")) if video_path else _get_standalone_audio_encode_args(standalone_audio_codec))]
         video_duration = get_media_duration(video_path) if video_path else None
         if video_duration is not None and video_duration > 0:
             command += ["-t", f"{video_duration:.6f}"]

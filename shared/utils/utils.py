@@ -48,7 +48,7 @@ def has_image_file_extension(filename):
 def has_audio_file_extension(filename):
     filename = strip_virtual_media_suffix(filename)
     extension = os.path.splitext(filename)[-1].lower()
-    return extension in [".wav", ".mp3", ".aac", ".flac"]
+    return extension in [".wav", ".mp3", ".aac", ".flac", ".opus", ".ogg"]
 
 
 def has_mesh_file_extension(filename):
@@ -856,5 +856,4 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
         src_videos.append(src_video)
         src_masks.append(src_mask)
     return src_videos, src_masks
-
 

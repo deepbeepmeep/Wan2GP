@@ -290,10 +290,10 @@ def _get_audio_codec_settings(codec_key):
         "mp3_128": {"ext": "mp3", "format": "mp3", "bitrate": "128k"},
         "mp3_192": {"ext": "mp3", "format": "mp3", "bitrate": "192k"},
         "mp3_320": {"ext": "mp3", "format": "mp3", "bitrate": "320k"},
-        **{
-            f"opus_{bitrate}": {"ext": "opus", "format": "opus", "bitrate": f"{bitrate}k"}
-            for bitrate in (64, 96, 128, 192)
-        },
+        "opus_64": {"ext": "opus", "format": "opus", "bitrate": "64k"},
+        "opus_96": {"ext": "opus", "format": "opus", "bitrate": "96k"},
+        "opus_128": {"ext": "opus", "format": "opus", "bitrate": "128k"},
+        "opus_192": {"ext": "opus", "format": "opus", "bitrate": "192k"},
     }
     return settings.get(codec_key, settings["wav"])
 
@@ -307,10 +307,10 @@ def get_mp4_audio_codec_settings(codec_key):
         "aac_320": {"codec": "aac", "bitrate": "320k", "ext": ".aac"},
         "alac": {"codec": "alac", "bitrate": None, "ext": ".m4a"},
         "flac": {"codec": "flac", "bitrate": None, "ext": ".flac", "sample_fmt": "s16"},
-        **{
-            f"opus_{bitrate}": {"codec": "libopus", "bitrate": f"{bitrate}k", "ext": ".opus", "sample_rate": 48000, "vbr": "on"}
-            for bitrate in (64, 96, 128, 192)
-        },
+        "opus_64": {"codec": "libopus", "bitrate": "64k", "ext": ".opus", "sample_rate": 48000, "vbr": "on"},
+        "opus_96": {"codec": "libopus", "bitrate": "96k", "ext": ".opus", "sample_rate": 48000, "vbr": "on"},
+        "opus_128": {"codec": "libopus", "bitrate": "128k", "ext": ".opus", "sample_rate": 48000, "vbr": "on"},
+        "opus_192": {"codec": "libopus", "bitrate": "192k", "ext": ".opus", "sample_rate": 48000, "vbr": "on"},
     }
     return settings.get(codec_key, settings["aac_128"])
 
@@ -396,8 +396,7 @@ def get_audio_codec_extension(codec_key):
 def get_standalone_audio_encode_args(codec_key):
     settings = _get_audio_codec_settings(codec_key)
     if settings["format"] == "opus":
-        # Opus does not accept arbitrary model sample rates (e.g. 44100 Hz).
-        return ["-c:a", "libopus", "-b:a", settings["bitrate"], "-vbr", "on", "-ar", "48000"]
+        return get_video_audio_encode_args(codec_key)
     if settings["format"] == "flac":
         return ["-c:a", "flac", "-sample_fmt", "s16"]
     if settings["format"] == "wav":

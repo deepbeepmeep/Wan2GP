@@ -202,6 +202,15 @@ def get_audio_file_channels(audio_path):
     return int(audio_stream["channels"])
 
 
+def get_audio_file_duration(audio_path):
+    probe = ffmpeg.probe(os.fspath(audio_path), cmd=_ffprobe_binary())
+    audio_stream = next((stream for stream in probe["streams"] if stream.get("codec_type") == "audio"), None)
+    duration = (audio_stream or {}).get("duration") or probe["format"].get("duration")
+    if not duration:
+        raise ValueError(f"Unable to read audio duration from {audio_path}")
+    return float(duration)
+
+
 def get_media_duration_and_audio_layouts(media_path):
     """Read file duration and each audio track's channel layout, without decoding."""
     probe = ffmpeg.probe(os.fspath(media_path), cmd=_ffprobe_binary())
@@ -580,6 +589,10 @@ def combine_and_concatenate_video_with_audio_tracks(
             else:
                 filters.append(f'anullsrc=r={audio_sampling_rate}:cl={channel_layout},apad=pad_dur=100[aout{i}]')
         else:
+            source_end = source_audio_duration
+            if s and n and not new_audio_from_start:
+                # the new track shares the source timeline: continue it where the source audio actually ends rather than padding the gap with silence
+                source_end = min(source_audio_duration, get_audio_file_duration(s))
             if s:
                 inputs += ['-i', s]
                 needs_filter = (
@@ -591,10 +604,10 @@ def combine_and_concatenate_video_with_audio_tracks(
                 if needs_filter:
                     filters.append(
                         f'[{idx}:a]aresample={audio_sampling_rate},aformat=channel_layouts={channel_layout},'
-                        f'apad=pad_dur={source_audio_duration},atrim=0:{source_audio_duration},asetpts=PTS-STARTPTS[s{i}]')
+                        f'apad=pad_dur={source_end},atrim=0:{source_end},asetpts=PTS-STARTPTS[s{i}]')
                 else:
                     filters.append(
-                        f'[{idx}:a]apad=pad_dur={source_audio_duration},atrim=0:{source_audio_duration},asetpts=PTS-STARTPTS[s{i}]')
+                        f'[{idx}:a]apad=pad_dur={source_end},atrim=0:{source_end},asetpts=PTS-STARTPTS[s{i}]')
                 if lang := meta.get('language'):
                     metadata_args += ['-metadata:s:a:' + str(i), f'language={lang}']
                 idx += 1
@@ -604,7 +617,7 @@ def combine_and_concatenate_video_with_audio_tracks(
 
             if n:
                 inputs += ['-i', n]
-                start = '0' if new_audio_from_start else source_audio_duration
+                start = '0' if new_audio_from_start else source_end
                 filters.append(
                     f'[{idx}:a]aresample={audio_sampling_rate},aformat=channel_layouts={channel_layout},'
                     f'atrim=start={start},asetpts=PTS-STARTPTS[n{i}]')

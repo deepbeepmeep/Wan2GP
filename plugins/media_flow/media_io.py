@@ -12,7 +12,7 @@ from pathlib import Path
 import gradio as gr
 
 from shared.utils.audio_video import get_hdr_video_encode_args, get_video_encode_args
-from shared.utils.video_codecs import normalize_video_container, validate_video_output_settings
+from shared.utils.video_codecs import CONTAINER_AUDIO_COPY_CODECS, normalize_video_container, validate_video_output_settings
 from shared.utils.utils import get_video_info_details
 from shared.utils.video_decode import resolve_media_binary
 from shared.utils.video_metadata import DEFAULT_RESERVED_VIDEO_METADATA_BYTES, write_reserved_video_ffmetadata
@@ -219,7 +219,7 @@ def validate_audio_copy_container(ffprobe_path: str, source_path: str, video_con
     video_container = normalize_container_name(video_container)
     if video_container not in {"mp4", "mov"}:
         return
-    supported_codecs = {"aac", "ac3", "alac", "eac3", "mp3", "opus"} if video_container == "mp4" else {"aac", "ac3", "alac", "eac3", "mp3", "pcm_s16le", "pcm_s24le", "pcm_s32le"}
+    supported_codecs = CONTAINER_AUDIO_COPY_CODECS[video_container]
     audio_codecs = _probe_audio_stream_codecs(ffprobe_path, source_path)
     if audio_track_no is None:
         selected_codecs = [codec for codec in audio_codecs if len(codec) > 0]

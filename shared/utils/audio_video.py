@@ -573,7 +573,9 @@ def combine_and_concatenate_video_with_audio_tracks(
 ):
     audio_settings = get_mp4_audio_codec_settings(audio_codec_key)
     audio_codec = audio_settings["codec"]
-    output_sample_rate = audio_settings.get("sample_rate", audio_sampling_rate)
+    audio_encode_args = get_video_audio_encode_args(audio_codec_key)
+    if not audio_settings.get("sample_rate"):
+        audio_encode_args += ["-ar", str(audio_sampling_rate)]
     inputs, filters, maps, idx = ['-i', video_path], [], ['-map', '0:v'], 1
     metadata_args = []
     sources = source_audio_tracks or []
@@ -640,8 +642,7 @@ def combine_and_concatenate_video_with_audio_tracks(
            '-filter_complex', ';'.join(filters),  # ✅ Only change made
            *maps, *metadata_args,
            '-c:v', 'copy',
-           *get_video_audio_encode_args(audio_codec_key),
-           '-ar', str(output_sample_rate),
+           *audio_encode_args,
            '-shortest', save_path_tmp]
 
     if verbose:

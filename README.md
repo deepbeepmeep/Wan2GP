@@ -249,7 +249,7 @@ Use this script to get the latest updates for WAN2GP and upgrade dependencies.
 * **1. Update:** Fetches the latest code from GitHub and updates requirements.
 * **2. Upgrade:** Allows you to manually individually upgrade heavy backend components (like PyTorch, Triton, Sage Attention).
 
-Triton recommendations follow both your GPU and selected PyTorch: **3.3.x with PyTorch 2.7**, **3.6.x with PyTorch 2.10** on RTX 30XX or newer, and **3.2.x on RTX 20XX**. Use **Upgrade** to correct an older Triton installation; **Update** alone does not change it.
+Triton recommendations follow both your GPU and selected PyTorch: **3.3.x with PyTorch 2.7**, **3.6.x with PyTorch 2.10** on RTX 30XX or newer, **3.2.x on RTX 20XX**, and **3.7.x with PyTorch 2.13** on AMD. Use **Upgrade** to correct an older Triton installation; **Update** alone does not change it.
 
 #### 4️⃣ Managing Environments (`scripts\manage.bat` | `scripts/manage.sh`)
 Use this script to manage and switch between your sandboxed environments safely.

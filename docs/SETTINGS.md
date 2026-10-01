@@ -52,6 +52,13 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 | `temperature` | number | Sampling temperature for audio/TTS models that expose it. |
 | `top_p` | number | Nucleus sampling limit for supported audio/TTS models. |
 | `top_k` | integer | Top-k sampling limit for supported audio/TTS models. `0` usually disables top-k. |
+| `planner_temperature` | number | Temperature of the autoregressive planner stage (for example the YuE2 ABC score). `0` is greedy. |
+| `planner_top_p` | number | Nucleus sampling limit of the planner stage. |
+| `planner_top_k` | integer | Top-k sampling limit of the planner stage. `0` disables top-k. |
+| `planner_repetition_penalty` | number | Repetition penalty of the planner stage. `1` disables it. |
+| `planner_penalty_window` | integer | Number of recent planner tokens the repetition penalty looks at. |
+| `planner_min_tokens` | integer | Minimum planner tokens before its end token is allowed. |
+| `planner_max_tokens` | integer | Maximum planner tokens; consumes context otherwise available to the media. |
 
 ## Guidance
 

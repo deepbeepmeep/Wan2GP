@@ -47,6 +47,7 @@ loras_i2v/
 tmp/
 deepy_sessions/
 dlss5/
+scripts/dlssg_worker_linux/.cache/
 /settings/
 
 # Local engineering specifications and tests must never be committed.

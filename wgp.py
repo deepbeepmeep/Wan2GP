@@ -6025,10 +6025,14 @@ def edit_media(
 
     temp_audio_tracks = []
     conditioning_audio_path = None
+    copy_source_audio = False
     if not source_is_image and not soundtrack_method and not api_suppress_source_audio:
-        audio_tracks, audio_metadata = extract_audio_tracks(video_source, temp_format="wav" if voice_method else None, codec_key=server_config.get("audio_output_codec", "aac_128"))
-        temp_audio_tracks = audio_tracks.copy()
-        has_already_audio = len(temp_audio_tracks) > 0 
+        if voice_method or parse_virtual_media_path(video_source) is not None:
+            audio_tracks, audio_metadata = extract_audio_tracks(video_source, temp_format="wav")
+            temp_audio_tracks = audio_tracks.copy()
+        else:
+            copy_source_audio = extract_audio_tracks(video_source, query_only=True) > 0
+        has_already_audio = len(temp_audio_tracks) > 0 or copy_source_audio
     if not source_is_image and source_audio_conditioning and not api_suppress_source_audio:
         if audio_source:
             conditioning_audio_path = audio_source
@@ -6226,7 +6230,7 @@ def edit_media(
             configs["postprocess_audio_neg_prompt"] = postprocess_audio_neg_prompt
             configs["postprocess_audio_seed"] = seed
             any_change = True
-        elif len(audio_tracks) > 0:
+        elif len(audio_tracks) > 0 or copy_source_audio:
             new_video_path = get_available_filename(save_path, video_source, suffix, force_extension=video_extension)
             if any_voice_replacement:
                 replaced_audio_tracks, replace_voice_temp_tracks = audio_processor_api.replace_voice_tracks(
@@ -6255,7 +6259,7 @@ def edit_media(
                 )
                 cleanup_temp_audio_files(replace_voice_temp_tracks)
             else:
-                combine_video_with_audio_tracks(video_path, audio_tracks, new_video_path, audio_metadata=audio_metadata, audio_codec_key=server_config.get("audio_output_codec", "aac_128"), video_duration=saved_video_duration)
+                combine_video_with_audio_tracks(video_path, [video_source] if copy_source_audio else audio_tracks, new_video_path, audio_metadata=audio_metadata, audio_codec_key=server_config.get("audio_output_codec", "aac_128"), video_duration=saved_video_duration, copy_audio=copy_source_audio)
         else:
             new_video_path = video_path
 

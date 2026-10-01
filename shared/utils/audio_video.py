@@ -21,7 +21,7 @@ import re
 from .hdr import hdr10_x265_params, hdr10_zscale_filter, iter_hdr_gbrpf32_frames, iter_video_chunks
 
 from .video_decode import probe_video_stream_metadata, resolve_media_binary
-from .video_codecs import SUPPORTED_VIDEO_CONTAINERS, get_imageio_codec_params, get_video_encode_args, validate_video_output_settings
+from .video_codecs import CONTAINER_AUDIO_COPY_CODECS, SUPPORTED_VIDEO_CONTAINERS, get_imageio_codec_params, get_video_encode_args, validate_video_output_settings
 from .virtual_media import get_virtual_media_entry, parse_virtual_media_path, strip_virtual_media_suffix
 
 def _ffmpeg_binary():
@@ -632,7 +632,7 @@ def combine_and_concatenate_video_with_audio_tracks(
 
 
 def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
-                                     audio_metadata=None, audio_codec_key="aac_128", verbose=False, video_duration=None):
+                                     audio_metadata=None, audio_codec_key="aac_128", verbose=False, video_duration=None, copy_audio=False):
     if not audio_tracks:
         if verbose: print("No audio tracks to combine."); return False
 
@@ -655,6 +655,10 @@ def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
             cmd += ['-metadata:s:a:' + str(i), f'language={lang}']
 
     cmd += ['-c:v', 'copy', *get_video_audio_encode_args(audio_codec_key)]
+    if copy_audio:
+        container = os.path.splitext(output_video)[1][1:].lower()
+        codecs = [s.get('codec_name') for path in audio_tracks for s in ffmpeg.probe(path, cmd=_ffprobe_binary())['streams'] if s['codec_type'] == 'audio']
+        cmd += [arg for i, codec in enumerate(codecs) if container == 'mkv' or codec in CONTAINER_AUDIO_COPY_CODECS.get(container, ()) for arg in (f'-c:a:{i}', 'copy')]
     cmd += ['-t', str(dur), output_video]
 
     result = subprocess.run(cmd, capture_output=not verbose, text=True)

@@ -135,6 +135,14 @@ def _read_mp3_text_tag(path: str, tag_key: str = "WanGP") -> Optional[str]:
     return None
 
 
+def _load_ogg_opus(path):
+    from mutagen import File
+    from mutagen.oggopus import OggOpus
+    audio = File(path)
+    # .ogg also carries other codecs; only Opus uses this metadata path.
+    return audio if isinstance(audio, OggOpus) else None
+
+
 def save_audio_metadata(path, configs):
     ext = os.path.splitext(path)[1].lower()
     payload = json.dumps(configs)
@@ -145,6 +153,12 @@ def save_audio_metadata(path, configs):
     elif ext == ".flac":
         from mutagen.flac import FLAC
         audio = FLAC(path)
+        audio["WanGP"] = [payload]
+        audio.save()
+    elif ext in {".opus", ".ogg"}:
+        audio = _load_ogg_opus(path)
+        if audio is None:
+            raise ValueError("Audio metadata requires an Ogg Opus file")
         audio["WanGP"] = [payload]
         audio.save()
     else:
@@ -160,6 +174,10 @@ def read_audio_metadata(path):
     elif ext == ".flac":
         from mutagen.flac import FLAC
         values = FLAC(path).get("WanGP", [])
+        raw = values[0] if values else None
+    elif ext in {".opus", ".ogg"}:
+        audio = _load_ogg_opus(path)
+        values = audio.get("WanGP", []) if audio is not None else []
         raw = values[0] if values else None
     else:
         return None

@@ -4773,7 +4773,7 @@ class DeepyZeroTools:
                 else:
                     suffix = deepy_video_tools.get_video_container_extension(video_container)
             else:
-                allowed_extensions = {"m4a"} if mode == "multitrack" else {"wav", "mp3", "flac", "m4a"}
+                allowed_extensions = {"m4a"} if mode == "multitrack" else {"wav", "mp3", "flac", "opus", "m4a"}
                 if requested_extension and requested_extension not in allowed_extensions:
                     return {"status": "error", "error": f"Audio {mode} output_extension must be one of: {', '.join(sorted(allowed_extensions))}."}
                 if mode == "multitrack":
@@ -4781,7 +4781,7 @@ class DeepyZeroTools:
                 else:
                     configured_extension = deepy_video_tools.get_audio_standalone_extension(standalone_audio_codec).lstrip(".")
                     if requested_extension and requested_extension != configured_extension:
-                        standalone_audio_codec = {"wav": "wav", "mp3": "mp3_192", "flac": "flac", "m4a": "alac"}[requested_extension]
+                        standalone_audio_codec = {"wav": "wav", "mp3": "mp3_192", "flac": "flac", "opus": "opus_128", "m4a": "alac"}[requested_extension]
                     suffix = deepy_video_tools.get_audio_standalone_extension(standalone_audio_codec)
             base_path = video_path or audio_paths[0]
             base_name = os.path.splitext(os.path.basename(base_path))[0]
@@ -4804,8 +4804,8 @@ class DeepyZeroTools:
                 else:
                     self._update_audio_metadata_fields(output_path, settings)
                 label = {"copy": "Remuxed Video", "mix": "Mixed Audio", "multitrack": "Multitrack Audio", "replace": "Video With Replaced Audio"}[mode]
-                # WanGP's embedded audio metadata writer currently supports WAV and MP3.
-                persist_metadata = bool(video_media) or os.path.splitext(output_path)[1].lower() in {".wav", ".mp3"}
+                # M4A multitrack output has no embedded WanGP metadata writer.
+                persist_metadata = bool(video_media) or os.path.splitext(output_path)[1].lower() in {".wav", ".mp3", ".flac", ".opus", ".ogg"}
                 media_record = self._record_direct_media(output_path, settings, is_image=False, audio_only=not bool(video_media), label=label, persist_metadata=persist_metadata)
             except Exception as exc:
                 result = {"status": "error", "mode": mode, "output_file": "", "error": str(exc)}

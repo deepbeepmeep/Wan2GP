@@ -640,7 +640,7 @@ class DiffusionVideoDecoder(nn.Module):
             x = _to_disposable(velocity_list, device, x_dtype)
         return x
 
-    def _schedule(self, shape: VideoLatentShape, tiling_config: TilingConfig | None) -> list[_Tile]:
+    def _schedule(self, shape: VideoLatentShape, tiling_config: TilingConfig | None, device: torch.device) -> list[_Tile]:
         stage4_t = shape.frames
         stage4_h = shape.height
         stage4_w = shape.width
@@ -683,9 +683,9 @@ class DiffusionVideoDecoder(nn.Module):
             out_h = slice(h_interval.start * pixel_scale[1], h_interval.end * pixel_scale[1])
             out_w = slice(w_interval.start * pixel_scale[2], w_interval.end * pixel_scale[2])
             masks = (
-                compute_trapezoidal_mask_1d(t_end - t_start, t_interval.left_ramp * pixel_scale[0], t_interval.right_ramp * pixel_scale[0]),
-                compute_trapezoidal_mask_1d(out_h.stop - out_h.start, h_interval.left_ramp * pixel_scale[1], h_interval.right_ramp * pixel_scale[1]),
-                compute_trapezoidal_mask_1d(out_w.stop - out_w.start, w_interval.left_ramp * pixel_scale[2], w_interval.right_ramp * pixel_scale[2]),
+                compute_trapezoidal_mask_1d(t_end - t_start, t_interval.left_ramp * pixel_scale[0], t_interval.right_ramp * pixel_scale[0], device=device),
+                compute_trapezoidal_mask_1d(out_h.stop - out_h.start, h_interval.left_ramp * pixel_scale[1], h_interval.right_ramp * pixel_scale[1], device=device),
+                compute_trapezoidal_mask_1d(out_w.stop - out_w.start, w_interval.left_ramp * pixel_scale[2], w_interval.right_ramp * pixel_scale[2], device=device),
             )
             tiles.append(_Tile(t_interval, h_interval, w_interval, out_t, out_h, out_w, masks))
         return tiles
@@ -721,7 +721,7 @@ class DiffusionVideoDecoder(nn.Module):
         latent, w_pad = _resize_axis(resize_input, 4, target, True)
         work_latent = VideoLatentShape.from_torch_shape(latent.shape)
         work_pixels = work_latent.upscale(self.video_downscale_factors)._replace(channels=self.out_channels)
-        tiles = self._schedule(work_latent, tiling_config)
+        tiles = self._schedule(work_latent, tiling_config, latent.device)
         with PhaseProgress(len(tiles)) as phase_progress:
             trailing_input = [latent]
             latent = None

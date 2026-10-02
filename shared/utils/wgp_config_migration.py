@@ -9,7 +9,7 @@ from shared.deepy.config import DEEPY_ENABLED_KEY, DEEPY_TEMPLATE_CONFIG_MIGRATI
 
 LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
 EXTENSIONS_DEFAULTS_VERSION_KEY = "extensions_defaults_version"
-EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.23")
+EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.24")
 EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT = str(EXTENSIONS_DEFAULTS_TARGET_VERSION)
 INSTALLED_REMOTE_PLUGINS_KEY = "installed_remote_plugins"
 
@@ -287,6 +287,14 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
         from shared.prompt_enhancer.config import PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT, split_speculative_decoding, speculative_decoding_config
         key = PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY
         server_config[key] = speculative_decoding_config(*split_speculative_decoding(server_config.get(key, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)))
+        changed = True
+
+    if version < Decimal("1.24"): # a VRAM preload per kind of output instead of one for all, smart memory pinning on / off
+        preload = server_config.pop("preload_in_VRAM", 0)
+        for output_type in ("video", "image", "audio"):
+            server_config.setdefault(f"{output_type}_preload_in_VRAM", preload)
+        smart = server_config.get("smart_memory_pinning", True)
+        server_config["smart_memory_pinning"] = smart if isinstance(smart, bool) else _to_int(smart, -1) >= 0
         changed = True
 
     changed = _migrate_audio_processors_config(server_config, version) or changed

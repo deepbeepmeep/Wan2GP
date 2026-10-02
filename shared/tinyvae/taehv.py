@@ -54,6 +54,9 @@ class TGrow(nn.Module):
         return x.reshape(-1, x.shape[1] // self.stride, x.shape[2], x.shape[3])
 
 
+SEQUENTIAL_PIECE_ELEMENTS = 2**23  # sequential decoding: frames created by the TGrow layers run the following layers in pieces of at most this many elements
+
+
 def _apply(model, x, parallel, output_indices=None, abort_check=None, output_transform=None):
     if parallel:
         n, t, c, h, w = x.shape
@@ -69,43 +72,42 @@ def _apply(model, x, parallel, output_indices=None, abort_check=None, output_tra
                 flat = block(flat)
         return flat.reshape(n, flat.shape[0] // n, flat.shape[1], flat.shape[2], flat.shape[3])
 
-    queues = [(frame, 0) for frame in x.unbind(1)]
+    # The frames of the single video in temporal order, one latent frame at a time: the frames the TGrow layers create run the following
+    # layers together, in pieces of at most SEQUENTIAL_PIECE_ELEMENTS. Each MemBlock gets every frame's predecessor at its own input, and
+    # the layers after the last temporal one, which work frame by frame, only run on the frames to output.
+    last_temporal = max((index for index, block in enumerate(model) if isinstance(block, (MemBlock, TGrow))), default=len(model) - 1)
     memory = [None] * len(model)
     output = []
     output_no = 0
-    while queues:
+
+    def run(value, start):
+        nonlocal output_no
+        for index in range(start, len(model)):
+            if value.shape[0] > 1 and value.numel() > SEQUENTIAL_PIECE_ELEMENTS:
+                for piece in value.split(max(1, SEQUENTIAL_PIECE_ELEMENTS // value[0].numel())):
+                    run(piece, index)
+                return
+            block = model[index]
+            if isinstance(block, MemBlock):
+                previous = torch.zeros_like(value[:1]) if memory[index] is None else memory[index]
+                past = previous if value.shape[0] == 1 else torch.cat([previous, value[:-1]])
+                memory[index] = value if value.shape[0] == 1 else value[-1:].clone()  # a view would keep the whole piece alive
+                value = block(value, past)
+            else:
+                value = block(value)
+            if index == last_temporal:
+                frames = range(output_no, output_no + value.shape[0])
+                output_no += value.shape[0]
+                if output_indices is not None:
+                    value = value[[frame - frames.start for frame in frames if frame in output_indices]]
+                    if value.shape[0] == 0:
+                        return
+        output.extend((frame if output_transform is None else output_transform(frame)).unsqueeze(1) for frame in value.split(1))
+
+    for value in x[0].split(1):
         if abort_check is not None and abort_check():
             return None
-        value, index = queues.pop(0)
-        if index == len(model):
-            if output_indices is None or output_no in output_indices:
-                if output_transform is not None:
-                    value = output_transform(value)
-                output.append(value.unsqueeze(1))
-            output_no += 1
-            continue
-        block = model[index]
-        if isinstance(block, MemBlock):
-            previous = memory[index]
-            value_new = block(value, value * 0 if previous is None else previous)
-            memory[index] = value
-            queues.insert(0, (value_new, index + 1))
-        elif isinstance(block, TPool):
-            pending = memory[index]
-            if pending is None:
-                pending = memory[index] = []
-            pending.append(value)
-            if len(pending) == block.stride:
-                value_new = block(torch.cat(pending, 1).view(-1, value.shape[1], value.shape[2], value.shape[3]))
-                memory[index] = []
-                queues.insert(0, (value_new, index + 1))
-        elif isinstance(block, TGrow):
-            value_new = block(value)
-            chunks = value_new.view(-1, block.stride * value_new.shape[1], value_new.shape[2], value_new.shape[3]).chunk(block.stride, 1)
-            for chunk in reversed(chunks):
-                queues.insert(0, (chunk, index + 1))
-        else:
-            queues.insert(0, (block(value), index + 1))
+        run(value, 0)
     return torch.cat(output, 1)
 
 

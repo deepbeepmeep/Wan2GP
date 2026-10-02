@@ -355,6 +355,7 @@ def get_nd_rotary_pos_embed(
     enable_riflex = False,
     rope_dim_list = [44, 42, 42],
     head_dim = 128,
+    device,
 ):
     """
     This is a n-d version of precompute_freqs_cis, which is a RoPE for tokens with n-d structure.
@@ -381,7 +382,7 @@ def get_nd_rotary_pos_embed(
     ), "sum(rope_dim_list) should equal to head_dim of attention layer"
 
     grid = get_meshgrid_nd(
-        start, *args, dim=len(rope_dim_list), dtype=_rope_freqs_dtype()
+        start, *args, dim=len(rope_dim_list), dtype=_rope_freqs_dtype(), device=device
     )  # [3, W, H, D] / [2, W, H]
 
     if isinstance(theta_rescale_factor, int) or isinstance(theta_rescale_factor, float):
@@ -489,7 +490,7 @@ def apply_rotary_source_id(freqs, source_id, head_dim=128):
     source_cos, source_sin = get_1d_rotary_pos_embed(head_dim, source_pos, use_real=True)
     return cos * source_cos - sin * source_sin, sin * source_cos + cos * source_sin
 
-def get_rotary_pos_embed(latents_size, enable_RIFLEx = False):
+def get_rotary_pos_embed(latents_size, enable_RIFLEx = False, *, device):
     target_ndim = 3
     ndim = 5 - 2
 
@@ -520,6 +521,7 @@ def get_rotary_pos_embed(latents_size, enable_RIFLEx = False):
         use_real=True,
         theta_rescale_factor=1,
         L_test = latents_size[0],
-        enable_riflex = enable_RIFLEx
+        enable_riflex = enable_RIFLEx,
+        device=device,
     )
     return (freqs_cos, freqs_sin)

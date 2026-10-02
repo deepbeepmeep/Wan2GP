@@ -336,7 +336,7 @@ class DTT2V:
             else:
                 self.model.cache = None
         from mmgp import offload
-        freqs = get_rotary_pos_embed(latents.shape[2 :], enable_RIFLEx= False) 
+        freqs = get_rotary_pos_embed(latents.shape[2 :], enable_RIFLEx= False, device=latents.device) 
         kwrags = {
             "freqs" :freqs,
             "fps" : fps_embeds,

@@ -237,6 +237,7 @@ class QwenImagePipeline(): #DiffusionPipeline
                 images=image,
                 padding=True,
                 return_tensors="pt",
+                device=device,
             ).to(device)
 
             with text_encoding_progress(self.text_encoder.model.language_model.layers, prompt_count=len(prompt)):
@@ -375,9 +376,9 @@ class QwenImagePipeline(): #DiffusionPipeline
 
     @staticmethod
     def _prepare_latent_image_ids(batch_size, height, width, device, dtype):
-        latent_image_ids = torch.zeros(height, width, 3)
-        latent_image_ids[..., 1] = latent_image_ids[..., 1] + torch.arange(height)[:, None]
-        latent_image_ids[..., 2] = latent_image_ids[..., 2] + torch.arange(width)[None, :]
+        latent_image_ids = torch.zeros(height, width, 3, device=device)
+        latent_image_ids[..., 1] = latent_image_ids[..., 1] + torch.arange(height, device=device)[:, None]
+        latent_image_ids[..., 2] = latent_image_ids[..., 2] + torch.arange(width, device=device)[None, :]
 
         latent_image_id_height, latent_image_id_width, latent_image_id_channels = latent_image_ids.shape
 
@@ -750,7 +751,7 @@ class QwenImagePipeline(): #DiffusionPipeline
                     if lora_inpaint:
                         image_mask_rebuilt = torch.where(convert_image_to_tensor(image_mask)>-0.5, 1., 0. )[0:1]
                         vae_tensor = convert_image_to_tensor(vae_img)
-                        green = torch.tensor([-1.0, 1.0, -1.0]).to(vae_tensor) 
+                        green = torch.tensor([-1.0, 1.0, -1.0], device=vae_tensor.device).to(vae_tensor)
                         green_image = green[:, None, None] .expand_as(vae_tensor)
                         vae_tensor = torch.where(image_mask_rebuilt > 0, green_image, vae_tensor)
                         vae_img = convert_tensor_to_image(vae_tensor)
@@ -1030,11 +1031,11 @@ class QwenImagePipeline(): #DiffusionPipeline
             latents_to_decode = latents_to_decode.to(self.vae.dtype)
             pid_latents = latents_to_decode[:, :, 0] if vae_upsampler is not None else None
             latents_mean = (
-                torch.tensor(self.vae.config.latents_mean)
+                torch.tensor(self.vae.config.latents_mean, device=latents_to_decode.device)
                 .view(1, vae_z_dim, 1, 1, 1)
                 .to(latents_to_decode.device, latents_to_decode.dtype)
             )
-            latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(1, vae_z_dim, 1, 1, 1).to(
+            latents_std = 1.0 / torch.tensor(self.vae.config.latents_std, device=latents_to_decode.device).view(1, vae_z_dim, 1, 1, 1).to(
                 latents_to_decode.device, latents_to_decode.dtype
             )
             latents_to_decode = latents_to_decode / latents_std + latents_mean

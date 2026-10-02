@@ -9,13 +9,14 @@ from shared.utils.hf import build_hf_url
 from shared.utils.frame_scheduler import normalize_overlap
 
 from .excerpts import H3_AUDIO_EXCERPTS_SETTING, H3_EXCERPT_SETTINGS, H3_VIDEO_EXCERPTS_SETTING, parse_excerpts, reference_video_frame_limit
-from .constants import (H3_AUDIO_REFINEMENT_SETTING, H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_ROWS,
+from .constants import (H3_AUDIO_REFINEMENT_SETTING, H3_CONTROL_LATENT_CONTINUATION, H3_MASK_MODE_DEFAULT, H3_MASK_MODE_GROUPED_ROWS,
                         H3_MASK_MODE_SHARED_TIMESTEP, H3_MASK_MODE_SETTING, H3_PHASE_2_NOISE_LEVEL_START_DEFAULT,
                         h3_grouped_masking_enabled)
 from .dialogue import H3_DIALOGUE_GENERATION, H3_DIALOGUE_MAX_TOTAL_SECONDS, H3_DIALOGUE_PROMPT_INFOS, load_dialogue_whisper
 from .minimax_h3_main import (AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER,
                               VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE, VIDEO_VAE_INT8_FILE)
 from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
+from .vae_upsampler import X1_VAE_VALUE, X2_VAE_DESCRIPTION, X2_VAE_FILE, X2_VAE_METHOD, X2_VAE_VALUE, query_x2_vae_files
 from .viggle import VIGGLE_ARCHITECTURE, VIGGLE_ASSET_FOLDER, VIGGLE_INFOS, VIGGLE_PROMPT_FILE, VIGGLE_REPO_ID
 from .prompt_enhancer import (FL2VA_DEEPY_PROMPT_INFOS, FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
                               H3_AUDIO_DEEPY_PROMPT_INFOS, H3_AUDIO_DIALOGUE_SYSTEM_PROMPT, H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
@@ -182,7 +183,13 @@ H3 is designed for 24 FPS, although WanGP can generate at another frame rate. Mi
 See the [MiniMax H3 model card](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/README.md) for the upstream specifications and prompting guidance.
 """
 
-CONTROL_INFOS = """## FL2VA ControlNet-Union — Control Video to Video and Audio
+CONTROL_CONTINUATION_INFOS = (
+    "ControlNet overlap choices are 5, 22, 39, and so on; 22 is the default. Older 1- and 18-frame settings become 5 and 22. Automatic continuation reuses generated overlap latents."
+    if H3_CONTROL_LATENT_CONTINUATION else
+    "ControlNet overlap choices are 1, 18, 35, and so on; 18 is the default. WanGP rounds other overlap amounts to the nearest supported value."
+)
+
+CONTROL_INFOS = f"""## FL2VA ControlNet-Union — Control Video to Video and Audio
 
 This model adds the VideoX-Fun ControlNet-Union 2.0 branch to MiniMax H3 FL2VA. A control video drives the structure and motion of the generated video, while the text prompt defines its content, style and sound. The output takes the control video's aspect ratio and H3 still generates synchronized stereo sound.
 
@@ -208,7 +215,7 @@ Select **Use Control Video as is**, supply the original video, enable **Spatial 
 
 The original rectangle is visible context for ControlNet's inpainting branch, and the new borders are automatically masked for generation. This uses ControlNet conditioning; **Denoising Strength** and **Mask Denoising Mode** from ordinary FL2VA are not used. **Control Strength** controls how strongly the visible context guides the result. The original area can still change slightly.
 
-To also edit an area inside the original picture, add a Video Mask or select **Perform Inpainting** with a mask, then enable Spatial Outpainting. Pose, depth, edge, shape and grayscale modes can likewise combine expansion with an explicit mask; their unmasked area supplies the original picture. For outpainting with **Use Control Video as is**, upload the original RGB video rather than a pose/depth/edge map. Sliding windows retain their existing overlap and extend each matching source-video section.
+To also edit an area inside the original picture, add a Video Mask or select **Perform Inpainting** with a mask, then enable Spatial Outpainting. Pose, depth, edge, shape and grayscale modes can likewise combine expansion with an explicit mask; their unmasked area supplies the original picture. For outpainting with **Use Control Video as is**, upload the original RGB video rather than a pose/depth/edge map. Sliding windows extend each matching source-video section. {CONTROL_CONTINUATION_INFOS} The original picture remains guidance and can still change.
 
 ### Start / End Images, Continuation and Audio
 
@@ -227,7 +234,7 @@ The branch is guidance-distilled: keep **Guidance** at 1. Upstream demonstration
 See the [ControlNet-Union 2.0 model card](https://huggingface.co/alibaba-pai/MiniMax-H3-Fun-Controlnet-Union-2.0) for upstream details.
 """
 
-CONTROL_DEEPY_INFOS = """Generate video and stereo sound from `prompt` guided by a control video (`video_guide`) through the ControlNet-Union branch; the output uses the control video's aspect ratio. `video_prompt_type`: `PV` = Open Pose motion, `DV` = depth, `EV` = Canny edges, `SV` = soft shapes/scribble, `CV` = grayscale recolorize, `V` = video already a control map (HED, MLSD, layout...), `MV` = inpainting only. Add `A` (masked area) or `NA` (non-masked area) with `video_mask` to regenerate only part of the frame; masks need a preprocessing mode or `V` with spatial outpainting enabled. `control_net_weight` (0-2, default 1) sets control strength. Long control videos are split across sliding windows (max 362 frames each). `image_start` / `image_end` / `video_source` anchor frames and should match the control video. `audio_prompt_type`: empty = generate audio; `A` = keep `audio_guide` as soundtrack; `K` = keep the control video's soundtrack. For visible speech in soundtrack mode, identify the speaker and explicitly request `speaking with natural lip movements synchronized` or equivalent lip-sync wording, without mentioning a supplied audio track. No transcript is required; face pose can compete with speech, and exact lip sync is not guaranteed. Guidance stays 1. Read `prompt_infos` for H3's structured prompt syntax."""
+CONTROL_DEEPY_INFOS = f"""Generate video and stereo sound from `prompt` guided by a control video (`video_guide`) through the ControlNet-Union branch; the output uses the control video's aspect ratio. `video_prompt_type`: `PV` = Open Pose motion, `DV` = depth, `EV` = Canny edges, `SV` = soft shapes/scribble, `CV` = grayscale recolorize, `V` = video already a control map (HED, MLSD, layout...), `MV` = inpainting only. Add `A` (masked area) or `NA` (non-masked area) with `video_mask` to regenerate only part of the frame; masks need a preprocessing mode or `V` with spatial outpainting enabled. `control_net_weight` (0-2, default 1) sets control strength. Long control videos are split across sliding windows (max 362 frames each). {CONTROL_CONTINUATION_INFOS} `image_start` / `image_end` / `video_source` anchor frames and should match the control video. `audio_prompt_type`: empty = generate audio; `A` = keep `audio_guide` as soundtrack; `K` = keep the control video's soundtrack. For visible speech in soundtrack mode, identify the speaker and explicitly request `speaking with natural lip movements synchronized` or equivalent lip-sync wording, without mentioning a supplied audio track. No transcript is required; face pose can compete with speech, and exact lip sync is not guaranteed. Guidance stays 1. Read `prompt_infos` for H3's structured prompt syntax."""
 
 CONTROL_DEEPY_INFOS += """\n\nSpatial outpainting: use `video_prompt_type: V` (Use Control Video as is), the original RGB `video_guide`, and `video_guide_outpainting` as four space-separated percentages (top bottom left right), e.g. `0 0 25 25`. No `video_mask` is needed for borders alone. Alternatively, set `video_guide_outpainting_ratio`, e.g. `16:9`, with `video_guide_outpainting: 0 0 0 0` for balanced expansion; `#` disables expansion. `resolution` is the final canvas. Enabling expansion routes the visible source and automatic border mask through ControlNet inpainting, not FL2VA denoising; no Grouped Rows requirement. With expansion disabled, `V` retains its normal prepared-control-map behavior. For simultaneous interior edits, use `VA` or `MVA` plus `video_mask`; masked pose/depth/edge/shape/grayscale modes also support expansion. Describe the completed scene and new surroundings; the original rectangle is guided, not copied pixel for pixel."""
 
@@ -480,6 +487,7 @@ class family_handler:
             result = family_handler.query_model_def(REF2VA_PRUNED_ARCHITECTURE, model_def)
             result.update({
                 "profiles_dir": [VIGGLE_ARCHITECTURE],
+                "device_explicit": False,
                 "specialities": [{"name": "character replacement"}, {"name": "motion transfer"}],
                 "infos": VIGGLE_INFOS,
                 "prompt_infos": "Viggle uses a fixed prompt. Prepare the character replacement in the Edited Reference Frame; generation prompt text is ignored.",
@@ -515,6 +523,7 @@ class family_handler:
                 result.pop(key)
             result.update({
                 "profiles_dir": result["profiles_dir"] + [CONTROL_ARCHITECTURE],  # main blocks are FL2VA: its LoRA accelerator profiles apply
+                "device_explicit": False,
                 "specialities": [{"name": "control video", "aliases": ["pose transfer", "depth control", "canny control", "controlnet"],
                                   "description": "Drive motion and structure with a pose, depth, edge, shape or grayscale control video."},
                                  {"name": "video inpainting", "description": "Regenerate a masked area of a video."},
@@ -525,7 +534,8 @@ class family_handler:
                 "v2i_switch_supported": False, "image_outputs": False,
                 "guidance_max_phases": 1, "lock_guidance_phases": True, "lora_multiplier_phases": 1, "phase_2_spatial_tiling": False,
                 "custom_settings": [setting for setting in result["custom_settings"] if setting["id"] == H3_AUDIO_REFINEMENT_SETTING],
-                "sliding_window_defaults": {**result["sliding_window_defaults"], "window_max": 362},
+                "sliding_window_defaults": {**result["sliding_window_defaults"], "window_max": 362,
+                                            **({"overlap_min": 5, "overlap_max": 107, "overlap_offset": 5, "overlap_default": 22} if H3_CONTROL_LATENT_CONTINUATION else {})},
                 "guide_preprocessing": {
                     "selection": ["", "PV", "DV", "EV", "SV", "CV", "V", "MV"],
                     "labels": {"V": "Use Control Video as is"},
@@ -547,6 +557,7 @@ class family_handler:
         text_encoder_files = [TEXT_ENCODER_BF16, TEXT_ENCODER_INT8] if text_encoder_variant is None else TEXT_ENCODER_VARIANTS[text_encoder_variant]
         result = {
             "dtype": "bf16",
+            "device_explicit": True,
             "size": "lighter" if pruned else "large",
             **({"accelerated": "native"} if pdd or vdn else {}),
             **({"specialities": [{"name": "character consistency", "aliases": ["identity preservation"]}, {"name": "motion transfer", "description": "Transfer motion or camera from reference videos to image-reference characters."}]} if reference_mode else {}),
@@ -646,6 +657,7 @@ class family_handler:
             "image_prompt_enhancer_max_tokens1": 1024,
             "profiles_dir": ["minimax_h3_vdn"] if vdn else [] if pdd else ["minimax_h3", "minimax_h3_ref2va" if reference_mode else "minimax_h3_fl2va"],
             "finetune_custom_urls": ["video_vae_file", "audio_vae_file"],
+            "vae_upsamplers": {X2_VAE_METHOD: [0, 1, 2]},
             "finetunes_infos": H3_FINETUNES_INFOS,
             "finetunes_params": H3_FINETUNES_PARAMS,
             TURBO_LORA_KEY: build_hf_url(REPO_ID, "loras", TURBO_LORA_FILE),
@@ -810,12 +822,18 @@ class family_handler:
         still_prompt_infos = "\n\nFor Text to Image, describe one still scene: its subject, composition, lighting and details. A plain-language image prompt is sufficient; speech and soundtrack instructions are unnecessary. The optional Write enhancer offers image prompts from text alone or from text plus the selected images. With an image, specify what to change and what to preserve."
         result["infos"] += still_infos
         result["deepy_infos"] += still_infos + " Set `image_mode` to `1`."
+        result["infos"] += "\n\n**MiniMax H3 VAE:** " + X2_VAE_DESCRIPTION
+        result["deepy_infos"] += " Spatial upsampler `h3_vae*2` doubles generation width/height; `h3_vae*1` uses the same X2 decode then bicubic downsamples to the generation dimensions. Both use FP16 without extra denoising, with the same decoder memory requirement; neither activates the RGB-reference B32 enhancer."
         result["prompt_infos"] += still_prompt_infos
         result["deepy_prompt_infos"] += still_prompt_infos
         return result
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
+        if (inputs.get("spatial_upsampling") in (X1_VAE_VALUE, X2_VAE_VALUE) and int(inputs["image_mode"]) == 0
+                and base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, VIGGLE_ARCHITECTURE)
+                and "2" in inputs["audio_prompt_type"]):
+            return "MiniMax H3 VAE Upsampling requires generated video; Audio from Control Video preserves the input frames and does not decode video latents"
         if base_model_type == VIGGLE_ARCHITECTURE:
             if inputs["video_guide"] is None:
                 return "Viggle-Animate requires a Control Video and one edited frame from that video"
@@ -855,10 +873,10 @@ class family_handler:
             if inputs["sample_solver"] != "euler":
                 return "MiniMax H3 PDD requires the Euler sampler"
             inputs["num_inference_steps"] = required_steps
-        overlap, error = normalize_overlap(int(inputs["sliding_window_overlap"] or 0), 17, 1)
+        overlap, error = normalize_overlap(int(inputs["sliding_window_overlap"] or 0), 17, 5 if H3_CONTROL_LATENT_CONTINUATION and base_model_type in CONTROL_ARCHITECTURES else 1)
         if error:
             return error
-        inputs["sliding_window_overlap"] = overlap
+        inputs["sliding_window_overlap"] = min(overlap, 107) if H3_CONTROL_LATENT_CONTINUATION and base_model_type in CONTROL_ARCHITECTURES else overlap
         from shared.utils.utils import get_outpainting_dims
 
         grouped_masking = base_model_type not in CONTROL_ARCHITECTURES and h3_grouped_masking_enabled(inputs.get("custom_settings"))
@@ -1051,6 +1069,8 @@ class family_handler:
             "sourceFolderList": source_folders,
             "fileList": file_lists,
         }]
+        if video_vae_file == X2_VAE_FILE:
+            downloads.append(query_x2_vae_files())
         if base_model_type == VIGGLE_ARCHITECTURE:
             downloads.append({"repoId": VIGGLE_REPO_ID, "sourceFolderList": [VIGGLE_ASSET_FOLDER], "fileList": [[VIGGLE_PROMPT_FILE]]})
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE and H3_DIALOGUE_GENERATION:
@@ -1064,7 +1084,7 @@ class family_handler:
                    text_encoder_quantization=None, dtype=torch.bfloat16,
                    mixed_precision_transformer=False, save_quantized=False, submodel_no_list=None,
                    text_encoder_filename=None, shared_h3_pipeline=None, shared_h3_offloadobj=None,
-                   disable_pinning=False, **kwargs):
+                   disable_pinning=False, VAE_upsampling=None, **kwargs):
         from .minimax_h3_main import model_factory
 
         pdd = model_def.get("pdd", False)
@@ -1074,7 +1094,7 @@ class family_handler:
                                  save_quantized=save_quantized, model_type=model_type,
                                  qkv_splitting=model_def["qkv_splitting"],
                                  qkv_layout=model_def["qkv_layout"],
-                                 video_vae_filename=model_def.get("video_vae_file", VIDEO_VAE_FILE),
+                                 video_vae_filename=X2_VAE_FILE if VAE_upsampling == X2_VAE_VALUE else model_def.get("video_vae_file", VIDEO_VAE_FILE),
                                  audio_vae_filename=model_def.get("audio_vae_file", AUDIO_VAE_FILE), shared_h3_pipeline=shared_h3_pipeline,
                                  pdd=pdd, pdd_num_steps=PDD_NUM_STEPS if pdd else None, pdd_block_size=PDD_BLOCK_SIZE if pdd else None,
                                  vdn=model_def.get("vdn", False), audio_only=base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE,
@@ -1130,6 +1150,10 @@ class family_handler:
             ui_defaults["sliding_window_size"] = 124
             ui_defaults["sliding_window_overlap"] = ui_defaults.get("sliding_window_overlap", 18) or 18
             ui_defaults["video_prompt_type"] = ui_defaults.get("video_prompt_type", "IVU").replace("-", "")
+        if base_model_type in CONTROL_ARCHITECTURES and "sliding_window_overlap" in ui_defaults:
+            overlap, error = normalize_overlap(int(ui_defaults["sliding_window_overlap"] or 0), 17, 5 if H3_CONTROL_LATENT_CONTINUATION else 1)
+            if error is None:
+                ui_defaults["sliding_window_overlap"] = min(overlap, 107) if H3_CONTROL_LATENT_CONTINUATION else overlap
         if base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE):
             return
         if settings_version < 2.67:
@@ -1190,4 +1214,4 @@ class family_handler:
         if reference_mode:
             ui_defaults.update({"image_refs_relative_size": 100, "remove_background_images_ref": 0})
         if base_model_type in CONTROL_ARCHITECTURES:
-            ui_defaults.update({"video_prompt_type": "PV", "control_net_weight": 1.0})
+            ui_defaults.update({"video_prompt_type": "PV", "control_net_weight": 1.0, "sliding_window_overlap": 22 if H3_CONTROL_LATENT_CONTINUATION else 18})

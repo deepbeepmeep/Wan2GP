@@ -127,6 +127,7 @@ spatial_upsampler_handlers = [
     "postprocessing.chain_of_zoom.wgp_bridge.ChainOfZoomBridge",
     "postprocessing.ltx2_upsampler.wgp_bridge.LTXVideoUpsamplerBridge",
     "postprocessing.spatial_upsamplers.WanVaeUpsampler",
+    "models.minimax_h3.vae_upsampler.MiniMaxH3VaeUpsampler",
 ]
 _upsampler_handlers: list[Any] = []
 _registered_upsampler_handler_paths: set[str] = set()
@@ -454,7 +455,7 @@ def query_download_defs(enabled_only: bool = True) -> list[dict[str, Any]]:
 
 
 def download_for_value(spatial_upsampling, process_files, **kwargs):
-    handler = find_postprocessing_upsampler(spatial_upsampling)
+    handler = find_upsampler(spatial_upsampling)
     if handler is None or not hasattr(handler, "download"):
         return False
     kwargs.setdefault("status_text", f"Downloading {_handler_def(handler)['name']} Model Files")

@@ -88,6 +88,7 @@ python wgp.py --profile 5
 
 # Enable swap file (OS level)
 ```
+To use less reserved RAM while keeping most of the speed of profile 4, lower *Configuration / RAM/VRAM Management / Reserved RAM for Pinning* and keep *Smart Memory Pinning* On: the blocks that no longer fit are copied through a small staging buffer (see [Memory Management](CLI.md#memory-management)).
 
 ## Performance Issues
 

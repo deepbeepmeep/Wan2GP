@@ -41,51 +41,6 @@ gradio-app {
 .wangp-settings-actions button {
     min-width: min(100%, 104px) !important;
 }
-.wangp-action-tooltip {
-    position: relative;
-    overflow: visible !important;
-}
-.wangp-action-tooltip::after {
-    position: absolute;
-    bottom: calc(100% + 8px);
-    left: 50%;
-    transform: translateX(-50%);
-    width: max-content;
-    max-width: min(240px, calc(100vw - 32px));
-    padding: 6px 9px;
-    border-radius: 6px;
-    background: var(--body-text-color);
-    color: var(--body-background-fill);
-    font-size: 12px;
-    font-weight: normal;
-    line-height: 1.4;
-    white-space: normal;
-    text-align: left;
-    pointer-events: none;
-    opacity: 0;
-    visibility: hidden;
-    transition: opacity 120ms ease, visibility 0s;
-    z-index: 50;
-}
-.wangp-action-tooltip:is(:hover, :focus-visible)::after {
-    opacity: 1;
-    visibility: visible;
-    transition-delay: 500ms;
-}
-.wangp-action-more::after {
-    content: "Generate one more result with the current prompt.";
-    left: 0;
-    transform: none;
-}
-.wangp-action-extend::after { content: "Extend the current video by one more window."; }
-.wangp-action-pause::after { content: "Pause generation until you choose Resume."; }
-.wangp-action-resume::after { content: "Continue the paused generation."; }
-.wangp-action-abort::after {
-    content: "Stop the current generation.";
-    left: auto;
-    right: 0;
-    transform: none;
-}
 /* Preview visibility still follows the same Gradio generation-state column,
    although its contents now stay beside the gallery rather than in the bar. */
 .gradio-container:not(:has(#wangp-generate-current-actions:not(.hide))) .wangp-generation-details {

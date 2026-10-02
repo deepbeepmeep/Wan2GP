@@ -639,7 +639,7 @@ class VideoDecoder(nn.Module):
                 lower_threshold = max(2, overlap + 1)
                 tile_size = max(lower_threshold, round(size * axis_length / long_side))
                 splitters[axis_idx] = split_in_spatial(tile_size, overlap)
-                mappers[axis_idx] = to_mapping_operation(map_spatial_slice, factor)
+                mappers[axis_idx] = to_mapping_operation(map_spatial_slice, factor, latent.device)
 
             enable_on_axis(3, self.video_downscale_factors.height)
             enable_on_axis(4, self.video_downscale_factors.width)
@@ -650,7 +650,7 @@ class VideoDecoder(nn.Module):
             overlap = _pixel_frames_to_latent_frames(cfg.tile_overlap_in_frames, self.video_downscale_factors.time)
             overlap = min(overlap, max(tile_size - 1, 0))
             splitters[2] = split_in_temporal(tile_size, overlap)
-            mappers[2] = to_mapping_operation(map_temporal_slice, self.video_downscale_factors.time)
+            mappers[2] = to_mapping_operation(map_temporal_slice, self.video_downscale_factors.time, latent.device)
 
         return create_tiles(latent.shape, splitters, mappers)
 
@@ -1225,19 +1225,28 @@ def _make_mask_1d(
 ) -> torch.Tensor:
     if length <= 0:
         return torch.ones(0, device=device, dtype=dtype)
-    mask = compute_trapezoidal_mask_1d(length, left_ramp, right_ramp, left_starts_from_0)
-    return mask.to(device=device, dtype=dtype)
+    return compute_trapezoidal_mask_1d(length, left_ramp, right_ramp, left_starts_from_0, device=device).to(dtype=dtype)
+
+
+def _encoder_input(video: torch.Tensor, device: torch.device | None, dtype: torch.dtype | None) -> torch.Tensor:
+    """uint8 videos may stay on CPU; each encoded tile is moved and normalized to [-1, 1] on its own."""
+    if video.dtype != torch.uint8:
+        return video
+    return video.to(device=device).to(dtype).div_(127.5).sub_(1.0)
 
 
 def encode_video(
     video: torch.Tensor,
     video_encoder: VideoEncoder,
     tiling_config: TilingConfig | None = None,
+    device: torch.device | None = None,
+    dtype: torch.dtype | None = None,
 ) -> torch.Tensor:
     """
     Encode a video tensor with the given encoder, optionally using spatial/temporal tiling.
     Args:
-        video: Tensor [b, c, f, h, w]
+        video: Tensor [b, c, f, h, w]. A uint8 video (0-255, possibly on CPU) is converted per tile
+            to ``device`` / ``dtype`` in [-1, 1], so the full-resolution float video never exists.
         video_encoder: Encoder module.
         tiling_config: Optional tiling settings.
     Returns:
@@ -1247,7 +1256,7 @@ def encode_video(
         tiling_config.spatial_config is None and tiling_config.temporal_config is None
     ):
         with vae_encoding_progress(1, video_encoder, enabled=video.shape[2] > 1):
-            return video_encoder(video)
+            return video_encoder(_encoder_input(video, device, dtype))
     if video.shape[2] == 1 and tiling_config.spatial_config is not None:
         tiling_config = replace(tiling_config, spatial_config=None)
 
@@ -1287,12 +1296,13 @@ def encode_video(
             w_left = width_intervals.left_ramps[w_idx]
             w_right = width_intervals.right_ramps[w_idx]
 
-            t_slice, _ = map_temporal_slice(t_start, t_end, t_left, t_right, scale.time)
-            h_slice, _ = map_spatial_slice(h_start, h_end, h_left, h_right, scale.height)
-            w_slice, _ = map_spatial_slice(w_start, w_end, w_left, w_right, scale.width)
+            t_slice, _ = map_temporal_slice(t_start, t_end, t_left, t_right, scale.time, video.device)
+            h_slice, _ = map_spatial_slice(h_start, h_end, h_left, h_right, scale.height, video.device)
+            w_slice, _ = map_spatial_slice(w_start, w_end, w_left, w_right, scale.width, video.device)
 
-            tile = video[:, :, t_slice, h_slice, w_slice]
+            tile = _encoder_input(video[:, :, t_slice, h_slice, w_slice], device, dtype)
             encoded_tile = video_encoder(tile)
+            tile = None
 
             t_len = t_end - t_start
             h_len = h_end - h_start
@@ -1343,7 +1353,7 @@ def encode_video(
 
     if output is None or weights is None:
         with vae_encoding_progress(1, video_encoder, enabled=video.shape[2] > 1):
-            return video_encoder(video)
+            return video_encoder(_encoder_input(video, device, dtype))
     weights = weights.clamp_min(1e-6)
     return output / weights
 
@@ -1403,8 +1413,9 @@ def split_in_temporal(size: int, overlap: int) -> SplitOperation:
 
 
 def to_mapping_operation(
-    map_func: Callable[[int, int, int, int, int], Tuple[slice, torch.Tensor]],
+    map_func: Callable[[int, int, int, int, int, torch.device], Tuple[slice, torch.Tensor]],
     scale: int,
+    device: torch.device,
 ) -> MappingOperation:
     def map_op(intervals: DimensionIntervals) -> tuple[list[slice], list[torch.Tensor | None]]:
         output_slices: list[slice] = []
@@ -1415,7 +1426,7 @@ def to_mapping_operation(
             end = intervals.ends[i]
             left_ramp = intervals.left_ramps[i]
             right_ramp = intervals.right_ramps[i]
-            output_slice, mask_1d = map_func(start, end, left_ramp, right_ramp, scale)
+            output_slice, mask_1d = map_func(start, end, left_ramp, right_ramp, scale, device)
             output_slices.append(output_slice)
             masks_1d.append(mask_1d)
         return output_slices, masks_1d
@@ -1423,19 +1434,19 @@ def to_mapping_operation(
     return map_op
 
 
-def map_temporal_slice(begin: int, end: int, left_ramp: int, right_ramp: int, scale: int) -> Tuple[slice, torch.Tensor]:
+def map_temporal_slice(begin: int, end: int, left_ramp: int, right_ramp: int, scale: int, device: torch.device) -> Tuple[slice, torch.Tensor]:
     start = begin * scale
     stop = 1 + (end - 1) * scale
     left_ramp = 1 + (left_ramp - 1) * scale
     right_ramp = right_ramp * scale
 
-    return slice(start, stop), compute_trapezoidal_mask_1d(stop - start, left_ramp, right_ramp, True)
+    return slice(start, stop), compute_trapezoidal_mask_1d(stop - start, left_ramp, right_ramp, True, device=device)
 
 
-def map_spatial_slice(begin: int, end: int, left_ramp: int, right_ramp: int, scale: int) -> Tuple[slice, torch.Tensor]:
+def map_spatial_slice(begin: int, end: int, left_ramp: int, right_ramp: int, scale: int, device: torch.device) -> Tuple[slice, torch.Tensor]:
     start = begin * scale
     stop = end * scale
     left_ramp = left_ramp * scale
     right_ramp = right_ramp * scale
 
-    return slice(start, stop), compute_trapezoidal_mask_1d(stop - start, left_ramp, right_ramp, False)
+    return slice(start, stop), compute_trapezoidal_mask_1d(stop - start, left_ramp, right_ramp, False, device=device)

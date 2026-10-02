@@ -948,8 +948,8 @@ class Qwen3VLVisionModel(Qwen3VLPreTrainedModel):
         weight_list = [[] for _ in range(4)]
 
         for t, h, w in zip(grid_ts, grid_hs, grid_ws):
-            h_idxs = torch.linspace(0, self.num_grid_per_side - 1, h)
-            w_idxs = torch.linspace(0, self.num_grid_per_side - 1, w)
+            h_idxs = torch.linspace(0, self.num_grid_per_side - 1, h, device=self.pos_embed.weight.device)
+            w_idxs = torch.linspace(0, self.num_grid_per_side - 1, w, device=self.pos_embed.weight.device)
 
             h_idxs_floor = h_idxs.int()
             w_idxs_floor = w_idxs.int()

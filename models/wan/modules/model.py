@@ -37,7 +37,7 @@ def sinusoidal_embedding_1d(dim, position):
 
     # calculation
     sinusoid = torch.outer(
-        position, torch.pow(10000, -torch.arange(half).to(position).div(half)))
+        position, torch.pow(10000, -torch.arange(half, device=position.device).to(position).div(half)))
     x = torch.cat([torch.cos(sinusoid), torch.sin(sinusoid)], dim=1)
     return x
 
@@ -1612,7 +1612,7 @@ class WanModel(ModelMixin, ConfigMixin):
                     for source_latent, source_id in bernini_sources[i]:
                         source_latent = source_latent.to(device=device, dtype=self.patch_embedding.weight.dtype)
                         source_tokens_i = self.patch_embedding(source_latent).to(modulation_dtype).flatten(2).transpose(1, 2)
-                        source_freqs = apply_rotary_source_id(get_rotary_pos_embed(tuple(source_latent.shape[2:])), source_id, self.dim // self.num_heads)
+                        source_freqs = apply_rotary_source_id(get_rotary_pos_embed(tuple(source_latent.shape[2:]), device=source_latent.device), source_id, self.dim // self.num_heads)
                         source_freqs = (source_freqs[0].to(device), source_freqs[1].to(device))
                         source_tokens.append(source_tokens_i)
                         cos_parts.append(source_freqs[0])
@@ -1620,7 +1620,7 @@ class WanModel(ModelMixin, ConfigMixin):
                     x = self.patch_embedding(x).to(modulation_dtype)
                     grid_sizes = x.shape[2:]
                     x = x.flatten(2).transpose(1, 2)
-                    target_freqs = freqs if freqs is not None else get_rotary_pos_embed(tuple(grid_sizes))
+                    target_freqs = freqs if freqs is not None else get_rotary_pos_embed(tuple(grid_sizes), device=x.device)
                     target_freqs = (target_freqs[0].to(device), target_freqs[1].to(device))
                     bernini_freqs_list.append((torch.cat([target_freqs[0]] + cos_parts, dim=0), torch.cat([target_freqs[1]] + sin_parts, dim=0)))
                     bernini_output_slices.append(slice(0, x.shape[1]))

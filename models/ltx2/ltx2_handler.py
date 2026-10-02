@@ -40,11 +40,12 @@ _GEMMA_TOKENIZER_FILES = [
 ]
 _GEMMA4_TOKENIZER_FILES = ["config.json", "chat_template.jinja", "tokenizer.json", "tokenizer_config.json"]
 _LORAS_MIGRATED = False
-_LORA_SPEC_KEYS = ("distilled_lora", "distilled_1_1_lora", "pixel_spatial_upscaler_lora", "union_control_lora", "id_lora", "outpaint_lora", "inpaint_lora", "ingredients_lora", "hdr_lora")
+_LORA_SPEC_KEYS = ("distilled_lora", "distilled_1_1_lora", "pixel_spatial_upscaler_lora", "refine_details_lora", "union_control_lora", "id_lora", "outpaint_lora", "inpaint_lora", "ingredients_lora", "hdr_lora")
 _SYSTEM_LORA_SPEC_KEYS = {
     "distilled": "distilled_lora",
     "distilled_1_1": "distilled_1_1_lora",
     "pixel_spatial_upscaler": "pixel_spatial_upscaler_lora",
+    "refine_details": "refine_details_lora",
     "union_control": "union_control_lora",
     "id": "id_lora",
     "outpaint": "outpaint_lora",
@@ -127,6 +128,7 @@ _ARCH_SPECS = {
         "temporal_upscaler": "ltx-2.5-temporal-upscaler-x2-1.0_bf16.safetensors",
         "distilled_lora": "ltx-2.5-22b-distilled-lora-450_bf16.safetensors",
         "pixel_spatial_upscaler_lora": "ltx-2.5-22b-ic-lora-pixel-spatial-upscaler-x2-1.0.safetensors",
+        "refine_details_lora": "ltx-2.5-22b-ic-lora-refine-details-1.0.safetensors",
         "union_control_lora": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
         "id_lora": "id-lora-celebvhq-ltx2.3.safetensors",
         "outpaint_lora": "ltx-2.3-22b-ic-lora-outpaint.safetensors",
@@ -521,6 +523,7 @@ class family_handler:
         gemma_folder = _GEMMA4_FOLDER if ltx25 else _GEMMA_FOLDER
         gemma_files = (_GEMMA4_FILENAME, _GEMMA4_INT8_FILENAME) if ltx25 else (_GEMMA_FILENAME, _GEMMA_QUANTO_FILENAME)
         extra_model_def = {
+            "device_explicit": base_model_type in ("ltx2_19B", "ltx2_22B", "ltx2_25_22B"),
             "ltx2_22B_class": base_model_type in LTX2_22B_CLASS or ltx25,
             "ltx2_edit_anything": editanything_ref,
             "infos": model_def.get("infos", LTX2_25_MSR_INFOS if ltx25 and msr else LTX2_25_INFOS if ltx25 else LTX2_MSR_V2_INFOS if msr_v2 else LTX2_MSR_INFOS if msr else LTX2_INFOS),

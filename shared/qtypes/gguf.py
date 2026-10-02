@@ -254,9 +254,6 @@ def set_gguf_cuda_kernels_enabled(enabled=None):
     return _probe_gguf_cuda_runtime(force=True)
 
 
-_probe_gguf_cuda_runtime()
-
-
 def _gguf_read_array(data, offset, dtype, byte_order):
     dtype = np.dtype(dtype).newbyteorder(byte_order)
     value = np.frombuffer(data, dtype=dtype, count=1, offset=offset)
@@ -570,6 +567,7 @@ def load_gguf_state_dict(
         raise RuntimeError("GGUF support requires the 'gguf' package.")
     if pin_to_memory:
         raise Exception("Pinning to memory while loading GGUF files is not supported")
+    _gguf_cuda_kernels_enabled() # probes the llama.cpp CUDA kernels on first GGUF use, before any forward or graph capture
 
     import warnings
 

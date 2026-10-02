@@ -96,6 +96,12 @@ class model_factory():
             from wgp import save_quantized_model
             save_quantized_model(transformer, model_type, model_filename[0], dtype, base_config_file)
 
+        from shared.kernels.int8_backend import require_blockwise_int8
+        # All Qwen 20B variants share these timestep shifts, scales and gates.
+        # Protect them from row-wise activation quantization; other linears
+        # can still use Kitchen. The separate Qwen 2.1 loader is unaffected.
+        require_blockwise_int8(transformer, "Qwen Image 20B Modulation", ("transformer_blocks.*.img_mod.1", "transformer_blocks.*.txt_mod.1"))
+
         text_encoder = offload.fast_load_transformers_model(text_encoder_filename, writable_tensors=False, modelClass=Qwen2_5_VLForConditionalGeneration, defaultConfigPath=os.path.join(tokenizer_path, "config.json"))
         # text_encoder = offload.fast_load_transformers_model(text_encoder_filename, do_quantize=True,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration, defaultConfigPath="text_encoder_config.json", verboseLevel=2)
         # text_encoder.to(torch.float16)

@@ -18,6 +18,7 @@ from .text_encoder import MiniMaxH3TextEncoder, load_h3_qwen_config
 from .transformer import MiniMaxH3Model, get_linear_split_map
 from .video_vae import MiniMaxH3VideoVAE, get_video_vae_linear_split_map
 from .viggle import load_fixed_prompt
+from .vae_upsampler import X2_VAE_FILE, X2_VAE_VALUE
 
 
 VIDEO_VAE_FILE = "MiniMax-H3-video_vae_fp16.safetensors"
@@ -125,7 +126,7 @@ def probe_h3_control_module(filenames, time_embed_dim):
     for path in filenames:
         state_dict, _ = quant_router.load_metadata_state_dict(path)
         for key, value in state_dict.items():
-            if key.startswith("blocks.") and ".control.adaln_proj.linear.weight" in key:
+            if key.startswith("blocks.") and key.endswith(".control.adaln_proj.linear.weight"):
                 layers.add(int(key.split(".")[1]))
                 if value.shape[1] != time_embed_dim:
                     raise ValueError(f"MiniMax H3 control module '{os.path.basename(path)}' uses AdaLN width {value.shape[1]} but the transformer uses {time_embed_dim}; "
@@ -139,7 +140,7 @@ def probe_h3_control_module(filenames, time_embed_dim):
 
 def _resample_adaln_table(table, rows, dtype):
     if table.shape[0] != rows:
-        position = torch.linspace(0, table.shape[0] - 1, rows)
+        position = torch.linspace(0, table.shape[0] - 1, rows, device=table.device)
         lower = position.floor().long().clamp(max=table.shape[0] - 2)
         table = torch.lerp(table[lower], table[lower + 1], (position - lower).unsqueeze(1))
     return table.to(dtype=dtype)
@@ -194,25 +195,33 @@ def _load_text_encoder(filename, dtype):
     return text_encoder
 
 
-def _load_video_vae(filename, qkv_splitting=True):
+def _load_video_vae(filename, qkv_splitting=True, upsampling=False):
     filename = fl.locate_file(filename)
     dtype = quant_router.load_metadata_state_dict(filename)[0]["encoder.conv_in.weight"].dtype
     dtype = torch.float16 if dtype == torch.float32 else dtype  # checkpoint-native FP16/BF16; FP32 wastes VRAM for little precision
     print(f"Loading MiniMax H3 Video VAE '{filename}'...")
     with init_empty_weights(include_buffers=False):
-        vae = MiniMaxH3VideoVAE()
+        vae = MiniMaxH3VideoVAE(upsampling=upsampling)
     split_map = get_video_vae_linear_split_map() if qkv_splitting else None
     if split_map is not None:
         offload.split_linear_modules(vae, split_map)
     def preprocess(state_dict):
-        state_dict.pop("latents_mean", None)
-        state_dict.pop("latents_std", None)
+        for name in ("latents_mean", "latents_std"):
+            if upsampling:
+                state_dict["_" + name] = state_dict.pop(name)
+            else:
+                state_dict.pop(name, None)
+        if upsampling:
+            # B32 consumes source RGB encoder features and is not part of latent decoding.
+            for name in [key for key in state_dict if key.startswith("detail_b32.")]:
+                del state_dict[name]
         return state_dict
 
-    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=dtype, preprocess_sd=preprocess,
+    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=None if upsampling else dtype, preprocess_sd=preprocess,
                             fused_split_map=split_map)
     vae.split_linear_modules_map = split_map
     vae._model_dtype = dtype
+    vae.upsampling_set = X2_VAE_VALUE if upsampling else None
     vae.eval().requires_grad_(False)
     return vae
 
@@ -258,8 +267,8 @@ def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=to
     transformer = _load_transformer(model_filename, dtype, qkv_splitting, qkv_layout, pdd, pdd_num_steps, pdd_block_size, vdn)
     if shared_h3_pipeline is None:
         text_encoder = _load_text_encoder(text_encoder_filename, dtype) if fixed_prompt_filename is None else None
-        video_vae_qkv_splitting = qkv_splitting and video_vae_filename == VIDEO_VAE_FILE
-        video_vae = _load_video_vae(video_vae_filename, video_vae_qkv_splitting)
+        video_vae_qkv_splitting = qkv_splitting and video_vae_filename in (VIDEO_VAE_FILE, X2_VAE_FILE)
+        video_vae = _load_video_vae(video_vae_filename, video_vae_qkv_splitting, upsampling=video_vae_filename == X2_VAE_FILE)
         audio_vae = _load_audio_vae(audio_vae_filename)
         latent_upscaler = _load_latent_upscaler(latent_upscaler_filename) if fixed_prompt_filename is None else None
     else:

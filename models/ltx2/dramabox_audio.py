@@ -412,7 +412,7 @@ class DramaBoxAudioPipeline(LTXAudioTTSPipelineBase):
             ref_latent=ref_latent,
             reference_conditioner=AudioConditionByAppendedReferenceLatent,
         )
-        sigmas = LTX2Scheduler().execute(steps=max(1, int(sampling_steps or DRAMABOX_DEFAULT_STEPS)), latent=audio_state.latent).to(self.device)
+        sigmas = LTX2Scheduler().execute(steps=max(1, int(sampling_steps or DRAMABOX_DEFAULT_STEPS)), latent=audio_state.latent, device=self.device)
         audio_state = self._generate_audio_euler(
             audio_context,
             sigmas,

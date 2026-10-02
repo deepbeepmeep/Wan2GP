@@ -194,17 +194,35 @@ Each materialized session keeps its canonical decoder context in `context.json` 
 ```
 
 ### Performance Profiles
-- **Profile 1**: Load entire current model in VRAM and keep all unused models in reserved RAM for fast VRAM tranfers 
-- **Profile 2**: Load model parts as needed, keep all unused models in reserved RAM for fast VRAM tranfers
-- **Profile 3**: Load entire current model in VRAM (requires 24GB for 14B model)
-- **Profile 4**: Default and recommended, load model parts as needed, most flexible option
-- **Profile 4+** (4.5): Profile 4 variation, can save up to 1 GB of VRAM, but will be slighlty slower on some configs
-- **Profile 5**: Minimum RAM usage
+- **Profile 1**: each model loaded whole in VRAM, all models kept in Reserved RAM. The fastest generations and model switches, needs the most RAM and VRAM
+- **Profile 2**: all models kept in Reserved RAM, sent to the GPU part by part. Runs models larger than your VRAM, leaves VRAM for long videos or large images and switches models fast, needs a lot of RAM
+- **Profile 3**: each model loaded whole in VRAM, only the main models kept in Reserved RAM. Fast generations with less RAM, needs enough VRAM for the whole model
+- **Profile 3+** (3.5, recommended for audio models): Profile 3 without any Reserved RAM. Audio models are usually small enough to fit whole in VRAM, where the language models many of them include run much faster and can use the faster CUDA Graph or vLLM engines; models load more slowly
+- **Profile 4** (recommended): only the main models kept in Reserved RAM, sent to the GPU part by part. The most versatile: runs models larger than your VRAM and leaves VRAM for long videos or large images
+- **Profile 4+** (4.5): Profile 4 sending one part at a time. Saves up to about 1 GB of VRAM, slightly slower
+- **Profile 5** (fail safe): almost no Reserved RAM, all models sent to the GPU part by part. For PCs short of RAM and VRAM, slower with short steps such as images
+
+### Preloading Part of the Model in VRAM
+With profiles 2, 4 and 5, models are transferred to the GPU block by block at every denoising step. Image models such as Flux have short steps, so with profile 4 these transfers, rather than the GPU computation, can set the speed. *Configuration / RAM/VRAM Management* shows a *VRAM Preload* slider below the default memory profile of each kind of output (video, image and audio). It keeps that many MB of each model in VRAM, spread across its blocks, so that less is transferred at each step (0 keeps the profile default). The slider is hidden for profiles 1, 3 and 3+, which load models entirely in VRAM. A memory profile chosen in the settings of a generation uses the preload of its kind of output, and `--preload` overrides all three.
+
+For Flux dev at 1024x1024, 6000 MB shortened the profile 4 steps by about 22%, to within about 20% of profile 1, with about half of its peak VRAM. Preloading uses VRAM during denoising only: at this resolution it did not raise the peak VRAM, which the image decoding sets.
 
 ### Memory Management
 ```bash
---perc-reserved-mem-max FLOAT # Max percentage of RAM for reserved memory (< 0.5)
+--perc-reserved-mem-max FLOAT # Share of RAM that pinning may lock, as a fraction (0.4 = 40%)
 ```
+Pinned ("reserved") RAM makes the transfers to the GPU fast, but nothing else can use it. *Configuration / RAM/VRAM Management / Reserved RAM for Pinning* sets the share of RAM that WanGP may pin, in percent (0 = automatic: 40% on Windows, 50% on Linux). `--perc-reserved-mem-max` takes precedence over this setting, which takes precedence over the `perc_reserved_mem_max` environment variable.
+
+When the models that the memory profile pins do not fit in it, WanGP pins first the blocks of these models that are processed at every step, spread evenly, then their blocks preloaded in VRAM and the rest of them, which are only transferred once per load. The blocks left over are copied through the staging buffer of [Smart Memory Pinning](#smart-memory-pinning), so a smaller share mostly costs speed on short steps.
+
+### Windows Power Throttling
+```bash
+--no-prevent-power-throttling # Let Windows slow down WanGP in the background to save power
+```
+On Windows, WanGP asks by default to keep its full CPU speed when its window is minimized or in the background. Windows may otherwise slow down a background application several times, which slows down generation on the steps where the GPU waits for the CPU. On a laptop running on battery, `--no-prevent-power-throttling` saves power at the cost of slower generations while WanGP is in the background.
+
+### Smart Memory Pinning
+*Configuration / RAM/VRAM Management / Smart Memory Pinning* (On by default) applies to the models processed block by block that the memory profile does not pin, such as the text encoders with profile 4, or every model with profile 5. When On, their blocks are copied ahead of their use through a staging buffer of about 1-2 GB of reserved RAM, then transferred like pinned blocks. Steps that keep the GPU busy (high resolutions, long videos, large models) run as fast as with pinned models; short steps, such as low resolutions or the first pass of distilled models, are limited by the RAM speed but remain much faster than without the buffer. When Off, these models use slower copies, as before. The blocks of pinned models that do not fit in the reserved RAM use the staging buffer either way. Changing this option reloads the model.
 
 ## Lora Configuration
 

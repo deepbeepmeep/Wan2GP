@@ -326,13 +326,12 @@ class TI2VidTwoStagesPipeline:
                     stage_1_output_shape,
                     latent_channels=self.pipeline_components.video_latent_channels,
                     scale_factors=self.pipeline_components.video_scale_factors,
-                ).to_torch_shape()
+                ).to_torch_shape(),
+                device="meta",
             )
-            sigmas = LTX2Scheduler().execute(latent=empty_latent, steps=num_inference_steps).to(
-                dtype=torch.float32, device=self.device
-            )
+            sigmas = LTX2Scheduler().execute(latent=empty_latent, steps=num_inference_steps, device=self.device)
         else:
-            sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
+            sigmas = LTX2Scheduler().execute(steps=num_inference_steps, device=self.device)
         if loras_slists is not None:
             stage_1_steps = len(sigmas) - 1
             update_loras_slists(

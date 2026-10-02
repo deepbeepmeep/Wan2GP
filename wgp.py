@@ -36,6 +36,8 @@ from functools import partial
 from shared.utils.download_progress import DownloadCancelled, check_download_cancelled
 from shared.utils.download import DownloadError, generation_downloads
 from shared.utils.media_control import MediaProcessingAborted, controlled_model_loading, media_abort_requested
+from shared.utils.default_device import call_with_default_device
+from shared.utils.power_throttling import prevent_power_throttling
 from shared.gradio import metadata_events
 from shared.utils.config_store import config_lock, read_config, write_config, update_config
 import warnings
@@ -2573,6 +2575,7 @@ attention_modes_supported = get_supported_attention_modes()
 override_attention_modes_installed = get_override_attention_modes()
 override_attention_modes_supported = get_supported_override_attention_modes()
 args = parse_wgp_args(CONFIG_FILENAME)
+if args.prevent_power_throttling: prevent_power_throttling()
 migrate_loras_layout()
 
 gpu_major, gpu_minor = torch.cuda.get_device_capability(args.gpu if len(args.gpu) > 0 else None)
@@ -2696,6 +2699,7 @@ if not Path(config_load_filename).is_file():
 else:
     server_config = read_config(config_load_filename)
 
+server_config.setdefault("clear_file_list", 5)
 server_config.setdefault("prompt_enhancer_quantization", "quanto_int8")
 notifications.apply_defaults(server_config)
 server_config.setdefault(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)
@@ -3914,10 +3918,11 @@ def get_profile_type_for_model(model_type, image_mode=0):
         return "image"
     return "video"
 
-def init_pipe(pipe, kwargs, profile):
+def init_pipe(pipe, kwargs, profile, output_type="video"):
     preload =int(args.preload)
-    if preload == 0:
-        preload = server_config.get("preload_in_VRAM", 0)
+    if preload == 0: # the VRAM preload of this kind of output, also when a generation overrides its memory profile
+        preload = server_config.get(f"{_normalize_output_type(output_type)}_preload_in_VRAM", 0)
+    kwargs["perc_reserved_mem_max"] = args.perc_reserved_mem_max or server_config.get("perc_reserved_mem_max", 0) / 100 # 0: mmgp's environment variable or default
 
     kwargs["extraModelsToQuantize"]=  None
     source_budgets = kwargs.get("budgets", None)
@@ -3934,7 +3939,7 @@ def init_pipe(pipe, kwargs, profile):
             budgets["transformer2"] = default_transformer2_budget if preload  == 0 else preload
         source_budgets.update(budgets)
     elif mmgp_profile == 3:
-        source_budgets.update({ "*" : "70%" })
+        source_budgets.update({ "*" : "80%" }) # a model larger than 80% of the VRAM is processed block by block
 
     if "transformer2" in pipe:
         if profile in [3,4]:
@@ -4084,7 +4089,6 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
     if quantizeTransformer or "quanto" in model_filename:
         transformer_dtype = torch.bfloat16 if "bf16" in model_filename or "BF16" in model_filename else transformer_dtype
         transformer_dtype = torch.float16 if "fp16" in model_filename or"FP16" in model_filename else transformer_dtype
-    perc_reserved_mem_max = args.perc_reserved_mem_max
     vram_safety_coefficient = args.vram_safety_coefficient 
     model_file_list = [model_filename]
     model_type_list = [model_type]
@@ -4168,7 +4172,7 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
     if preview_path is not None:
         loading_model_ids[preview_path] = "tiny_vae"
     with model_unload_guard(), offload.loading_context(loading_callback, loading_model_ids):
-        torch.set_default_device('cpu')
+        torch.set_default_device(None) # cpu, without the DeviceContext mode that routes every torch call through Python
         if preview_path is not None:
             preview_decoder = load_decoder(preview_name, preview_path)
         wan_model, pipe = model_type_handler.load_model(
@@ -4183,7 +4187,7 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
         if preview_decoder is not None:
             pipe["tiny_vae"] = preview_decoder
             kwargs["coTenantsMap"]["tiny_vae"] = "*"
-        mmgp_profile = init_pipe(pipe, kwargs, profile)
+        mmgp_profile = init_pipe(pipe, kwargs, profile, output_type)
         loras_transformer = kwargs.pop("loras", [])
         if "transformer" in pipe:
             loras_transformer += ["transformer"]
@@ -4197,7 +4201,9 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
         if compile_modules == False and len(compile):
             _load_models_info("Pytorch compilation is not supported for this Model")
         # kwargs["pinnedMemory"] = "text_encoder"
-        offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, loading_callback=loading_callback, **kwargs)
+        if "prefetch_window" in server_config: kwargs["prefetchWindow"] = server_config["prefetch_window"]
+        if server_config.get("smart_memory_pinning", True): kwargs["smartPinning"] = 0 # the models processed block by block that the profile does not pin cross a staging ring
+        offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, loading_callback=loading_callback, **kwargs)
     offloadobj.tiny_vae = preview_decoder
     if len(args.gpu) > 0:
         torch.set_default_device(args.gpu)
@@ -5893,7 +5899,7 @@ def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_cont
             profile = get_default_profile("audio")
         else:
             profile = loaded_profile if loaded_profile >= 0 else get_default_profile("video")
-        sample, upsampler_cache = upsampler_api.upscale_postprocessing(edit_upsampler, sample, spatial_upsampling, main_offloadobj=offloadobj, loaded_model_context=get_loaded_model_context(), seed=seed, continue_cache=flashvsr_continue_cache, return_continue_cache=return_flashvsr_continue_cache, vae_tile_size=vae_tile_size, process_files=process_files_def, vae_config=vae_config, init_pipe=init_pipe, profile=profile, still_image=still_image, fps=fps, frame_offset=frame_offset, prompt=prompt, negative_prompt=negative_prompt, audio_waveform=audio_waveform, audio_sample_rate=audio_sample_rate, source_audio_path=source_audio_path, reference_images=reference_images, image_refs_relative_size=image_refs_relative_size, abort_callback=abort_callback, progress_callback=progress_callback, **parameter_values)
+        sample, upsampler_cache = upsampler_api.upscale_postprocessing(edit_upsampler, sample, spatial_upsampling, main_offloadobj=offloadobj, loaded_model_context=get_loaded_model_context(), seed=seed, continue_cache=flashvsr_continue_cache, return_continue_cache=return_flashvsr_continue_cache, vae_tile_size=vae_tile_size, process_files=process_files_def, vae_config=vae_config, init_pipe=partial(init_pipe, output_type=profile_type), profile=profile, still_image=still_image, fps=fps, frame_offset=frame_offset, prompt=prompt, negative_prompt=negative_prompt, audio_waveform=audio_waveform, audio_sample_rate=audio_sample_rate, source_audio_path=source_audio_path, reference_images=reference_images, image_refs_relative_size=image_refs_relative_size, abort_callback=abort_callback, progress_callback=progress_callback, **parameter_values)
         return (sample, upsampler_cache) if return_flashvsr_continue_cache else sample
     raise ValueError(f"No spatial upsampler registered for '{spatial_upsampling}'")
 
@@ -6077,12 +6083,12 @@ def edit_media(
             frames_count = sample.shape[1] 
 
         output_fps = fps
-        def upsampler_progress(phase, current_step=None, total_steps=None):
+        def upsampler_progress(phase, current_step=None, total_steps=None, unit=None):
             phase_text = str(phase)
             gen["progress_phase"] = (phase_text, int(current_step) if current_step is not None else -1)
             status_msg = get_latest_status(state, phase_text)
             if current_step is not None and total_steps is not None and int(total_steps) > 0:
-                send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)])
+                send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)] + ([unit] if unit else []))
             else:
                 send_cmd("progress", [0, status_msg])
         if len(temporal_upsampling) > 0:
@@ -6209,7 +6215,7 @@ def edit_media(
                 verbose_level=verbose_level,
                 audio_codec_key=server_config.get("audio_output_codec", "aac_128"),
                 process_files=process_files_def,
-                init_pipe=init_pipe,
+                init_pipe=partial(init_pipe, output_type="audio"),
                 profile=server_config.get("audio_profile", 4),
                 abort_callback=lambda: media_abort_requested(gen),
                 progress_callback=audio_progress,
@@ -6236,7 +6242,7 @@ def edit_media(
                     process_files=process_files_def,
                     profile_no=server_config.get("audio_profile", 4),
                     verbose_level=verbose_level,
-                    init_pipe=init_pipe,
+                    init_pipe=partial(init_pipe, output_type="audio"),
                     voice_sample2=replace_voice_sample2,
                     status_callback=lambda status: send_cmd("progress", [0, get_latest_status(state, status)]),
                 )
@@ -6334,7 +6340,7 @@ def edit_audio(send_cmd, state, audio_source, postprocess_audio, replace_voice_s
         process_files=process_files_def,
         profile_no=server_config.get("audio_profile", 4),
         verbose_level=verbose_level,
-        init_pipe=init_pipe,
+        init_pipe=partial(init_pipe, output_type="audio"),
         status_callback=lambda status: send_cmd("progress", [0, get_latest_status(state, status)]),
     )
     configs["postprocess_audio"] = postprocess_audio
@@ -7102,7 +7108,7 @@ def generate_media(
     if vae_upsampler_handler is not None and hasattr(vae_upsampler_handler, "prepare_vae_upsampler"):
         upsampler_name = vae_upsampler_handler.query_upsampler_def()["name"]
         send_cmd("status", f"Preparing {upsampler_name} upsampler...")
-        vae_upsampler_session = upsampler_api.prepare_vae_upsampler(vae_upsampler_handler, spatial_upsampling, send_cmd=send_cmd, process_files=process_files_def, init_pipe=init_pipe, profile=compute_profile(override_profile, upsampler_api.profile_type_for_handler(vae_upsampler_handler)), attention_mode=attention_mode, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters)
+        vae_upsampler_session = upsampler_api.prepare_vae_upsampler(vae_upsampler_handler, spatial_upsampling, send_cmd=send_cmd, process_files=process_files_def, init_pipe=partial(init_pipe, output_type=upsampler_api.profile_type_for_handler(vae_upsampler_handler)), profile=compute_profile(override_profile, upsampler_api.profile_type_for_handler(vae_upsampler_handler)), attention_mode=attention_mode, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters)
         send_cmd("status", f"{upsampler_name} upsampler prepared")
     if args.test and auto_prompt_enhancer_requested:
         try:
@@ -8086,8 +8092,8 @@ def generate_media(
                         model_outpainting_dims = resolve_outpainting_dims(control_source_height, control_source_width, outpainting_dims, video_guide_outpainting_ratio)
                 overridden_inputs = None
                 if vae_upsampler_handler is not None and vae_upsampler_session is None:
-                    vae_upsampler_session = upsampler_api.prepare_vae_upsampler(vae_upsampler_handler, spatial_upsampling, send_cmd=send_cmd, process_files=process_files_def, init_pipe=init_pipe, profile=compute_profile(override_profile, upsampler_api.profile_type_for_handler(vae_upsampler_handler)), attention_mode=attention_mode, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters)
-                samples = wan_model.generate(
+                    vae_upsampler_session = upsampler_api.prepare_vae_upsampler(vae_upsampler_handler, spatial_upsampling, send_cmd=send_cmd, process_files=process_files_def, init_pipe=partial(init_pipe, output_type=upsampler_api.profile_type_for_handler(vae_upsampler_handler)), profile=compute_profile(override_profile, upsampler_api.profile_type_for_handler(vae_upsampler_handler)), attention_mode=attention_mode, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters)
+                samples = call_with_default_device(model_def, model_type, wan_model.generate,
                     input_prompt = prompt,
                     alt_prompt = current_alt_prompt,
                     image_start = image_start_tensor,  
@@ -8404,12 +8410,12 @@ def generate_media(
                     send_cmd("progress", [0, merge_status_context(status, spatial_status)])
                 
                 output_fps  = fps
-                def upsampler_progress(phase, current_step=None, total_steps=None):
+                def upsampler_progress(phase, current_step=None, total_steps=None, unit=None):
                     phase_text = str(phase)
                     gen["progress_phase"] = (phase_text, int(current_step) if current_step is not None else -1)
                     status_msg = merge_status_context(status, phase_text)
                     if current_step is not None and total_steps is not None and int(total_steps) > 0:
-                        send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)])
+                        send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)] + ([unit] if unit else []))
                     else:
                         send_cmd("progress", [0, status_msg])
                 if len(temporal_upsampling) > 0:
@@ -8539,7 +8545,7 @@ def generate_media(
                             verbose_level=verbose_level,
                             audio_codec_key=server_config.get("audio_output_codec", "aac_128"),
                             process_files=process_files_def,
-                            init_pipe=init_pipe,
+                            init_pipe=partial(init_pipe, output_type="audio"),
                             profile=server_config.get("audio_profile", 4),
                             abort_callback=lambda: media_abort_requested(gen),
                             progress_callback=audio_progress,
@@ -8566,7 +8572,7 @@ def generate_media(
                         new_audio_tracks = trimmed_mux_audio_tracks = [ trim_audio_file_ranges(path, new_audio_trim_ranges, fps, get_available_filename(save_path, path, suffix=f"_trim{i}", force_extension=".wav")) for i, path in enumerate(new_audio_tracks) ]
                     replace_voice_temp_audio_tracks = []
                     if replace_voice_method and replace_voice_sample is not None and len(new_audio_tracks) > 0:
-                        new_audio_tracks, replace_voice_temp_audio_tracks = audio_processor_api.replace_voice_tracks(replace_voice_method, new_audio_tracks, voice_sample=replace_voice_sample, output_dir=save_path, prefix=f"tmp{time_flag}", process_files=process_files_def, profile_no=server_config.get("audio_profile", 4), verbose_level=verbose_level, init_pipe=init_pipe, voice_sample2=replace_voice_sample2, status_callback=lambda status: send_cmd("progress", [0, get_latest_status(state, status)]))
+                        new_audio_tracks, replace_voice_temp_audio_tracks = audio_processor_api.replace_voice_tracks(replace_voice_method, new_audio_tracks, voice_sample=replace_voice_sample, output_dir=save_path, prefix=f"tmp{time_flag}", process_files=process_files_def, profile_no=server_config.get("audio_profile", 4), verbose_level=verbose_level, init_pipe=partial(init_pipe, output_type="audio"), voice_sample2=replace_voice_sample2, status_callback=lambda status: send_cmd("progress", [0, get_latest_status(state, status)]))
                     if generated_audio is not None: output_new_audio_filepath = None
                     mux_audio_sampling_rate = resolve_mux_audio_sampling_rate(output_audio_sampling_rate, source_audio_metadata, new_audio_tracks)
 
@@ -11433,13 +11439,13 @@ def change_guidance_phases(state, guidance_phases, video_prompt_type):
     return gr.update(visible= guidance_phases >=3 and visible_phases >=3 and multiple_submodels) , gr.update(visible=phase_controls_visible), gr.update(visible=phase_controls_visible and switch_threshold_def.visible, label=switch_threshold_def.label), gr.update(visible= guidance_phases >=3 and visible_phases >=3), gr.update(visible= guidance_phases >=2 and visible_phases >=2), gr.update(visible= guidance_phases >=3 and visible_phases >=3), video_prompt_type
 
 
-memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: at least 64 GB of RAM and 24 GB of VRAM, the fastest for short videos with a RTX 3090 / RTX 4090", 1),
-                            ("Profile 2, HighRAM_LowVRAM: at least 64 GB of RAM and 12 GB of VRAM, the most versatile profile with high RAM, better suited for RTX 3070/3080/4070/4080 or for RTX 3090 / RTX 4090 with large pictures batches or long videos", 2),
-                            ("Profile 3, LowRAM_HighVRAM: at least 32 GB of RAM and 24 GB of VRAM, adapted for RTX 3090 / RTX 4090 with limited RAM for good speed short video",3),
-                            ("Profile 3+, VeryLowRAM_HighVRAM: at least 32 GB of RAM and 24 GB of VRAM, variant of Profile 3 that won't used Reserved Memory to reduce RAM usage",3.5),
-                            ("Profile 4, LowRAM_LowVRAM (Recommended): at least 32 GB of RAM and 12 GB of VRAM, if you have little VRAM or want to generate longer videos",4),
-                            ("Profile 4+, LowRAM_LowVRAM+: at least 32 GB of RAM and 12 GB of VRAM, variant of Profile 4, slightly slower but needs less VRAM",4.5),
-                            ("Profile 5, VerylowRAM_LowVRAM (Fail safe): at least 24 GB of RAM and 10 GB of VRAM, if you don't have much it won't be fast but maybe it will work",5)]
+memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: each model loaded whole in VRAM, all models kept in Reserved RAM. The fastest generations and model switches, needs the most RAM and VRAM", 1),
+                            ("Profile 2, HighRAM_LowVRAM: all models kept in Reserved RAM, sent to the GPU part by part. Runs models larger than your VRAM, leaves VRAM for long videos or large images and switches models fast, needs a lot of RAM", 2),
+                            ("Profile 3, LowRAM_HighVRAM: each model loaded whole in VRAM, only the main models kept in Reserved RAM. Fast generations with less RAM, needs enough VRAM for the whole model", 3),
+                            ("Profile 3+, VeryLowRAM_HighVRAM (Recommended for Audio): Profile 3 without any Reserved RAM. Audio models are small enough to fit whole in VRAM, where their language models run much faster; models load more slowly", 3.5),
+                            ("Profile 4, LowRAM_LowVRAM (Recommended): only the main models kept in Reserved RAM, sent to the GPU part by part. The most versatile: runs models larger than your VRAM and leaves VRAM for long videos or large images", 4),
+                            ("Profile 4+, LowRAM_LowVRAM+: Profile 4 sending one part at a time. Saves up to about 1 GB of VRAM, slightly slower", 4.5),
+                            ("Profile 5, VerylowRAM_LowVRAM (Fail safe): almost no Reserved RAM, all models sent to the GPU part by part. For PCs short of RAM and VRAM, slower with short steps such as images", 5)]
 
 def check_attn(mode):
     if mode not in attention_modes_installed: return " (NOT INSTALLED)"
@@ -13047,11 +13053,11 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     generate_btn = gr.Button("Generate")
                     with gr.Column(visible=False, elem_id=f"wangp-{tab_id}-current-actions" if floating_generate_button else None) as current_gen_column:
                         with gr.Row() as current_gen_buttons_row:
-                            onemoresample_btn = gr.Button("One More", visible = True, size='md', min_width=1, elem_classes=["wangp-action-tooltip", "wangp-action-more"])
-                            onemorewindow_btn = gr.Button("Extend", visible = False, size='md', min_width=1, elem_classes=["wangp-action-tooltip", "wangp-action-extend"])
-                            pause_btn = gr.Button("Pause", visible = True, size='md', min_width=1, elem_classes=["wangp-action-tooltip", "wangp-action-pause"])
-                            resume_btn = gr.Button("Resume", visible = False, size='md', min_width=1, elem_classes=["wangp-action-tooltip", "wangp-action-resume"])
-                            abort_btn = gr.Button("Abort", visible = True, size='md', min_width=1, elem_classes=["wangp-action-tooltip", "wangp-action-abort"])
+                            onemoresample_btn = gr.Button("One More", visible = True, size='md', min_width=1)
+                            onemorewindow_btn = gr.Button("Extend", visible = False, size='md', min_width=1)
+                            pause_btn = gr.Button("Pause", visible = True, size='md', min_width=1)
+                            resume_btn = gr.Button("Resume", visible = False, size='md', min_width=1)
+                            abort_btn = gr.Button("Abort", visible = True, size='md', min_width=1)
                             earlystop_btn = gr.Button("Early Stop", visible = False, size='md', min_width=1)
                     add_to_queue_btn = gr.Button("Add New Prompt To Queue", visible=False)
                 with gr.Column(elem_classes=["wangp-generation-details"]) if floating_generate_button else current_gen_column:

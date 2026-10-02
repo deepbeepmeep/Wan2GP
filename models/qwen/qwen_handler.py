@@ -11,6 +11,7 @@ class family_handler():
             return qwen21.query_model_def(base_model_type, model_def)
         extra_model_def = {
             "image_outputs" : True,
+            "device_explicit": base_model_type in ("qwen_image_20B", "qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B"),
             "sample_solvers":[
                             ("Default", "default"),
                             ("Lightning", "lightning")],

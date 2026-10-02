@@ -15,6 +15,7 @@
 # WanGP boundary adapter around the official MiniMax-H3 video VAE.
 
 import torch
+import torch.nn.functional as F
 
 from shared.utils.phase_progress import vae_encoding_progress
 
@@ -42,12 +43,13 @@ LATENTS_STD = (
 
 
 class MiniMaxH3VideoVAE(AutoencoderKLMiniMaxH3):
-    def __init__(self):
-        super().__init__(latents_mean=LATENTS_MEAN, latents_std=LATENTS_STD)
-        self.register_buffer("_latents_mean", torch.tensor(LATENTS_MEAN, dtype=torch.float32), persistent=False)
-        self.register_buffer("_latents_std", torch.tensor(LATENTS_STD, dtype=torch.float32), persistent=False)
-        self.register_buffer("pixel_mean", torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1, 1), persistent=False)
-        self.register_buffer("pixel_std", torch.tensor(IMAGENET_STD).view(1, 3, 1, 1, 1), persistent=False)
+    def __init__(self, upsampling=False):
+        super().__init__(out_channels=12 if upsampling else 3, latents_mean=LATENTS_MEAN, latents_std=LATENTS_STD)
+        self.upsampling = upsampling
+        self.register_buffer("_latents_mean", torch.tensor(LATENTS_MEAN, dtype=torch.float32, device="cpu"), persistent=upsampling)
+        self.register_buffer("_latents_std", torch.tensor(LATENTS_STD, dtype=torch.float32, device="cpu"), persistent=upsampling)
+        self.register_buffer("pixel_mean", torch.tensor(IMAGENET_MEAN, device="cpu").view(1, 3, 1, 1, 1), persistent=False)
+        self.register_buffer("pixel_std", torch.tensor(IMAGENET_STD, device="cpu").view(1, 3, 1, 1, 1), persistent=False)
         self._interrupt = False
 
     @staticmethod
@@ -120,6 +122,12 @@ class MiniMaxH3VideoVAE(AutoencoderKLMiniMaxH3):
         return super().decode((latents * std + mean).to(self._model_dtype), return_dict=False)[0]
 
     def _prepare_decoded_chunk(self, chunk):
+        if self.upsampling:
+            # Spatial/temporal blending operates on the native packed grid. Shuffle
+            # only finalized chunks, before the existing RGB normalization and CPU copy.
+            batch, channels, frames, height, width = chunk.shape
+            chunk = F.pixel_shuffle(chunk.permute(0, 2, 1, 3, 4).reshape(batch * frames, channels, height, width), 2)
+            chunk = chunk.reshape(batch, frames, 3, height * 2, width * 2).permute(0, 2, 1, 3, 4)
         decoded = chunk.float()
         decoded.mul_(self.pixel_std.to(decoded)).add_(self.pixel_mean.to(decoded))
         return decoded.clamp_(0.0, 1.0).mul_(2.0).sub_(1.0)

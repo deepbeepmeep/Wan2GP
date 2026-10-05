@@ -3640,9 +3640,11 @@ class offload:
                 kind_entries = entries(model_id, kind)
                 need = builtins.sum(sizes[entry] for entry in kind_entries) * share
                 whole = kind == "base" and not any(entry.startswith(model_id + "/") for entry in tensors) # pinned as far as it fits, in order
-                ratio = share if whole or need <= budget else max(0, share * budget / need)
+                ratio = share if need == 0 or whole or need <= budget else max(0, share * budget / need)
                 for entry in _spread(kind_entries, ratio):
-                    budget -= sizes[entry]
+                    if not whole and sizes[entry] > budget:
+                        continue
+                    budget = max(0, budget - sizes[entry])
                     taken.add(entry)
                     ranks[model_id].update((id(p), rank) for p in tensors[entry])
             return ranks, taken
@@ -4723,7 +4725,8 @@ def all(pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, p
     global total_pinned_bytes, max_pinnable_bytes, last_offload_obj
     kwargs = locals().copy()
     previous_pinnable_limit = max_pinnable_bytes
-    previous_device, previous_offload = torch.get_default_device(), last_offload_obj
+    device_context = getattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context", None)
+    previous_device, previous_offload = None if device_context is None else device_context.device, last_offload_obj
     self = offload()
     try:
         return _configure(self, **kwargs)

@@ -1082,7 +1082,9 @@ def decode_video_to_tensor(
     hdr_transform: str | None = None,
     output_dtype: torch.dtype | None = None,
     generator: torch.Generator | None = None,
+    keyframes=None,
 ) -> torch.Tensor | None:
+    """``keyframes`` (:class:`DecodeKeyframes`) enables the keyframe-aware decode of the NAD diffusion decoder."""
     if isinstance(latent, list):
         latent_tensor = latent[0]
         latent.clear()
@@ -1107,6 +1109,8 @@ def decode_video_to_tensor(
             tiled_decode_kwargs = {"generator": generator, "interrupt_check": interrupt_check, "copy_emitted_chunks": False}
             if is_diffusion_decoder:
                 tiled_decode_kwargs["output_uint8"] = tensor_dtype is torch.uint8
+                tiled_decode_kwargs["keyframes"] = keyframes
+                tiled_decode_kwargs["high_precision"] = is_hdr
                 decoder_input = [latent]
                 latent = None
                 tiled_iterator = video_decoder.tiled_decode(decoder_input, tiling_config, **tiled_decode_kwargs)
@@ -1124,7 +1128,7 @@ def decode_video_to_tensor(
                 if frames.dtype is torch.uint8:
                     pass
                 elif is_hdr:
-                    frames = vae_range_to_hdr_linear(frames, transform=hdr_transform).to(dtype=tensor_dtype)
+                    frames = vae_range_to_hdr_linear(frames, transform=hdr_transform, channel_dim=1).to(dtype=tensor_dtype)
                 else:
                     frames = frames.add_(1.0).mul_(127.5).clamp_(0.0, 255.0)
                 video_tensor[write_pos : write_pos + frame_count].copy_(frames[0].permute(1, 2, 3, 0))
@@ -1135,7 +1139,7 @@ def decode_video_to_tensor(
             if is_diffusion_decoder:
                 decoder_input = [latent]
                 latent = None
-                decoded_video = video_decoder(decoder_input, generator=generator, interrupt_check=interrupt_check)
+                decoded_video = video_decoder(decoder_input, generator=generator, interrupt_check=interrupt_check, keyframes=keyframes, high_precision=is_hdr)
             else:
                 with PhaseProgress(1) as progress:
                     decoded_video = video_decoder(latent)
@@ -1147,7 +1151,7 @@ def decode_video_to_tensor(
                 return None
             decoded_video = decoded_video[:, :, :frame_count, :target_height, :target_width]
             if is_hdr:
-                decoded_video = vae_range_to_hdr_linear(decoded_video, transform=hdr_transform).to(dtype=tensor_dtype)
+                decoded_video = vae_range_to_hdr_linear(decoded_video, transform=hdr_transform, channel_dim=1).to(dtype=tensor_dtype)
             else:
                 decoded_video = decoded_video.add_(1.0).mul_(127.5).clamp_(0.0, 255.0)
             video_tensor[:frame_count].copy_(decoded_video[0].permute(1, 2, 3, 0))

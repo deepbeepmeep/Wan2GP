@@ -318,6 +318,9 @@ struct Device {
     void* nvml_device = nullptr;                               // see vram_short
     int64_t nvml_free = 0, nvml_reserved = 0;                  // whole GPU free memory at the last NVML reading, reserved_now then
     std::chrono::steady_clock::time_point nvml_read{};
+    bool beyond_gpu = false;                                   // vmm_alloc's last attempt: the VRAM of other processes is not counted
+    int refusal = 0;                                           // what refused new memory last (Refusal), for the out of memory message
+    int64_t refused_need = 0, refused_headroom = 0;            // the new memory it needed, headroom included, and that headroom
     std::unordered_map<CUdeviceptr, DebugEntry> debug_live;  // debug mode: the live allocations of the threshold and more
     std::map<int64_t, DebugSnapshot> debug_peaks;            // per phase
     DebugSnapshot debug_oom;                                 // when the last allocation failed
@@ -410,11 +413,15 @@ void trim_pools(Device& d) {
 // The free VRAM the driver reports is this process' budget, which on Windows ignores the VRAM used by other processes (a second WanGP,
 // Deepy, ComfyUI, a game): NVML's free memory of the whole GPU is checked too. NVML only counts memory once written: it is read at most
 // every 2 s, when this process' allocations have normally been written, and the allocator's own growth since is subtracted.
-int64_t room_now(Device& d) {
+// An allocation that would fail anyway is tried once more without it (beyond_gpu): Windows pages the VRAM of idle processes out.
+enum Refusal : int { REFUSED_BY_BUDGET = 1, REFUSED_BY_GPU, REFUSED_BY_LIMIT, REFUSED_BY_DRIVER };
+
+int64_t room_now(Device& d, int* bound = nullptr) {  // bound: the Refusal of the smallest of the limits
     size_t free_bytes = 0, total = 0;
     cu.MemGetInfo(&free_bytes, &total);
     int64_t room = static_cast<int64_t>(free_bytes);
-    if (d.nvml_device) {
+    int smallest = REFUSED_BY_BUDGET;
+    if (d.nvml_device && !d.beyond_gpu) {
         int64_t reserved = reserved_now(d);
         auto now = std::chrono::steady_clock::now();
         NvmlMemory info;
@@ -423,19 +430,38 @@ int64_t room_now(Device& d) {
             d.nvml_reserved = reserved;
             d.nvml_read = now;
         }
-        if (d.nvml_read != std::chrono::steady_clock::time_point{}) room = std::min(room, d.nvml_free - (reserved - d.nvml_reserved));
+        if (d.nvml_read != std::chrono::steady_clock::time_point{} && d.nvml_free - (reserved - d.nvml_reserved) < room) {
+            room = d.nvml_free - (reserved - d.nvml_reserved);
+            smallest = REFUSED_BY_GPU;
+        }
     }
-    if (vram_limit) room = std::min(room, vram_limit - reserved_now(d));
+    if (vram_limit && vram_limit - reserved_now(d) < room) {
+        room = vram_limit - reserved_now(d);
+        smallest = REFUSED_BY_LIMIT;
+    }
+    if (bound) *bound = smallest;
     return room;
 }
 
+void refuse(Device& d, int refusal, size_t bytes, size_t headroom) {
+    d.refusal = refusal;
+    d.refused_need = static_cast<int64_t>(bytes + headroom);
+    d.refused_headroom = static_cast<int64_t>(headroom);
+}
+
 bool vram_short(Device& d, size_t bytes, size_t headroom = vram_headroom) {
-    return room_now(d) < static_cast<int64_t>(bytes + headroom);
+    int bound;
+    if (room_now(d, &bound) >= static_cast<int64_t>(bytes + headroom)) return false;
+    refuse(d, bound, bytes, headroom);
+    return true;
 }
 
 CUresult create_chunk(Device& d, CUmemGenericAllocationHandle* handle, size_t missing) {
     // the free VRAM the driver reports only counts chunks once mapped: the room is checked for all the chunks the range still misses
-    return vram_short(d, missing * chunk_size) ? CUDA_ERROR_OUT_OF_MEMORY : cu.MemCreate(handle, chunk_size, &d.prop, 0);
+    if (vram_short(d, missing * chunk_size)) return CUDA_ERROR_OUT_OF_MEMORY;
+    CUresult result = cu.MemCreate(handle, chunk_size, &d.prop, 0);
+    if (result != CUDA_SUCCESS) refuse(d, REFUSED_BY_DRIVER, missing * chunk_size, vram_headroom);
+    return result;
 }
 
 CUresult pool_alloc(Device& d, CUdeviceptr* dptr, size_t size, CUmemoryPool pool, CUstream stream) {
@@ -446,10 +472,12 @@ CUresult pool_alloc(Device& d, CUdeviceptr* dptr, size_t size, CUmemoryPool pool
     unsigned long long reserved = pool_attribute(pool, CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT);
     if (reserved - pool_attribute(pool, CU_MEMPOOL_ATTR_USED_MEM_CURRENT) < size && vram_short(d, size, headroom)) return CUDA_ERROR_OUT_OF_MEMORY;
     CUresult result = cu.MemAllocFromPoolAsync(dptr, size, pool, stream);
+    if (result != CUDA_SUCCESS) refuse(d, REFUSED_BY_DRIVER, size, headroom);
     reserved = pool_attribute(pool, CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT);
     bool grew = reserved > seen;
     seen = reserved;
     if (result == CUDA_SUCCESS && grew && vram_short(d, 0, headroom)) {  // the pool grew past the GPU's room: the block goes back, the next trim releases it
+        d.refused_need += static_cast<int64_t>(size);
         cu.MemFreeAsync(*dptr, stream);
         return CUDA_ERROR_OUT_OF_MEMORY;
     }
@@ -855,12 +883,25 @@ const char* format_size(double bytes, char* text) {  // as PyTorch's out of memo
 [[noreturn]] void out_of_memory(const Device& d, size_t size, int device) {
     size_t free_bytes = 0, total = 0;
     cu.MemGetInfo(&free_bytes, &total);
-    char request[32], capacity[32], available[32], allocated[32], unused[32], spilled[32], ram[32], margin[32], message[768];
-    int length = snprintf(message, sizeof(message), "CUDA out of memory. Tried to allocate %s. GPU %d has a total capacity of %s of which %s is "
-             "free. Of the allocated memory %s is allocated by PyTorch, and %s is reserved by the mmgp VRAM allocator but unallocated.",
+    NvmlMemory gpu = {};  // the whole GPU's free memory, read now: the driver's figure is this process' budget on Windows
+    bool whole_gpu = d.nvml_device && nvml.DeviceGetMemoryInfo(d.nvml_device, &gpu) == 0;
+    char request[32], capacity[32], available[32], driver_free[32], allocated[32], unused[32], need[32], headroom[32], spilled[32], ram[32],
+        margin[32], message[1280];
+    int length = snprintf(message, sizeof(message), "CUDA out of memory. Tried to allocate %s. GPU %d has a total capacity of %s of which %s is free",
              format_size(static_cast<double>(size), request), device, format_size(static_cast<double>(total), capacity),
-             format_size(static_cast<double>(free_bytes), available), format_size(static_cast<double>(d.allocated), allocated),
+             format_size(static_cast<double>(whole_gpu ? gpu.free : free_bytes), available));
+    if (whole_gpu)
+        length += snprintf(message + length, sizeof(message) - length, " (the driver reports %s free for this process)",
+                           format_size(static_cast<double>(free_bytes), driver_free));
+    length += snprintf(message + length, sizeof(message) - length, ". Of the allocated memory %s is allocated by PyTorch, and %s is reserved by "
+             "the MMGP VRAM allocator but unallocated.", format_size(static_cast<double>(d.allocated), allocated),
              format_size(static_cast<double>(std::max<int64_t>(reserved_now(d) - d.allocated, 0)), unused));
+    static const char* reasons[] = {"", "no VRAM was left for this process", "other programs use the rest of the GPU's VRAM",
+                                    "the VRAM limit set for this process was reached", "the CUDA driver refused it"};
+    if (d.refusal)
+        length += snprintf(message + length, sizeof(message) - length, " %s more VRAM was needed (%s of it kept free for the driver), refused "
+                           "because %s.", format_size(static_cast<double>(d.refused_need), need),
+                           format_size(static_cast<double>(d.refused_headroom), headroom), reasons[d.refusal]);
     if (spill) {  // the allocation could not spill either
         unsigned long long ram_total, ram_available;
         ram_info(ram_total, ram_available);
@@ -967,6 +1008,7 @@ EXPORT void* vmm_alloc(size_t size, int device, CUstream stream) {
     std::unique_lock<std::mutex> guard(lock);
     Device& d = device_state(device);
     RelaxedCapture relaxed(any_capture());
+    if (!in_pressure_callback) d.refusal = 0;
     void* ptr = nullptr;
     bool to_pool = false;
     for (auto capture = d.captures.rbegin(); capture != d.captures.rend() && !to_pool; ++capture) {
@@ -990,7 +1032,13 @@ EXPORT void* vmm_alloc(size_t size, int device, CUstream stream) {
     int64_t kind = to_pool ? 4 : size >= large_threshold ? 0 : size >= mid_threshold ? 2 : 1;
     if (!ptr && spill && !to_pool) {
         ptr = alloc_spilled(d, size, stream);
-        kind = 3;
+        if (ptr) kind = 3;
+    }
+    if (!ptr && !to_pool && d.refusal == REFUSED_BY_GPU && d.captures.empty()) {
+        // last attempt before the error: this process' budget has room, the VRAM missing is used by other processes
+        d.beyond_gpu = true;
+        ptr = size >= large_threshold ? alloc_large(d, size, stream) : alloc_small(d, size, stream);
+        d.beyond_gpu = false;
     }
     if (!ptr) {
         if (threshold) {

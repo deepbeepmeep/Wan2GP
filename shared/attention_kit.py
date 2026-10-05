@@ -30,6 +30,21 @@ def configure(level):
     head_split = int(level)
 
 
+@torch.compiler.disable()
+def kv_first_attention(qkv_list, force_attention=None):
+    """pay_attention(qkv_list, force_attention=force_attention, recycle_q=True) when nothing else holds k and v: with SageAttention 2
+    (sm89/sm120), k is quantized and released before v is copied for its quantization, a peak lower by half of k; same results."""
+    settings = sage2_staged_settings(qkv_list[0].device, force_attention)
+    if settings is None:
+        return pay_attention(qkv_list, force_attention=force_attention, recycle_q=True)
+    from shared import sage2_core
+    query, key_list, value_list = qkv_list[0], qkv_list[1:2], qkv_list[2:3]
+    qkv_list.clear()
+    quantized = [None, sage2_core.staged_quantize_k(key_list, settings), sage2_core.staged_quantize_v(value_list, settings)]
+    quantized[0] = sage2_core.staged_quantize_q(query, settings)
+    return sage2_core.staged_attention(query, quantized, settings)
+
+
 def head_groups(kv_heads, tokens, level=None):
     """Groups of heads of an attention over tokens (per batch item): the divisor of kv_heads closest to the level's target, 1 when off."""
     level = head_split if level is None else level

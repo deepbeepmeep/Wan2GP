@@ -67,15 +67,17 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 I went to the future and brought back **MMGP v4** for you. 
 
-Pair it with WanGP, and your GPU punches above its weight:
+**15 seconds of H3 video at 1080p used to require  25 GB of VRAM,  now you just need 11 GB of VRAM**.  Everybody wins, only 5-6GB of VRAM to gen 15 seconds of H3 video at 480p. 
+
+Pair MMGP with WanGP, and your GPU punches above its weight:
 
 - **Profile 4 is up to 25% faster and uses up to 50% less VRAM** when generating large videos. And that's on top of the optimizations that already made WanGP the go-to *Low VRAM App*. Even better: in many cases, Profile 4 now beats the old Profile 1 and matches the new Profile 1.
 
 - **Good old failsafe Profile 5 is up to 50% faster.** Even the safety net got a turbo boost.
 
-These VRAM savings should benefit everyone, especially at higher resolutions and longer durations. **15 seconds of H3 video at 1080p with just 11 GB of VRAM** is now possible. Same GPU, bigger ambitions.
+These VRAM savings should benefit everyone, especially at higher resolutions and longer durations. 
 
-To get the most out of this update, open the new *Config → RAM/VRAM Management* tab, choose an *MMGP Optimized VRAM Allocator* option under *VRAM Allocator*, and turn on *Smart Memory Pinning*. Restart WanGP if you change the allocator.
+To get the most out of this update, first make sure you use *Sage2/2+ Attention* as quite a few optimizations depends on it. Then open the new *Config → RAM/VRAM Management* tab, choose an *MMGP Optimized VRAM Allocator* option under *VRAM Allocator*, and turn on *Smart Memory Pinning*. Restart WanGP if you change the allocator.
 
 For an extra **20% VRAM saving**, with a speed penalty of up to 10%, go to *Config → Performance* and set *Attention Head Split* to *Medium (good balance)*. A pretty good trade-off when every gigabyte counts.
 

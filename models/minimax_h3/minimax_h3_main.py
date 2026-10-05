@@ -217,7 +217,9 @@ def _load_video_vae(filename, qkv_splitting=True, upsampling=False):
                 del state_dict[name]
         return state_dict
 
-    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=None if upsampling else dtype, preprocess_sd=preprocess,
+    # X2's learned tensors are FP16. Give quantized layers the same compute dtype
+    # instead of inheriting FP32 from the empty model's constructor.
+    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=None if upsampling else dtype, fp32_dtype=dtype, preprocess_sd=preprocess,
                             fused_split_map=split_map)
     vae.split_linear_modules_map = split_map
     vae._model_dtype = dtype

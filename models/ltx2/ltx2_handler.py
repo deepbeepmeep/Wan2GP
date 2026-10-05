@@ -109,6 +109,7 @@ _ARCH_SPECS = {
         "ingredients_lora": "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors",
         "hdr_lora": "ltx-2.3-22b-ic-lora-hdr-0.9.safetensors",
         "hdr_scene_embeddings": "ltx-2.3-22b-ic-lora-hdr-scene-emb.safetensors",
+        "hdr_transform": "logc3",
         "video_vae": "ltx-2.3-22b_vae.safetensors",
         "diffusion_video_vae": _NAD_VAE_FILENAME,
         "audio_vae": "ltx-2.3-22b_audio_vae.safetensors",
@@ -134,8 +135,9 @@ _ARCH_SPECS = {
         "outpaint_lora": "ltx-2.3-22b-ic-lora-outpaint.safetensors",
         "inpaint_lora": "ltx-2.3-22b-ic-lora-in-outpainting-0.9.safetensors",
         "ingredients_lora": "ltx-2.5-22b-ic-lora-ingredients-0.9.safetensors",
-        "hdr_lora": "ltx-2.3-22b-ic-lora-hdr-0.9.safetensors",
-        "hdr_scene_embeddings": "ltx-2.3-22b-ic-lora-hdr-scene-emb.safetensors",
+        "hdr_lora": "ltx-2.5-22b-ic-lora-sdr-to-hdr-1.0.safetensors",
+        "hdr_scene_embeddings": "ltx-2.5-22b-ic-lora-sdr-to-hdr-scene-emb.safetensors",
+        "hdr_transform": "acescct",
         "video_vae": "ltx-2.5-22b_video_vae_bf16.safetensors",
         "diffusion_video_vae": _NAD_VAE_FILENAME,
         "audio_vae": "ltx-2.5-22b_audio_vae_bf16.safetensors",
@@ -435,6 +437,8 @@ def _notify_control_video_phase2(base_model_type, model_def, inputs, any_outpain
     video_prompt_type = inputs.get("video_prompt_type", "") or ""
     if int(inputs.get("guidance_phases", 1)) != 2 or "V" not in video_prompt_type or inputs.get("video_guide") is None:
         return ""
+    if "&" in video_prompt_type and _is_ltx25(base_model_type):
+        return ""  # LTX-2.5 HDR conversion runs as a single phase
     wgp = sys.modules.get("wgp")
     lora_dir = wgp.get_lora_dir(base_model_type) if wgp is not None and hasattr(wgp, "get_lora_dir") else None
     selected = {os.path.basename(lora).lower() for lora in inputs.get("activated_loras", []) or []}
@@ -546,6 +550,7 @@ class family_handler:
             "ltx2_spatial_upscaler_file": spec["spatial_upscaler"],
             "ltx2_hdr_lora_file": spec.get("hdr_lora", ""),
             "ltx2_hdr_scene_embeddings_file": spec.get("hdr_scene_embeddings", ""),
+            "ltx2_hdr_transform": spec.get("hdr_transform"),
             "self_refiner": True,
             "self_refiner_max_plans": 2,
             "custom_settings": [_PROMPT_RELAY_CUSTOM_SETTING.copy()],
@@ -952,6 +957,8 @@ class family_handler:
                 return "LTX2 HDR IC-LoRA is not compatible with Pose/Depth/Canny/Outpaint control modes."
             if "F" in video_prompt_type:
                 return "LTX2 HDR IC-LoRA is not yet compatible with Inject Frames."
+            if _is_ltx25(base_model_type) and (any(letter in image_prompt_type for letter in "SE") or "A" in video_prompt_type):
+                return "LTX-2.5 SDR to HDR conversion is driven by the whole Control Video only: Start / End Images and Video Masks are not supported."
         if "M" in video_prompt_type:
             if not _supports_main_22b_loras(base_model_type):
                 return "LTX2 inpainting IC-LoRA is supported only with the main 22B models."

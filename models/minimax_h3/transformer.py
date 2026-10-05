@@ -253,8 +253,6 @@ class Attention(nn.Module):
             self.vdn = VDNHybridAttention(hidden, heads, head_dim, dtype=dtype, device=device)
 
     def _norm_qk(self, query, key):
-        if hasattr(self, "vdn"):  # VDN also reads the raw query and key
-            return self.q_norm(query), self.k_norm(key)
         return _rms_norm_(self.q_norm, query), _rms_norm_(self.k_norm, key)
 
     def _norm_rope_(self, query, key, rope, packed_rope, fused_rms):
@@ -279,7 +277,7 @@ class Attention(nn.Module):
             return denoiser_kernels.gated_linear(self.out_proj, output, residual, gate, segments)
         return self.out_proj(output)
 
-    def forward(self, x_list, rope=None, transformer_options=None, residual=None, gate=None, segments=None):
+    def forward(self, x_list, rope=None, transformer_options=None, residual=None, gate=None, segments=None, input_again=None):
         x = _take(x_list)
         vdn_input = x if hasattr(self, "vdn") else None
         seq_len = x.shape[0]
@@ -294,6 +292,15 @@ class Attention(nn.Module):
             attention = attention_kit.qkv_attention(x_list, self.q_proj, self.k_proj, self.v_proj, self.heads, self.head_dim,
                                                     lambda query, key, group: self._norm_rope_(query, key, rope, packed_rope, fused_rms))
             return self._out_projection(attention, seq_len, residual, gate, segments)
+        if split_qkv and hasattr(self, "vdn"):  # VDN projects q, k and v when it needs them: its linear branch reads them raw
+            x_list, x, vdn_input = [x], None, None
+            return self.vdn(x_list, (self.q_proj, self.k_proj, self.v_proj), lambda query, key: self._norm_rope_(query, key, rope, packed_rope, False),
+                            self.out_proj, input_again)
+        if split_qkv and use_sol and self.sol_attention.staged(x, (self.q_proj, self.k_proj, self.v_proj)):
+            x_list, x = [x], None
+            attention = self.sol_attention.attention(x_list, (self.q_proj, self.k_proj, self.v_proj), (self.q_norm, self.k_norm), rope,
+                                                     self.q_norm.eps, self.heads, self.head_dim)
+            return self._out_projection(attention, seq_len, residual, gate, segments)
         if split_qkv:
             projections = (self.q_proj, self.k_proj, self.v_proj)
             if denoiser_kernels.DEEP_FUSIONS and all(denoiser_kernels.can_linear(layer, x) for layer in projections):
@@ -304,9 +311,6 @@ class Attention(nn.Module):
             query = query.view(1, seq_len, self.heads, self.head_dim)
             key = key.view(1, seq_len, self.heads, self.head_dim)
             value = value.view(1, seq_len, self.heads, self.head_dim)
-            raw_qkv = (query[0], key[0], value[0]) if hasattr(self, "vdn") else None
-            if not use_sol and not fused_rms:
-                query, key = self._norm_qk(query, key)
         else:
             qkv = self.qkv_proj(x)
             x = None
@@ -317,23 +321,22 @@ class Attention(nn.Module):
             query, key, value = query.unsqueeze(0), key.unsqueeze(0), value.unsqueeze(0)
             if not use_sol:
                 value = value.clone()
-            raw_qkv = (query[0], key[0], value[0]) if hasattr(self, "vdn") else None
             del qkv
+        if hasattr(self, "vdn"):  # fused q/k/v projection: k gets storage of its own, normalized in place
+            x_handoff, qkv = [vdn_input], [query, key.contiguous(), value]
+            vdn_input = query = key = value = None
+            return self.vdn(x_handoff, qkv, lambda query, key: self._norm_rope_(query, key, rope, packed_rope, False), self.out_proj)
         if use_sol:
             from shared.sol_attn import qk_rms_norm_rope_
             qk_rms_norm_rope_(query, key, self.q_norm.weight, self.k_norm.weight, rope, self.q_norm.eps)
         elif fused_rms:
             query, key = denoiser_kernels.rms_rope(query, key, rope, packed_rope, self.q_norm, self.k_norm)
-        elif not split_qkv:
+        else:
             query, key = self._norm_qk(query, key)
         qkv_list = [query, key, value]
         del query, key, value
         if rope is not None and not use_sol and not fused_rms:
             _rope_(qkv_list[:2], rope)
-        if hasattr(self, "vdn"):
-            x_handoff, raw_handoff, softmax_handoff = [vdn_input], list(raw_qkv), qkv_list
-            vdn_input = raw_qkv = qkv_list = query = key = value = None
-            return self.vdn(x_handoff, raw_handoff, softmax_handoff, self.out_proj)
         attention = pay_attention(qkv_list, recycle_q=True) if self.sol_attention is None else self.sol_attention(qkv_list, use_sol)
         return self._out_projection(attention, seq_len, residual, gate, segments)
 
@@ -453,14 +456,16 @@ class DiTBlock(nn.Module):
             hidden = self.attn(h_list, rope=rope, residual=residual_list[0], gate=gate_msa, segments=segments)
             h_list = [_norm_modulate(self.norm2, hidden, [shift_mlp, scale_mlp], segments)]
             return self.mlp(h_list, residual=hidden, gate=gate_mlp, segments=segments)
-        if not residual_signature_elements:
-            residual_list = [_gated_residual(residual_list, [gate_msa], [self.attn(h_list, rope=rope)], segments)]
+        if not residual_signature_elements:  # VDN computes its input again rather than keeping it (input_again)
+            input_again = (lambda: _norm_modulate(self.norm1, residual_list[0], [shift_msa, scale_msa], segments)) if hasattr(self.attn, 'vdn') else None
+            residual_list = [_gated_residual(residual_list, [gate_msa], [self.attn(h_list, rope=rope, input_again=input_again)], segments)]
             h_list = [_norm_modulate(self.norm2, residual_list[0], [shift_mlp, scale_mlp], segments)]
             return _gated_residual(residual_list, [gate_mlp], [self.mlp(h_list)], segments)
 
         hidden = _take(residual_list)
         signature_stride = max(1, math.ceil(hidden.numel() / residual_signature_elements))
-        branch = self.attn(h_list, rope=rope)
+        input_again = (lambda: _norm_modulate(self.norm1, hidden, [shift_msa, scale_msa], segments)) if hasattr(self.attn, 'vdn') else None
+        branch = self.attn(h_list, rope=rope, input_again=input_again)
         hidden, signature = self._gated_branch(hidden, gate_msa.to(hidden.dtype), branch, segments, signature_stride)
         del branch
         h_list = [_norm_modulate(self.norm2, hidden, [shift_mlp, scale_mlp], segments)]

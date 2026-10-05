@@ -341,10 +341,10 @@ def attention_config_shared_state(attention_mode=None, resolver=resolve_attentio
         else:
             offload.shared_state["_attention"] = previous
 
-def sage2_staged_settings(device):
+def sage2_staged_settings(device, force_attention=None):
     """Settings of shared.sage2_core's staged_* functions (q, k and v quantized as soon as each is computed) when pay_attention would run
-    SageAttention 2 without mask or sequence lengths on this device; None otherwise."""
-    attn = offload.shared_state["_attention"]
+    SageAttention 2 without mask or sequence lengths on this device (with this force_attention); None otherwise."""
+    attn = force_attention or offload.shared_state["_attention"]
     attn = get_default_attention_mode() if attn in ("sol", "vdn") else attn
     return _sage2_staged_settings(device) if attn in ("sage2", "radial") and sageattn2 is not None else None
 

@@ -51,7 +51,7 @@ In the configuration menu, **INT8 Math Kernels** selects the backend for INT8 qu
 
 Kitchen falls back to Triton when unavailable, and Triton falls back to PyTorch when unavailable, including explicit selections. Startup reports the backend actually selected. Finish the current generation before changing the selection. Weights stay loaded; autoregressive CUDA graphs and KV caches rebuild on the next request when the resolved backend changes. Existing `enable_int8_kernels` configurations migrate automatically: enabled becomes `int8_kernels: "auto"`, disabled becomes `int8_kernels: "disabled"`.
 
-Comfy Kitchen is installed with `requirements.txt`; its prebuilt CUDA kernels require an NVIDIA R580+ driver. AMD INT8/ConvRot uses ROCm PyTorch and Kitchen's HIP extension on supported RDNA3/3.5/4 devices. RDNA2 and unavailable or failing HIP backends retain the Triton/PyTorch fallback. WanGP probes small plain and ConvRot linear operations before selecting Kitchen, and reports CUDA or HIP in the startup message. AMD routing is covered by mocked tests; HIP execution has not yet been validated on AMD hardware here. This option selects INT8 linear math; it does not change the attention backend or enable FP16 accumulation.
+Comfy Kitchen is installed with `requirements.txt`; its prebuilt CUDA kernels require an NVIDIA R580+ driver. AMD INT8/ConvRot uses ROCm PyTorch and Kitchen's HIP extension on supported RDNA3/3.5/4 devices. RDNA2 and unavailable or failing HIP backends retain the Triton/PyTorch fallback. WanGP probes small plain and ConvRot linear operations before selecting Kitchen, and reports CUDA or HIP in the startup message. This option selects INT8 linear math; it does not change the attention backend or enable FP16 accumulation.
 
 ### CUDA Kernels Optimized Ops Precision (When Available)
 
@@ -215,8 +215,9 @@ The CUDA 13 builds contain native GPU code for SM75 through the architectures su
 ### Experimental AMD HIP wheel: Windows / Python 3.11 / PyTorch 2.10
 
 For RX 9070-series GPUs (`gfx1201`), the separate HIP wheel targets exactly
-**PyTorch 2.10.0+rocm7.14.0**. It does not use the NVIDIA PyTorch build or the
-legacy `rocm65` / TheRock 2.7-alpha installer option. Install into an AMD environment:
+**PyTorch 2.10.0+rocm7.14.0**. It does not use the NVIDIA PyTorch build and does not
+load in the installer's AMD environment (PyTorch 2.13.0+rocm10.0.0). Install into a
+separate AMD environment:
 
 ```powershell
 python -m pip install --index-url https://repo.amd.com/rocm/whl-multi-arch/ "torch[device-gfx1201]==2.10.0+rocm7.14.0" "rocm[libraries,device-gfx1201]==7.14.0"

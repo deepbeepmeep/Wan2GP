@@ -866,7 +866,8 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         for i_pos, i_len in zip(y_indices, y_lengths):
             row = []
             for j_pos, j_len in zip(x_indices, x_lengths):
-                tile = x[..., i_pos : i_pos + i_len, j_pos : j_pos + j_len]
+                # Compact the tile so padding does not inherit full-video strides.
+                tile = x[..., i_pos : i_pos + i_len, j_pos : j_pos + j_len].contiguous()
                 row.append(self.quant_conv(self.encoder(tile)))
             rows.append(row)
 

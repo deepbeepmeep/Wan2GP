@@ -1340,10 +1340,8 @@ class LTXVideoPipeline(DiffusionPipeline):
                 elif not isinstance(decode_noise_scale, list):
                     decode_noise_scale = [decode_noise_scale] * latents.shape[0]
 
-                decode_timestep = torch.tensor(decode_timestep).to(latents.device)
-                decode_noise_scale = torch.tensor(decode_noise_scale).to(
-                    latents.device
-                )[:, None, None, None, None]
+                decode_timestep = torch.tensor(decode_timestep, device=latents.device)
+                decode_noise_scale = torch.tensor(decode_noise_scale, device=latents.device)[:, None, None, None, None]
                 latents = (
                     latents * (1 - decode_noise_scale) + noise * decode_noise_scale
                 )

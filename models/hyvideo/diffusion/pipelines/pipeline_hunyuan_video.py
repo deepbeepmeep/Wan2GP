@@ -1528,11 +1528,11 @@ class HunyuanVideoPipeline(DiffusionPipeline):
                 else:
                     img_latents_concat = img_latents
                 img_latents_concat[:, :, 1:] = 0
-                mask_concat = torch.ones(img_latents_concat.shape[0], 1, *img_latents_concat.shape[2:]).to(device=img_latents.device)
+                mask_concat = torch.ones(img_latents_concat.shape[0], 1, *img_latents_concat.shape[2:], device=img_latents.device)
                 mask_concat[:, :, 1:] = 0
             else:
-                img_latents_concat = torch.zeros(latents.shape[0], latents.shape[1], *latents.shape[2:]).to(latents.device)
-                mask_concat = torch.zeros(img_latents_concat.shape[0], 1, *latents.shape[2:]).to(device=latents.device)
+                img_latents_concat = torch.zeros(latents.shape[0], latents.shape[1], *latents.shape[2:], device=latents.device)
+                mask_concat = torch.zeros(img_latents_concat.shape[0], 1, *latents.shape[2:], device=latents.device)
 
 
         vision_states = None

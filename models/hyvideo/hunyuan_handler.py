@@ -35,7 +35,7 @@ class family_handler():
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        extra_model_def = {}
+        extra_model_def = {"device_explicit": base_model_type in ("hunyuan_1_5_t2v", "hunyuan_1_5_i2v")}
         if base_model_type != "hunyuan_avatar":
             extra_model_def["riflex"] = True
 

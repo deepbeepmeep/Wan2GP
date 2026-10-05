@@ -31,6 +31,7 @@ class family_handler:
         ]
         result = {
             **({"accelerated": "native"} if base_model_type in (_TURBO_MODEL_TYPE, _TURBO_EDIT_MODEL_TYPE) else {}),
+            "device_explicit": True,
             "image_outputs": True,
             "system_configs": vae_configs(),
             "guidance_max_phases": 1 if base_model_type in (_RAW_MODEL_TYPE, _RAW_EDIT_MODEL_TYPE) else 0,

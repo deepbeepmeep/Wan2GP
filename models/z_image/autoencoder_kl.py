@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from shared.utils.phase_progress import vae_decoding_progress, set_phase_status
+import functools
 from typing import Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+
+from shared.utils.conv_bands import band_convs, conv_bands
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import PeftAdapterMixin
@@ -39,6 +42,35 @@ from diffusers.models.autoencoders.vae import (
     DiagonalGaussianDistribution,
     Encoder,
 )
+from diffusers.models.resnet import ResnetBlock2D
+
+
+def _resnet_forward(resnet, input_list):
+    """ResnetBlock2D.forward for this VAE (no time embedding, resampling or dropout), the same values with fewer full-size tensors alive.
+    input_list: [input], emptied so that the input is released once its shortcut projection is taken; each intermediate is released
+    before the next convolution and the residual sum is computed in place."""
+    input_tensor = input_list.pop()
+    hidden_states = resnet.nonlinearity(resnet.norm1(input_tensor))
+    if resnet.conv_shortcut is not None:
+        input_tensor = resnet.conv_shortcut(input_tensor.contiguous())
+    hidden_states = resnet.conv1(hidden_states)
+    hidden_states = resnet.norm2(hidden_states)
+    hidden_states = resnet.conv2(resnet.nonlinearity(hidden_states))
+    return hidden_states.add_(input_tensor).div_(resnet.output_scale_factor)
+
+
+def _decoder_forward(decoder, sample):
+    """diffusers Decoder.forward (no latent embeddings) running the up blocks' resnets itself: each one is handed its input, so a block's
+    input does not stay alive for the whole block."""
+    sample = decoder.mid_block(decoder.conv_in(sample), None)
+    for up_block in decoder.up_blocks:
+        for resnet in up_block.resnets:
+            resnet_input, sample = [sample], None
+            sample = resnet(resnet_input)
+        for upsampler in up_block.upsamplers or ():
+            sample = upsampler(sample)
+    sample = decoder.conv_act(decoder.conv_norm_out(sample))
+    return decoder.conv_out(sample)
 
 
 class AutoencoderMixin:
@@ -163,6 +195,19 @@ class AutoencoderKL(ModelMixin, AutoencoderMixin, ConfigMixin, FromOriginalModel
             mid_block_add_attention=mid_block_add_attention,
         )
 
+        for block in self.decoder.up_blocks:  # nearest x2 + conv by bands of rows: no full-size upsampled input
+            for upsampler in block.upsamplers or ():
+                upsampler.forward = lambda hidden_states, *args, _conv=upsampler.conv, **kwargs: conv_bands(hidden_states, _conv, upsample=True)
+        band_convs(self)  # large 3x3 convolutions by bands of rows: no full-image cuDNN workspace
+        for module in self.modules():  # every activation follows a normalization (a fresh tensor): in place, without a second full-size tensor
+            if isinstance(module, nn.SiLU):
+                module.inplace = True
+            elif isinstance(module, ResnetBlock2D):  # called by diffusers' mid and encoder blocks with the tensor itself
+                module.forward = lambda input_tensor, *args, _resnet=module, **kwargs: _resnet_forward(_resnet, [input_tensor])
+        for block in self.decoder.up_blocks:
+            for resnet in block.resnets:
+                resnet.forward = functools.partial(_resnet_forward, resnet)
+        self.decoder.forward = functools.partial(_decoder_forward, self.decoder)
         self.quant_conv = nn.Conv2d(2 * latent_channels, 2 * latent_channels, 1) if use_quant_conv else None
         self.post_quant_conv = nn.Conv2d(latent_channels, latent_channels, 1) if use_post_quant_conv else None
 

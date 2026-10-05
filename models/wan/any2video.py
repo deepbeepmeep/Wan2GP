@@ -376,7 +376,7 @@ class WanAny2V:
             x = [vae_feat, vae_feat_uncond] if any_guidance else [vae_feat],
             context = [context, context] if any_guidance else [context], 
             freqs= freqs,
-            t=torch.stack([torch.tensor(0, dtype=torch.float)]).to(self.device),
+            t=torch.zeros(1, dtype=torch.float, device=self.device),
             lynx_feature_extractor = True,
         )
         if loras_scaling is not None:
@@ -580,7 +580,8 @@ class WanAny2V:
             from .kiwi.embedders import build_kiwi_conditions
             kiwi_ref_images = original_input_ref_images[0] if original_input_ref_images is not None and len(original_input_ref_images) else None
             kiwi_state = build_kiwi_conditions(vae=self.vae, source_frames=input_frames, ref_images=kiwi_ref_images, width=width, height=height, batch_size=batch_size, device=self.device, dtype=self.dtype, source_embedder_file=self.kiwi_source_embedder_file, ref_embedder_file=self.kiwi_ref_embedder_file, vae_tile_size=VAE_tile_size)
-            with text_encoding_prompts(2 if any_guidance_at_all or NAG_scale > 1 else 1):
+            # the Qwen2.5-VL processor and vision code create their tensors on the default device
+            with text_encoding_prompts(2 if any_guidance_at_all or NAG_scale > 1 else 1), torch.device(self.device):
                 context = self.kiwi_mllm.encode_from_inputs(input_prompt, input_frames, kiwi_ref_images, use_ref_image=self.kiwi_ref_embedder_file is not None, max_frames=16)
                 context = [context]
                 if any_guidance_at_all or NAG_scale > 1:
@@ -1101,11 +1102,10 @@ class WanAny2V:
                 lynx = False
             else:
                 from  .lynx.resampler import Resampler
-                from accelerate import init_empty_weights
                 lynx_lite = model_type in ["lynx_lite", "vace_lynx_lite_14B"]
                 ip_hidden_states = ip_hidden_states_uncond = None
                 if True:
-                    with init_empty_weights():
+                    with torch.device("meta"):
                         arc_resampler = Resampler( depth=4, dim=1280, dim_head=64, embedding_dim=512, ff_mult=4, heads=20, num_queries=16, output_dim=2048 if lynx_lite else 5120 )
                     offload.load_model_data(arc_resampler, fl.locate_file("wan2.1_lynx_lite_arc_resampler.safetensors" if lynx_lite else "wan2.1_lynx_full_arc_resampler.safetensors"), writable_tensors=False, default_dtype=None)
                     arc_resampler.to(self.device)
@@ -1288,13 +1288,13 @@ class WanAny2V:
             pose_len = main_len
             main_grid_h, main_grid_w = target_shape[2] // ps_h, target_shape[3] // ps_w
             if test_scail2_replace(video_prompt_type):
-                ref_freqs_cos, ref_freqs_sin = get_nd_rotary_pos_embed((0, 120, 0), (ref_latent_count, 120 + main_grid_h, main_grid_w), (ref_latent_count, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
-                video_freqs_cos, video_freqs_sin = get_nd_rotary_pos_embed((ref_latent_count - 1, 0, 0), (ref_latent_count - 1 + main_len, main_grid_h, main_grid_w), (main_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+                ref_freqs_cos, ref_freqs_sin = get_nd_rotary_pos_embed((0, 120, 0), (ref_latent_count, 120 + main_grid_h, main_grid_w), (ref_latent_count, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False, device=self.device)
+                video_freqs_cos, video_freqs_sin = get_nd_rotary_pos_embed((ref_latent_count - 1, 0, 0), (ref_latent_count - 1 + main_len, main_grid_h, main_grid_w), (main_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False, device=self.device)
                 main_freqs_cos, main_freqs_sin = torch.cat([ref_freqs_cos, video_freqs_cos]), torch.cat([ref_freqs_sin, video_freqs_sin])
-                pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((ref_latent_count - 1, 0, 120), (ref_latent_count - 1 + pose_len, main_grid_h, 120 + main_grid_w), (pose_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+                pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((ref_latent_count - 1, 0, 120), (ref_latent_count - 1 + pose_len, main_grid_h, 120 + main_grid_w), (pose_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False, device=self.device)
             else:
-                main_freqs_cos, main_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (ref_latent_count + main_len, main_grid_h, main_grid_w), (ref_latent_count + main_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
-                pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((ref_latent_count, 0, 120), (ref_latent_count + pose_len, main_grid_h, 120 + main_grid_w), (pose_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False)
+                main_freqs_cos, main_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (ref_latent_count + main_len, main_grid_h, main_grid_w), (ref_latent_count + main_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False, device=self.device)
+                pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((ref_latent_count, 0, 120), (ref_latent_count + pose_len, main_grid_h, 120 + main_grid_w), (pose_len, main_grid_h, main_grid_w), L_test=main_len, enable_riflex=False, device=self.device)
             head_dim = pose_freqs_cos.shape[1]
             pose_freqs_cos = F.avg_pool2d(pose_freqs_cos.view(pose_len, main_grid_h, main_grid_w, head_dim).permute(0, 3, 1, 2), kernel_size=2, stride=2).permute(0, 2, 3, 1).reshape(-1, head_dim)
             pose_freqs_sin = F.avg_pool2d(pose_freqs_sin.view(pose_len, main_grid_h, main_grid_w, head_dim).permute(0, 3, 1, 2), kernel_size=2, stride=2).permute(0, 2, 3, 1).reshape(-1, head_dim)

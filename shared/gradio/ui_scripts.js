@@ -1,5 +1,30 @@
 function() {
     console.log("[WanGP] main JS initialized");
+    let generationLayoutFrame = 0;
+    function scheduleGenerationReferences() {
+        if (generationLayoutFrame) return;
+        generationLayoutFrame = requestAnimationFrame(() => {
+            generationLayoutFrame = 0;
+            const grids = [...document.querySelectorAll('.wangp-generation-info .generation-references')];
+            // Always measure the one-column layout; the two-column prompt wraps
+            // differently and must not feed back into the next decision.
+            grids.forEach(grid => grid.classList.remove('generation-references-two-columns'));
+            const twoColumns = grids.map(grid => {
+                if (grid.childElementCount < 2 || !grid.getBoundingClientRect().width) return false;
+                const prompt = grid.closest('tr').querySelector('.generation-prompt-cell');
+                const first = prompt.firstElementChild, last = prompt.lastElementChild;
+                const promptHeight = first ? last.getBoundingClientRect().bottom - first.getBoundingClientRect().top : 0;
+                return grid.getBoundingClientRect().height > promptHeight;
+            });
+            grids.forEach((grid, index) => grid.classList.toggle('generation-references-two-columns', twoColumns[index]));
+        });
+    }
+    document.addEventListener('animationstart', event => {
+        if (event.animationName === 'wangp-generation-references-ready') scheduleGenerationReferences();
+    });
+    window.addEventListener('resize', scheduleGenerationReferences, {passive: true});
+    document.fonts.addEventListener('loadingdone', scheduleGenerationReferences);
+    scheduleGenerationReferences();
     // CSS positions the bars; this only distinguishes floating from landed.
     let actionFrame = 0;
     const actionResize = new ResizeObserver(scheduleActionAppearance);

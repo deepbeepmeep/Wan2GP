@@ -985,6 +985,9 @@ class MiniMaxH3Pipeline:
             with control_video_encoding(audio_from_control_video):
                 target_video_condition = self._encode_video(_resize_video(frozen_target_video, height, width), keep_all_latents=True)
         if self.reference_mode and self.fixed_prompt is None:
+            if image_outputs and video_references:
+                input_ref_images = [*(input_ref_images or []), input_frames]
+                video_references = False
             for image in input_ref_images or []:
                 self._add_image_reference(image, width, height, image_refs_relative_size, presentation, visual_latents, refs)
 

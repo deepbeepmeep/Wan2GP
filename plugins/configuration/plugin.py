@@ -1,4 +1,5 @@
 from shared.kernels import int8_backend, kernel_policy
+from shared import attention_kit
 import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
 import copy
@@ -156,12 +157,14 @@ def deepy_filesystem_ui_state(deepy_type):
 
 
 WHOLE_MODEL_PROFILES = (1, 3, 3.5) # memory profiles that load each model whole in VRAM: nothing to preload
+PRELOAD_MODES = [("Default", "default"), ("Dynamic", "dynamic"), ("Manual", "manual")]
 MEMORY_ADVICE = """**Profile 4 is recommended for most PCs.** It sends the main model to the GPU part by part while the GPU works: models larger than your VRAM still run, most of the VRAM stays free for long videos or large images, and the speed cost is small. *Reserved RAM* is memory set aside to make these transfers fast. Other programs cannot use it, so only part of your RAM is reserved.
+
+**For image models, use Profile 4 or 5 with a *Dynamic* or *Manual* VRAM Preload for faster generations.** Their steps are short, so the transfers set the speed. The *VRAM Preload* next to each memory profile (Profiles 2, 4 and 5) keeps part of each model in VRAM: *Default* keeps the profile's choice; *Dynamic* keeps as much of the model as each generation leaves free and gives part of it back if VRAM runs short (it needs the MMGP Optimized VRAM Allocator); *Manual* keeps the amount set below it (8000 MB or more brings Flux close to Profile 1). Video steps are usually long enough to hide the transfers.
 
 **Profile 3+ is recommended for audio models** (their default): they are usually small enough to fit entirely in VRAM, where the language model many of them include runs much faster and can use the faster CUDA Graph or vLLM engines (*Performance* tab).
 
 Change the settings below only if needed:
-- **Image models feel slow:** raise *Image VRAM Preload* as far as your VRAM allows (8000 MB or more brings Flux close to Profile 1).
 - **Your PC runs short of RAM:** lower *Reserved RAM for Pinning* and keep *Smart Memory Pinning* On.
 - **Out of VRAM errors:** lower the preloads, or choose a higher *VAE Tiling* preset or Profile 4+.
 - **Plenty of RAM and VRAM for your models:** Profile 1 is a bit faster."""
@@ -380,36 +383,59 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             ("vllm: up to x10 faster, whole LM will be loaded in VRAM, requires Triton & Flash Attention 2", "vllm"),
                         ],
                         value=self.server_config.get("lm_decoder_engine", ""),
-                        label="Language Models Decoder Engine (when available for a model)",
+                        label="Language Models Decoder Engine (when available for a model, used also by Prompt Enhancer and Deepy)",
                     )
                     self.VAE_precision_choice = gr.Dropdown(choices=[("16-bit (faster, less VRAM)", "16"), ("32-bit (slower, better for sliding window)", "32")], value=self.server_config.get("vae_precision", "16"), label="VAE Encoding/Decoding Precision")
                     self.compile_choice = gr.Dropdown(choices=[("On (up to 20% faster, requires Triton)", "transformer"), ("Off", "")], value=self.compile, label="Compile Transformer Model (slight speed again, but first generation is slower and potential compatibility issues with some GPUs/Models)", interactive=not self.args.lock_config)
                     self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
                     self.int8_kernels_choice = gr.Dropdown(choices=int8_backend.CHOICES, value=self.server_config.get("int8_kernels", "auto"), label="INT8 Math Kernels", info="Auto selects Comfy Kitchen, then Triton, then PyTorch. Disabled uses PyTorch. Changes apply to the next generation without reloading weights.")
                     self.kernel_precision_choice = gr.Dropdown(choices=kernel_policy.CHOICES, value=self.server_config.get("kernel_precision", "fast"), label="CUDA Kernels Optimized Ops Precision (When Available)", info="Fast allows additional VAE optimizations with small rounding differences. Allow Faster Approximate Kernels is the default. INT8 math is controlled separately.")
+                    self.attention_head_split_choice = gr.Dropdown(choices=attention_kit.HEAD_SPLIT_CHOICES, value=self.server_config.get("attention_head_split", 0), label="Attention Head Split (much lower VRAM for long videos, up to 10% slower)", info="Models that support it compute attention one group of heads at a time for long sequences, which lowers the VRAM peak of denoising. Higher levels use more groups, saving more VRAM at a small speed cost; how many groups each level gives depends on the model. Applies to the next generation without reloading.")
 
                 with gr.Tab("RAM/VRAM Management"):
+                    self.vram_allocator_choice = gr.Dropdown(
+                        choices=[("MMGP Optimized VRAM Allocator with RAM Spilling (a generation slightly too large for the VRAM can still finish, more slowly)", "vmm_spill"),
+                                 ("MMGP Optimized VRAM Allocator (out of memory error when no VRAM is left)", "vmm"),
+                                 ("PyTorch Default VRAM Allocator", "default")],
+                        value=self.server_config.get("vram_allocator", "vmm_spill"),
+                        label="VRAM Allocator (requires restart)",
+                        info="The MMGP Optimized VRAM Allocator recycles more efficiently the VRAM that is no longer used: lower peak VRAM with long videos, large images and Deepy. Same as --vram-allocator, which takes precedence.",
+                    )
                     gr.Markdown(MEMORY_ADVICE)
-                    preload_info = "Memory profiles 2, 4 and 5 keep this part of each model in VRAM (0 = profile default): less to transfer at each step, faster for short steps such as images, at the cost of VRAM."
-                    profiles, preloads = {}, {}
+                    preload_info = "This part of each model stays in VRAM: less to transfer at each step, faster for short steps such as images, at the cost of VRAM."
+                    profiles, modes, preloads = {}, {}, {}
                     for output_type, title, profile in (("video", "Video", self.default_profile_video), ("image", "Image", self.default_profile_image), ("audio", "Audio", self.default_profile_audio)):
-                        profiles[output_type] = gr.Dropdown(choices=self.memory_profile_choices, value=profile, label=f"Default Memory Profile ({title})")
-                        preloads[output_type] = gr.Slider(0, 40000, value=self.server_config.get(f"{output_type}_preload_in_VRAM", 0), step=100, label=f"{title} VRAM Preload (MB)", info=preload_info, visible=profile not in WHOLE_MODEL_PROFILES)
-                        profiles[output_type].change(fn=lambda profile: gr.update(visible=profile not in WHOLE_MODEL_PROFILES), inputs=[profiles[output_type]], outputs=[preloads[output_type]], show_progress="hidden")
+                        streamed, mode = profile not in WHOLE_MODEL_PROFILES, self.server_config[f"{output_type}_preload_mode"]
+                        with gr.Group():
+                            with gr.Row():
+                                profiles[output_type] = gr.Dropdown(choices=self.memory_profile_choices, value=profile, label=f"{title} - Default Memory Profile", scale=6)
+                                modes[output_type] = gr.Dropdown(choices=PRELOAD_MODES, value=mode, label="VRAM Preload", scale=1, min_width=140, visible=streamed)
+                            preloads[output_type] = gr.Slider(0, 40000, value=self.server_config.get(f"{output_type}_preload_in_VRAM", 0), step=100, label=f"{title} VRAM Preload (MB)", info=preload_info, visible=streamed and mode == "manual")
                     self.video_profile_choice, self.image_profile_choice, self.audio_profile_choice = profiles.values()
+                    self.video_preload_mode_choice, self.image_preload_mode_choice, self.audio_preload_mode_choice = modes.values()
                     self.video_preload_choice, self.image_preload_choice, self.audio_preload_choice = preloads.values()
                     with gr.Row():
                         self.smart_memory_pinning_choice = gr.Dropdown(
-                            choices=[("On", True), ("Off", False)],
+                            choices=[("On: faster, uses 1-2 GB more Reserved RAM", True), ("Off: slower, saves 1-2 GB of Reserved RAM", False)],
                             value=self.server_config.get("smart_memory_pinning", True),
                             label="Smart Memory Pinning",
-                            info="On: the models processed block by block that the memory profile does not pin (all of them with profile 5) are copied ahead through a staging buffer of about 1-2 GB of reserved RAM, almost as fast as pinned models. Off: they use slower copies. Blocks of pinned models that do not fit in the reserved RAM use the buffer either way.",
+                            info="Helps most with Profile 5 and image models. Allocate a 1-2GB Reserved RAM buffer to accelerate transfers.",
                         )
                         self.perc_reserved_mem_max_choice = gr.Slider(
                             0, 80, value=self.server_config.get("perc_reserved_mem_max", 0), step=5,
                             label="Reserved RAM for Pinning (% of RAM, 0 = Auto)",
-                            info="Auto: 40% on Windows, 50% on Linux. Same as the command line --perc-reserved-mem-max (a fraction, e.g. 0.4), which takes precedence, and as the environment variable perc_reserved_mem_max, which this setting overrides.",
+                            info="Auto: 40% on Windows, 80% on Linux. Same as the command line --perc-reserved-mem-max (a fraction, e.g. 0.4), which takes precedence, and as the environment variable perc_reserved_mem_max, which this setting overrides.",
                         )
+                    self.read_ahead_choice = gr.Checkbox(
+                        value=self.server_config.get("read_ahead", False), label="Read Ahead (Windows)",
+                        info="Reads the model files ahead of their use: faster loading when they are not already in RAM, such as the first load after a restart or with Profile 5. Windows may then keep more file data in its cache, shown as used RAM. Applies when models reload.",
+                    )
+                    def update_preload_visibility(profile, mode):
+                        streamed = profile not in WHOLE_MODEL_PROFILES
+                        return gr.update(visible=streamed), gr.update(visible=streamed and mode == "manual")
+                    for output_type in profiles:
+                        for trigger in (profiles[output_type], modes[output_type]):
+                            trigger.change(fn=update_preload_visibility, inputs=[profiles[output_type], modes[output_type]], outputs=[modes[output_type], preloads[output_type]], show_progress="hidden")
                     self.max_reserved_loras_choice = gr.Slider(
                         -1,
                         10000,
@@ -829,9 +855,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
             self.text_encoder_quantization_choice, self.lm_decoder_engine_choice, self.VAE_precision_choice, self.compile_choice,
             self.depth_anything_v2_variant_choice,
-            self.vae_config_choice, self.boost_choice, self.int8_kernels_choice, self.kernel_precision_choice,
+            self.vae_config_choice, self.boost_choice, self.int8_kernels_choice, self.kernel_precision_choice, self.attention_head_split_choice,
             self.video_profile_choice, self.image_profile_choice, self.audio_profile_choice, self.video_preload_choice, self.image_preload_choice, self.audio_preload_choice,
-            self.smart_memory_pinning_choice, self.perc_reserved_mem_max_choice, self.max_reserved_loras_choice,
+            self.video_preload_mode_choice, self.image_preload_mode_choice, self.audio_preload_mode_choice,
+            self.smart_memory_pinning_choice, self.perc_reserved_mem_max_choice, self.read_ahead_choice, self.vram_allocator_choice, self.max_reserved_loras_choice,
             self.deepy_llm_engine_choice,
             *self.codex_config_ui.save_components,
             *self.claude_config_ui.save_components,
@@ -924,9 +951,10 @@ class ConfigTabPlugin(WAN2GPPlugin):
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
             text_encoder_quantization_choice, lm_decoder_engine_choice, VAE_precision_choice, compile_choice,
             depth_anything_v2_variant_choice,
-            vae_config_choice, boost_choice, int8_kernels_choice, kernel_precision_choice,
+            vae_config_choice, boost_choice, int8_kernels_choice, kernel_precision_choice, attention_head_split_choice,
             video_profile_choice, image_profile_choice, audio_profile_choice, video_preload_choice, image_preload_choice, audio_preload_choice,
-            smart_memory_pinning_choice, perc_reserved_mem_max_choice, max_reserved_loras_choice,
+            video_preload_mode_choice, image_preload_mode_choice, audio_preload_mode_choice,
+            smart_memory_pinning_choice, perc_reserved_mem_max_choice, read_ahead_choice, vram_allocator_choice, max_reserved_loras_choice,
             deepy_llm_engine_choice,
             codex_executable_choice, codex_model_choice, codex_reasoning_effort_choice,
             claude_executable_choice, claude_model_choice, claude_reasoning_effort_choice,
@@ -1042,11 +1070,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "compile": compile_choice, "profile": video_profile_choice,
             "video_profile": video_profile_choice, "image_profile": image_profile_choice, "audio_profile": audio_profile_choice,
             "video_preload_in_VRAM": video_preload_choice, "image_preload_in_VRAM": image_preload_choice, "audio_preload_in_VRAM": audio_preload_choice,
-            "smart_memory_pinning": smart_memory_pinning_choice, "perc_reserved_mem_max": perc_reserved_mem_max_choice,
+            "video_preload_mode": video_preload_mode_choice, "image_preload_mode": image_preload_mode_choice, "audio_preload_mode": audio_preload_mode_choice,
+            "smart_memory_pinning": smart_memory_pinning_choice, "perc_reserved_mem_max": perc_reserved_mem_max_choice, "read_ahead": read_ahead_choice, "vram_allocator": vram_allocator_choice,
             "vae_config": vae_config_choice, "vae_precision": VAE_precision_choice,
             "mixed_precision": mixed_precision_choice, "metadata_type": metadata_choice,
             "transformer_quantization": quantization_choice, "transformer_dtype_policy": transformer_dtype_policy_choice,
-            "boost": boost_choice, "int8_kernels": int8_kernels_choice, "kernel_precision": kernel_precision_choice, "clear_file_list": clear_file_list_choice,
+            "boost": boost_choice, "int8_kernels": int8_kernels_choice, "kernel_precision": kernel_precision_choice, "attention_head_split": attention_head_split_choice, "clear_file_list": clear_file_list_choice,
             "multi_prompts_gen_type": prompt_parser.normalize_multi_prompts_mode(multi_prompts_gen_type_choice, default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
             "keep_intermediate_sliding_windows": keep_intermediate_sliding_windows_choice,
             "preload_model_policy": preload_model_policy_choice, "UI_theme": UI_theme_choice,
@@ -1157,7 +1186,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         no_reload_keys = [
             VOICE_MODE_KEY,
             DEEPY_VOICE_LANGUAGE_KEY,
-            "attention_mode", "vae_config", "boost", "int8_kernels", "kernel_precision", "save_path", "image_save_path", "audio_save_path",
+            "attention_mode", "vae_config", "boost", "int8_kernels", "kernel_precision", "attention_head_split", "save_path", "image_save_path", "audio_save_path",
             "metadata_type", "clear_file_list", "multi_prompts_gen_type", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", *notifications.CONFIG_KEYS, "audio_processors", "temporal_upsamplers", "spatial_upsamplers", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization", PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, "enhancer_mode",
@@ -1223,6 +1252,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         upsampler_api.release_changed_config_upsamplers(old_server_config, new_server_config, changes)
         if "kernel_precision" in changes:
             kernel_policy.configure(new_server_config["kernel_precision"])
+        if "attention_head_split" in changes:
+            attention_kit.configure(new_server_config["attention_head_split"])
         if "int8_kernels" in changes:
             self.apply_int8_kernel_setting(new_server_config["int8_kernels"], True, resolved=int8_resolution)
 

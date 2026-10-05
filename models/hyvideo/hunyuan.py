@@ -725,7 +725,8 @@ class HunyuanVideoSampler(Inference):
             use_real=True,
             theta_rescale_factor=1,
             L_test = (video_length - 1) // 4 + 1,
-            enable_riflex = enable_riflex
+            enable_riflex = enable_riflex,
+            device = self.device,
         )
         return freqs_cos, freqs_sin
 

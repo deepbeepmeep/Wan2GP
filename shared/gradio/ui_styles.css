@@ -77,7 +77,22 @@ gradio-app {
     border-radius: 4px;
 }
 
-/* The preview cross removes the selected item only in the reference gallery. */
+/* Image inputs use a landscape icon, sized and colored by the native label. */
+.amg-image-gallery > [data-testid="block-label"] {
+    z-index: 30;
+}
+.amg-image-gallery:has(.preview) > [data-testid="block-label"] {
+    max-width: calc(100% - 100px);
+}
+.amg-image-gallery > [data-testid="block-label"] > span {
+    background: currentColor;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Ccircle cx='8.5' cy='8.5' r='1.5'/%3E%3Cpath d='m21 15-5-5L5 21'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.amg-image-gallery > [data-testid="block-label"] > span > svg {
+    visibility: hidden;
+}
+
+/* Input galleries remove the selected item; output galleries keep no cross. */
 .gallery-container > .preview button[aria-label="Close"] {
     display: none;
 }
@@ -421,8 +436,10 @@ h2 {
 .wangp-generation-info #PINFO .generation-prompt-cell {width:100%;min-width:200px;padding:14px 16px;overflow-wrap:anywhere;}
 .wangp-generation-info .generation-label {margin-bottom:6px;font-size:var(--text-sm);font-weight:600;color:var(--body-text-color-subdued);}
 .wangp-generation-info .generation-note {margin-bottom:8px;color:var(--body-text-color-subdued);white-space:pre-wrap;}
-.wangp-generation-info .generation-references {display:grid;grid-template-columns:repeat(2,120px);gap:10px;}
-.wangp-generation-info .generation-references:has(> :only-child) {grid-template-columns:120px;}
+/* The mount/show event starts one layout check without a DOM observer. */
+@keyframes wangp-generation-references-ready {from {visibility:visible;} to {visibility:visible;}}
+.wangp-generation-info .generation-references {display:grid;grid-template-columns:120px;gap:10px;animation:wangp-generation-references-ready 0s;}
+.wangp-generation-info .generation-references.generation-references-two-columns {grid-template-columns:repeat(2,120px);}
 .wangp-generation-info .generation-reference {display:flex;flex-direction:column;gap:6px;width:120px;padding:6px;border:1px solid var(--border-color-primary);border-radius:var(--button-small-radius,6px);background:var(--background-fill-secondary);color:inherit;font:inherit;cursor:pointer;}
 .wangp-generation-info .generation-reference img {display:block;width:100%;height:101px;object-fit:contain;border-radius:4px;}
 .wangp-generation-info .generation-reference span {font-size:var(--text-sm);line-height:1.35;overflow-wrap:anywhere;text-align:center;}
@@ -485,6 +502,12 @@ transition: visibility 0s linear 1s, opacity 0.3s linear 1s; /* 1s delay before 
 /* Reserve the LoRA multiplier's actual width instead of a fixed 1% column. */
 #video_info table {
     table-layout: auto !important;
+}
+#video_info .selected-media-prompt {
+    display: block;
+    max-height: 20lh;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
 }
 .copy-swap {
 display: block;

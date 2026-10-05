@@ -1,5 +1,8 @@
 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/
-mmgp==3.8.2
+# mmgp is bundled in the mmgp folder; its dependencies:
+optimum-quanto==0.2.7
+safetensors
+psutil
 comfy-kitchen==0.2.35
 # Core AI stack
 diffusers==0.36.0

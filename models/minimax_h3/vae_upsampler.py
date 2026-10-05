@@ -5,27 +5,22 @@ Revision: af8c92d267c6849fec5032c35a65d5766737b338. See X2_VAE_LICENSE and X2_VA
 """
 
 from postprocessing.spatial_upsamplers import SimpleScaleSuffixMixin
-from shared.utils.download import process_files_def_if_needed
 
 
 X2_VAE_FILE = "minimax_h3/MiniMax-H3-X2-Detail-v1.safetensors"
+X2_VAE_INT8_FILE = "minimax_h3/MiniMax-H3-X2-Detail-v1_int8_convrot.safetensors"  # built by tools/build_h3_x2_vae_int8_convrot.py
 X2_VAE_METHOD = "h3_vae"
 X2_VAE_VALUE = "h3_vae*2"
 X1_VAE_VALUE = "h3_vae*1"
 X2_VAE_DESCRIPTION = (
-    "Uses the detail decoder without another denoising pass. x2 doubles the generated width and height; "
-    "x1 decodes at x2, then downsamples once with bicubic filtering to keep the generation dimensions. "
-    "x1 can change texture and sharpness, but uses the same decoder memory as x2. "
-    "Uses the FP16 X2 decoder in place of the selected Video VAE. Frame count and audio are unchanged. "
-    "VAE tile sizes refer to the generation resolution, before the 2x output expansion. "
-    "This mode does not use the checkpoint's RGB-reference B32 detail enhancer. "
-    "Available during H3 generation only; it cannot upscale an existing gallery item."
+    "Replaces MiniMax H3's default VAE and handles VAE decoding and upsampling together. "
+    "Choose x2 to double the output width and height, or x1 to keep the original size."
 )
 
 
-def query_x2_vae_files():
+def query_x2_vae_files(filename=X2_VAE_FILE):
     return {"repoId": "DeepBeepMeep/MiniMax-H3", "sourceFolderList": ["minimax_h3"],
-            "fileList": [[X2_VAE_FILE.rsplit("/", 1)[-1]]]}
+            "fileList": [[filename.rsplit("/", 1)[-1]]]}
 
 
 class MiniMaxH3VaeUpsampler(SimpleScaleSuffixMixin):
@@ -70,8 +65,3 @@ class MiniMaxH3VaeUpsampler(SimpleScaleSuffixMixin):
 
             return resize_lanczos_spatial(sample, 0.5, method=Image.Resampling.BICUBIC)
         return sample
-
-    @staticmethod
-    def download(process_files, send_cmd=None, gen=None, **kwargs):
-        return process_files_def_if_needed(query_x2_vae_files(), process_files=process_files, gen=gen, send_cmd=send_cmd,
-                                          status_text="Downloading MiniMax H3 X2 VAE")

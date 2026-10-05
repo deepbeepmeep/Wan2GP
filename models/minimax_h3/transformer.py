@@ -23,6 +23,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from shared import attention_kit
 from shared.attention import pay_attention
 
 from .interrupt import GenerationInterrupted
@@ -117,6 +118,27 @@ def _take(x_list):
     x = x_list[0]
     x_list.clear()
     return x
+
+
+def _rms_norm_(norm, tensor, chunk_bytes=256 << 20):
+    """norm(tensor) written back into tensor by chunks of tokens: the same values, without nn.RMSNorm's full-size output and temporary."""
+    rows = max(1, chunk_bytes // (tensor[0, 0].numel() * tensor.element_size()))
+    for start in range(0, tensor.shape[1], rows):
+        part = tensor[:, start:start + rows]
+        part.copy_(norm(part))
+    return tensor
+
+
+def _rope_(tensors, rope):
+    """Split-half RoPE applied in place to each tensor, with one scratch buffer."""
+    pairs = rope.shape[-2]
+    cosine, sine = rope[..., 0], rope[..., 1]
+    scratch = torch.empty_like(tensors[0][..., :pairs])
+    for tensor in tensors:
+        first, second = tensor[..., :pairs], tensor[..., pairs:2 * pairs]
+        scratch.copy_(first)
+        first.mul_(cosine).addcmul_(second, sine, value=-1)
+        second.mul_(cosine).addcmul_(scratch, sine)
 
 
 def _to_dtype(x_list, dtype):
@@ -230,6 +252,33 @@ class Attention(nn.Module):
             from .vdn_attention import VDNHybridAttention
             self.vdn = VDNHybridAttention(hidden, heads, head_dim, dtype=dtype, device=device)
 
+    def _norm_qk(self, query, key):
+        if hasattr(self, "vdn"):  # VDN also reads the raw query and key
+            return self.q_norm(query), self.k_norm(key)
+        return _rms_norm_(self.q_norm, query), _rms_norm_(self.k_norm, key)
+
+    def _norm_rope_(self, query, key, rope, packed_rope, fused_rms):
+        """RMSNorm + RoPE in place of q and/or k (attention_kit callback, per head)."""
+        if fused_rms:
+            if query is not None and key is not None:
+                denoiser_kernels.rms_rope(query, key, rope, packed_rope, self.q_norm, self.k_norm)
+            else:  # the paired kernels normalize each (token, head) row on its own: the two halves of the heads form the pair
+                tensor, norm = (query, self.q_norm) if key is None else (key, self.k_norm)
+                half = tensor.shape[2] // 2
+                denoiser_kernels.rms_rope(tensor[:, :, :half], tensor[:, :, half:], rope, packed_rope, norm, norm)
+            return
+        tensors = [(tensor, norm) for tensor, norm in ((query, self.q_norm), (key, self.k_norm)) if tensor is not None]
+        for tensor, norm in tensors:
+            _rms_norm_(norm, tensor)
+        if rope is not None:
+            _rope_([tensor for tensor, _ in tensors], rope)
+
+    def _out_projection(self, attention, seq_len, residual, gate, segments):
+        output = attention.reshape(seq_len, -1)
+        if residual is not None:
+            return denoiser_kernels.gated_linear(self.out_proj, output, residual, gate, segments)
+        return self.out_proj(output)
+
     def forward(self, x_list, rope=None, transformer_options=None, residual=None, gate=None, segments=None):
         x = _take(x_list)
         vdn_input = x if hasattr(self, "vdn") else None
@@ -240,21 +289,27 @@ class Attention(nn.Module):
             rope, packed_rope = rope
         fused_rms = rope is not None and not use_sol and not hasattr(self, "vdn") and denoiser_kernels.can_rms(x, packed_rope, self.q_norm, self.k_norm)
         split_qkv = hasattr(self, "q_proj")
+        if split_qkv and not use_sol and not hasattr(self, "vdn"):
+            x_list, x = [x], None
+            attention = attention_kit.qkv_attention(x_list, self.q_proj, self.k_proj, self.v_proj, self.heads, self.head_dim,
+                                                    lambda query, key, group: self._norm_rope_(query, key, rope, packed_rope, fused_rms))
+            return self._out_projection(attention, seq_len, residual, gate, segments)
         if split_qkv:
             projections = (self.q_proj, self.k_proj, self.v_proj)
             if denoiser_kernels.DEEP_FUSIONS and all(denoiser_kernels.can_linear(layer, x) for layer in projections):
                 query, key, value = int8_backend.linear_multi(projections, x)
             else:
                 query, key, value = (layer(x) for layer in projections)
+            x = None  # only the projections read it: released before the norms, at the peak of the block
             query = query.view(1, seq_len, self.heads, self.head_dim)
             key = key.view(1, seq_len, self.heads, self.head_dim)
             value = value.view(1, seq_len, self.heads, self.head_dim)
             raw_qkv = (query[0], key[0], value[0]) if hasattr(self, "vdn") else None
             if not use_sol and not fused_rms:
-                query = self.q_norm(query)
-                key = self.k_norm(key)
+                query, key = self._norm_qk(query, key)
         else:
             qkv = self.qkv_proj(x)
+            x = None
             query, key, value = qkv.split(self.heads * self.head_dim, dim=-1)
             query = query.view(seq_len, self.heads, self.head_dim)
             key = key.view(seq_len, self.heads, self.head_dim)
@@ -264,36 +319,23 @@ class Attention(nn.Module):
                 value = value.clone()
             raw_qkv = (query[0], key[0], value[0]) if hasattr(self, "vdn") else None
             del qkv
-        x = None
         if use_sol:
             from shared.sol_attn import qk_rms_norm_rope_
             qk_rms_norm_rope_(query, key, self.q_norm.weight, self.k_norm.weight, rope, self.q_norm.eps)
         elif fused_rms:
             query, key = denoiser_kernels.rms_rope(query, key, rope, packed_rope, self.q_norm, self.k_norm)
         elif not split_qkv:
-            query, key = self.q_norm(query), self.k_norm(key)
+            query, key = self._norm_qk(query, key)
         qkv_list = [query, key, value]
         del query, key, value
         if rope is not None and not use_sol and not fused_rms:
-            pairs = rope.shape[-2]
-            cosine, sine = rope[..., 0], rope[..., 1]
-            scratch = torch.empty_like(qkv_list[0][..., :pairs])
-            for index in range(2):
-                tensor = qkv_list[index]
-                first, second = tensor[..., :pairs], tensor[..., pairs:2 * pairs]
-                scratch.copy_(first)
-                first.mul_(cosine).addcmul_(second, sine, value=-1)
-                second.mul_(cosine).addcmul_(scratch, sine)
-            del scratch, tensor, first, second
+            _rope_(qkv_list[:2], rope)
         if hasattr(self, "vdn"):
             x_handoff, raw_handoff, softmax_handoff = [vdn_input], list(raw_qkv), qkv_list
             vdn_input = raw_qkv = qkv_list = query = key = value = None
             return self.vdn(x_handoff, raw_handoff, softmax_handoff, self.out_proj)
         attention = pay_attention(qkv_list, recycle_q=True) if self.sol_attention is None else self.sol_attention(qkv_list, use_sol)
-        output = attention.reshape(seq_len, -1)
-        if residual is not None:
-            return denoiser_kernels.gated_linear(self.out_proj, output, residual, gate, segments)
-        return self.out_proj(output)
+        return self._out_projection(attention, seq_len, residual, gate, segments)
 
 
 class RefinerBlock(nn.Module):

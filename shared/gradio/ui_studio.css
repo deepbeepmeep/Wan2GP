@@ -127,9 +127,6 @@ footer .built-with > img {
     --color-accent: var(--studio-accent);
     --color-accent-soft: var(--studio-soft);
 }
-.wangp-studio-field:has(video) {
-    --block-label-background-fill: var(--studio-soft);
-}
 .wangp-studio-field [data-testid="block-info"] {
     background: transparent;
     color: var(--studio-label);
@@ -245,10 +242,11 @@ footer .built-with > img {
 }
 .wangp-studio-gallery {
     --block-shadow: none;
+    --block-border-width: 0px;
     --block-radius: 7px;
     --color-accent: var(--studio-accent);
     --color-accent-soft: var(--studio-soft);
-    box-shadow: inset 0 0 0 1px var(--studio-border) !important;
+    box-shadow: none !important;
 }
 .wangp-studio-gallery .preview {
     background: var(--studio-input);

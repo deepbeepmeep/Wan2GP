@@ -1158,6 +1158,21 @@ WAC.syncSettingsState = function () {
   if (launcher) launcher.setAttribute('aria-expanded', open ? 'true' : 'false');
 };
 
+WAC.syncSettingsDropdowns = function () {
+  const panel = WAC.settingsPanel();
+  if (!panel) return;
+  for (const menu of panel.querySelectorAll('.chat__settings-scroll .wrap > ul.options[role="listbox"]')) {
+    const input = menu.parentElement.getBoundingClientRect();
+    const scroll = menu.closest('.chat__settings-scroll').getBoundingClientRect();
+    const above = Math.max(0, input.top - Math.max(0, scroll.top) - 4);
+    const below = Math.max(0, Math.min(window.innerHeight, scroll.bottom) - input.bottom - 4);
+    const openUp = below < Math.min(280, menu.scrollHeight) && above > below;
+    menu.style.setProperty('--chat-options-top', openUp ? 'auto' : '100%');
+    menu.style.setProperty('--chat-options-bottom', openUp ? '100%' : 'auto');
+    menu.style.setProperty('--chat-options-height', `${Math.min(280, openUp ? above : below)}px`);
+  }
+};
+
 WAC.syncDockLayout = function () {
   const dock = WAC.dock();
   if (!dock) return;
@@ -2504,6 +2519,7 @@ WAC.installObserver = function () {
         WAC.syncScrollBridge();
         WAC.syncThemeState();
         WAC.syncDockLayout();
+        WAC.syncSettingsDropdowns();
         WAC.syncDeepyTypePreview();
         WAC.setQueuedEditButtonLabels(!!WAC.queuedEditMessageId);
         WAC.handleEventNodeMutation();
@@ -2536,6 +2552,10 @@ WAC.installObserver = function () {
 WAC.installDockBridge = function () {
   if (WAC.dockBridgeInstalled) return;
   WAC.dockBridgeInstalled = true;
+  window.addEventListener('resize', WAC.syncSettingsDropdowns);
+  document.addEventListener('scroll', (event) => {
+    if (event.target.matches?.('.chat__settings-scroll')) WAC.syncSettingsDropdowns();
+  }, true);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) WAC.clearStreamingReveals(null, true);
   });

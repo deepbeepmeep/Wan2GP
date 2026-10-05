@@ -176,7 +176,7 @@ class NEOChatModel(PreTrainedModel):
         "Qwen3DecoderLayer",
         "Qwen3MoeDecoderLayer",
     ]
-    _denoise_offload_module_paths = (
+    _offload_separate_blocks = (  # mmgp loads them only while they run: the prompt's embedding and the thinking text's head, not while denoising
         "language_model.model.embed_tokens",
         "language_model.lm_head",
     )

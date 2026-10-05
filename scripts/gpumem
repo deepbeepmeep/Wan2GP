@@ -1,0 +1,3 @@
+#!/bin/sh
+# Git Bash wrapper for gpumem.cmd (per-process VRAM usage).
+exec cmd.exe //c "$(cygpath -w "$(dirname "$0")")\gpumem.cmd"

@@ -423,10 +423,78 @@ def _quanto_forward(ctx, input, weight, bias=None):
             and input.dtype in (torch.float16, torch.bfloat16, torch.float32)
             and weight._data.is_cuda and weight._data.dtype == torch.int8
             and (input.shape[-1] <= 16384 or not _sm120_cutlass)
-            and (not _kitchen_hip or weight.shape[-1] % 16 == 0)):
+            and weight._data.shape[-1] % (16 if _kitchen_hip else 4) == 0 and weight._data.shape[0] % 4 == 0):  # the kitchen GEMM rejects other widths
         ctx.save_for_backward(input, weight)
         return kitchen_linear(input, weight, bias)
     return _original_forward(ctx, input, weight, bias)
+
+
+class _KitchenRowProjection:
+    """mmgp row projection (offload.linear_rows) of the INT8 ConvRot and Quanto INT8 layers that kitchen_linear computes with
+    _cutlass_linear_chunked: the input is quantized once, each range of output rows is the same CUTLASS GEMM on a view of the weight
+    rows, so the rows equal those of the layer's own output. The quantized input is as large as half the input it replaces: callers
+    release the input (prepare_linear_input takes it)."""
+
+    @staticmethod
+    def supports(module, x):
+        qtype = getattr(module, "weight_qtype", None)
+        if (_kitchen is None or not _direct_cutlass or qtype is None or torch.compiler.is_compiling() or not x.is_cuda
+                or x.dtype not in (torch.bfloat16, torch.float16) or not x.is_contiguous()):
+            return False
+        convrot = qtype.name == "qint8_convrot"
+        if convrot and (getattr(module, "_convrot_group_size", 0) != 256 or not kitchen_enabled()):
+            return False
+        if not convrot and (qtype.name != "qint8" or getattr(module, "_router_forward_impl", None) is not None):
+            return False
+        weight = module.qweight
+        data = weight._data
+        (m, k), n = x.shape, data.shape[0]
+        rows = max(1, _SCRATCH_BYTES // (k + n * (4 + x.element_size()) + 4))  # _linear_impl's single call threshold
+        rows = rows // 32 * 32 if rows >= 32 else rows
+        return (m > rows and data.dtype == torch.int8 and data.is_cuda and data.is_contiguous() and weight.dtype == x.dtype
+                and n % 8 == 0 and k % 256 == 0 and 256 <= k <= 16384 and (not convrot or _kitchen._convrot_fused_shared_memory_fits(x, k, 256)))
+
+    @staticmethod
+    def key(module):
+        return "kitchen_int8_convrot" if module.weight_qtype.name == "qint8_convrot" else "kitchen_int8"
+
+    @staticmethod
+    def prepare(module, x):
+        (m, k), convrot = x.shape, module.weight_qtype.name == "qint8_convrot"
+        rows = max(32, (_SCRATCH_BYTES // (k + 4)) // 32 * 32)
+        q, scales = torch.empty((m, k), dtype=torch.int8, device=x.device), None
+        for start in range(0, m, rows):
+            stop = min(start + rows, m)
+            tile_q, tile_scales = _kitchen.quantize_int8_rowwise_convrot64(x[start:stop], 256) if convrot else _kitchen.quantize_int8_rowwise(x[start:stop])
+            if scales is None:
+                scales = torch.empty((m, *tile_scales.shape[1:]), dtype=tile_scales.dtype, device=x.device)
+            q[start:stop].copy_(tile_q)
+            scales[start:stop].copy_(tile_scales)
+            del tile_q, tile_scales
+        return q, scales, x.dtype
+
+    @staticmethod
+    def rows(module, prepared, start, stop):
+        q, scales, dtype = prepared
+        weight, bias = module.qweight, module.bias
+        (m, k), device = q.shape, q.device
+        data = weight._data[start:stop]
+        scale = _weight_scale(weight, weight._data.shape[0], device)[start:stop]
+        bias_arg = (_kitchen._gemm_vector_arg(bias[start:stop], device, dtype) if bias is not None
+                    else _kitchen._empty_cuda_tensor(device, dtype))
+        out = torch.empty((m, stop - start), dtype=dtype, device=device)
+        wrap = _kitchen._wrap_for_dlpack
+        stream = torch._C._cuda_getCurrentRawStream(device.index)
+        tile = max(32, (_SCRATCH_BYTES // (k + 4)) // 32 * 32)
+        for row in range(0, m, tile):
+            end = min(row + tile, m)
+            if not _kitchen._C.cutlass_int8_dequant(wrap(q[row:end]), wrap(data), wrap(scales[row:end]), wrap(scale), wrap(bias_arg),
+                                                     wrap(out[row:end]), _kitchen.DTYPE_TO_CODE[dtype], stream):
+                raise RuntimeError("Comfy Kitchen rejected the INT8 CUTLASS row range")
+        return out
+
+
+_KITCHEN_ROW_PROJECTION = _KitchenRowProjection()
 
 
 def configure(selection, verbose_level=0, *, resolved=None):
@@ -472,6 +540,8 @@ def configure(selection, verbose_level=0, *, resolved=None):
         _original_forward = qbytes.WeightQBytesLinearFunction.forward
         qbytes.WeightQBytesLinearFunction.forward = staticmethod(_quanto_forward)
     _backend = backend
+    from mmgp import offload
+    (offload.register_row_projection if backend == "kitchen" else offload.unregister_row_projection)(_KITCHEN_ROW_PROJECTION)
     if backend != previous_backend:
         revision += 1
     label = {"kitchen": "Comfy Kitchen HIP" if _kitchen_hip else "Comfy Kitchen CUDA", "triton": "Triton", "pytorch": "PyTorch"}[backend]

@@ -355,7 +355,7 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        return get_qwen3_model_def(base_model_type)
+        return {**get_qwen3_model_def(base_model_type), "device_explicit": True}
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

@@ -260,6 +260,15 @@ def _apply_rope_inplace_inner(x: torch.Tensor, cos: torch.Tensor, sin: torch.Ten
 
 
 def _apply_rope_inplace(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, use_fp32: bool) -> torch.Tensor:
+    if use_fp32 and x.dtype != torch.float32 and x.dim() == cos.dim() and x.shape[1] == cos.shape[1] > 1:
+        # by chunks of tokens: the same values without a float32 copy of x
+        step = max(1, (64 << 20) // (x[:, 0].numel() * 4))
+        for start in range(0, x.shape[1], step):
+            part = x[:, start:start + step]
+            x_work = part.to(torch.float32)
+            _apply_rope_inplace_inner(x_work, cos[:, start:start + step], sin[:, start:start + step])
+            part.copy_(x_work.to(x.dtype))
+        return x
     if use_fp32 and x.dtype != torch.float32:
         x_work = x.to(torch.float32)
         _apply_rope_inplace_inner(x_work, cos, sin)

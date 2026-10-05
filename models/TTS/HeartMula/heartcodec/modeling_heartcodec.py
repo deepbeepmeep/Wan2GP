@@ -66,9 +66,7 @@ class HeartCodec(PreTrainedModel):
         if abort_signal and abort_signal():
             return None
         codes = codes.unsqueeze(0).to(self.device)
-        first_latent = torch.randn(
-            codes.shape[0], int(duration * 25), 256, dtype=self.dtype
-        ).to(self.device)
+        first_latent = torch.randn(codes.shape[0], int(duration * 25), 256, dtype=self.dtype, device=self.device)
         first_latent_length = 0
         first_latent_codes_length = 0
         min_samples = int(duration * 12.5)

@@ -5,6 +5,7 @@ import os
 import gradio as gr
 import torch
 
+from shared.utils.download import process_files_def_if_needed
 from shared.utils.hf import build_hf_url
 from shared.utils.frame_scheduler import normalize_overlap
 
@@ -16,7 +17,7 @@ from .dialogue import H3_DIALOGUE_GENERATION, H3_DIALOGUE_MAX_TOTAL_SECONDS, H3_
 from .minimax_h3_main import (AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER,
                               VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE, VIDEO_VAE_INT8_FILE)
 from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
-from .vae_upsampler import X1_VAE_VALUE, X2_VAE_DESCRIPTION, X2_VAE_FILE, X2_VAE_METHOD, X2_VAE_VALUE, query_x2_vae_files
+from .vae_upsampler import X1_VAE_VALUE, X2_VAE_DESCRIPTION, X2_VAE_FILE, X2_VAE_INT8_FILE, X2_VAE_METHOD, X2_VAE_VALUE, query_x2_vae_files
 from .viggle import VIGGLE_ARCHITECTURE, VIGGLE_ASSET_FOLDER, VIGGLE_INFOS, VIGGLE_PROMPT_FILE, VIGGLE_REPO_ID
 from .prompt_enhancer import (FL2VA_DEEPY_PROMPT_INFOS, FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
                               H3_AUDIO_DEEPY_PROMPT_INFOS, H3_AUDIO_DIALOGUE_SYSTEM_PROMPT, H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
@@ -344,6 +345,7 @@ def _get_audio_generator_model_def(model_def):
     text_encoder_files = [TEXT_ENCODER_BF16, TEXT_ENCODER_INT8] if text_encoder_variant is None else TEXT_ENCODER_VARIANTS[text_encoder_variant]
     return {
         "audio_only": True,
+        "device_explicit": True,
         "image_outputs": False,
         "profile_type": "video",
         "preserve_empty_prompt_lines": True,
@@ -487,7 +489,7 @@ class family_handler:
             result = family_handler.query_model_def(REF2VA_PRUNED_ARCHITECTURE, model_def)
             result.update({
                 "profiles_dir": [VIGGLE_ARCHITECTURE],
-                "device_explicit": False,
+                "device_explicit": True,
                 "specialities": [{"name": "character replacement"}, {"name": "motion transfer"}],
                 "infos": VIGGLE_INFOS,
                 "prompt_infos": "Viggle uses a fixed prompt. Prepare the character replacement in the Edited Reference Frame; generation prompt text is ignored.",
@@ -523,7 +525,6 @@ class family_handler:
                 result.pop(key)
             result.update({
                 "profiles_dir": result["profiles_dir"] + [CONTROL_ARCHITECTURE],  # main blocks are FL2VA: its LoRA accelerator profiles apply
-                "device_explicit": False,
                 "specialities": [{"name": "control video", "aliases": ["pose transfer", "depth control", "canny control", "controlnet"],
                                   "description": "Drive motion and structure with a pose, depth, edge, shape or grayscale control video."},
                                  {"name": "video inpainting", "description": "Regenerate a masked area of a video."},
@@ -678,9 +679,9 @@ class family_handler:
             "system_configs2": {
                 "_name": "Video VAE",
                 "_default_label": "Auto",
-                "bf16": {"name": "BF16", "video_vae_file": VIDEO_VAE_FILE},
-                "fp8mix": {"name": "FP8 Mixed Precision", "video_vae_file": VIDEO_VAE_FP8MIX_FILE},
-                "int8_convrot": {"name": "INT8 ConvRot Decoder", "video_vae_file": VIDEO_VAE_INT8_FILE},
+                "bf16": {"name": "BF16", "video_vae_file": VIDEO_VAE_FILE, "x2_vae_file": X2_VAE_FILE},
+                "fp8mix": {"name": "FP8 Mixed Precision", "video_vae_file": VIDEO_VAE_FP8MIX_FILE, "x2_vae_file": X2_VAE_FILE},
+                "int8_convrot": {"name": "INT8 ConvRot Decoder", "video_vae_file": VIDEO_VAE_INT8_FILE, "x2_vae_file": X2_VAE_INT8_FILE},
             },
             "system_configs3": {
                 "_name": "DiT Denoising Priority",
@@ -823,7 +824,7 @@ class family_handler:
         result["infos"] += still_infos
         result["deepy_infos"] += still_infos + " Set `image_mode` to `1`."
         result["infos"] += "\n\n**MiniMax H3 VAE:** " + X2_VAE_DESCRIPTION
-        result["deepy_infos"] += " Spatial upsampler `h3_vae*2` doubles generation width/height; `h3_vae*1` uses the same X2 decode then bicubic downsamples to the generation dimensions. Both use FP16 without extra denoising, with the same decoder memory requirement; neither activates the RGB-reference B32 enhancer."
+        result["deepy_infos"] += " MiniMax H3 VAE replaces the default VAE and handles decoding and upsampling together. Choose `h3_vae*2` to double the output width and height, or `h3_vae*1` to keep the original size."
         result["prompt_infos"] += still_prompt_infos
         result["deepy_prompt_infos"] += still_prompt_infos
         return result
@@ -938,11 +939,14 @@ class family_handler:
             image_count -= position_count  # images beyond the injected frames are reference images
         videos = []
         if "V" in video_prompt_type and "G" not in video_prompt_type:
-            videos.append(inputs["video_guide"])
-            if "+" in video_prompt_type:
-                videos.append(inputs["video_guide2"])
-            if "*" in video_prompt_type:
-                videos.append(inputs["video_guide3"])
+            if inputs["image_mode"] > 0:
+                image_count += 1  # image_guide supplies the reference in still-image mode.
+            else:
+                videos.append(inputs["video_guide"])
+                if "+" in video_prompt_type:
+                    videos.append(inputs["video_guide2"])
+                if "*" in video_prompt_type:
+                    videos.append(inputs["video_guide3"])
         soundtrack = "S" in audio_prompt_type or base_model_type == VIGGLE_ARCHITECTURE  # Viggle's A/K inputs are also kept soundtracks, not audio references
         audios = [inputs["audio_guide"]] if "A" in audio_prompt_type and not soundtrack and base_model_type != VIGGLE_ARCHITECTURE else []
         if "B" in audio_prompt_type:
@@ -1041,7 +1045,7 @@ class family_handler:
         if "video_vae_file" in model_def or model_def.get("system_configs2", {}).get("_name") != "Video VAE":
             return model_def
         filename = {"int8": VIDEO_VAE_INT8_FILE, "fp8": VIDEO_VAE_FP8MIX_FILE}.get(runtime_context["transformer_quantization"], VIDEO_VAE_FILE)
-        return {**model_def, "video_vae_file": filename}
+        return {**model_def, "video_vae_file": filename, "x2_vae_file": X2_VAE_INT8_FILE if filename == VIDEO_VAE_INT8_FILE else X2_VAE_FILE}
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
@@ -1069,8 +1073,8 @@ class family_handler:
             "sourceFolderList": source_folders,
             "fileList": file_lists,
         }]
-        if video_vae_file == X2_VAE_FILE:
-            downloads.append(query_x2_vae_files())
+        if video_vae_file in (X2_VAE_FILE, X2_VAE_INT8_FILE):
+            downloads.append(query_x2_vae_files(video_vae_file))
         if base_model_type == VIGGLE_ARCHITECTURE:
             downloads.append({"repoId": VIGGLE_REPO_ID, "sourceFolderList": [VIGGLE_ASSET_FOLDER], "fileList": [[VIGGLE_PROMPT_FILE]]})
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE and H3_DIALOGUE_GENERATION:
@@ -1089,12 +1093,16 @@ class family_handler:
 
         pdd = model_def.get("pdd", False)
         viggle = base_model_type == VIGGLE_ARCHITECTURE
+        video_vae_file = model_def.get("video_vae_file", VIDEO_VAE_FILE)
+        if VAE_upsampling == X2_VAE_VALUE:  # the X2 decoder of the selected Video VAE replaces it; downloaded once both choices are known
+            video_vae_file = model_def.get("x2_vae_file", X2_VAE_FILE)
+            process_files_def_if_needed(query_x2_vae_files(video_vae_file), status_text="Downloading MiniMax H3 X2 VAE")
         pipeline = model_factory(model_filename, text_encoder_filename, dtype=dtype,
                                  reference_mode=base_model_type in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, TTS_REF2VA_PRUNED_ARCHITECTURE, VIGGLE_ARCHITECTURE),
                                  save_quantized=save_quantized, model_type=model_type,
                                  qkv_splitting=model_def["qkv_splitting"],
                                  qkv_layout=model_def["qkv_layout"],
-                                 video_vae_filename=X2_VAE_FILE if VAE_upsampling == X2_VAE_VALUE else model_def.get("video_vae_file", VIDEO_VAE_FILE),
+                                 video_vae_filename=video_vae_file,
                                  audio_vae_filename=model_def.get("audio_vae_file", AUDIO_VAE_FILE), shared_h3_pipeline=shared_h3_pipeline,
                                  pdd=pdd, pdd_num_steps=PDD_NUM_STEPS if pdd else None, pdd_block_size=PDD_BLOCK_SIZE if pdd else None,
                                  vdn=model_def.get("vdn", False), audio_only=base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE,

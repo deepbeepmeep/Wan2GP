@@ -50,6 +50,17 @@ def _write_audit(sites, label, path):
 
 
 @contextlib.contextmanager
+def keep_default_device():
+    """Restores the thread's default device on exit, e.g. around an mmgp offload.profile() call made during generate(): it
+    leaves the CUDA default device installed."""
+    context = getattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context", None)
+    try:
+        yield
+    finally:
+        torch.set_default_device(None if context is None else context.device)
+
+
+@contextlib.contextmanager
 def generation_default_device(model_def, label=""):
     audit_path = os.environ.get("WANGP_AUDIT_DEFAULT_DEVICE", "")
     if audit_path:
@@ -63,12 +74,9 @@ def generation_default_device(model_def, label=""):
     if not device_explicit(model_def):
         yield
         return
-    context = getattr(torch._GLOBAL_DEVICE_CONTEXT, "device_context", None)
-    torch.set_default_device(None)
-    try:
+    with keep_default_device():
+        torch.set_default_device(None)
         yield
-    finally:
-        torch.set_default_device(None if context is None else context.device)
 
 
 def call_with_default_device(model_def, label, fn, *args, **kwargs):

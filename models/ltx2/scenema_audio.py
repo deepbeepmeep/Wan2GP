@@ -731,7 +731,8 @@ def _transcribe_words(alignment_whisper: torch.nn.Module, audio_np: np.ndarray, 
     if int(sample_rate) != 16000:
         mono_tensor = torchaudio.functional.resample(mono_tensor.unsqueeze(0), int(sample_rate), 16000).squeeze(0)
     model_dtype = getattr(alignment_whisper, "_model_dtype", next(alignment_whisper.parameters()).dtype)
-    result = alignment_whisper.transcribe(mono_tensor.numpy(), language=language, word_timestamps=True, fp16=model_dtype == torch.float16, verbose=None)
+    with torch.device("cuda" if torch.cuda.is_available() else "cpu"):  # openai-whisper creates its tensors on the default device
+        result = alignment_whisper.transcribe(mono_tensor.numpy(), language=language, word_timestamps=True, fp16=model_dtype == torch.float16, verbose=None)
     words = []
     for segment in result.get("segments", []):
         for word in segment.get("words", []) or []:

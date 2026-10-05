@@ -523,7 +523,7 @@ class family_handler:
         gemma_folder = _GEMMA4_FOLDER if ltx25 else _GEMMA_FOLDER
         gemma_files = (_GEMMA4_FILENAME, _GEMMA4_INT8_FILENAME) if ltx25 else (_GEMMA_FILENAME, _GEMMA_QUANTO_FILENAME)
         extra_model_def = {
-            "device_explicit": base_model_type in ("ltx2_19B", "ltx2_22B", "ltx2_25_22B"),
+            "device_explicit": True,
             "ltx2_22B_class": base_model_type in LTX2_22B_CLASS or ltx25,
             "ltx2_edit_anything": editanything_ref,
             "infos": model_def.get("infos", LTX2_25_MSR_INFOS if ltx25 and msr else LTX2_25_INFOS if ltx25 else LTX2_MSR_V2_INFOS if msr_v2 else LTX2_MSR_INFOS if msr else LTX2_INFOS),

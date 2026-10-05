@@ -287,7 +287,7 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        return {**_get_index_tts2_model_def(base_model_type), "specialities": [{"name": name} for name in ("expressive speech", "emotion transfer", "two-speaker dialogue")]}
+        return {**_get_index_tts2_model_def(base_model_type), "device_explicit": base_model_type == "index_tts2", "specialities": [{"name": name} for name in ("expressive speech", "emotion transfer", "two-speaker dialogue")]}
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

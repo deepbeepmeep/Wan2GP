@@ -61,8 +61,8 @@ def style_config(config, theme):
     visit(config['layout'])
     scope = config['layout']['id']
     navigation = {next(node for node in reversed(paths[c['id']]) if components[node]['type'] == 'row') for c in components.values() if c['props'].get('elem_id') == 'family_list'}
-    kinds = {kind: 'field' for kind in ('textbox', 'dropdown', 'slider', 'number', 'checkbox', 'checkboxgroup', 'radio', 'hierarchyselector', 'rangeslider', 'file', 'image', 'video', 'audio')}
-    kinds.update(button='button', uploadbutton='button', downloadbutton='button', accordion='accordion', tabs='tabs', gallery='gallery')
+    kinds = {kind: 'field' for kind in ('textbox', 'dropdown', 'slider', 'number', 'checkbox', 'checkboxgroup', 'radio', 'hierarchyselector', 'rangeslider', 'file', 'image', 'audio')}
+    kinds.update(button='button', uploadbutton='button', downloadbutton='button', accordion='accordion', tabs='tabs', gallery='gallery', video='gallery')
     selectors = {'wangp-studio-scope': [f'#component-{scope}'], 'wangp-studio-dropdown': []}
     for component_id, component in components.items():
         if component_id not in paths or scope not in paths[component_id]:

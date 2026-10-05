@@ -9,16 +9,9 @@ parsing, validation helpers, config nesting, downloads and dispatch.
 ## Upsampler types
 
 **MiniMax H3 VAE** is available in Spatial Upsampling during H3 video or image
-generation. Choose **×2** to double the selected generation width and height, or
-**×1** to decode at ×2 and then bicubic downsample to the generation dimensions.
-The ×1 option can change texture and sharpness while keeping the output size; it
-has the same decoder memory requirement as ×2. Neither adds denoising steps;
-duration and audio remain unchanged. Both use the checkpoint's
-FP16 decoder in place of the selected Video VAE. VAE tiling still uses pixels at
-the generation resolution, before the output doubles. Start with the 256-pixel
-tile preset if memory is limited. This option does not enable the separate
-reference-image B32 detail enhancer, and does not apply to Audio from Control
-Video or to existing media in Late Post Processing.
+generation. It replaces the default VAE and handles VAE decoding and upsampling
+together. Choose **×2** to double the output width and height, or **×1** to keep
+the original size.
 
 - `postprocessing`: works on decoded frames. Interchangeable: WanGP can call any of
   them through the same `upscale()` interface, both at generation time and in

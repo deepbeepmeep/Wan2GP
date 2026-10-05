@@ -568,11 +568,9 @@ def _fit_ref_image_into_canvas(image_ref, height, width, model_def):
 
 
 def _resize_ref_image_for_mode(image_ref, height, width, video_prompt_type, model_def):
-    ref_h, ref_w = image_ref.shape[-2:]
     if test_scail2_replace(video_prompt_type):
         return _fit_ref_image_into_canvas(image_ref, height, width, model_def)
-    new_h, new_w = calculate_new_dimensions(height, width, ref_h, ref_w, 0)
-    return _resize_ref_image(image_ref, new_h, new_w)
+    return _resize_ref_image(image_ref, height, width)
 
 
 def _save_debug_ref_mask(ref_mask, save_masks=False):
@@ -819,25 +817,25 @@ def prepare_scail2_conditioning(
     pose_grid_t = pose_latents.shape[2] // ps_t
     if additional_ref_count:
         if test_scail2_replace(video_prompt_type):
-            ref_freqs_cos, ref_freqs_sin = get_nd_rotary_pos_embed((0, 120, 0), (additional_ref_count + 1, 120 + main_grid_h, main_grid_w), (additional_ref_count + 1, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
-            video_freqs_cos, video_freqs_sin = get_nd_rotary_pos_embed((additional_ref_count, 0, 0), (additional_ref_count + lat_t, main_grid_h, main_grid_w), (lat_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+            ref_freqs_cos, ref_freqs_sin = get_nd_rotary_pos_embed((0, 120, 0), (additional_ref_count + 1, 120 + main_grid_h, main_grid_w), (additional_ref_count + 1, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx, device=pipeline.device)
+            video_freqs_cos, video_freqs_sin = get_nd_rotary_pos_embed((additional_ref_count, 0, 0), (additional_ref_count + lat_t, main_grid_h, main_grid_w), (lat_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx, device=pipeline.device)
             main_freqs_cos, main_freqs_sin = torch.cat([ref_freqs_cos, video_freqs_cos]), torch.cat([ref_freqs_sin, video_freqs_sin])
-            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((additional_ref_count, 0, 120), (additional_ref_count + pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((additional_ref_count, 0, 120), (additional_ref_count + pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx, device=pipeline.device)
         else:
             main_grid_t = additional_ref_count + 1 + lat_t
             pose_start_t = additional_ref_count + 1
-            main_freqs_cos, main_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (main_grid_t, main_grid_h, main_grid_w), (main_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
-            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((pose_start_t, 0, 120), (pose_start_t + pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+            main_freqs_cos, main_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (main_grid_t, main_grid_h, main_grid_w), (main_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx, device=pipeline.device)
+            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((pose_start_t, 0, 120), (pose_start_t + pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx, device=pipeline.device)
     else:
         main_grid_t = 1 + lat_t
         if test_scail2_replace(video_prompt_type):
-            ref_freqs_cos, ref_freqs_sin = get_nd_rotary_pos_embed((0, 120, 0), (1, 120 + main_grid_h, main_grid_w), (1, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
-            video_freqs_cos, video_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (lat_t, main_grid_h, main_grid_w), (lat_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+            ref_freqs_cos, ref_freqs_sin = get_nd_rotary_pos_embed((0, 120, 0), (1, 120 + main_grid_h, main_grid_w), (1, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx, device=pipeline.device)
+            video_freqs_cos, video_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (lat_t, main_grid_h, main_grid_w), (lat_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx, device=pipeline.device)
             main_freqs_cos, main_freqs_sin = torch.cat([ref_freqs_cos, video_freqs_cos]), torch.cat([ref_freqs_sin, video_freqs_sin])
-            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((0, 0, 120), (pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((0, 0, 120), (pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx, device=pipeline.device)
         else:
-            main_freqs_cos, main_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (main_grid_t, main_grid_h, main_grid_w), (main_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
-            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((1, 0, 120), (1 + pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx)
+            main_freqs_cos, main_freqs_sin = get_nd_rotary_pos_embed((0, 0, 0), (main_grid_t, main_grid_h, main_grid_w), (main_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx, device=pipeline.device)
+            pose_freqs_cos, pose_freqs_sin = get_nd_rotary_pos_embed((1, 0, 120), (1 + pose_grid_t, main_grid_h, 120 + main_grid_w), (pose_grid_t, main_grid_h, main_grid_w), L_test=lat_t, enable_riflex=enable_RIFLEx, device=pipeline.device)
     pose_freqs_cos, pose_freqs_sin = _downsample_pose_freqs(pose_freqs_cos, pose_freqs_sin, pose_grid_t, main_grid_h, main_grid_w)
 
     return {

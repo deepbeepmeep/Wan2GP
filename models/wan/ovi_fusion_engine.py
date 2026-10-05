@@ -228,9 +228,9 @@ class OviFusionEngine:
 		
         from .modules.posemb_layers import get_rotary_pos_embed, get_nd_rotary_pos_embed
 
-        video_freqs = get_nd_rotary_pos_embed((0, 0, 0 ), (video_latent_length, video_latent_h//2, video_latent_w//2 ))
+        video_freqs = get_nd_rotary_pos_embed((0, 0, 0 ), (video_latent_length, video_latent_h//2, video_latent_w//2 ), device=self.device)
         # audio_freqs = get_nd_rotary_pos_embed((0,), (audio_latent_length, ), interpolation_factor= self.model.audio_model.temporal_rope_scaling_factor, rope_dim_list= [44])	
-        audio_freqs = self.model.audio_model.get_audio_rope_params()		
+        audio_freqs = self.model.audio_model.get_audio_rope_params(self.device)		
         video_noise = torch.randn((self.video_latent_channel, video_latent_length, video_latent_h, video_latent_w), device=self.device, dtype=self.target_dtype, generator=torch.Generator(device=self.device).manual_seed(seed))  # c, f, h, w
         audio_noise = torch.randn((audio_latent_length, self.audio_latent_channel), device=self.device, dtype=self.target_dtype, generator=torch.Generator(device=self.device).manual_seed(seed))  # 1, l c -> l, c
         def ret():

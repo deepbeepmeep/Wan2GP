@@ -42,7 +42,7 @@ DIT_CONFIG = {
     "block_type": "mmdit_sr",
     "window": (4, 3, 3),
     "window_method": [method for _ in range(16) for method in ("720pwin_by_size_bysize", "720pswin_by_size_bysize")],
-    "attention_window_batch_size": 16,
+    "attention_window_batch_size": 8,
     "rope_type": "mmrope3d",
     "rope_dim": 128,
 }
@@ -126,12 +126,14 @@ def _wavelet_low(image: torch.Tensor) -> torch.Tensor:
     return image
 
 
-def _wavelet_color_fix(decoded: torch.Tensor, sample: torch.Tensor, height: int, width: int, device: torch.device, abort_callback=None):
+def _color_fixed_frames(decoded: torch.Tensor, sample: torch.Tensor, height: int, width: int, device: torch.device, abort_callback=None) -> torch.Tensor:
+    """The wavelet color fix against the input, then the uint8 frames, by chunks of frames on the GPU (decoded may be in RAM)."""
+    frames = torch.empty(decoded.shape[1:], dtype=torch.uint8, device="cpu")
     for start in tqdm(range(0, decoded.shape[2], OUTPUT_FRAME_BATCH_SIZE), desc="SeedVR2 color", leave=False):
         if callable(abort_callback) and abort_callback():
             raise InterruptedError("SeedVR2 upscaling aborted")
         stop = min(start + OUTPUT_FRAME_BATCH_SIZE, decoded.shape[2])
-        content = decoded[0, :, start:stop].permute(1, 0, 2, 3).float()
+        content = decoded[0, :, start:stop].to(device).permute(1, 0, 2, 3).float()
         style = _resize_input(sample[:, start:stop], height, width, device)
         count = stop - start
         low_input = torch.empty(count * 2, *content.shape[1:], device=device, dtype=torch.float32)
@@ -140,15 +142,7 @@ def _wavelet_color_fix(decoded: torch.Tensor, sample: torch.Tensor, height: int,
         style = None
         low_content, low_style = _wavelet_low(low_input).split(count)
         fixed = (content - low_content + low_style).clamp_(-1.0, 1.0).to(decoded.dtype)
-        decoded[0, :, start:stop].copy_(fixed.permute(1, 0, 2, 3))
-
-
-def _materialize_frames(decoded: torch.Tensor) -> torch.Tensor:
-    frames = torch.empty(decoded.shape[1:], dtype=torch.uint8, device="cpu")
-    for start in range(0, decoded.shape[2], OUTPUT_FRAME_BATCH_SIZE):
-        stop = min(start + OUTPUT_FRAME_BATCH_SIZE, decoded.shape[2])
-        chunk = decoded[0, :, start:stop].mul_(127.5).add_(127.5).round_().clamp_(0, 255).to(torch.uint8).to("cpu")
-        frames[:, start:stop].copy_(chunk)
+        frames[:, start:stop].copy_(fixed.permute(1, 0, 2, 3).mul_(127.5).add_(127.5).round_().clamp_(0, 255).to(torch.uint8))
     return frames
 
 
@@ -194,7 +188,7 @@ class SeedVR2Runtime:
         self.vae.requires_grad_(False)
         self.vae.debug = None
         self.vae.set_causal_slicing(split_size=VAE_TEMPORAL_TILE_SIZE, memory_device="same")
-        self.vae.set_memory_limit(conv_max_mem=0.5, norm_max_mem=0.5)
+        self.vae.set_memory_limit(conv_max_mem=0.25, norm_max_mem=0.5)
         self.positive_embedding = load_file(paths.positive_embedding, device="cpu")["embedding"].to(self.dtype)
         pipe = {"transformer": self.dit, "vae": self.vae}
         kwargs = {}
@@ -274,9 +268,9 @@ class SeedVR2Runtime:
                 if decoded.ndim == 4:
                     decoded = decoded.unsqueeze(2)
                 decoded = decoded[:, :, :input_frames, :output_height, :output_width]
-                _wavelet_color_fix(decoded, sample, output_height, output_width, self.device, abort_callback)
+                frames = _color_fixed_frames(decoded, sample, output_height, output_width, self.device, abort_callback)
                 progress.update()
-                return _materialize_frames(decoded), None
+                return frames, None
         except InterruptedError:
             return None, None
         finally:

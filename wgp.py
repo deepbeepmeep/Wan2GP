@@ -29,6 +29,7 @@ is_mps = sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.b
 if is_mps:
     from shared.mps.device_patch import apply_mps_patch
     apply_mps_patch()
+from shared.cuda_memory import apply_startup_settings, write_vram_debug_report; apply_startup_settings(sys.argv, "wgp_config.json") # VRAM allocator and CUDA stack reserve, before anything initializes CUDA
 
 import time
 import threading
@@ -175,8 +176,7 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.8.2"
-WanGP_version = "13.141"
+WanGP_version = "17.00"
 settings_version = 2.79
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -198,11 +198,6 @@ ATTACHMENT_KEYS = ["image_start", "image_end", "image_refs", "image_guide", "ima
                    "video_guide", "video_guide2", "video_guide3", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_guide3", "audio_source", "replace_voice_sample", "replace_voice_sample2", "custom_guide"]
 PRESERVE_MEDIA_ON_SETTINGS_IMPORT = True
 
-from importlib.metadata import version
-mmgp_version = version("mmgp")
-if mmgp_version != target_mmgp_version:
-    print(f"Incorrect version of mmgp ({mmgp_version}), version {target_mmgp_version} is needed. Please upgrade with the command 'pip install -r requirements.txt'")
-    exit()
 lock = threading.Lock()
 current_task_id = None
 task_id = 0
@@ -227,6 +222,7 @@ for handler in _HANDLER_MODULES:
 from shared.qtypes import gguf as gguf_handler
 quant_router.register_file_extension("gguf", gguf_handler)
 from shared.kernels import int8_backend, kernel_policy
+from shared import attention_kit
 
 
 def apply_int8_kernel_setting(selection: str, notify_disabled=False, resolved=None) -> bool:
@@ -2660,11 +2656,16 @@ if not Path(config_load_filename).is_file():
         "boost" : 1,
         "int8_kernels": "auto",
         "kernel_precision": "fast",
+        "attention_head_split": 0,
         "clear_file_list" : 5,
         "keep_intermediate_sliding_windows": 1,
         "keep_resolution_on_model_switch": True,
         "enable_4k_resolutions": 0,
         "max_reserved_loras": -1,
+        "read_ahead": False,
+        "video_preload_mode": "default",
+        "image_preload_mode": "default",
+        "audio_preload_mode": "default",
         "vae_config": 0,
         "profile" : profile_type.LowRAM_LowVRAM,
         "video_profile": profile_type.LowRAM_LowVRAM,
@@ -3427,6 +3428,7 @@ boost = server_config.get("boost", 1)
 int8_kernels = server_config.get("int8_kernels", "auto")
 apply_int8_kernel_setting(int8_kernels)
 kernel_policy.configure(server_config.get("kernel_precision", "fast"))
+attention_kit.configure(server_config.get("attention_head_split", 0))
 vae_config = server_config.get("vae_config", 0)
 if len(args.vae_config) > 0:
     vae_config = int(args.vae_config)
@@ -3918,10 +3920,26 @@ def get_profile_type_for_model(model_type, image_mode=0):
         return "image"
     return "video"
 
+def preload_mode(output_type):
+    # the VRAM preload of a kind of output with memory profiles 2, 4 and 5: "default" (the profile's), "manual" (its VRAM Preload value) or
+    # "dynamic" (the preload follows the VRAM left by each workload, the profile default until measured; mmgp says when it cannot apply it:
+    # without an MMGP VRAM allocator, or with Profile 4+, which sends one part at a time)
+    return "manual" if int(args.preload) > 0 else server_config[f"{_normalize_output_type(output_type)}_preload_mode"]
+
+auto_preload_measures = {} # model type -> (its model definition, the measures of the automatic preload): measured again with a new definition
+
+def auto_preload_store(model_type):
+    model_def = get_model_def(model_type)
+    stored = auto_preload_measures.get(model_type, None)
+    if stored is None or stored[0] is not model_def: # definitions are rebuilt when they are refreshed, e.g. after a finetune was edited
+        stored = auto_preload_measures[model_type] = (model_def, {})
+    return stored[1]
+
 def init_pipe(pipe, kwargs, profile, output_type="video"):
     preload =int(args.preload)
-    if preload == 0: # the VRAM preload of this kind of output, also when a generation overrides its memory profile
+    if preload == 0 and preload_mode(output_type) == "manual": # the VRAM preload of this kind of output, also when a generation overrides its memory profile
         preload = server_config.get(f"{_normalize_output_type(output_type)}_preload_in_VRAM", 0)
+    kwargs["readAhead"] = server_config.get("read_ahead", False)
     kwargs["perc_reserved_mem_max"] = args.perc_reserved_mem_max or server_config.get("perc_reserved_mem_max", 0) / 100 # 0: mmgp's environment variable or default
 
     kwargs["extraModelsToQuantize"]=  None
@@ -4188,6 +4206,8 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
             pipe["tiny_vae"] = preview_decoder
             kwargs["coTenantsMap"]["tiny_vae"] = "*"
         mmgp_profile = init_pipe(pipe, kwargs, profile, output_type)
+        if mmgp_profile in (2, 4, 5) and preload_mode(output_type) == "dynamic":
+            kwargs["autoPreload"] = auto_preload_store(model_type)
         loras_transformer = kwargs.pop("loras", [])
         if "transformer" in pipe:
             loras_transformer += ["transformer"]
@@ -4856,6 +4876,7 @@ def format_media_info(file_name, configs):
     if file_name is not None:
         values = [html.escape(os.path.basename(strip_virtual_media_suffix(file_name)))]
         labels = [ "File Name"]
+        prompt_labels = {"Prompt", "Negative Prompt"}
         misc_values= []
         misc_labels = []
         pp_values= []
@@ -5124,6 +5145,7 @@ def format_media_info(file_name, configs):
                 misc_values += [ f"{video_duration_seconds}s"]
                 misc_labels += [html.escape(duration_def.get("name", duration_def.get("label", "Max Duration")))]
             prompt_class = model_def.get("prompt_class","Text Prompt")
+            prompt_labels.update((prompt_class, f"Original {prompt_class}"))
             values +=  misc_values + [video_prompt]
             labels += misc_labels + [f"Original {prompt_class}" if enhanced_video_prompt else prompt_class]
             video_comments = html.escape(str(configs.get("comments", "") or "")[:4096]).replace("\n", "<BR>")
@@ -5133,6 +5155,7 @@ def format_media_info(file_name, configs):
             alt_prompt_def = model_def.get("alt_prompt", None)
             if alt_prompt_def is not None:
                 alt_prompt_label = alt_prompt_def.get("name", alt_prompt_def.get("label")) 
+                prompt_labels.update((alt_prompt_label, f"Original {alt_prompt_label}"))
                 alt_prompt_text = str(configs.get("alt_prompt", "") or "")
                 enhanced_alt_prompt_text = str(configs.get("enhanced_alt_prompt", "") or "")
                 alt_prompt_mode = multi_prompts_gen_type if model_def.get("alt_prompt_inherits_prompt_paragraphs", False) else "FG"
@@ -5341,7 +5364,7 @@ def format_media_info(file_name, configs):
             }
             </STYLE>
         """
-        rows = [f"<TR><TD style='text-align: right;' WIDTH=1% NOWRAP VALIGN=TOP>{label}</TD><TD><B>{value}</B></TD></TR>" for label, value in zip(labels, values)]
+        rows = [f"<TR><TD style='text-align: right;' WIDTH=1% NOWRAP VALIGN=TOP>{label}</TD><TD><B class='{'selected-media-prompt' if label in prompt_labels else ''}'>{value}</B></TD></TR>" for label, value in zip(labels, values)]
         html_content = f"{table_style}<TABLE ID=video_info WIDTH=100%>" + "".join(rows) + "</TABLE>"
     else:
         html_content =  get_default_video_info()
@@ -8243,9 +8266,14 @@ def generate_media(
                 #     torch.compiler.reset()
                 #     torch._dynamo.config.cache_size_limit = cache_size
 
+                reraise = isinstance(e, (DownloadCancelled, DownloadError, MediaProcessingAborted))
+                tb = traceback.format_exc().split('\n')[:-1]
+                exc = None if reraise else e
+                while exc is not None:  # the failed generation's frames, and the generators and closures they ran, still hold its tensors
+                    exc.__traceback__, exc = None, exc.__context__
                 gc.collect()
                 torch.cuda.empty_cache()
-                if isinstance(e, (DownloadCancelled, DownloadError, MediaProcessingAborted)):
+                if reraise:
                     raise
                 s = str(e)
                 keyword_list = {"CUDA out of memory" : "VRAM", "Tried to allocate":"VRAM", "CUDA error: out of memory": "RAM", "CUDA error: too many resources requested": "RAM"}
@@ -8261,7 +8289,6 @@ def generate_media(
                     new_error = "The generation of the video has encountered an error: it is likely that you have unsufficient RAM and / or Reserved RAM allocation should be reduced using 'perc_reserved_mem_max' or using a different Profile."
                 else:
                     new_error =  gr.Error(f"The generation of the video has encountered an error, please check your terminal for more information. '{s}'")
-                tb = traceback.format_exc().split('\n')[:-1] 
                 print('\n'.join(tb))
                 send_cmd("error", new_error)
                 clear_status(state)
@@ -8843,6 +8870,7 @@ def _process_tasks(state):
                         filtered_params.setdefault("model_type", "")
                     plugin_data = task.pop('plugin_data', {})
                     success = generate_media(task, send_cmd, plugin_data=plugin_data,  **filtered_params)
+                    write_vram_debug_report(save_path, params.get("model_type"))
 
                 except DownloadCancelled:
                     success = True
@@ -9099,6 +9127,7 @@ def process_tasks_cli(queue, state):
                     filtered_params.setdefault("client_id", "")
                     plugin_data = task.get('plugin_data', {})
                     generate_media(task, send_cmd, plugin_data=plugin_data, **filtered_params)
+                    write_vram_debug_report(save_path, params.get("model_type"))
                 except Exception as e:
                     print(f"\n  [ERROR] {e}")
                     traceback.print_exc()
@@ -11458,7 +11487,7 @@ attention_modes_choices= [
     (f'flash{check_attn("flash")}: High quality, requires manual install', "flash"),
     (f'xformers{check_attn("xformers")}: Good quality, less VRAM, requires manual install', "xformers"),
     (f'sage{check_attn("sage")}: ~30% faster, requires manual install', "sage"),
-    (f'sage2/sage2++{check_attn("sage2")}: ~40% faster, requires manual install', "sage2"),
+    (f'sage2/sage2++{check_attn("sage2")}: ~40% faster, (recommended, extra optims when used) requires manual install', "sage2"),
 ] + ([(f'radial{check_attn("radial")}: Experimental, may be faster, requires manual install', "radial")] if args.betatest else []) + [
     (f'sage3{check_attn("sage3")}: >50% faster, may have quality trade-offs, requires manual install', "sage3"),
 ]

@@ -1186,7 +1186,7 @@ class LTX2:
                 waveform = waveform[:, :target_channels]
                 if waveform.shape[1] < target_channels:
                     waveform = torch.cat((waveform, waveform.new_zeros(waveform.shape[0], target_channels - waveform.shape[1], waveform.shape[2])), dim=1)
-        audio_processor = AudioProcessor(sample_rate=audio_encoder.sample_rate, mel_bins=audio_encoder.mel_bins, mel_hop_length=audio_encoder.mel_hop_length, n_fft=audio_encoder.n_fft)
+        audio_processor = AudioProcessor(sample_rate=audio_encoder.sample_rate, mel_bins=audio_encoder.mel_bins, mel_hop_length=audio_encoder.mel_hop_length, n_fft=audio_encoder.n_fft, device=self.device)
         mel = audio_processor.waveform_to_mel(waveform, int(audio_sample_rate))
         audio_params = next(audio_encoder.parameters())
         audio_latent = audio_encoder(mel.to(device=audio_params.device, dtype=audio_params.dtype))
@@ -1727,6 +1727,7 @@ class LTX2:
                     mel_bins=self.audio_encoder.mel_bins,
                     mel_hop_length=self.audio_encoder.mel_hop_length,
                     n_fft=self.audio_encoder.n_fft,
+                    device=self.device,
                 )
                 skip_audio_conditioning = False
                 waveform_sample_rate = int(waveform_sample_rate or 0)

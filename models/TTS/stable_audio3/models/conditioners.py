@@ -140,7 +140,7 @@ class NumberConditioner(Conditioner):
             # Cast the inputs to floats
             floats = [float(x) for x in floats]
 
-            floats = torch.tensor(floats).to(device)
+            floats = torch.tensor(floats, device=device)
 
             floats = floats.clamp(self.min_val, self.max_val)
     
@@ -152,7 +152,7 @@ class NumberConditioner(Conditioner):
 
             float_embeds = self.embedder(normalized_floats).unsqueeze(1)
     
-            return [float_embeds, torch.ones(float_embeds.shape[0], 1).to(device)]
+            return [float_embeds, torch.ones(float_embeds.shape[0], 1, device=device)]
 
 class T5GemmaConditioner(Conditioner):
 

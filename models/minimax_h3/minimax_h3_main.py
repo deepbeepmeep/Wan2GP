@@ -18,7 +18,7 @@ from .text_encoder import MiniMaxH3TextEncoder, load_h3_qwen_config
 from .transformer import MiniMaxH3Model, get_linear_split_map
 from .video_vae import MiniMaxH3VideoVAE, get_video_vae_linear_split_map
 from .viggle import load_fixed_prompt
-from .vae_upsampler import X2_VAE_FILE, X2_VAE_VALUE
+from .vae_upsampler import X2_VAE_FILE, X2_VAE_INT8_FILE, X2_VAE_VALUE
 
 
 VIDEO_VAE_FILE = "MiniMax-H3-video_vae_fp16.safetensors"
@@ -268,7 +268,7 @@ def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=to
     if shared_h3_pipeline is None:
         text_encoder = _load_text_encoder(text_encoder_filename, dtype) if fixed_prompt_filename is None else None
         video_vae_qkv_splitting = qkv_splitting and video_vae_filename in (VIDEO_VAE_FILE, X2_VAE_FILE)
-        video_vae = _load_video_vae(video_vae_filename, video_vae_qkv_splitting, upsampling=video_vae_filename == X2_VAE_FILE)
+        video_vae = _load_video_vae(video_vae_filename, video_vae_qkv_splitting, upsampling=video_vae_filename in (X2_VAE_FILE, X2_VAE_INT8_FILE))
         audio_vae = _load_audio_vae(audio_vae_filename)
         latent_upscaler = _load_latent_upscaler(latent_upscaler_filename) if fixed_prompt_filename is None else None
     else:

@@ -276,6 +276,7 @@ class LTXAudioTTSPipelineBase:
             mel_bins=self.audio_encoder.mel_bins,
             mel_hop_length=self.audio_encoder.mel_hop_length,
             n_fft=self.audio_encoder.n_fft,
+            device=self.device,
         ).to(waveform.device)
         mel = audio_processor.waveform_to_mel(waveform, sample_rate)
         audio_device, audio_dtype = ltx_audio_tts_model_device_dtype(self.audio_encoder, self.device, self.dtype)

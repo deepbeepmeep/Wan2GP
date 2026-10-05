@@ -6,7 +6,7 @@ from gradio import blocks
 
 
 def bind(triggers, sources, callback, state, outputs):
-    """Sources are (component, value/count/presence/editor) pairs."""
+    """Sources are (component, value/count/presence/editor/gallery) pairs."""
     @wraps(callback)
     def refresh(state_value, metadata):
         return callback(state_value, metadata)
@@ -56,6 +56,7 @@ if(g&&wangpKind){
     if(wangpKind==="value")return value;
     if(wangpKind==="count")return value?.length||0;
     if(wangpKind==="editor")return g.instance.get_metadata();
+    if(wangpKind==="gallery")return {items:value?.map(item=>(item.image||item.video).path)||[],selected:g.props.selected_index};
     return value&&( !Array.isArray(value)||value.length) ? "present" : null;
 }
 """

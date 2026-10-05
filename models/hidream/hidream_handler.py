@@ -26,6 +26,7 @@ class family_handler:
         is_dev = base_model_type == "hidream_o1_dev"
         return {
             "image_outputs": True,
+            "device_explicit": True,
             "sample_solvers": [("Flash", "flash")] if is_dev else [("Default", "default")],
             "guidance_max_phases": 0 if is_dev else 1,
             "fit_into_canvas_image_refs": 0,

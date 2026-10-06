@@ -50,7 +50,7 @@ def parse_wgp_args(config_filename: str, argv: Sequence[str] | None = None):
     add("--bf16", action="store_true", help="For using bf16 transformer model")
     add("--server-port", type=str, default=0, help="Server port")
     add("--theme", type=str, default="", help="set UI Theme")
-    add("--perc-reserved-mem-max", type=float, default=0, help="Share of RAM that pinning may lock, as a fraction, e.g. 0.4 (default: the Configuration setting, else 0.4 on Windows and 0.5 on Linux)")
+    add("--perc-reserved-mem-max", type=float, default=0, help="Share of RAM that pinning may lock, as a fraction, e.g. 0.4 (default: the Configuration setting, else 0.4 on Windows and 0.6 on Linux)")
     add("--vram-debug", type=float, default=0, metavar="MIN_MB", help="Debug mode of the MMGP VRAM allocator: records the allocations of MIN_MB and more (module, tags, Python stack) and writes after each generation a report of the tensors alive at the peak of each phase in <outputs>/vram_debug")
     add("--vram-allocator", choices=["default", "vmm", "vmm_spill"], default=None, help="VRAM allocator, applied at startup: vmm_spill (MMGP Optimized VRAM Allocator, the default, with RAM spilling: a generation slightly too large for the VRAM can finish, slowly), vmm (the same, an out of memory error when no VRAM is left) or default (PyTorch's). Overrides the Configuration setting")
     add("--prevent-power-throttling", action=argparse.BooleanOptionalAction, default=True, help="Windows: keep full CPU speed while WanGP is in the background or minimized (--no-prevent-power-throttling lets Windows save power instead)")

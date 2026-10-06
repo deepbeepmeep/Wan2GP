@@ -27,13 +27,14 @@ class family_handler():
         extra_model_def["text_encoder_folder"] = text_encoder_folder
         if base_model_type != "qwen_image_layered_20B":
             extra_model_def["system_configs"] = vae_configs()
+            extra_model_def["tiny_vae_architecture"] = "t2v"
 
         extra_model_def["vae_upsampler"] = [1,2]
         extra_model_def["vae_upsamplers"] = {"qwen_vae_pid(1.5)": [1, 2]}
         extra_model_def["excluded_spatial_upsamplers"] = ["qwen_pid(1.5)"]
 
         if base_model_type in ["qwen_image_layered_20B"]:
-            extra_model_def["specialities"] = [{"name": "layer decomposition", "aliases": ["editable layers"], "description": "Decompose an input image into RGBA layers."}]
+            extra_model_def["specialities"] = [{"name": "layer decomposition", "aliases": ["editable layers"], "description": "Decompose an input image into RGBA layers."}, {"name": "alpha output", "aliases": ["RGBA", "transparent layers"], "description": "Decompose a supplied image into RGBA layers with alpha."}]
             extra_model_def["batch_size_label"] = "Number of Layers"
             extra_model_def["set_video_prompt_type"] = "V"
             extra_model_def["guide_preprocessing"] = {

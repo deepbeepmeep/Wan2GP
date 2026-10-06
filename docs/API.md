@@ -363,7 +363,9 @@ Useful `GeneratedArtifact` fields:
 - `artifact.side_files`
   - Companion filenames mapped to their file contents as `bytes`, such as `{"song.abc": b"...", "song.mid": b"..."}`. Python session calls return these in memory by default, while the main media is still saved for the gallery. Set `_api={"return_side_files": False}` to save the companions beside the media instead. They are not separate gallery entries.
 
-For YuE2, set `custom_settings={"save_score": 1}` to export both the ABC and MIDI composition. This works with automatic planning, a supplied score or source-audio scoring; direct generation has no score. These describe the composition used to generate the song, not an exact transcription of the finished audio. Wan Alpha returns its transparent PNG-frame ZIP through the same `side_files` field.
+For YuE2, set `custom_settings={"save_score": 1}` to export both the ABC and MIDI composition. This works with automatic planning, a supplied score or source-audio scoring; direct generation has no score. These describe the composition used to generate the song, not an exact transcription of the finished audio.
+
+Wan Alpha and LTX Alpha Gen return their transparent output through the same `side_files` field. **Configuration / Outputs / RGBA Video Output** selects lossless RGBA PNG frames in a `.zip` (default) or a ProRes 4444 `_rgba.mov` for video editors. The shared `wgp_config.json` key is `rgba_video_output`, with values `png_zip` and `prores_4444`. Wan Alpha's gallery video is a checkerboard preview; LTX Alpha Gen's is the grayscale matte. This choice is independent of the gallery codec and container. Transparent still images are saved as PNG. Deepy model search accepts the `alpha output` speciality (alias `RGBA`); each matching model describes how to enable its alpha output.
 
 To supply a YuE2 score, set `custom_guide` to the path of a UTF-8 `.abc` file and use `audio_prompt_type=""` with composition mode 0 or 1. Source-audio scoring (`audio_prompt_type="A"`) hides and ignores this optional file. The former pasted `custom_settings.abc` value is ignored; upload a file instead.
 

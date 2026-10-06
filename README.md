@@ -94,6 +94,14 @@ There are also two new upsamplers to play with:
 
 By pure coincidence, WanGP has just hit **10,000 GitHub stars**. If you're enjoying it, spread the word! Plenty of fellow GPU Poors could use the extra breathing room. Let's take together WanGP to **100,000 stars**.
 
+### v17.10: LTX-2.5 VFX Tools
+
+- **LTX-2.5 SDR to HDR**: LTX-2.5 now converts SDR videos to HDR10 with its own dedicated HDR LoRA (LTX-2.3 keeps its previous one). HDR videos in the *Video Gallery* also get an automatic SDR preview, so they no longer show up as a black clip in your browser.
+- **LTX-2.5 Layout to Render**: turn a rough viewport animation or playblast into a finished shot. Feed it the layout video plus one appearance reference image (a finished render of its first frame): the layout drives the camera and object placement, the reference sets the look.
+- **LTX-2.5 Alpha Gen**: extract a soft alpha matte from any video, optionally restricted by a selection mask, and get the original footage back with transparency as PNG frames (ZIP) or ProRes 4444. Pick the format in *Config → Outputs → RGBA Video Output*.
+- **Two Phases with Tiling** (LTX-2, 2.3 and 2.5): a new *Guidance Phases* choice. Phase 1 lays out the whole scene, then phase 2 refines it in overlapping tiles blended at every step. Try this to generate directly in 4K. Don't be surprised if it is slower since proper tiling requires a  50% overlap. 
+
+
 ## 29th of September 2026: WanGP v13.141 — Community Release
 
 Thanks to **WanGP community** contributing code, testing and feedback!

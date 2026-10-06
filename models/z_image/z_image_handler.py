@@ -15,6 +15,7 @@ class family_handler:
             "profiles_dir": [],
             "vae_upsamplers": {"flux_vae_pid": [1, 2]},
             "excluded_spatial_upsamplers": ["flux_pid"],
+            "tiny_vae_architecture": "flux",
         }
         text_encoder_folder = "Qwen3"
         extra_model_def["text_encoder_URLs"] = [

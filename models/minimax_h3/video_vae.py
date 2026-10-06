@@ -116,12 +116,14 @@ class MiniMaxH3VideoVAE(AutoencoderKLMiniMaxH3):
             latents = (mean + std * noise.to(mean.device)).to(torch.float16).float()
             return self._normalize(latents)
 
-    def decode(self, latents):
+    def decode(self, latents, uint8_rounding=None):
+        """The CPU video in [-1, 1]; with uint8_rounding, its uint8 frames, converted on the GPU before they reach the RAM: "truncate" as WGP
+        converts float videos (convert_video_tensor_to_uint8_chunked), "round" as _video_to_uint8_cpu."""
         mean = self._latents_mean.view(1, -1, 1, 1, 1).to(latents)
         std = self._latents_std.view(1, -1, 1, 1, 1).to(latents)
-        return super().decode((latents * std + mean).to(self._model_dtype), return_dict=False)[0]
+        return super().decode((latents * std + mean).to(self._model_dtype), return_dict=False, uint8_rounding=uint8_rounding)[0]
 
-    def _prepare_decoded_chunk(self, chunk):
+    def _prepare_decoded_chunk(self, chunk, uint8_rounding=None):
         if self.upsampling:
             # Spatial/temporal blending operates on the native packed grid. Shuffle
             # only finalized chunks, before the existing RGB normalization and CPU copy.
@@ -130,7 +132,13 @@ class MiniMaxH3VideoVAE(AutoencoderKLMiniMaxH3):
             chunk = chunk.reshape(batch, frames, 3, height * 2, width * 2).permute(0, 2, 1, 3, 4)
         decoded = chunk.float()
         decoded.mul_(self.pixel_std.to(decoded)).add_(self.pixel_mean.to(decoded))
-        return decoded.clamp_(0.0, 1.0).mul_(2.0).sub_(1.0)
+        decoded = decoded.clamp_(0.0, 1.0).mul_(2.0).sub_(1.0)
+        if uint8_rounding == "round":
+            return decoded.add_(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
+        if uint8_rounding == "truncate":
+            decoded = decoded.to(torch.float16)
+            return decoded.sub_(-1).mul_(127.5).clamp_(0, 255).to(torch.uint8)
+        return decoded
 
 
 __all__ = ["IMAGENET_MEAN", "IMAGENET_STD", "LATENTS_MEAN", "LATENTS_STD", "MiniMaxH3VideoVAE",

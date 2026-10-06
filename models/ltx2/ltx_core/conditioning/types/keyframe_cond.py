@@ -14,11 +14,12 @@ class VideoConditionByKeyframeIndex(ConditioningItem):
     ``num_pixel_frames=1`` marks a standalone one-frame encode: its temporal span is narrowed to that single pixel frame.
     """
 
-    def __init__(self, keyframes: torch.Tensor, frame_idx: int, strength: float, num_pixel_frames: int | None = None):
+    def __init__(self, keyframes: torch.Tensor, frame_idx: int, strength: float, num_pixel_frames: int | None = None, literal_frame_index: bool = False):
         self.keyframes = keyframes
         self.frame_idx = frame_idx
         self.strength = strength
         self.num_pixel_frames = num_pixel_frames
+        self.literal_frame_index = literal_frame_index
 
     def apply_to(
         self,
@@ -35,12 +36,11 @@ class VideoConditionByKeyframeIndex(ConditioningItem):
             scale_factors=latent_tools.scale_factors,
             causal_fix=latent_tools.causal_fix if self.frame_idx == 0 else False,
         )
-        remove_prepend = False
-        if self.frame_idx < 0:
-            self.frame_idx  = - self.frame_idx 
-            remove_prepend = True
-        
-        positions[:, 0, ...] += self.frame_idx
+        # Negative continuation offsets retain their legacy prepend convention.
+        # Layout appearance references use a literal -1 pixel-frame position.
+        remove_prepend = self.frame_idx < 0 and not self.literal_frame_index
+        frame_idx = -self.frame_idx if remove_prepend else self.frame_idx
+        positions[:, 0, ...] += frame_idx
         if self.num_pixel_frames == 1:
             positions[:, 0, ..., 1:] = positions[:, 0, ..., :1] + 1
         positions = positions.to(dtype=torch.float32)

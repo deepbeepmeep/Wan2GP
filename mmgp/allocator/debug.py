@@ -29,7 +29,7 @@ import time
 
 import torch
 
-KINDS = ("chunk range", "small pool", "mid-size pool", "spilled", "graph pool")
+KINDS = ("chunk range", "small pool", "mid-size pool", "spilled", "graph pool", "driver spill")
 GB, MB = 2 ** 30, 2 ** 20
 
 

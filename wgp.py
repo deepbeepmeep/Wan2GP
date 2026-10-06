@@ -161,6 +161,7 @@ from shared import settings_metadata
 from postprocessing import audio_processors as audio_processor_api
 from postprocessing import temporal_upsamplers as temporal_upsampler_api
 from postprocessing import spatial_upsamplers as upsampler_api
+from postprocessing.lanczos import resize_lanczos_spatial
 from shared.cli_args import parse_wgp_args
 from collections import defaultdict
 
@@ -178,7 +179,7 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-WanGP_version = "17.01"
+WanGP_version = "17.10"
 settings_version = 2.79
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -5907,9 +5908,6 @@ def perform_temporal_upsampling(sample, previous_last_frame, temporal_upsampling
 
 def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_continue_cache=None, return_flashvsr_continue_cache=False, vae_tile_size=None, still_image=False, abort_callback=None, progress_callback=None, fps=24.0, frame_offset=0, prompt="", negative_prompt="", audio_waveform=None, audio_sample_rate=0, source_audio_path=None, reference_images=None, image_refs_relative_size=100.0, spatial_upsampler_prompt="", spatial_upsampler_reference_images=None, spatial_upsampler_param=None, spatial_upsampler_param2=None, spatial_upsampler_parameters=None):
     wait_for_model_unload()
-    if upsampler_api.is_vae_upsampling(spatial_upsampling):
-        sample = upsampler_api.post_model_process_vae_upsampling(sample, spatial_upsampling)
-        return (sample, None) if return_flashvsr_continue_cache else sample
     edit_upsampler = upsampler_api.find_postprocessing_upsampler(spatial_upsampling)
     if edit_upsampler is not None:
         parameter_values = dict(spatial_upsampler_parameters or {})
@@ -8324,8 +8322,8 @@ def generate_media(
                     post_decode_pre_trim = samples.get("post_decode_pre_trim", 0) 
                     samples = samples.get("x", None)
 
-                if samples is not None:
-                    samples = samples.to("cpu")
+                if samples is not None and (audio_only or is_image or sample_is_hdr):
+                    samples = samples.to("cpu") # a video stays where it was decoded until it is converted to uint8 below, the RAM only gets the uint8 frames
   
             clear_gen_cache()
             offloadobj.unload_all()
@@ -8337,7 +8335,7 @@ def generate_media(
                 state["prompt"] = ""
                 send_cmd("output")  
             else:
-                sample = samples.cpu()
+                sample = samples
                 samples = None
                 stop_current_sample = stop_sample_scheduled or (not (is_image or audio_only) and sample.shape[1] < current_video_length)
                 # if True: # for testing
@@ -8368,7 +8366,7 @@ def generate_media(
                     else:
                         pre_audio_guide, pre_audio_guide_sample_rate = None, 0
 
-                    pre_video_guide = sample[:, -next_overlap_frames:].clone() if next_overlap_frames > 0 else None if scheduler_active else sample[:, max_source_video_frames:].clone()
+                    pre_video_guide = sample[:, -next_overlap_frames:].to("cpu", copy=True) if next_overlap_frames > 0 else None if scheduler_active else sample[:, max_source_video_frames:].to("cpu", copy=True)
                     pre_video_guide_is_hdr = sample_is_hdr
                     if pre_video_guide is not None and pre_video_guide.dtype == torch.uint8:
                         pre_video_guide =  pre_video_guide.float().div_(127.5).sub_(1.0)
@@ -8382,7 +8380,10 @@ def generate_media(
                             generated_audio = truncate_audio(generated_audio, trim_first_frames, 0, fps, output_audio_sampling_rate)
                 if not (audio_only or is_image):
                     if not sample_is_hdr:
-                        sample = convert_video_tensor_to_uint8_chunked(sample)
+                        sample = convert_video_tensor_to_uint8_chunked(sample, max_buffer_mb=64, output_device="cpu")
+                if upsampler_api.has_post_model_process_vae_upsampling(spatial_upsampling): # VAE upsamplers reach their final size before source frames are joined and frames are interpolated
+                    send_cmd("progress", [0, merge_status_context(status, upsampler_api.method_progress_label(spatial_upsampling))])
+                    sample = upsampler_api.post_model_process_vae_upsampling(sample, spatial_upsampling)
 
                 if prefix_video != None and window_no == 1 :
                     if sample_is_hdr:
@@ -8399,11 +8400,10 @@ def generate_media(
                         elif prefix_video.dtype == torch.uint8:
                             prefix_video = prefix_video.float().div_(127.5).sub_(1.0)
                     if prefix_video.shape[1] > 1:
+                        if prefix_video.shape[-2:] != sample.shape[-2:]: # a VAE upsampler enlarged the generated frames
+                            prefix_video = resize_lanczos_spatial(prefix_video, None, size=sample.shape[-2:])
                         # remove sliding window overlapped frames at the beginning of the generation
                         sample = torch.cat([ prefix_video, sample[: , source_video_overlap_frames_count:]], dim = 1)
-                    else:
-                        # remove source video overlapped frames at the beginning of the generation if there is only a start frame
-                        sample = torch.cat([ prefix_video[:, :-source_video_overlap_frames_count], sample], dim = 1)
                     prefix_video = None
                     guide_start_frame -= source_video_overlap_frames_count 
                     if generated_audio is not None:
@@ -8434,7 +8434,7 @@ def generate_media(
                     retained_video_frames += sample.shape[1]
 
 
-                if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 and (not upsampler_api.is_vae_upsampling(spatial_upsampling) or upsampler_api.has_post_model_process_vae_upsampling(spatial_upsampling)):
+                if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 and not upsampler_api.is_vae_upsampling(spatial_upsampling):
                     spatial_status = upsampler_api.method_progress_label(spatial_upsampling)
                     send_cmd("progress", [0, merge_status_context(status, spatial_status)])
                 
@@ -8453,7 +8453,7 @@ def generate_media(
                         abort = True
                         break
 
-                if len(spatial_upsampling) > 0:
+                if len(spatial_upsampling) > 0 and not upsampler_api.is_vae_upsampling(spatial_upsampling):
                     if is_image:
                         sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, vae_tile_size=VAE_tile_size, fps=output_fps, prompt=prompt, negative_prompt=negative_prompt, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: media_abort_requested(gen), progress_callback=upsampler_progress)
                         flashvsr_continue_cache = None

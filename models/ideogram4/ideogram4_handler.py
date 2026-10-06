@@ -170,6 +170,7 @@ class family_handler:
             "image_outputs": True,
             "device_explicit": True,
             "flux2": True,
+            "tiny_vae_architecture": "flux2_klein_4b",
             "vae_upsamplers": {"flux2_vae_pid": [1]},
             "excluded_spatial_upsamplers": ["flux2_pid"],
             "guidance_max_phases": 3,

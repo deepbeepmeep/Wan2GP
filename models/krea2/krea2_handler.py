@@ -34,6 +34,7 @@ class family_handler:
             "device_explicit": True,
             "image_outputs": True,
             "system_configs": vae_configs(),
+            "tiny_vae_architecture": "t2v",
             "guidance_max_phases": 1 if base_model_type in (_RAW_MODEL_TYPE, _RAW_EDIT_MODEL_TYPE) else 0,
             "NAG": True,
             "NAG_scale": {"min": 1.0, "max": 1.5, "step": 0.01},

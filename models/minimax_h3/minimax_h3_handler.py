@@ -17,7 +17,7 @@ from .dialogue import H3_DIALOGUE_GENERATION, H3_DIALOGUE_MAX_TOTAL_SECONDS, H3_
 from .minimax_h3_main import (AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER,
                               VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE, VIDEO_VAE_INT8_FILE)
 from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
-from .vae_upsampler import X1_VAE_VALUE, X2_VAE_DESCRIPTION, X2_VAE_FILE, X2_VAE_INT8_FILE, X2_VAE_METHOD, X2_VAE_VALUE, query_x2_vae_files
+from .vae_upsampler import X2_VAE_DESCRIPTION, X2_VAE_FILE, X2_VAE_INT8_FILE, X2_VAE_METHOD, X2_VAE_VALUE, query_x2_vae_files
 from .viggle import VIGGLE_ARCHITECTURE, VIGGLE_ASSET_FOLDER, VIGGLE_INFOS, VIGGLE_PROMPT_FILE, VIGGLE_REPO_ID
 from .prompt_enhancer import (FL2VA_DEEPY_PROMPT_INFOS, FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
                               H3_AUDIO_DEEPY_PROMPT_INFOS, H3_AUDIO_DIALOGUE_SYSTEM_PROMPT, H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
@@ -559,6 +559,7 @@ class family_handler:
         result = {
             "dtype": "bf16",
             "device_explicit": True,
+            "tiny_vae_architecture": REF2VA_ARCHITECTURE,
             "size": "lighter" if pruned else "large",
             **({"accelerated": "native"} if pdd or vdn else {}),
             **({"specialities": [{"name": "character consistency", "aliases": ["identity preservation"]}, {"name": "motion transfer", "description": "Transfer motion or camera from reference videos to image-reference characters."}]} if reference_mode else {}),
@@ -824,14 +825,14 @@ class family_handler:
         result["infos"] += still_infos
         result["deepy_infos"] += still_infos + " Set `image_mode` to `1`."
         result["infos"] += "\n\n**MiniMax H3 VAE:** " + X2_VAE_DESCRIPTION
-        result["deepy_infos"] += " MiniMax H3 VAE replaces the default VAE and handles decoding and upsampling together. Choose `h3_vae*2` to double the output width and height, or `h3_vae*1` to keep the original size."
+        result["deepy_infos"] += " MiniMax H3 VAE replaces the default VAE and handles decoding and upsampling together. Choose `h3_vae*2` to double the output width and height, `h3_vae*1.5` to enlarge them by half, or `h3_vae*1` to keep the original size."
         result["prompt_infos"] += still_prompt_infos
         result["deepy_prompt_infos"] += still_prompt_infos
         return result
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
-        if (inputs.get("spatial_upsampling") in (X1_VAE_VALUE, X2_VAE_VALUE) and int(inputs["image_mode"]) == 0
+        if ((inputs.get("spatial_upsampling") or "").startswith(X2_VAE_METHOD) and int(inputs["image_mode"]) == 0
                 and base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, VIGGLE_ARCHITECTURE)
                 and "2" in inputs["audio_prompt_type"]):
             return "MiniMax H3 VAE Upsampling requires generated video; Audio from Control Video preserves the input frames and does not decode video latents"

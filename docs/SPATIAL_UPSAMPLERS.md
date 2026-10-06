@@ -10,8 +10,11 @@ parsing, validation helpers, config nesting, downloads and dispatch.
 
 **MiniMax H3 VAE** is available in Spatial Upsampling during H3 video or image
 generation. It replaces the default VAE and handles VAE decoding and upsampling
-together. Choose **×2** to double the output width and height, or **×1** to keep
-the original size.
+together. Choose **×2** to double the output width and height, **×1.5** to
+enlarge them by half, or **×1** to keep the original size. ×1 and ×1.5 are
+downscaled from the ×2 decoding. **VAE Upscaling** (Wan, Qwen and Krea image
+generation) offers the same three choices. When a video continues a Source
+Video, the source frames are resized to the output size.
 
 - `postprocessing`: works on decoded frames. Interchangeable: WanGP can call any of
   them through the same `upscale()` interface, both at generation time and in
@@ -89,6 +92,7 @@ class MyUpsampler:
     def model_load_upsampling_value(self, value, model_type, model_def, image_mode): ...
     def loaded_model_vae_upsampling_value(self, model): ...
     def model_load_kwargs_for_vae_upsampling(self, value, model_type, model_def, image_mode): ...
+    def post_model_process_vae_upsampling(self, sample, value): ...  # optional: final output size, applied right after decoding
     # optional Configuration tab integration:
     def default_config(self): ...                          # -> dict
     def legacy_config(self, server_config): ...            # -> old top-level values, if any

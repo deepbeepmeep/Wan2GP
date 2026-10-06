@@ -15,7 +15,7 @@ import sys
 
 import torch
 
-STATS = ("allocated", "reserved", "peak_allocated", "peak_reserved", "chunks", "cached_ranges", "stale_ranges", "live_large", "small_cached", "graph_pools", "spilled", "recoveries")
+STATS = ("allocated", "reserved", "peak_allocated", "peak_reserved", "chunks", "cached_ranges", "stale_ranges", "live_large", "small_cached", "graph_pools", "spilled", "recoveries", "driver_spilled")
 _LIBRARIES = {("win32", "amd64"): "vmm_alloc_win_amd64.dll", ("linux", "x86_64"): "vmm_alloc_linux_x86_64.so", ("linux", "aarch64"): "vmm_alloc_linux_aarch64.so"}
 _CHECK_ERRORS = {
     1: "the NVIDIA driver library could not be loaded",
@@ -47,7 +47,8 @@ def install(mode="vmm", large_mb=256, chunk_mb=32, spill=False):
     """Replaces PyTorch's CUDA allocator. Must run before CUDA is initialized: PyTorch cannot swap an allocator it has started.
     mode "vmm": this allocator (Windows and Linux); "expandable": PyTorch's own expandable segments (Linux only).
     spill (vmm): tensors that VRAM has no room for go to pinned system RAM, mapped into the GPU's address space and read
-    over PCIe, instead of raising an out of memory error. Slow, but lets a generation slightly too large for the VRAM finish."""
+    over PCIe, instead of raising an out of memory error. Slow, but lets a generation slightly too large for the VRAM finish. When RAM
+    is too short to pin them, the driver allocates them as for PyTorch's allocator (on Windows, in shared GPU memory)."""
     global _lib, active
     if active == mode:
         return
@@ -94,7 +95,7 @@ def install(mode="vmm", large_mb=256, chunk_mb=32, spill=False):
     for name in ("vmm_mark_reset", "vmm_mark_peak", "vmm_room"):
         getattr(lib, name).argtypes = (ctypes.c_int,)
     lib.vmm_mark_peak.restype = lib.vmm_room.restype = ctypes.c_int64
-    lib.vmm_configure(large_mb << 20, chunk_mb << 20, int(spill))
+    lib.vmm_configure(large_mb << 20, chunk_mb << 20, 3 if spill else 0)  # spill modes: pinned system RAM, then the driver's allocation
     lib.vmm_set_oom_thrower.argtypes = (ctypes.c_void_p,)
     _install_oom_error(lib)
     _lib, active = lib, mode

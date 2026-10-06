@@ -1030,7 +1030,7 @@ class LongCatModel:
                     latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
                 if callback is not None:
-                    callback(i, latents.squeeze(0))
+                    callback(i, latents[0, :, num_ref_latents:])
                 progress_bar.update()
 
         if num_ref_latents > 0:

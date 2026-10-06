@@ -136,6 +136,7 @@ class family_handler:
 
         profiles_dir = base_model_type or "kandinsky5"
         extra_model_def = {
+            "tiny_vae_architecture": "hunyuan",
             "i2v_class": task == "i2v",
             "t2v_class": task == "t2v",
             "image_outputs": is_image,

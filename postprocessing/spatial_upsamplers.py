@@ -563,6 +563,17 @@ def has_post_model_process_vae_upsampling(spatial_upsampling) -> bool:
     return handler is not None and hasattr(handler, "post_model_process_vae_upsampling")
 
 
+def resize_x2_vae_output(sample, scale):
+    """Brings the output of a VAE decoder that always upsamples x2 to the selected multiplier."""
+    if scale == 2.0:
+        return sample
+    from PIL import Image
+    from postprocessing.lanczos import resize_lanczos_spatial
+
+    height, width = sample.shape[-2:]
+    return resize_lanczos_spatial(sample, None, size=(round(height * scale / 2), round(width * scale / 2)), method=Image.Resampling.BICUBIC)
+
+
 def prepare_vae_upsampler(handler, spatial_upsampling, **kwargs):
     if handler is None or not hasattr(handler, "prepare_vae_upsampler"):
         return None
@@ -1185,7 +1196,7 @@ class WanVaeUpsampler(SimpleScaleSuffixMixin):
             "method_pos": {"vae": 30},
             "methods": [],
             "vae_methods": [("VAE Upscaling", "vae")],
-            "multipliers": {"vae": (1.0, 2.0)},
+            "multipliers": {"vae": (1.0, 1.5, 2.0)},
             "default_spatial_upsampling": "vae*2",
             "postprocessing_category": POSTPROCESSING_CATEGORY_UPSAMPLER,
             "description": "Runs through the compatible generation model's existing VAE path, so it adds no separate decoded-media pass and has little extra VRAM impact. It can create more detail than Lanczos.",
@@ -1193,7 +1204,7 @@ class WanVaeUpsampler(SimpleScaleSuffixMixin):
 
     def validate_upsampling(self, spatial_upsampling, image_mode: int) -> str:
         split = self.split_value(spatial_upsampling)
-        return "" if split is not None and split[1] in self.query_upsampler_def()["multipliers"]["vae"] else "VAE Spatial Upsampling only supports x1.0 and x2.0"
+        return "" if split is not None and split[1] in self.query_upsampler_def()["multipliers"]["vae"] else "VAE Spatial Upsampling only supports x1, x1.5 and x2"
 
     def supports_model_vae_method(self, method, model_type, model_def, image_mode: int) -> bool:
         return method == "vae" and image_mode in model_def.get("vae_upsampler", [])
@@ -1214,10 +1225,4 @@ class WanVaeUpsampler(SimpleScaleSuffixMixin):
         return {"VAE_upsampling": spatial_upsampling}
 
     def post_model_process_vae_upsampling(self, sample, spatial_upsampling):
-        split = self.split_value(spatial_upsampling)
-        if split is not None and split[1] == 1.0:
-            from PIL import Image
-            from postprocessing.lanczos import resize_lanczos_spatial
-
-            return resize_lanczos_spatial(sample, 0.5, method=Image.Resampling.BICUBIC)
-        return sample
+        return resize_x2_vae_output(sample, self.split_value(spatial_upsampling)[1])

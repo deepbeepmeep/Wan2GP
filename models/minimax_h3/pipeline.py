@@ -18,6 +18,7 @@ from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.phase_progress import control_video_encoding, generation_progress
 from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_count, normalize_overlap
+from shared.utils.utils import convert_video_tensor_to_uint8_chunked
 from .constants import (H3_AUDIO_REFINEMENT_DENOISE, H3_AUDIO_REFINEMENT_SETTING, H3_AUDIO_REFINEMENT_STEPS, H3_CONTROL_LATENT_CONTINUATION,
                         H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, h3_grouped_masking_enabled)
 from .dialogue import H3_DIALOGUE_GENERATION, generate_dialogue, is_dialogue_prompt
@@ -1676,16 +1677,22 @@ class MiniMaxH3Pipeline:
         # The shared return_latent_slice is expressed in frame-step units, not H3's VAE units.
         latent_slice = {"latents": video.detach().cpu(), "start_frame": window_start_frame_no} if H3_CONTROL_LATENT_CONTINUATION and control_target_anchors and not image_outputs else None
         control_anchor_indices = control_anchor_latents = control_anchor_noised = None
+        # videos are decoded to uint8 frames, which only reach the RAM converted, with the rounding WGP (truncate) or the tiled phase 2 (round)
+        # gave them; images and refinements (the H3 Face Refiner blends signed windows) keep a float video
+        uint8_rounding = "round" if tiled_phase_2 else None if image_outputs or refinement_mode else "truncate"
+        to_uint8 = _video_to_uint8_cpu if tiled_phase_2 else convert_video_tensor_to_uint8_chunked
         if not self.audio_only and decoded_video is None:
             if frozen_target_video is None:
                 video = video.to(self.vae._model_dtype)
-                decoded_video = self.vae.decode(video).clamp_(-1.0, 1.0)[0, :, :target_frames]
-                decoded_video = _video_to_uint8_cpu(decoded_video) if tiled_phase_2 else decoded_video.cpu()
+                decoded_video = self.vae.decode(video, uint8_rounding)[0, :, :target_frames]
+                if uint8_rounding is None:
+                    decoded_video = decoded_video.clamp_(-1.0, 1.0)
             else:
                 decoded_video = frozen_target_video[:, :target_frames].cpu()
         video = None
         for frame_index, known in control_frame_anchors:  # restore exact supplied pixels after the VAE round trip
-            decoded_video[:, frame_index:frame_index + known.shape[1]] = _resize_video(known.float(), *decoded_video.shape[-2:]).to(decoded_video)
+            known = _resize_video(known.float(), *decoded_video.shape[-2:])
+            decoded_video[:, frame_index:frame_index + known.shape[1]] = (to_uint8(known) if decoded_video.dtype == torch.uint8 else known).to(decoded_video)
         if image_outputs:
             audio = None
             self._check_abort()
@@ -1703,7 +1710,7 @@ class MiniMaxH3Pipeline:
             if (two_phase or self.vae.upsampling) and output_prefix.shape[-2:] != decoded_video.shape[-2:]:
                 output_prefix = _resize_video(output_prefix, decoded_video.shape[-2], decoded_video.shape[-1])
             if decoded_video.dtype == torch.uint8 and output_prefix.dtype != torch.uint8:
-                output_prefix = output_prefix.clamp(-1.0, 1.0).add_(1.0).mul_(127.5).round_().to(torch.uint8)
+                output_prefix = output_prefix.clamp(-1.0, 1.0).add_(1.0).mul_(127.5).round_().to(torch.uint8) if tiled_phase_2 else to_uint8(output_prefix)
             decoded_video = torch.cat((output_prefix.to(decoded_video), decoded_video), dim=1)
             if history_waveform is not None:
                 prefix_samples = round(output_prefix_count / fps * AUDIO_SAMPLE_RATE)

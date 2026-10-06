@@ -15,6 +15,11 @@ VIDEO_CONTAINER_CHOICES = [
     ("MKV / Matroska", "mkv"),
 ]
 
+RGBA_VIDEO_OUTPUT_CHOICES = [
+    ("RGBA PNG Frames (ZIP)", "png_zip"),
+    ("ProRes 4444 (MOV)", "prores_4444"),
+]
+
 SUPPORTED_VIDEO_CONTAINERS = {"mkv", "mov", "mp4"}
 CONFIG_VIDEO_CONTAINERS = {value for _, value in VIDEO_CONTAINER_CHOICES}
 PROFESSIONAL_VIDEO_CODECS = {"prores_422", "dnxhr_hq"}
@@ -62,6 +67,8 @@ def _get_video_codec_spec(codec_key: str | None, container: str | None) -> tuple
         return "libx264", "yuv444p", ["-crf", "0"]
     if codec_key == "prores_422":
         return "prores_ks", "yuv422p10le", ["-profile:v", "2"]
+    if codec_key == "prores_4444":
+        return "prores_ks", "yuva444p10le", ["-profile:v", "4", "-alpha_bits", "16"]
     if codec_key == "dnxhr_hq":
         return "dnxhd", "yuv422p", ["-profile:v", "dnxhr_hq"]
     return "libx264", "yuv420p", ["-crf", "10"]
@@ -74,7 +81,9 @@ def get_video_encode_args(codec_key: str | None, container: str | None) -> list[
 
 def get_imageio_codec_params(codec_key: str | None, container: str | None) -> dict:
     codec, pixel_format, output_params = _get_video_codec_spec(codec_key, container)
-    return {"codec": codec, "quality": None, "pixelformat": pixel_format, "output_params": [*output_params, "-hide_banner", "-nostats"]}
+    # Alpha mattes must stay pixel-aligned with their source after VAE padding
+    # is cropped away. ImageIO's default macroblock resizing breaks that alignment.
+    return {"codec": codec, "quality": None, "pixelformat": pixel_format, "macro_block_size": 1, "output_params": [*output_params, "-hide_banner", "-nostats"]}
 
 
 def validate_video_output_settings(video_codec: str | None, video_container: str | None, audio_codec: str | None = None, width: int | None = None, height: int | None = None, *, allowed_containers: set[str] | None = None) -> str | None:

@@ -34,6 +34,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         extra_model_def = {
             "device_explicit": base_model_type == "longcat_avatar_v1_5",
+            "tiny_vae_architecture": "t2v",
             "frames_minimum": 5,
             "frames_steps": 4,
             "sliding_window": True,

@@ -246,7 +246,7 @@ def _get_perc_reserved_mem_max(perc_reserved_mem_max = 0):
         perc_reserved_mem_max = float(os.getenv("perc_reserved_mem_max", 0) or 0)
 
     if perc_reserved_mem_max <= 0:             
-        perc_reserved_mem_max = 0.40 if os.name == 'nt' else 0.8
+        perc_reserved_mem_max = 0.40 if os.name == 'nt' else 0.6
     return perc_reserved_mem_max
     
 def _get_max_reservable_memory(perc_reserved_mem_max = 0):

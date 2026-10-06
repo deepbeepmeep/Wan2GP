@@ -382,12 +382,15 @@ def convert_tensor_to_image(t, frame_no = 0, mask_levels = False):
     else:
         return Image.fromarray(t.clone().add_(1.).mul_(127.5).permute(1,2,0).to(torch.uint8).cpu().numpy())
 
-def convert_video_tensor_to_uint8_chunked(video, value_range=(-1, 1), max_buffer_mb=256):
+def convert_video_tensor_to_uint8_chunked(video, value_range=(-1, 1), max_buffer_mb=256, output_device=None):
+    # output_device: where the uint8 video goes (the video's device by default); a video on the GPU is converted there chunk by chunk,
+    # so only the uint8 video reaches the RAM
+    output_device = video.device if output_device is None else torch.device(output_device)
     if video.dtype == torch.uint8:
-        return video
+        return video.to(output_device)
     min_val, max_val = value_range
     scale = 255.0 / (max_val - min_val)
-    output = torch.empty(video.shape, dtype=torch.uint8, device=video.device)
+    output = torch.empty(video.shape, dtype=torch.uint8, device=output_device)
     time_dim = 2 if video.ndim == 5 else 1 if video.ndim >= 4 else 0
     frames = video.shape[time_dim]
     frame_elems = max(1, video.numel() // max(1, frames))

@@ -170,8 +170,17 @@ _ARCH_SPECS["ltx2_25_22B_msr"] = {
     "preset_profiles_dir": "ltx2_25_msr_presets",
     "distilled_preset_profiles_dir": "ltx2_25_msr_distilled_presets",
 }
+# LTX-2.5 VFX IC-LoRA workflows: same weights as LTX-2.5, listed as models of their own in the selector.
+for model_type, profiles_name in (("ltx2_25_22B_alpha_gen", "ltx2_25_alpha_gen"), ("ltx2_25_22B_layout_to_render", "ltx2_25_layout_to_render")):
+    _ARCH_SPECS[model_type] = {
+        **_ARCH_SPECS["ltx2_25_22B"],
+        "profiles_dir": profiles_name,
+        "dev_profiles_dir": f"{profiles_name}_dev_accelerators",
+        "preset_profiles_dir": f"{profiles_name}_presets",
+        "distilled_preset_profiles_dir": f"{profiles_name}_distilled_presets",
+    }
 LTX2_22B_CLASS = {"ltx2_22B", "ltx2_22B_edit_anything", "ltx2_22B_msr", "joyai_echo"}
-LTX2_25_CLASS = {"ltx2_25_22B", "ltx2_25_22B_msr"}
+LTX2_25_CLASS = {"ltx2_25_22B", "ltx2_25_22B_msr", "ltx2_25_22B_alpha_gen", "ltx2_25_22B_layout_to_render"}
 for model_type in LTX2_22B_CLASS:
     if model_type != "ltx2_22B" and model_type not in _ARCH_SPECS:
         _ARCH_SPECS[model_type]=_ARCH_SPECS["ltx2_22B"]
@@ -461,7 +470,8 @@ def _notify_control_video_phase2(base_model_type, model_def, inputs, any_outpain
     if errors:
         return f"Error parsing Loras: {errors}"
     loras_selected = extra_loras + activated_loras
-    msg = control_video_phase2_message(loras_selected, loras_slists, force_phase2_control=_is_editanything_model(model_def), force_name="EditAnything")
+    layout = model_def.get("ltx2_layout_to_render", False)
+    msg = control_video_phase2_message(loras_selected, loras_slists, force_phase2_control=layout or _is_editanything_model(model_def), force_name="Layout to Render" if layout else "EditAnything")
     print(msg)
     gr.Info(msg)
     return ""
@@ -471,7 +481,7 @@ class family_handler:
     @staticmethod
     def query_supported_types():
         _migrate_loras()
-        return ["ltx2_19B", "ltx2_22B", "ltx2_25_22B", "ltx2_22B_edit_anything", "ltx2_22B_msr", "ltx2_25_22B_msr", "joyai_echo"]
+        return ["ltx2_19B", "ltx2_22B", "ltx2_25_22B", "ltx2_22B_edit_anything", "ltx2_22B_msr", "ltx2_25_22B_msr", "ltx2_25_22B_alpha_gen", "ltx2_25_22B_layout_to_render", "joyai_echo"]
 
     @staticmethod
     def query_family_maps():
@@ -482,6 +492,8 @@ class family_handler:
             "ltx2_22B_edit_anything" : "ltx2_22B",
             "ltx2_22B_msr" : "ltx2_22B",
             "ltx2_25_22B_msr" : "ltx2_22B",
+            "ltx2_25_22B_alpha_gen" : "ltx2_22B",
+            "ltx2_25_22B_layout_to_render" : "ltx2_22B",
         }
 
         models_comp_map = { 
@@ -557,6 +569,8 @@ class family_handler:
             # "no_background_removal": True,
             "vae_block_size": 64,
             "keep_frames_video_guide_not_supported": True,
+            # LTX-2.3/2.5 variants share the 2.3 video latent space; conditioning tokens are removed before previews.
+            "tiny_vae_architecture": "ltx2_22B" if base_model_type in LTX2_22B_CLASS or ltx25 else "ltx2_19B",
         }
         extra_model_def["prompt_enhancer_button_label"] = "Write"
         if base_model_type in LTX2_22B_CLASS or ltx25:
@@ -825,13 +839,26 @@ class family_handler:
         #     "scale": 1,
         #     }
 
+        extra_model_def["phase_2_spatial_tiling"] = not (msr or joy or editanything_ref)
+        if extra_model_def["phase_2_spatial_tiling"]:
+            tiling_help = "\n\n**Two Phases with Tiling** refines overlapping spatial tiles in phase 2, blending predictions at every step. Phase 1 establishes the whole scene. This reduces each transformer call's spatial extent, takes more calls, and can change fine detail. VAE tiling is independent."
+            for key in ("infos", "deepy_infos"):
+                if key in extra_model_def:
+                    extra_model_def[key] += tiling_help
+        from .vfx import vfx_model_def
+        extra_model_def.update(vfx_model_def(model_def))
         return extra_model_def
+
+    @staticmethod
+    def custom_preprocess(base_model_type, video_guide, video_mask, video_prompt_type, **kwargs):
+        from .vfx import preprocess_alpha_source
+        return preprocess_alpha_source(video_guide, video_mask, video_prompt_type)
 
     @staticmethod
     def get_rgb_factors(base_model_type):
         from shared.RGB_factors import get_rgb_factors
 
-        return get_rgb_factors("ltx2", "ltx2_22B" if _is_ltx25(base_model_type) else base_model_type)
+        return get_rgb_factors("ltx2", "ltx2_22B" if base_model_type in LTX2_22B_CLASS or _is_ltx25(base_model_type) else base_model_type)
 
     @staticmethod
     def get_lora_dir(base_model_type):
@@ -874,6 +901,17 @@ class family_handler:
 
     def validate_generative_settings(base_model_type, model_def, inputs):
         pipeline_kind = model_def.get("ltx2_pipeline", "two_stage")
+        alpha = model_def.get("ltx2_alpha_gen", False)
+        layout = model_def.get("ltx2_layout_to_render", False)
+        if alpha or layout:
+            if not inputs.get("video_guide") or "V" not in inputs.get("video_prompt_type", ""):
+                return "Alpha Gen requires a Source Video." if alpha else "Layout to Render requires a Layout Video."
+            if alpha:
+                if inputs.get("video_length", 121) > 145:
+                    return "Alpha Gen supports at most 145 frames. Trim or split the source clip."
+                inputs.update(guidance_phases=1, masking_strength=0.0, denoising_strength=1.0, prompt_enhancer="", audio_prompt_type="")
+            elif not inputs.get("image_refs"):
+                return "Layout to Render requires an Appearance Reference made from the layout's first frame."
         if _is_ltx25(base_model_type):
             inputs["self_refiner_setting"] = 0
         if _is_joyai_echo(base_model_type, model_def):
@@ -1143,7 +1181,7 @@ class family_handler:
         default_perturbation_layers = _default_perturbation_layers(base_model_type)
         ui_defaults.update(
             {
-                "sliding_window_size": 481,
+                "sliding_window_size": 145 if model_def.get("ltx2_alpha_gen", False) else 481,
                 "sliding_window_overlap": 17,
                 "denoising_strength": 1.0,
                 "masking_strength": 0,

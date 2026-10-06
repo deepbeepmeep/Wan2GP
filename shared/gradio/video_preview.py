@@ -13,7 +13,7 @@ from urllib.parse import quote
 import gradio as gr
 from gradio.data_classes import FileData
 
-from shared.utils.video_decode import probe_video_stream_metadata, resolve_media_binary
+from shared.utils.video_decode import _build_hdr_tonemap_filter, probe_video_stream_metadata, resolve_media_binary
 
 
 _BROWSER_VIDEO_EXTENSIONS = {".mp4", ".webm", ".ogg", ".ogv"}
@@ -35,7 +35,7 @@ _PREVIEW_SECONDS = 20
 _PREVIEW_MAX_WIDTH = 1280
 _PREVIEW_CRF = "24"
 _PREVIEW_PRESET = "veryfast"
-_PREVIEW_CACHE_VERSION = 6
+_PREVIEW_CACHE_VERSION = 7
 ENABLE_VIDEO_PREVIEW_PATCH = True
 _CODEC_DISPLAY_NAMES = {
     "av1": "AV1",
@@ -125,11 +125,16 @@ def _restore_preview_path(path):
     return path
 
 
+def _is_hdr_hevc(metadata):
+    return str(metadata.get("codec_name") or "").strip().lower() in ("hevc", "h265") and bool(metadata.get("needs_tonemap"))
+
+
 def _is_browser_playable(path):
     metadata = probe_video_stream_metadata(str(path)) or {}
     codec_name = str(metadata.get("codec_name") or "").strip().lower()
     if len(codec_name) > 0:
-        return (path.suffix.lower(), codec_name) in _BROWSER_PLAYABLE_VIDEO_CODECS
+        # Many browsers cannot decode 10-bit HDR HEVC and show an empty black video: those get a tone-mapped SDR preview.
+        return (path.suffix.lower(), codec_name) in _BROWSER_PLAYABLE_VIDEO_CODECS and not _is_hdr_hevc(metadata)
     return path.suffix.lower() in _BROWSER_VIDEO_EXTENSIONS
 
 
@@ -163,6 +168,8 @@ def _format_preview_label(source_path, metadata):
     codec_name = str((metadata or {}).get("codec_name") or "").strip().lower()
     codec_label = _format_codec_label(metadata)
     container_label = Path(source_path).suffix.lstrip(".").upper() or "Container"
+    if _is_hdr_hevc(metadata):
+        return "HDR Video, SDR Preview"
     if len(codec_name) > 0 and any(known_codec == codec_name for _, known_codec in _BROWSER_PLAYABLE_VIDEO_CODECS):
         return f"Container {container_label} Not Supported for {codec_label}, Low Res Preview"
     return f"Codec {codec_label} Not Supported, Low Res Preview"
@@ -178,7 +185,9 @@ def _preview_video_filter(source_path):
     text = _format_preview_label(source_path, metadata)
     text = text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
     label_filter = f"drawtext=text='{text}':fontcolor=white@0.9:fontsize=max(11\\,h/44):box=1:boxcolor=black@0.45:boxborderw=6:x=w-tw-12:y=12"
-    return f"{scale_filter},{label_filter}"
+    # HDR sources are tone-mapped to BT.709 SDR, as for the frames WanGP extracts from HDR videos.
+    tonemap_filter = ",".join(_build_hdr_tonemap_filter(metadata)) + ",format=yuv420p," if metadata.get("needs_tonemap") else ""
+    return f"{scale_filter},{tonemap_filter}{label_filter}"
 
 
 def ensure_fast_video_preview(video_path, cache_dir=None):

@@ -965,11 +965,11 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             moments = moments[:, :, : -self.config.token_drop]
         return moments
 
-    def _prepare_decoded_chunk(self, chunk: torch.Tensor) -> torch.Tensor:
+    def _prepare_decoded_chunk(self, chunk: torch.Tensor, uint8_rounding: str | None = None) -> torch.Tensor:
         """Convert finalized pixels before copying them to the CPU output buffer."""
         return chunk
 
-    def _decode(self, z: torch.Tensor) -> torch.Tensor:
+    def _decode(self, z: torch.Tensor, uint8_rounding: str | None = None) -> torch.Tensor:
         r"""
         Decode a latent video, mirroring the chunking that `_encode` applied.
 
@@ -1018,7 +1018,7 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
                 nonlocal decoded, write_position
                 copy_frames = min(chunk.shape[2], output_frames - write_position)
                 for start in range(0, copy_frames, 4):
-                    part = self._prepare_decoded_chunk(chunk[:, :, start : min(start + 4, copy_frames)])
+                    part = self._prepare_decoded_chunk(chunk[:, :, start : min(start + 4, copy_frames)], uint8_rounding)
                     if decoded is None:
                         decoded = torch.empty(*part.shape[:2], output_frames, *part.shape[3:], dtype=part.dtype, device="cpu")
                     decoded[:, :, write_position : write_position + part.shape[2]].copy_(part, non_blocking=False)
@@ -1082,7 +1082,7 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             return AutoencoderKLOutput(latent_dist=posterior)
 
     @apply_forward_hook
-    def decode(self, z: torch.Tensor, return_dict: bool = True) -> DecoderOutput | tuple[torch.Tensor]:
+    def decode(self, z: torch.Tensor, return_dict: bool = True, uint8_rounding: str | None = None) -> DecoderOutput | tuple[torch.Tensor]:
         r"""
         Decode a batch of latent videos.
 
@@ -1097,9 +1097,9 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
                 The decoded CPU videos, shape `(batch_size, out_channels, num_frames, height, width)`.
         """
         if self.use_slicing and z.shape[0] > 1:
-            decoded = torch.cat([self._decode(z_slice) for z_slice in z.split(1)])
+            decoded = torch.cat([self._decode(z_slice, uint8_rounding) for z_slice in z.split(1)])
         else:
-            decoded = self._decode(z)
+            decoded = self._decode(z, uint8_rounding)
         if not return_dict:
             return (decoded,)
         return DecoderOutput(sample=decoded)

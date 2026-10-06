@@ -199,7 +199,10 @@ class family_handler():
         extra_model_def["standin_class"] = standin = test_standin(base_model_type)
         extra_model_def["lynx_class"] = lynx = test_lynx(base_model_type)
         extra_model_def["alpha_class"] = alpha = test_alpha(base_model_type)
-        extra_model_def["wan_5B_class"] = wan_5B = test_wan_5B(base_model_type)        
+        if alpha:
+            extra_model_def["specialities"] = [{"name": "alpha output", "aliases": ["RGBA", "transparent video", "transparent background"], "description": "Generate foreground RGB and alpha together. Video saves a checkerboard preview plus RGBA PNG ZIP or ProRes 4444; image mode saves RGBA."}]
+        extra_model_def["wan_5B_class"] = wan_5B = test_wan_5B(base_model_type)
+        extra_model_def["tiny_vae_architecture"] = "ti2v_2_2" if wan_5B else "t2v"
         extra_model_def["vace_class"] = vace_class = test_vace(base_model_type)
         extra_model_def["bernini_class"] = bernini = test_bernini(base_model_type)
         extra_model_def["shotplan"] = shotplan = test_shotplan(base_model_type)

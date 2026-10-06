@@ -52,6 +52,7 @@ class family_handler:
     def query_model_def(base_model_type: str, model_def: Dict[str, Any]):
         is_distill = base_model_type == DISTILL_ARCH
         extra_model_def = {
+            "tiny_vae_architecture": "ti2v_2_2",
             "returns_audio": True,
             "any_audio_prompt": True,
             "audio_prompt_choices": True,

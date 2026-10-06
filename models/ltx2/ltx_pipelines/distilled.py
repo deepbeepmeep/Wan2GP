@@ -33,6 +33,7 @@ from .utils.constants import (
     LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS,
     STAGE_2_DISTILLED_SIGMA_VALUES,
 )
+from .utils.spatial_tiling import spatially_tiled_denoising_func
 from .utils.helpers import (
     assert_resolution,
     bind_interrupt_check,
@@ -600,6 +601,7 @@ class DistilledPipeline:
         skip_audio: bool = False,
         continuous_conditioning_and_guide: bool = False,
         skip_stage_2: bool = False,
+        tiled_stage_2: bool = False,
         frozen_video_conditioning: torch.Tensor | None = None,
         frozen_output_video: torch.Tensor | None = None,
         self_refiner_setting: int = 0,
@@ -610,10 +612,11 @@ class DistilledPipeline:
         editanything_ref_images=None,
         ltx2_22B_class: bool = False,
         use_ancestral_sampler: bool = False,
+        layout_to_render: bool = False,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         joyai_echo = self._joyai_echo or {}
         return_joyai_memory = bool(joyai_echo.get("return_latents"))
-        assert_resolution(height=height, width=width, is_two_stage=True)
+        assert_resolution(height=height, width=width, is_two_stage=not skip_stage_2)
         alt_guidance_scale = 1.0
         negative_prompt = negative_prompt or DEFAULT_NEGATIVE_PROMPT
 
@@ -971,8 +974,8 @@ class DistilledPipeline:
                 return decoded_video, decoded_audio, latent_slice
             return decoded_video, decoded_audio
 
-        stepper = EulerDiffusionStep()
-        stage_2_sigma_values = DISTILLED_8_STEPS_STAGE_2_SIGMA_VALUES if LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS and ltx2_22B_class else STAGE_2_DISTILLED_SIGMA_VALUES
+        stepper = EulerAncestralDiffusionStep() if layout_to_render else EulerDiffusionStep()
+        stage_2_sigma_values = DISTILLED_8_STEPS_STAGE_2_SIGMA_VALUES if not layout_to_render and LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS and ltx2_22B_class else STAGE_2_DISTILLED_SIGMA_VALUES
         stage_2_sigmas = torch.Tensor(stage_2_sigma_values).to(self.device)
         upscaled_video_latent = upsample_video(
             latent=video_state.latent[:1],
@@ -1008,25 +1011,28 @@ class DistilledPipeline:
             preview_tools: VideoLatentTools | None = None,
             mask_context=None,
         ) -> tuple[LatentState, LatentState]:
+            denoise_fn = simple_denoising_func(
+                video_context=video_context,
+                audio_context=audio_context,
+                transformer=transformer,  # noqa: F821
+                video_nag=video_NAG,
+                audio_nag=audio_NAG,
+                alt_guidance_scale=alt_guidance_scale,
+                skip_audio_to_video=frozen_video_conditioning is not None,
+                ref_context=stage_2_ref_context,
+                ref_adaln=stage_2_ref_adaln,
+                video_context_mask_builder=video_context_mask_builder,
+                audio_context_mask_builder=audio_context_mask_builder,
+                cross_attention_mask_builder=stage_2_cross_attention_mask_builder,
+            )
+            if tiled_stage_2:
+                denoise_fn = spatially_tiled_denoising_func(denoise_fn, stage_2_output_shape, self.pipeline_components, interrupt_check, callback)
             return euler_denoising_loop(
                 sigmas=sigmas,
                 video_state=video_state,
                 audio_state=audio_state,
                 stepper=stepper,
-                denoise_fn=simple_denoising_func(
-                    video_context=video_context,
-                    audio_context=audio_context,
-                    transformer=transformer,  # noqa: F821
-                    video_nag=video_NAG,
-                    audio_nag=audio_NAG,
-                    alt_guidance_scale=alt_guidance_scale,
-                    skip_audio_to_video=frozen_video_conditioning is not None,
-                    ref_context=stage_2_ref_context,
-                    ref_adaln=stage_2_ref_adaln,
-                    video_context_mask_builder=video_context_mask_builder,
-                    audio_context_mask_builder=audio_context_mask_builder,
-                    cross_attention_mask_builder=stage_2_cross_attention_mask_builder,
-                ),
+                denoise_fn=denoise_fn,
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,
@@ -1036,6 +1042,7 @@ class DistilledPipeline:
                 self_refiner_handler=self_refiner_handler_stage2,
                 self_refiner_handler_audio=self_refiner_handler_audio_stage2,
                 self_refiner_generator=generator,
+                ancestral_noise_generator=ancestral_noise_generator if layout_to_render else None,
             )
 
         stage_2_output_shape = VideoPixelShape(

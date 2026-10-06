@@ -227,6 +227,8 @@ class family_handler():
             extra_model_def["piflow"] = True
 
         extra_model_def["fit_into_canvas_image_refs"] = 0
+        if not flux_chroma_radiance:
+            extra_model_def["tiny_vae_architecture"] = "flux2_klein_4b" if flux2 else "flux"
 
         return extra_model_def
 

@@ -1233,9 +1233,9 @@ def _make_mask_1d(
 
 
 def _encoder_input(video: torch.Tensor, device: torch.device | None, dtype: torch.dtype | None) -> torch.Tensor:
-    """uint8 videos may stay on CPU; each encoded tile is moved and normalized to [-1, 1] on its own."""
+    """Videos may stay on CPU; each encoded tile is moved to ``device`` on its own, and uint8 tiles are normalized to [-1, 1]."""
     if video.dtype != torch.uint8:
-        return video
+        return video.to(device=device)
     return video.to(device=device).to(dtype).div_(127.5).sub_(1.0)
 
 
@@ -1249,8 +1249,8 @@ def encode_video(
     """
     Encode a video tensor with the given encoder, optionally using spatial/temporal tiling.
     Args:
-        video: Tensor [b, c, f, h, w]. A uint8 video (0-255, possibly on CPU) is converted per tile
-            to ``device`` / ``dtype`` in [-1, 1], so the full-resolution float video never exists.
+        video: Tensor [b, c, f, h, w], possibly on CPU: each tile is moved to ``device`` on its own. A uint8 video
+            (0-255) is also converted per tile to ``dtype`` in [-1, 1], so the full-resolution float video never exists.
         video_encoder: Encoder module.
         tiling_config: Optional tiling settings.
     Returns:

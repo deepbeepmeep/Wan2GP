@@ -74,7 +74,7 @@ class MSRReferenceImages:
             check_abort()
             video = load_video_conditioning(image[None], height, width, 1, dtype, device)
             video = video.expand(-1, -1, self.frame_count, -1, -1)
-            latent = encode_video(video, video_encoder, tiling_config)
+            latent = encode_video(video, video_encoder, tiling_config, device=device)
             del video
             embedding = self.slot_embeddings[index].to(device=latent.device, dtype=latent.dtype)
             latent.add_(embedding.view(1, -1, 1, 1, 1))

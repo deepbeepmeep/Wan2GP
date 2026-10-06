@@ -258,6 +258,7 @@ struct Spilled {  // spill mode: a tensor VRAM had no room for, in pinned system
     size_t size;  // mapped size
     CUstream stream;
     Event freed;  // once freed: kept mapped for the next spill of the same size
+    bool driver = false;  // allocated by the driver as PyTorch's allocator does (alloc_driver): given back to the driver once freed
 };
 struct Pool {  // private memory of CUDA graphs, kept while a graph may replay
     int use_count = 0;
@@ -275,7 +276,7 @@ struct Capture {  // between PyTorch's begin and end of allocation to a pool
 // still at that maximum. Off (threshold 0): one test in each allocation and free.
 struct DebugEntry {  // also the layout exported to Python
     uint64_t ptr;
-    int64_t size, origin, seq, kind;  // kind: 0 chunk range, 1 small pool, 2 mid-size pool, 3 spilled, 4 graph pool
+    int64_t size, origin, seq, kind;  // kind: 0 chunk range, 1 small pool, 2 mid-size pool, 3 spilled, 4 graph pool, 5 driver spill
     double time;                      // seconds since the recording started
 };
 struct DebugHeader {  // exported layout
@@ -315,6 +316,7 @@ struct Device {
     std::vector<std::pair<CUdeviceptr, Spilled>> spill_cache;  // freed spilled tensors, oldest first
     size_t host_granularity = 0;                               // 0 when the driver cannot map system RAM this way
     int64_t spilled_bytes = 0;                                 // system RAM mapped by spills, live and cached
+    int64_t driver_spilled = 0;                                // live allocations of the driver (alloc_driver)
     void* nvml_device = nullptr;                               // see vram_short
     int64_t nvml_free = 0, nvml_reserved = 0;                  // whole GPU free memory at the last NVML reading, reserved_now then
     std::chrono::steady_clock::time_point nvml_read{};
@@ -336,6 +338,7 @@ size_t mid_threshold = 4ull << 20;
 size_t vram_headroom = 256ull << 20;  // left free by chunks and the mid-size pool: driver (kernel modules, local memory), other libraries
 size_t small_headroom = 64ull << 20;  // left free by the small blocks, which may use the rest (spilled tensors still need small ones)
 bool spill = false;  // allocations that VRAM has no room for go to pinned system RAM instead of failing
+bool driver_spill = false;  // and when RAM is short for that, to the driver's own allocation, as with PyTorch's allocator (alloc_driver)
 int64_t vram_limit = 0;  // vmm_set_vram_limit: VRAM this process may reserve, 0 for the GPU's (emulates a smaller GPU: a hard limit, unlike
                          // another process holding VRAM, which Windows pages out of the GPU when it is idle)
 std::atomic<size_t> debug_threshold{0};
@@ -409,7 +412,8 @@ void trim_pools(Device& d) {
 
 // With Windows' driver model (also under WSL) the driver commits memory beyond the GPU's own, in shared GPU memory, and can fail later
 // when it cannot make it resident: that error is permanent, the CUDA context is lost with all its VRAM. New memory is only taken while
-// the GPU has room for it (and the headroom); otherwise the allocation fails, which raises an out of memory error.
+// the GPU has room for it (and the headroom); otherwise the allocation fails, which raises an out of memory error, or in spill mode
+// spills (alloc_spilled, then as a last resort alloc_driver, which accepts that risk as PyTorch's allocator does).
 // The free VRAM the driver reports is this process' budget, which on Windows ignores the VRAM used by other processes (a second WanGP,
 // Deepy, ComfyUI, a game): NVML's free memory of the whole GPU is checked too. NVML only counts memory once written: it is read at most
 // every 2 s, when this process' allocations have normally been written, and the allocator's own growth since is subtracted.
@@ -598,8 +602,8 @@ bool reusable(const Event& freed, CUstream owner, CUstream stream) {  // without
     return owner == stream || !freed || cu.EventQuery(freed.get()) == CUDA_SUCCESS;
 }
 
-// Spilled tensors are pinned: system RAM that nothing else can use and the OS cannot page out. A new spill is refused, raising the
-// out of memory error, when it would leave less than a tenth of the RAM (at least 4 GiB) available.
+// Spilled tensors are pinned: system RAM that nothing else can use and the OS cannot page out. A new spill is refused when it would
+// leave less than a tenth of the RAM (at least 4 GiB) available: the driver's own allocation is tried instead (alloc_driver).
 void ram_info(unsigned long long& total, unsigned long long& available) {
 #ifdef _WIN32
     MEMORYSTATUSEX status = {};
@@ -673,6 +677,21 @@ void* alloc_spilled(Device& d, size_t size, CUstream stream) {
     d.live_spilled[va] = {mapped, stream, nullptr};
     d.spilled_bytes += static_cast<int64_t>(mapped);
     return reinterpret_cast<void*>(va);
+}
+
+void* alloc_driver(Device& d, size_t size, CUstream stream) {
+    // Spill mode, last resort (RAM too short to pin a spill): the driver's own allocation, as PyTorch's allocator makes it. With Windows'
+    // driver model (also under WSL) it may go beyond the VRAM, to shared GPU memory, which pageable system RAM backs: what PyTorch's
+    // allocator would have done. The memory this allocator keeps free first goes back to the driver, which may then place it in VRAM.
+    if (d.captures.empty()) {
+        cu.CtxSynchronize();
+        release_cached_memory(d);
+    }
+    CUdeviceptr dptr = 0;
+    if (cu.MemAlloc(&dptr, size) != CUDA_SUCCESS) return nullptr;
+    d.live_spilled[dptr] = {size, stream, nullptr, true};
+    d.driver_spilled += static_cast<int64_t>(size);
+    return reinterpret_cast<void*>(dptr);
 }
 
 void take_chunks(Device& d, Range& range, size_t need, CUstream stream, bool wait_for_others) {
@@ -840,6 +859,17 @@ void release(Device& d, CUdeviceptr dptr) {
     auto it = d.live.find(dptr);
     auto small = it == d.live.end() ? d.live_small.find(dptr) : d.live_small.end();
     auto spilled = it == d.live.end() && small == d.live_small.end() ? d.live_spilled.find(dptr) : d.live_spilled.end();
+    if (spilled != d.live_spilled.end() && spilled->second.driver) {  // cuMemFree waits for the work using it, on every stream
+        if (!d.captures.empty()) {  // a synchronization would invalidate the captures: freed once they end
+            d.deferred.push_back(dptr);
+            return;
+        }
+        d.stream_uses.erase(dptr);
+        d.driver_spilled -= static_cast<int64_t>(spilled->second.size);
+        d.live_spilled.erase(spilled);
+        cu.MemFree(dptr);
+        return;
+    }
     CUstream stream = it != d.live.end() ? it->second.stream : small != d.live_small.end() ? small->second.stream : spilled->second.stream;
     auto uses = d.stream_uses.find(dptr);
     if (uses != d.stream_uses.end()) {  // reuse must also wait for the other streams that used the memory
@@ -905,9 +935,17 @@ const char* format_size(double bytes, char* text) {  // as PyTorch's out of memo
     if (spill) {  // the allocation could not spill either
         unsigned long long ram_total, ram_available;
         ram_info(ram_total, ram_available);
-        snprintf(message + length, sizeof(message) - length, " Spilling into system RAM (%s spilled) stopped: %s of RAM available, %s kept free for "
-                 "the system.", format_size(static_cast<double>(d.spilled_bytes), spilled), format_size(static_cast<double>(ram_available), ram),
-                 format_size(static_cast<double>(ram_margin(ram_total)), margin));
+        length += snprintf(message + length, sizeof(message) - length, " Spilling into system RAM (%s spilled) stopped: %s of RAM available, %s kept "
+                           "free for the system.", format_size(static_cast<double>(d.spilled_bytes), spilled), format_size(static_cast<double>(ram_available), ram),
+                           format_size(static_cast<double>(ram_margin(ram_total)), margin));
+    }
+    if (driver_spill && d.refusal != REFUSED_BY_LIMIT) {
+#ifdef _WIN32
+        snprintf(message + length, sizeof(message) - length, " The CUDA driver could not place it in shared GPU memory either (NVIDIA Control Panel: "
+                 "CUDA - Sysmem Fallback Policy).");
+#else
+        snprintf(message + length, sizeof(message) - length, " The CUDA driver could not allocate it either.");
+#endif
     }
     if (oom_thrower) oom_thrower(message);  // PyTorch's own error, which cuDNN and Python catch as such
     throw std::runtime_error(message);
@@ -1030,15 +1068,19 @@ EXPORT void* vmm_alloc(size_t size, int device, CUstream stream) {
         if (freed > 0) ptr = size >= large_threshold ? alloc_large(d, size, stream) : alloc_small(d, size, stream);
     }
     int64_t kind = to_pool ? 4 : size >= large_threshold ? 0 : size >= mid_threshold ? 2 : 1;
+    if (!ptr && !to_pool && d.refusal == REFUSED_BY_GPU && d.captures.empty()) {
+        // before spilling, as PyTorch's allocator: this process' budget has room, the VRAM missing is used by other processes
+        d.beyond_gpu = true;
+        ptr = size >= large_threshold ? alloc_large(d, size, stream) : alloc_small(d, size, stream);
+        d.beyond_gpu = false;
+    }
     if (!ptr && spill && !to_pool) {
         ptr = alloc_spilled(d, size, stream);
         if (ptr) kind = 3;
     }
-    if (!ptr && !to_pool && d.refusal == REFUSED_BY_GPU && d.captures.empty()) {
-        // last attempt before the error: this process' budget has room, the VRAM missing is used by other processes
-        d.beyond_gpu = true;
-        ptr = size >= large_threshold ? alloc_large(d, size, stream) : alloc_small(d, size, stream);
-        d.beyond_gpu = false;
+    if (!ptr && driver_spill && !to_pool && d.refusal != REFUSED_BY_LIMIT) {  // the VRAM limit emulates a smaller GPU: it stays hard
+        ptr = alloc_driver(d, size, stream);
+        if (ptr) kind = 5;
     }
     if (!ptr) {
         if (threshold) {
@@ -1126,11 +1168,12 @@ EXPORT void vmm_release_pool(int device, MempoolId id) {
     }
 }
 
-EXPORT void vmm_configure(size_t large, size_t chunk, int spill_to_ram) {
+EXPORT void vmm_configure(size_t large, size_t chunk, int spill_modes) {  // spill_modes: 1 pinned system RAM, 2 the driver's allocation
     std::lock_guard<std::mutex> guard(lock);
     large_threshold = large;
     chunk_size = chunk;
-    spill = spill_to_ram != 0;
+    spill = (spill_modes & 1) != 0;
+    driver_spill = (spill_modes & 2) != 0;
 }
 
 EXPORT void vmm_set_vram_limit(int64_t bytes) {  // the VRAM this process may reserve on each device, 0 for no limit but the GPU's
@@ -1138,9 +1181,9 @@ EXPORT void vmm_set_vram_limit(int64_t bytes) {  // the VRAM this process may re
     vram_limit = bytes;
 }
 
-EXPORT void vmm_stats(int device, int64_t* out) {  // allocated, reserved, peak allocated, peak reserved, chunks, cached ranges, stale ranges, live large, small cached, graph pools, spilled, recoveries
+EXPORT void vmm_stats(int device, int64_t* out) {  // allocated, reserved, peak allocated, peak reserved, chunks, cached ranges, stale ranges, live large, small cached, graph pools, spilled, recoveries, driver spilled
     std::lock_guard<std::mutex> guard(lock);
-    for (int i = 0; i < 12; ++i) out[i] = 0;
+    for (int i = 0; i < 13; ++i) out[i] = 0;
     auto found = devices.find(device);
     if (found == devices.end()) return;
     Device& d = found->second;
@@ -1160,6 +1203,7 @@ EXPORT void vmm_stats(int device, int64_t* out) {  // allocated, reserved, peak 
     out[9] = d.pools_bytes;
     out[10] = d.spilled_bytes;
     out[11] = d.recoveries;
+    out[12] = d.driver_spilled;
 }
 
 EXPORT void vmm_reset_peaks(int device) {

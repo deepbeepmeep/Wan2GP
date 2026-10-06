@@ -15,7 +15,7 @@ from shared.gradio.hierarchy_selector import HierarchySelector
 from shared import notifications
 from shared.utils import prompt_parser
 from shared.gradio.model_selector_toolbar import unload_models_from_ram
-from shared.utils.video_codecs import SDR_VIDEO_CODEC_CHOICES, VIDEO_CONTAINER_CHOICES, validate_video_output_settings
+from shared.utils.video_codecs import RGBA_VIDEO_OUTPUT_CHOICES, SDR_VIDEO_CODEC_CHOICES, VIDEO_CONTAINER_CHOICES, validate_video_output_settings
 from shared.deepy.config import (
     DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT,
     DEEPY_ALLOW_READ_FILE_SYSTEM_KEY,
@@ -424,7 +424,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         self.perc_reserved_mem_max_choice = gr.Slider(
                             0, 80, value=self.server_config.get("perc_reserved_mem_max", 0), step=5,
                             label="Reserved RAM for Pinning (% of RAM, 0 = Auto)",
-                            info="Auto: 40% on Windows, 80% on Linux. Same as the command line --perc-reserved-mem-max (a fraction, e.g. 0.4), which takes precedence, and as the environment variable perc_reserved_mem_max, which this setting overrides.",
+                            info="Auto: 40% on Windows, 60% on Linux. Same as the command line --perc-reserved-mem-max (a fraction, e.g. 0.4), which takes precedence, and as the environment variable perc_reserved_mem_max, which this setting overrides.",
                         )
                     self.read_ahead_choice = gr.Checkbox(
                         value=self.server_config.get("read_ahead", False), label="Read Ahead (Windows)",
@@ -666,6 +666,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 with gr.Tab("Outputs"):
                     self.video_container_choice = gr.Dropdown(choices=VIDEO_CONTAINER_CHOICES, value=self.server_config.get("video_container", "mp4"), label="Video Container")
                     self.video_output_codec_choice = gr.Dropdown(choices=SDR_VIDEO_CODEC_CHOICES, value=self.server_config.get("video_output_codec", "libx264_8"), label="SDR Video Codec")
+                    self.rgba_video_output_choice = gr.Dropdown(choices=RGBA_VIDEO_OUTPUT_CHOICES, value=self.server_config.get("rgba_video_output", "png_zip"), label="RGBA Video Output", info="Alpha models save transparency beside the gallery video as lossless PNG frames in a ZIP, or as a ProRes 4444 MOV for video editors. This choice is independent of the gallery codec and container.")
                     self.hdr_video_crf_choice = gr.Dropdown(
                         choices=[
                             ("Low (x265 CRF 14)", 14),
@@ -868,7 +869,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.matanyone_version_choice,
             self.deepy_type_choice, self.deepy_vram_mode_choice, self.deepy_voice_language_choice, self.voice_mode_choice, self.deepy_allow_read_file_system_choice, self.deepy_file_system_paths_choice, self.deepy_read_everywhere_choice,
             self.deepy_context_tokens_choice, self.deepy_kv_cache_quantization_choice, self.deepy_compaction_type_choice, self.deepy_repetition_penalty_choice, self.deepy_zero_custom_system_prompt_choice, self.deepy_prime_custom_system_prompt_choice, self.deepy_prime_mcp_servers_choice, self.deepy_mcp_auto_discover_paths_choice,
-            self.video_container_choice, self.video_output_codec_choice, self.hdr_video_crf_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
+            self.video_container_choice, self.video_output_codec_choice, self.rgba_video_output_choice, self.hdr_video_crf_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice,
             self.notification_sound_enabled_choice, self.notification_sound_volume_choice, self.notification_apprise_urls_choice, self.notification_secure_storage_choice, self.notification_on_generation_choice, self.notification_on_queue_complete_choice, self.notification_on_queue_interrupted_choice,
@@ -964,7 +965,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             matanyone_version_choice,
             deepy_type_choice, deepy_vram_mode_choice, deepy_voice_language_choice, voice_mode_choice, deepy_allow_read_file_system_choice, deepy_file_system_paths_choice, deepy_read_everywhere_choice,
             deepy_context_tokens_choice, deepy_kv_cache_quantization_choice, deepy_compaction_type_choice, deepy_repetition_penalty_choice, deepy_zero_custom_system_prompt_choice, deepy_prime_custom_system_prompt_choice, deepy_prime_mcp_servers_choice, deepy_mcp_auto_discover_paths_choice,
-            video_container_choice, video_output_codec_choice, hdr_video_crf_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
+            video_container_choice, video_output_codec_choice, rgba_video_output_choice, hdr_video_crf_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice, audio_save_path_choice,
             notification_sound_enabled_choice, notification_sound_volume_choice, notification_apprise_urls_choice, notification_secure_storage_choice, notification_on_generation_choice, notification_on_queue_complete_choice, notification_on_queue_interrupted_choice,
@@ -1038,6 +1039,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             checkpoints_paths = [path.strip() for path in checkpoints_paths_choice.replace("\r", "").split("\n") if len(path.strip()) > 0]
 
         video_output_error = validate_video_output_settings(video_output_codec_choice, video_container_choice, audio_output_codec_choice)
+        if rgba_video_output_choice not in {value for _, value in RGBA_VIDEO_OUTPUT_CHOICES}:
+            video_output_error = "Choose RGBA PNG Frames (ZIP) or ProRes 4444 (MOV) for RGBA Video Output."
         if video_output_error is not None:
             gr.Info(f"Configuration was not saved: {video_output_error}")
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {video_output_error}</div>", *[gr.update()]*9
@@ -1097,6 +1100,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "enable_4k_resolutions": enable_4k_resolutions_choice,
             "max_reserved_loras": max_reserved_loras_choice,
             "video_output_codec": video_output_codec_choice, "hdr_video_crf": hdr_video_crf_choice,
+            "rgba_video_output": rgba_video_output_choice,
             "image_output_codec": image_output_codec_choice,
             "audio_output_codec": audio_output_codec_choice,
             "audio_stand_alone_output_codec": audio_stand_alone_output_codec_choice,

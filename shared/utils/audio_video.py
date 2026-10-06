@@ -8,6 +8,7 @@ import torch.nn.functional as F
 import cv2
 import tempfile
 import imageio
+from shared import imageio_ffmpeg_patch  # Configure all imageio FFmpeg readers/writers before use.
 import binascii
 import torchvision
 import torch

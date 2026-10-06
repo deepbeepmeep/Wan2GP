@@ -98,6 +98,7 @@ class family_handler:
                 "info": "Disabled saves RGB in your selected image format. Enabled preserves the generated alpha channel and saves RGBA PNG. Request transparency in the prompt when needed.",
             }],
             "specialities": [
+                {"name": "alpha output", "aliases": ["RGBA", "transparent background"], "description": "Set custom_settings.rgba to Enabled and request an RGBA image with transparent background to preserve generated alpha in PNG. Turbo adapter RGBA quality is not validated."},
                 {"name": "text rendering", "aliases": ["text writing", "lettering"], "description": "Moderate text-rendering quality, best with short text. Spelling and layout require proofreading; not recommended for dense infographics."},
             ],
             "prompt_enhancer_def": {"selection": ["T", "TI", "T1", "TI1"], "labels": {"T": "A New Image Description using existing Text Prompt", "TI": "An Image Edit using existing Text Prompt and {image_inputs}", "T1": "An Editing Instruction using existing Text Prompt", "TI1": "A New Composition using existing Text Prompt and {image_inputs}"}, "default": ""},

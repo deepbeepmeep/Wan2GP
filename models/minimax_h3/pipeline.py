@@ -232,10 +232,10 @@ def _build_outpainting_mask(video, outpainting_dims):
 def _encode_video_source(vae, video, device, outpainting_dims=None):
     location = _outpainting_frame_location(video, outpainting_dims)
     if location is None:
-        return vae.encode(video.unsqueeze(0).to(device=device, dtype=vae._model_dtype))
+        return vae.encode(video.unsqueeze(0), device)
     inner_height, inner_width, top, left = location
     source = video[..., top:top + inner_height, left:left + inner_width]
-    source_latents = vae.encode(source.unsqueeze(0).to(device=device, dtype=vae._model_dtype))
+    source_latents = vae.encode(source.unsqueeze(0), device)
     ratio = vae.spatial_compression_ratio
     latents = source_latents.new_zeros((*source_latents.shape[:-2], math.ceil(video.shape[-2] / ratio), math.ceil(video.shape[-1] / ratio)))
     latent_top, latent_left = top // ratio, left // ratio
@@ -502,7 +502,7 @@ class MiniMaxH3Pipeline:
 
     def _encode_video(self, video, keep_all_latents=False):
         self._check_abort()
-        return self.vae.encode_condition(video.unsqueeze(0).to(device=self.device, dtype=self.vae._model_dtype), keep_all_latents=keep_all_latents).cpu()
+        return self.vae.encode_condition(video.unsqueeze(0), self.device, keep_all_latents=keep_all_latents).cpu()
 
     def _waveform(self, waveform, sample_rate):
         if waveform is None:

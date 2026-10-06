@@ -86,6 +86,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import hashlib
 import importlib
+import inspect
 import sys
 from typing import Any
 
@@ -462,7 +463,27 @@ def download_for_value(spatial_upsampling, process_files, **kwargs):
     return handler.download(process_files, spatial_upsampling=spatial_upsampling, **kwargs)
 
 
+_progress_compat_warnings = set()
+
+
+def _unit_compatible_progress(progress_callback):
+    """Adapt plugin wrappers written for the older progress_callback(phase, current, total) by dropping the optional unit."""
+    try:
+        inspect.signature(progress_callback).bind(None, None, None, None)
+        return progress_callback
+    except TypeError:
+        pass
+    parts = (inspect.getsourcefile(progress_callback) or "unknown").replace("\\", "/").split("/")
+    owner = next((f"Plugin '{parts[i + 1]}'" for i, part in enumerate(parts[:-1]) if part.lower() == "plugins"), "/".join(parts))
+    if owner not in _progress_compat_warnings:
+        _progress_compat_warnings.add(owner)
+        print(f"[Upsamplers] Warning: {owner} wraps the post-processing progress callback without its optional 'unit' argument; progress units will not be shown. Please update it.")
+    return lambda phase, current=None, total=None, unit=None: progress_callback(phase, current, total)
+
+
 def upscale_postprocessing(handler, sample, spatial_upsampling, *, main_offloadobj=None, loaded_model_context=None, **kwargs):
+    if kwargs.get("progress_callback") is not None:
+        kwargs["progress_callback"] = _unit_compatible_progress(kwargs["progress_callback"])
     _activate_upsampler(handler)
     persistent = persistent_models()
     name = _handler_def(handler)["name"]

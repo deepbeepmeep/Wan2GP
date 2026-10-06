@@ -78,38 +78,42 @@ class MiniMaxH3VideoVAE(AutoencoderKLMiniMaxH3):
         if hasattr(self, "decoder"):
             self.decoder._interrupt = self._abort
 
-    def _pixels(self, video):
-        video = video.float().add(1.0).mul_(0.5)
+    def _pixels(self, video, device):
+        """``video`` in [-1, 1], possibly in RAM and FP32, is rounded to the model dtype on ``device`` before normalization."""
+        video = video.to(device=device, dtype=self._model_dtype).float().add(1.0).mul_(0.5)
         video.sub_(self.pixel_mean.to(video)).div_(self.pixel_std.to(video))
         return video.to(self._model_dtype)
+
+    def _prepare_encoder_clip(self, clip, device):
+        return self._pixels(clip, device)
 
     def _normalize(self, latents):
         mean = self._latents_mean.view(1, -1, 1, 1, 1).to(latents)
         std = self._latents_std.view(1, -1, 1, 1, 1).to(latents)
         return (latents - mean) / std
 
-    def encode(self, video):
-        posterior = super().encode(self._pixels(video), return_dict=False)[0]
+    def encode(self, video, device):
+        """``video`` may stay in RAM: each row of tiles of each clip is moved to ``device`` and normalized on its own."""
+        posterior = super().encode(video, return_dict=False, device=device)[0]
         return self._normalize(posterior.mode().float())
 
-    def encode_condition(self, video, keep_all_latents=False):
+    def encode_condition(self, video, device, keep_all_latents=False):
         tiles = (video.shape[2] + self.config.clip_length - 1) // self.config.clip_length
         if self.use_tiling:
             rows = self._split_tiles(video.shape[-2], self.tile_sample_min_height, self.tile_sample_min_overlap_height)[0]
             cols = self._split_tiles(video.shape[-1], self.tile_sample_min_width, self.tile_sample_min_overlap_width)[0]
             tiles *= len(rows) * len(cols)
         with vae_encoding_progress(tiles, self.encoder, enabled=video.shape[2] > 1):
-            pixels = self._pixels(video)
-            if pixels.shape[2] == 1:
-                moments = self._encode_clip(pixels)
+            if video.shape[2] == 1:
+                moments = self._encode_clip(video, device)
             elif keep_all_latents:
                 clip_length = self.config.clip_length
                 moments = torch.cat([
-                    self._encode_clip(pixels[:, :, start:start + clip_length])
-                    for start in range(0, pixels.shape[2], clip_length)
+                    self._encode_clip(video[:, :, start:start + clip_length], device)
+                    for start in range(0, video.shape[2], clip_length)
                 ], dim=2)
             else:
-                moments = self._encode(pixels)
+                moments = self._encode(video, device)
             mean, logvar = moments.float().chunk(2, dim=1)
             std = torch.exp(0.5 * logvar.clamp(-30.0, 20.0))
             noise = torch.randn(mean.shape, generator=torch.Generator().manual_seed(42), dtype=torch.float32, device="cpu")

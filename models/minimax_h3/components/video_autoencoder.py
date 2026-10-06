@@ -114,9 +114,12 @@ class MiniMaxH3VideoGroupNorm(nn.GroupNorm):
         return hidden_states
 
 
-def _norm_silu_conv(hidden_states, norm, conv, residual=None):
+def _norm_silu_conv(hidden_states: list[torch.Tensor], norm, conv, residual=None):
+    """`hidden_states` holds the input, handed over so that it is released as soon as it is normalized."""
+    hidden_states = hidden_states.pop()
     if conv.spatial_padding_mode != "reflect":
-        return conv(F.silu(norm(hidden_states)), residual=residual)
+        hidden_states = F.silu(norm(hidden_states))
+        return conv(hidden_states, residual=residual)
     p = conv.spatial_padding
     hidden_states = norm(hidden_states, silu_pad=(p, p, p, p, conv.temporal_padding))
     return conv(hidden_states, pre_padded=True, residual=residual)
@@ -159,7 +162,7 @@ class MiniMaxH3VideoResnetBlock3d(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         residual = hidden_states
-        hidden_states = _norm_silu_conv(hidden_states, self.norm1, self.conv1)
+        hidden_states = [_norm_silu_conv([hidden_states], self.norm1, self.conv1)]
         if self.nin_shortcut is not None:
             residual = self.nin_shortcut(residual)
         return _norm_silu_conv(hidden_states, self.norm2, self.conv2, residual)
@@ -192,10 +195,24 @@ class MiniMaxH3VideoDownsample3d(nn.Module):
             spatial_padding_mode=spatial_padding_mode,
         )
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        if self.spatial_stride == 2:
-            hidden_states = F.pad(hidden_states, (0, 1, 0, 1, 0, 0), mode=self.spatial_padding_mode)
-        return self.conv(hidden_states)
+    def forward(self, hidden_states: list[torch.Tensor]) -> torch.Tensor:
+        """`hidden_states` holds the input, handed over: with reflect padding, the bottom/right pad and the causal frames are
+        written into one buffer and the input is released before the convolution."""
+        hidden_states = hidden_states.pop()
+        if self.spatial_stride != 2:
+            return self.conv(hidden_states)
+        if self.spatial_padding_mode != "reflect":
+            return self.conv(F.pad(hidden_states, (0, 1, 0, 1, 0, 0), mode=self.spatial_padding_mode))
+        front, (height, width) = self.conv.temporal_padding, hidden_states.shape[-2:]
+        padded = hidden_states.new_empty((*hidden_states.shape[:2], front + hidden_states.shape[2], height + 1, width + 1))
+        padded[:, :, :front].zero_()
+        frames = padded[:, :, front:]
+        frames[..., :height, :width].copy_(hidden_states)
+        frames[..., height, :width].copy_(hidden_states[..., height - 2, :])
+        hidden_states = None
+        frames[..., width].copy_(frames[..., width - 2])  # the corner reflects both ways, like F.pad
+        frames = None
+        return self.conv(padded, pre_padded=True)
 
 
 class MiniMaxH3VideoDownBlock3d(nn.Module):
@@ -235,13 +252,16 @@ class MiniMaxH3VideoDownBlock3d(nn.Module):
 
         self.gradient_checkpointing = False
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: list[torch.Tensor]) -> torch.Tensor:
+        """`hidden_states` holds the input, handed over so that it is released once the first resnet no longer needs it."""
+        hidden_states = hidden_states.pop()
         for resnet in self.block:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 hidden_states = self._gradient_checkpointing_func(resnet, hidden_states)
             else:
                 hidden_states = resnet(hidden_states)
         if self.downsample is not None:
+            hidden_states = [hidden_states]
             hidden_states = self.downsample(hidden_states)
         return hidden_states
 
@@ -303,9 +323,9 @@ class MiniMaxH3VideoEncoder3d(nn.Module):
         )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        hidden_states = self.conv_in(hidden_states)
+        hidden_states = [self.conv_in(hidden_states)]
         for down_block in self.down:
-            hidden_states = down_block(hidden_states)
+            hidden_states = [down_block(hidden_states)]  # each block takes its input out of the list and releases it
             if getattr(self, "_interrupt", False):
                 raise GenerationInterrupted
         return _norm_silu_conv(hidden_states, self.norm_out, self.conv_out)
@@ -844,15 +864,16 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         return torch.cat(result_rows, dim=-2)
 
     @apply_forward_hook
-    def _encode_clip(self, x: torch.Tensor) -> torch.Tensor:
+    def _encode_clip(self, x: torch.Tensor, device: torch.device | None = None) -> torch.Tensor:
         r"""
-        Encode one temporal clip, spatially tiled when tiling is enabled.
+        Encode one temporal clip, spatially tiled when tiling is enabled. `x` may stay in RAM: each row of tiles is moved to
+        `device` and prepared (`_prepare_encoder_clip`) on its own.
 
         MiniMax-H3 encodes a keyframe or an image reference through this method rather than through [`~encode`],
         because a single frame must not go through the temporal chunking, so it carries the offload hook too.
         """
         if not self.use_tiling:
-            return self.quant_conv(self.encoder(x))
+            return self.quant_conv(self.encoder(self._prepare_encoder_clip(x, device)))
 
         height, width = x.shape[-2], x.shape[-1]
         y_indices, y_lengths, y_overlaps = self._split_tiles(
@@ -864,12 +885,14 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
 
         rows = []
         for i_pos, i_len in zip(y_indices, y_lengths):
+            band = self._prepare_encoder_clip(x[..., i_pos : i_pos + i_len, :], device)
             row = []
             for j_pos, j_len in zip(x_indices, x_lengths):
                 # Compact the tile so padding does not inherit full-video strides.
-                tile = x[..., i_pos : i_pos + i_len, j_pos : j_pos + j_len].contiguous()
+                tile = band[..., j_pos : j_pos + j_len].contiguous()
                 row.append(self.quant_conv(self.encoder(tile)))
             rows.append(row)
+            band = tile = None
 
         latent_y_overlaps = [overlap // self.spatial_compression_ratio for overlap in y_overlaps]
         latent_x_overlaps = [overlap // self.spatial_compression_ratio for overlap in x_overlaps]
@@ -939,28 +962,30 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         del decoded
         return canvas
 
+    def _prepare_encoder_clip(self, clip: torch.Tensor, device: torch.device | None) -> torch.Tensor:
+        """Convert a part of the video to encode (a row of tiles of one clip); the video itself may stay on CPU."""
+        return clip.to(device=device)
+
     @apply_forward_hook
-    def _encode(self, x: torch.Tensor) -> torch.Tensor:
+    def _encode(self, x: torch.Tensor, device: torch.device | None = None) -> torch.Tensor:
         r"""
         Encode a video in `clip_length`-frame chunks and drop the `token_drop` trailing latent frames.
 
         MiniMax-H3 encodes a video reference through this method rather than through [`~encode`], because the
         posterior is sampled under a fixed generator rather than through the distribution object, so it carries the
-        offload hook too.
+        offload hook too. `x` may stay in RAM (`_encode_clip` moves each row of tiles to `device`), and only the last clip
+        is padded by repeating the last frame, so no full-video copy is made.
         """
         clip_length = self.config.clip_length
-        num_frames = x.shape[2]
-        if num_frames % clip_length != 0:
-            pad_frames = x[:, :, -1:].repeat(1, 1, (-num_frames) % clip_length, 1, 1)
-            x = torch.cat([x, pad_frames], dim=2)
-
-        moments = torch.cat(
-            [
-                self._encode_clip(x[:, :, i * clip_length : (i + 1) * clip_length])
-                for i in range(x.shape[2] // clip_length)
-            ],
-            dim=2,
-        )
+        clips = []
+        for start in range(0, x.shape[2], clip_length):
+            clip = x[:, :, start : start + clip_length]
+            if clip.shape[2] < clip_length:
+                clip = torch.cat([clip, x[:, :, -1:].repeat(1, 1, clip_length - clip.shape[2], 1, 1)], dim=2)
+            clips.append(self._encode_clip(clip, device))
+            clip = None
+        moments = torch.cat(clips, dim=2)
+        clips = None
         if self.config.token_drop > 0:
             moments = moments[:, :, : -self.config.token_drop]
         return moments
@@ -1051,7 +1076,7 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             return decoded
 
     @apply_forward_hook
-    def encode(self, x: torch.Tensor, return_dict: bool = True) -> AutoencoderKLOutput | tuple[torch.Tensor]:
+    def encode(self, x: torch.Tensor, return_dict: bool = True, device: torch.device | None = None) -> AutoencoderKLOutput | tuple[torch.Tensor]:
         r"""
         Encode a batch of videos into latents.
 
@@ -1061,6 +1086,8 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether to return a [`~models.autoencoders.autoencoder_kl.AutoencoderKLOutput`] instead of a plain
                 tuple.
+            device (`torch.device`, *optional*):
+                Device each clip is moved to before encoding, so `x` may stay on CPU.
 
         Returns:
             The latent distribution of the encoded videos. Note that MiniMax-H3 normalizes the sampled latents with
@@ -1073,9 +1100,9 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             tiles *= len(rows) * len(cols)
         with vae_encoding_progress(tiles, self.encoder, enabled=x.shape[2] > 1):
             if self.use_slicing and x.shape[0] > 1:
-                moments = torch.cat([self._encode(x_slice) for x_slice in x.split(1)])
+                moments = torch.cat([self._encode(x_slice, device) for x_slice in x.split(1)])
             else:
-                moments = self._encode(x)
+                moments = self._encode(x, device)
             posterior = DiagonalGaussianDistribution(moments)
             if not return_dict:
                 return (posterior,)

@@ -287,6 +287,9 @@ def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None,
         weight = state_dict.pop(base + ".weight")
         scale = state_dict.pop(base + ".weight_scale")
         state_dict.pop(base + ".comfy_quant", None)
+        if scale.numel() == 1 and weight.shape[0] != 1:
+            # True tensorwise checkpoints (one scale per tensor) are the per-row case with equal rows.
+            scale = scale.reshape(1, 1).expand(weight.shape[0], 1).contiguous()
         if scale.numel() == weight.shape[0]:
             scale = scale.reshape(weight.shape[0], 1)
         if scale.numel() != weight.shape[0]:

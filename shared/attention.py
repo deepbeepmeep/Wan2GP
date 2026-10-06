@@ -92,7 +92,7 @@ except ImportError:
             pass
 
 try:
-    from .sage2_core import sageattn as sageattn2, is_sage2_supported, sageattn_attention_mask_support_reason
+    from .sage2_core import sageattn as sageattn2, is_sage2_supported, sageattn_attention_mask_support_reason, staged_settings as _sage2_staged_settings
     sage2_supported =  is_sage2_supported()
 except ImportError:
     sageattn2 = None
@@ -113,9 +113,8 @@ def sageattn2_wrapper(
         attention_mask = None,
         causal = False,
     ):
-    q,k, v = qkv_list
-    q_dtype = q.dtype
-    qkv_list = [q,k,v]
+    # no reference is kept here: the kernel takes q, k and v out of the list and frees k and v once quantized
+    q_dtype = qkv_list[0].dtype
     if attention_mask is not None:
         if attention_mask.ndim == 4:
             attention_mask = attention_mask.transpose(1, 2)
@@ -125,9 +124,9 @@ def sageattn2_wrapper(
             attention_mask = attention_mask.unsqueeze(0).unsqueeze(0)
         causal_mask = None
         if causal:
-            lq, lk = q.shape[1], k.shape[1]
-            row = torch.arange(lq, device=q.device)[:, None]
-            col = torch.arange(lk, device=q.device)[None, :]
+            lq, lk, device = qkv_list[0].shape[1], qkv_list[1].shape[1], qkv_list[0].device
+            row = torch.arange(lq, device=device)[:, None]
+            col = torch.arange(lk, device=device)[None, :]
             causal_mask = (col <= row).view(1, 1, lq, lk)
             causal = False
         if torch.is_floating_point(attention_mask):
@@ -342,6 +341,13 @@ def attention_config_shared_state(attention_mode=None, resolver=resolve_attentio
         else:
             offload.shared_state["_attention"] = previous
 
+def sage2_staged_settings(device, force_attention=None):
+    """Settings of shared.sage2_core's staged_* functions (q, k and v quantized as soon as each is computed) when pay_attention would run
+    SageAttention 2 without mask or sequence lengths on this device (with this force_attention); None otherwise."""
+    attn = force_attention or offload.shared_state["_attention"]
+    attn = get_default_attention_mode() if attn in ("sol", "vdn") else attn
+    return _sage2_staged_settings(device) if attn in ("sage2", "radial") and sageattn2 is not None else None
+
 __all__ = [
     'ATTENTION_MODE_AVAILABILITY',
     'attention_config_shared_state',
@@ -351,6 +357,7 @@ __all__ = [
     'get_supported_override_attention_modes',
     'resolve_attention_mode',
     'pay_attention',
+    'sage2_staged_settings',
     'attention',
 ]
 

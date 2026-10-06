@@ -13,6 +13,7 @@ ENGINE_LOCAL_2 = "local_florence_llamajoy"
 ENGINE_QWEN35_4B = "qwen35_4b"
 ENGINE_QWEN35_9B = "qwen35_9b"
 ENGINE_QWEN38_27B = "qwen38_27b"
+ENGINE_QWEN38_9B = "qwen38_9b"
 ENGINE_CODEX = "codex"
 ENGINE_CLAUDE = "claude"
 ENGINE_OPENCODE = "opencode"
@@ -58,6 +59,7 @@ LOCAL_ENGINE_TO_ENHANCER_ID = {
     ENGINE_QWEN35_4B: 3,
     ENGINE_QWEN35_9B: 4,
     ENGINE_QWEN38_27B: 5,
+    ENGINE_QWEN38_9B: 6,
 }
 ENHANCER_ID_TO_LOCAL_ENGINE = {value: key for key, value in LOCAL_ENGINE_TO_ENHANCER_ID.items()}
 
@@ -66,6 +68,7 @@ LLM_ENGINE_CHOICES = [
     ("Florence 2 + Llama Joy 8B (local)", ENGINE_LOCAL_2),
     ("Qwen3.5 VL Abliterated 4B (local, recommended)", ENGINE_QWEN35_4B),
     ("Qwen3.5 VL Abliterated 9B (local)", ENGINE_QWEN35_9B),
+    ("Qwen3.8 VL Uncensored 9B (local)", ENGINE_QWEN38_9B),
     ("Qwen3.8 VL Uncensored 27B (local)", ENGINE_QWEN38_27B),
     ("Codex (external)", ENGINE_CODEX),
     ("Claude Code (external)", ENGINE_CLAUDE),

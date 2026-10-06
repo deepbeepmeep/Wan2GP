@@ -13,6 +13,10 @@ class DownloadCancelled(Exception):
 
 
 def check_download_cancelled(gen):
+    from shared.utils.media_control import current_control
+    control = current_control()
+    if control is not None and control.gen is gen:
+        control.checkpoint(unload=False)
     if gen is not None and (gen.get("abort", False) or (gen.get("abort_callback") is not None and gen["abort_callback"]())):
         raise DownloadCancelled("Download cancelled")
 

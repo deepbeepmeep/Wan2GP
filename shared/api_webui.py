@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from shared.api import GeneratedArtifact, GenerationError, GenerationResult, PreviewUpdate, SessionJob, WanGPSession
+from shared.tinyvae.media import VideoPreview
 
 _NO_YIELDED_RESULT = object()
 _GRADIO_LOG_PATCH_LOCK = threading.Lock()
@@ -346,7 +347,8 @@ class WebUIQueueProbe:
                     self._logged_admitted_client_ids.add(client_id)
         if self._job.cancel_requested:
             self._request_cancel()
-        if self._queue_wait_suspended and any(client_id in self._admitted_client_ids for client_id in self._client_ids):
+        # Historical admissions do not mean the remaining requests have resumed.
+        if self._queue_wait_suspended and any(client_id in self._client_ids for client_id in queue_client_ids):
             print("WanGP back in focus API queue resumed")
             self._queue_wait_suspended = False
         self._check_queue_errors()
@@ -518,7 +520,8 @@ class WebUIQueueProbe:
                     self._publish(
                         "preview",
                         PreviewUpdate(
-                            image=preview_image,
+                            image=preview_image.image if isinstance(preview_image, VideoPreview) else preview_image,
+                            video=preview_image.video if isinstance(preview_image, VideoPreview) else None,
                             phase=progress_update.phase,
                             status=progress_update.status,
                             progress=progress_update.progress,

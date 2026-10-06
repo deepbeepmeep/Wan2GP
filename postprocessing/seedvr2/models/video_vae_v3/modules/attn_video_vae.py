@@ -132,11 +132,12 @@ class Upsample3D(Upsample2D):
 
     def forward(
         self,
-        hidden_states: torch.FloatTensor,
+        hidden_states_list: list,
         output_size: Optional[int] = None,
         memory_state: MemoryState = MemoryState.DISABLED,
         **kwargs,
     ) -> torch.FloatTensor:
+        hidden_states = hidden_states_list.pop()  # the caller holds no reference: the input is released once upscaled
         assert hidden_states.shape[1] == self.channels
 
         if hasattr(self, "norm") and self.norm is not None:
@@ -332,11 +333,12 @@ class ResnetBlock3D(ResnetBlock2D):
 
 
     def forward(
-        self, input_tensor, temb, memory_state: MemoryState = MemoryState.DISABLED, **kwargs
+        self, input_list, temb, memory_state: MemoryState = MemoryState.DISABLED, **kwargs
     ):
-        hidden_states = input_tensor
+        # input_list: [input], emptied so that the input is released once its shortcut projection is taken (before conv1)
+        input_tensor = input_list.pop()
 
-        hidden_states = causal_norm_wrapper(self.norm1, hidden_states)
+        hidden_states = causal_norm_wrapper(self.norm1, input_tensor)
         hidden_states = retry_on_oom(
             self.nonlinearity,
             hidden_states,
@@ -350,11 +352,14 @@ class ResnetBlock3D(ResnetBlock2D):
             if hidden_states.shape[0] >= 64:
                 input_tensor = input_tensor.contiguous()
                 hidden_states = hidden_states.contiguous()
-            input_tensor = self.upsample(input_tensor, memory_state=memory_state)
-            hidden_states = self.upsample(hidden_states, memory_state=memory_state)
+            input_tensor = self.upsample([input_tensor], memory_state=memory_state)
+            hidden_states = self.upsample([hidden_states], memory_state=memory_state)
         elif self.downsample is not None:
             input_tensor = self.downsample(input_tensor, memory_state=memory_state)
             hidden_states = self.downsample(hidden_states, memory_state=memory_state)
+
+        if self.conv_shortcut is not None:
+            input_tensor = self.conv_shortcut(input_tensor, memory_state=memory_state)
 
         hidden_states = self.conv1(hidden_states, memory_state=memory_state)
 
@@ -377,12 +382,7 @@ class ResnetBlock3D(ResnetBlock2D):
         hidden_states = self.dropout(hidden_states)
         hidden_states = self.conv2(hidden_states, memory_state=memory_state)
 
-        if self.conv_shortcut is not None:
-            input_tensor = self.conv_shortcut(input_tensor, memory_state=memory_state)
-
-        output_tensor = (input_tensor + hidden_states) / self.output_scale_factor
-
-        return output_tensor
+        return hidden_states.add_(input_tensor).div_(self.output_scale_factor)  # in place on conv2's output: the same values
 
 
 class DownEncoderBlock3D(DownEncoderBlock2D):
@@ -467,12 +467,14 @@ class DownEncoderBlock3D(DownEncoderBlock2D):
 
     def forward(
         self,
-        hidden_states: torch.FloatTensor,
+        hidden_states_list: list,
         memory_state: MemoryState = MemoryState.DISABLED,
         **kwargs,
     ) -> torch.FloatTensor:
+        hidden_states = hidden_states_list.pop()  # the caller holds no reference: the input is released after the first resnet
         for resnet, temporal in zip(self.resnets, self.temporal_modules):
-            hidden_states = resnet(hidden_states, temb=None, memory_state=memory_state)
+            resnet_input, hidden_states = [hidden_states], None
+            hidden_states = resnet(resnet_input, temb=None, memory_state=memory_state)
             hidden_states = temporal(hidden_states)
 
         if self.downsamplers is not None:
@@ -568,17 +570,20 @@ class UpDecoderBlock3D(UpDecoderBlock2D):
 
     def forward(
         self,
-        hidden_states: torch.FloatTensor,
+        hidden_states_list: list,
         temb: Optional[torch.FloatTensor] = None,
         memory_state: MemoryState = MemoryState.DISABLED,
     ) -> torch.FloatTensor:
+        hidden_states = hidden_states_list.pop()  # the caller holds no reference: the input is released after the first resnet
         for resnet, temporal in zip(self.resnets, self.temporal_modules):
-            hidden_states = resnet(hidden_states, temb=None, memory_state=memory_state)
+            resnet_input, hidden_states = [hidden_states], None
+            hidden_states = resnet(resnet_input, temb=None, memory_state=memory_state)
             hidden_states = temporal(hidden_states)
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
-                hidden_states = upsampler(hidden_states, memory_state=memory_state)
+                upsampler_input, hidden_states = [hidden_states], None
+                hidden_states = upsampler(upsampler_input, memory_state=memory_state)
 
         return hidden_states
 
@@ -678,7 +683,7 @@ class UNetMidBlock3D(nn.Module):
 
     def forward(self, hidden_states, temb=None, memory_state: MemoryState = MemoryState.DISABLED):
         video_length, frame_height, frame_width = hidden_states.size()[-3:]
-        hidden_states = self.resnets[0](hidden_states, temb, memory_state=memory_state)
+        hidden_states = self.resnets[0]([hidden_states], temb, memory_state=memory_state)
         for attn, resnet in zip(self.attentions, self.resnets[1:]):
             if attn is not None:
                 hidden_states = rearrange(hidden_states, "b c f h w -> (b f) c h w")
@@ -686,7 +691,7 @@ class UNetMidBlock3D(nn.Module):
                 hidden_states = rearrange(
                     hidden_states, "(b f) c h w -> b c f h w", f=video_length
                 )
-            hidden_states = resnet(hidden_states, temb, memory_state=memory_state)
+            hidden_states = resnet([hidden_states], temb, memory_state=memory_state)
 
         return hidden_states
 
@@ -850,7 +855,7 @@ class Encoder3D(nn.Module):
             # [Override] add extra block and extra cond
             for down_block, extra_block in zip(self.down_blocks, self.conv_extra_cond):
                 sample = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(down_block), sample, memory_state, use_reentrant=False
+                    create_custom_forward(down_block), [sample], memory_state, use_reentrant=False
                 )
                 if extra_block is not None:
                     sample = sample + safe_interpolate_operation(extra_block(extra_cond), size=sample.shape[2:])
@@ -866,7 +871,8 @@ class Encoder3D(nn.Module):
             # down
             # [Override] add extra block and extra cond
             for down_block, extra_block in zip(self.down_blocks, self.conv_extra_cond):
-                sample = down_block(sample, memory_state=memory_state)
+                block_input, sample = [sample], None
+                sample = down_block(block_input, memory_state=memory_state)
                 if extra_block is not None:
                     sample = sample + safe_interpolate_operation(extra_block(extra_cond), size=sample.shape[2:])
                 if callable(getattr(self, "abort_callback", None)) and self.abort_callback():
@@ -1036,7 +1042,7 @@ class Decoder3D(nn.Module):
                 for up_block in self.up_blocks:
                     sample = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(up_block),
-                        sample,
+                        [sample],
                         latent_embeds,
                         memory_state,
                         use_reentrant=False,
@@ -1048,7 +1054,7 @@ class Decoder3D(nn.Module):
                 # up
                 for up_block in self.up_blocks:
                     sample = torch.utils.checkpoint.checkpoint(
-                        create_custom_forward(up_block), sample, latent_embeds, memory_state
+                        create_custom_forward(up_block), [sample], latent_embeds, memory_state
                     )
         else:
             # middle
@@ -1058,7 +1064,8 @@ class Decoder3D(nn.Module):
 
             # up
             for up_block in self.up_blocks:
-                sample = up_block(sample, latent_embeds, memory_state=memory_state)
+                block_input, sample = [sample], None
+                sample = up_block(block_input, latent_embeds, memory_state=memory_state)
                 if callable(getattr(self, "abort_callback", None)) and self.abort_callback():
                     raise InterruptedError("SeedVR2 upscaling aborted")
 
@@ -1207,6 +1214,10 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
             if use_post_quant_conv
             else None
         )
+
+        for module in self.modules():  # every activation follows a normalization (a fresh tensor): in place, without a second full-size tensor
+            if isinstance(module, nn.SiLU):
+                module.inplace = True
 
         # A hacky way to remove attention.
         if not attention:
@@ -1566,9 +1577,17 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
         stride_h = max(1, latent_tile_h - latent_overlap_h)
         stride_w = max(1, latent_tile_w - latent_overlap_w)
 
-        # Allocate later using first decoded results
+        # Tiles in raster order (rows of tiles), without those fully within the overlap of previous tiles
+        tile_rows = [y for y in range(0, H, stride_h) if not (y > 0 and min(y + latent_tile_h, H) - y <= latent_overlap_h)]
+        tile_cols = [x for x in range(0, W, stride_w) if not (x > 0 and min(x + latent_tile_w, W) - x <= latent_overlap_w)]
+        assert 2 * latent_overlap_h <= latent_tile_h and 2 * latent_overlap_w <= latent_tile_w  # only neighbouring tiles overlap
+
+        # The blended output is written to RAM as soon as no later tile adds to it: only the pending sums stay in VRAM, the overlap below
+        # the current row of tiles (carried to the next row) and the overlap right of the current tile (carried to the next tile). Each
+        # tile adds the pending sums of its region into itself: the same additions in the same order as with a full-size canvas.
         result = None
         count = None
+        pending_rows = None
 
         num_tiles = ((max(H - latent_overlap_h, 1) + stride_h - 1) // stride_h) \
                   * ((max(W - latent_overlap_w, 1) + stride_w - 1) // stride_w)
@@ -1593,14 +1612,11 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
 
         tile_id = 0
         with tqdm(total=total_steps, desc="SeedVR2 VAE decode", unit="chunk") as progress:
-            for y_lat, x_lat in product(range(0, H, stride_h), range(0, W, stride_w)):
+            for (row, y_lat), (col, x_lat) in product(enumerate(tile_rows), enumerate(tile_cols)):
                 y_lat_end = min(y_lat + latent_tile_h, H)
                 x_lat_end = min(x_lat + latent_tile_w, W)
-
-                # Skip if fully within overlap of previous tiles
-                if (y_lat > 0 and (y_lat_end - y_lat) <= latent_overlap_h) or \
-                   (x_lat > 0 and (x_lat_end - x_lat) <= latent_overlap_w):
-                    continue
+                if col == 0:
+                    above, pending_rows, pending_cols = pending_rows, None, None
 
                 tile_id += 1
                 
@@ -1647,7 +1663,7 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                     output_h = H * scale_factor
                     output_w = W * scale_factor
                     
-                    result = torch.zeros((b_out, c_out, out_f_tile, output_h, output_w), device=decoded_tile.device, dtype=decoded_tile.dtype)
+                    result = torch.empty((b_out, c_out, out_f_tile, output_h, output_w), device="cpu", dtype=decoded_tile.dtype)
                     count = torch.zeros((1, 1, 1, output_h, output_w), device=decoded_tile.device, dtype=decoded_tile.dtype)
 
                 # Corresponding output-space placement
@@ -1681,10 +1697,26 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
                 weight_w_5d = weight_w.view(1, 1, 1, 1, w_out)
                 decoded_tile.mul_(weight_h_5d).mul_(weight_w_5d)
 
-                result[:, :, : decoded_tile.shape[2], y_out:y_out_end, x_out:x_out_end] += decoded_tile
+                # Sums of earlier tiles over this tile: the overlap with the previous tile (which already includes the row above), then the
+                # rest of the overlap with the row above
+                left = 0 if pending_cols is None else pending_cols.shape[-1]
+                if left:
+                    decoded_tile[..., :left].add_(pending_cols)
+                if above is not None:
+                    decoded_tile[:, :, :, :above.shape[3], left:].add_(above[..., x_out + left:x_out_end])
                 count[:, :, :, y_out:y_out_end, x_out:x_out_end].addcmul_(weight_h_5d, weight_w_5d)
 
-        result.div_(count.clamp(min=1e-6)) # In-place normalize
+                # Rows from next_y and columns from next_x get contributions from later tiles; the rest is final
+                next_y = tile_rows[row + 1] * scale_factor - y_out if row + 1 < len(tile_rows) else h_out
+                next_x = tile_cols[col + 1] * scale_factor - x_out if col + 1 < len(tile_cols) else w_out
+                pending_cols = decoded_tile[..., next_x:].clone() if next_x < w_out else None
+                if next_y < h_out:
+                    if pending_rows is None:
+                        pending_rows = decoded_tile.new_empty((*decoded_tile.shape[:3], h_out - next_y, output_w))
+                    pending_rows[..., x_out:x_out + next_x].copy_(decoded_tile[:, :, :, next_y:, :next_x])
+                final = decoded_tile[:, :, :, :next_y, :next_x].div_(count[:, :, :, y_out:y_out + next_y, x_out:x_out + next_x].clamp(min=1e-6))
+                result[:, :, : decoded_tile.shape[2], y_out:y_out + next_y, x_out:x_out + next_x].copy_(final)
+                final = decoded_tile = None
 
         if z.shape[2] == 1:  # single frame
             result = result.squeeze(2)

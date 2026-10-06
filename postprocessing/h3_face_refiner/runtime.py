@@ -230,11 +230,17 @@ def refine_video(video: torch.Tensor | None, strengths: torch.Tensor, *, pipelin
             def status_callback(phase):
                 _report(progress_callback, f"{label} - {phase}" if label else phase)
 
-            def step_callback(step_idx, _latent=None, _force_refresh=False, **_kwargs):
-                if callable(abort_callback) and abort_callback() and hasattr(pipeline, "_interrupt"):
+            def step_callback(step_idx=-1, _latent=None, _force_refresh=False, read_state=False, **kwargs):
+                if callable(abort_callback) and abort_callback():
                     pipeline._interrupt = True
-                phase = f"{label} - H3 face refinement" if label else "H3 face refinement"
-                _report(progress_callback, phase, int(step_idx) + 1, int(sampling_steps))
+                    return
+                if read_state:
+                    return
+                phase = kwargs.get("progress_title", "H3 Face Refinement")
+                phase = f"{label} - {phase}" if label else phase
+                _report(progress_callback, phase, int(step_idx) + 1, kwargs.get("override_num_inference_steps", int(sampling_steps)))
+
+            step_callback.checkpoint = lambda: step_callback(read_state=True)
 
             if hasattr(pipeline, "_interrupt"):
                 pipeline._interrupt = False

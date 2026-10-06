@@ -7,4 +7,8 @@ class GELUApprox(torch.nn.Module):
         self.proj = torch.nn.Linear(dim_in, dim_out, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.nn.functional.gelu(self.proj(x), approximate="tanh")
+        x = self.proj(x)
+        rows = x.view(-1, x.shape[-1])
+        for part in torch.split(rows, max(1, (64 << 20) // (rows.shape[-1] * rows.element_size()))):
+            part.copy_(torch.nn.functional.gelu(part, approximate="tanh"))  # in place by rows: the same values without a second copy
+        return x

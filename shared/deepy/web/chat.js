@@ -101,6 +101,9 @@ WAC.scheduleComposerLayout = function (scrollState) {
       WAC.composerResizeFrame = 0;
       const state = scroll?.scrollTop !== initialTop ? WAC.captureAutoscrollState() : WAC.composerResizeScrollState;
       WAC.syncComposerLayout();
+      // Pasting scrolls the caret line into view but not the field's bottom padding.
+      const input = WAC.requestInput();
+      if (input && input.selectionStart === input.value.length) input.scrollTop = input.scrollHeight;
       WAC.composerResizeScrollState = null;
       WAC.applyAutoscrollState(state);
     });
@@ -950,7 +953,13 @@ WAC.consumePayload = function (payload) {
     return [];
   }
   const chatSessionId = typeof event.chat_session_id === 'string' ? event.chat_session_id : '';
-  if (chatSessionId && WAC.chatSessionId && chatSessionId !== WAC.chatSessionId) WAC.reset();
+  if (chatSessionId && WAC.chatSessionId && chatSessionId !== WAC.chatSessionId) {
+    // Saving the first request assigns a persistent session ID. Keep following it
+    // when this event acknowledges that request, despite resetting the old session.
+    const followedSubmission = WAC.syncAcknowledgesFollowedSubmission(event.messages || [event.message], event.acknowledged_submission_ids) ? WAC.followSubmissionId : '';
+    WAC.reset();
+    WAC.followSubmissionId = followedSubmission;
+  }
   if (chatSessionId) WAC.chatSessionId = chatSessionId;
   if (event.type === 'session_resume_ready') {
     WAC.prefillResumedSession(event.request_id);
@@ -1149,6 +1158,21 @@ WAC.syncSettingsState = function () {
   if (launcher) launcher.setAttribute('aria-expanded', open ? 'true' : 'false');
 };
 
+WAC.syncSettingsDropdowns = function () {
+  const panel = WAC.settingsPanel();
+  if (!panel) return;
+  for (const menu of panel.querySelectorAll('.chat__settings-scroll .wrap > ul.options[role="listbox"]')) {
+    const input = menu.parentElement.getBoundingClientRect();
+    const scroll = menu.closest('.chat__settings-scroll').getBoundingClientRect();
+    const above = Math.max(0, input.top - Math.max(0, scroll.top) - 4);
+    const below = Math.max(0, Math.min(window.innerHeight, scroll.bottom) - input.bottom - 4);
+    const openUp = below < Math.min(280, menu.scrollHeight) && above > below;
+    menu.style.setProperty('--chat-options-top', openUp ? 'auto' : '100%');
+    menu.style.setProperty('--chat-options-bottom', openUp ? '100%' : 'auto');
+    menu.style.setProperty('--chat-options-height', `${Math.min(280, openUp ? above : below)}px`);
+  }
+};
+
 WAC.syncDockLayout = function () {
   const dock = WAC.dock();
   if (!dock) return;
@@ -1302,7 +1326,10 @@ WAC.scrollToBottomAfterLayout = function () {
 WAC.hideEmpty = function () {
   if (WAC.replayDepth > 0) return;
   const empty = WAC.empty();
+  const transcript = WAC.transcript();
   if (empty) empty.style.display = 'none';
+  // Show the transcript in the same frame, so the first message is laid out before scrolling to it.
+  if (transcript) transcript.style.display = 'flex';
 };
 
 WAC.showEmptyIfNeeded = function () {
@@ -1474,6 +1501,7 @@ WAC.appendStreamingInlineMarkdown = function (parent, value) {
 
 WAC.resetStreamingMarkdown = function (node) {
   node.replaceChildren();
+  delete node.__wangpStreamingArrival;
   const state = { source: '', buffer: '', inFence: false, fence: '', code: null, list: null, listType: '', table: null, tableHeader: null, blockBoundary: true, tail: null };
   node.__wangpStreamingMarkdown = state;
   return state;
@@ -1733,10 +1761,27 @@ WAC.clearStreamingReveals = function (root, flush = false) {
 
 WAC.queueStreamingReveal = function (live, text) {
   const now = performance.now();
-  const reveal = WAC.streamingReveals.get(live) || { last: now, text: '' };
+  const start = live.__wangpStreamingMarkdown.source.length;
+  if (text.length <= start) return;
+  const reveal = WAC.streamingReveals.get(live) || { last: now, target: start };
   reveal.text = text;
-  // Catch up a burst in roughly 700 ms, speeding up when more text arrives.
-  reveal.speed = Math.max(180, (text.length - live.__wangpStreamingMarkdown.source.length) / 0.7);
+  // Learn visible throughput per block, independently of the model, action and tokenizer.
+  // Coalesced events within 50 ms form one sample; empty/final events are not arrivals.
+  let arrival = live.__wangpStreamingArrival;
+  if (!arrival) arrival = live.__wangpStreamingArrival = { at: now, length: text.length, interval: 250, rate: (text.length - start) * 2, measured: false };
+  const elapsed = now - arrival.at;
+  if (!reveal.finalEvent && text.length > arrival.length && elapsed >= 50) {
+    const rate = (text.length - arrival.length) * 1000 / elapsed;
+    const weight = Math.max(rate < arrival.rate ? 0.5 : 0, 1 - Math.exp(-elapsed / 1000));
+    arrival.rate = arrival.measured ? arrival.rate + weight * (rate - arrival.rate) : rate;
+    arrival.interval = Math.max(elapsed, 0.75 * arrival.interval + 0.25 * elapsed);
+    arrival.at = now;
+    arrival.length = text.length;
+    arrival.measured = true;
+  }
+  // Completion no longer needs a jitter buffer, but must not dump the remaining text.
+  if (reveal.finalEvent) reveal.finishAt ??= now + Math.min(700, (text.length - reveal.target) * 1000 / arrival.rate);
+  else delete reveal.finishAt;
   WAC.streamingReveals.set(live, reveal);
   if (!WAC.shouldRevealStreamingText(live)) WAC.clearStreamingReveals(live, true);
   else if (!WAC.streamingRevealFrame) WAC.streamingRevealFrame = window.requestAnimationFrame(WAC.stepStreamingReveals);
@@ -1755,12 +1800,20 @@ WAC.stepStreamingReveals = function (now) {
     const scrollState = WAC.captureAutoscrollState();
     for (const { live, reveal, animate } of ready) {
       const start = live.__wangpStreamingMarkdown.source.length;
-      let end = animate ? Math.min(reveal.text.length, start + Math.max(1, Math.floor(reveal.speed * (now - reveal.last) / 1000))) : reveal.text.length;
-      // Keep ordinary words together, without stalling on long URLs or unspaced text.
-      const limit = Math.min(reveal.text.length, end + 32);
-      while (end < limit && !/\s/u.test(reveal.text[end])) end += 1;
-      if (end < reveal.text.length && /[\uDC00-\uDFFF]/u.test(reveal.text[end])) end += 1;
-      while (end < reveal.text.length && /\s/u.test(reveal.text[end])) end += 1;
+      const remaining = reveal.text.length - reveal.target;
+      const arrival = live.__wangpStreamingArrival;
+      const bufferSeconds = Math.max(250, arrival.interval) / 1000;
+      // Keep about one arrival interval in reserve. Correct excess/deficit gradually instead
+      // of consuming the entire backlog on every chunk and pausing until the next one.
+      const speed = reveal.finishAt
+        ? remaining * 1000 / Math.max(1, reveal.finishAt - reveal.last)
+        : arrival.rate + (remaining - arrival.rate * bufferSeconds) / (2 * bufferSeconds);
+      reveal.target = Math.min(reveal.text.length, reveal.target + speed * (now - reveal.last) / 1000);
+      let end = animate ? Math.floor(reveal.target) : reveal.text.length;
+      // Stay on the pacing clock; rounding forward to a whole word can consume a slow
+      // model's entire next chunk. Only keep UTF-16 surrogate pairs together.
+      if (end < reveal.text.length && /[\uDC00-\uDFFF]/u.test(reveal.text[end])) end -= 1;
+      if (end <= start) { reveal.last = now; continue; }
       WAC.appendStreamingMarkdown(live, reveal.text.slice(start, end));
       reveal.last = now;
       if (end === reveal.text.length) {
@@ -2294,7 +2347,7 @@ WAC.renderStatus = function (status, restoreAnchor) {
     pauseNode.textContent = isPaused ? 'Resume' : kind === 'pause_pending' ? 'Pausing…' : kind === 'resuming' ? 'Resuming…' : 'Pause';
     pauseNode.setAttribute('aria-label', isPaused ? 'Resume Deepy' : 'Pause Deepy');
     pauseNode.dataset.mode = isPaused ? 'resume' : 'pause';
-    pauseNode.disabled = kind === 'pause_pending' || kind === 'resuming' || kind === 'session_loading';
+    pauseNode.disabled = kind === 'pause_pending' || kind === 'resuming' || kind === 'session_loading' || kind === 'stop_pending';
   }
   if (stopNode) {
     stopNode.hidden = kind === 'session_loading';
@@ -2466,6 +2519,7 @@ WAC.installObserver = function () {
         WAC.syncScrollBridge();
         WAC.syncThemeState();
         WAC.syncDockLayout();
+        WAC.syncSettingsDropdowns();
         WAC.syncDeepyTypePreview();
         WAC.setQueuedEditButtonLabels(!!WAC.queuedEditMessageId);
         WAC.handleEventNodeMutation();
@@ -2498,6 +2552,10 @@ WAC.installObserver = function () {
 WAC.installDockBridge = function () {
   if (WAC.dockBridgeInstalled) return;
   WAC.dockBridgeInstalled = true;
+  window.addEventListener('resize', WAC.syncSettingsDropdowns);
+  document.addEventListener('scroll', (event) => {
+    if (event.target.matches?.('.chat__settings-scroll')) WAC.syncSettingsDropdowns();
+  }, true);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) WAC.clearStreamingReveals(null, true);
   });
@@ -2505,7 +2563,8 @@ WAC.installDockBridge = function () {
   try { window.localStorage.removeItem('wangp-assistant-chat-open'); } catch (_error) {}
   document.addEventListener('beforeinput', (event) => {
     const input = WAC.requestInput();
-    if (input && event.target === input) WAC.composerResizeScrollState = WAC.captureAutoscrollState();
+    // A pending resize has already moved the layout; keep the intent captured before it.
+    if (input && event.target === input && !WAC.composerResizeFrame) WAC.composerResizeScrollState = WAC.captureAutoscrollState();
   }, true);
   document.addEventListener('input', (event) => {
     if (event.target && event.target.closest && event.target.closest('#deepy_type_choice')) WAC.syncDeepyTypePreview();

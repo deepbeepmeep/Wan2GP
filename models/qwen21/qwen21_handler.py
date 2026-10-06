@@ -78,6 +78,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         return {
             "image_outputs": True,
+            "device_explicit": True,
             "resolutions_categories": ["<=4096p"],
             "custom_settings": [{
                 "id": "qwen21_kv_cache",

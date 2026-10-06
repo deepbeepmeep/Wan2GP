@@ -186,7 +186,7 @@ Each materialized session keeps its canonical decoder context in `context.json` 
 --compile                     # Enable PyTorch compilation (requires Triton)
 --attention MODE              # Force attention mode: sdpa, flash, sage, sage2
 --profile NUMBER              # Performance profile 1-5 (default: 4)
---preload NUMBER              # Preload N MB of diffusion model in VRAM
+--preload NUMBER              # Preload N MB of diffusion model in VRAM (Manual VRAM Preload for every kind of output)
 --fp16                        # Force fp16 instead of bf16 models
 --save-quantized              # Save an INT8 Quanto checkpoint during model loading
 --convrot                     # With --save-quantized, save INT8 ConvRot instead of Quanto INT8
@@ -194,17 +194,79 @@ Each materialized session keeps its canonical decoder context in `context.json` 
 ```
 
 ### Performance Profiles
-- **Profile 1**: Load entire current model in VRAM and keep all unused models in reserved RAM for fast VRAM tranfers 
-- **Profile 2**: Load model parts as needed, keep all unused models in reserved RAM for fast VRAM tranfers
-- **Profile 3**: Load entire current model in VRAM (requires 24GB for 14B model)
-- **Profile 4**: Default and recommended, load model parts as needed, most flexible option
-- **Profile 4+** (4.5): Profile 4 variation, can save up to 1 GB of VRAM, but will be slighlty slower on some configs
-- **Profile 5**: Minimum RAM usage
+- **Profile 1**: each model loaded whole in VRAM, all models kept in Reserved RAM. The fastest generations and model switches, needs the most RAM and VRAM
+- **Profile 2**: all models kept in Reserved RAM, sent to the GPU part by part. Runs models larger than your VRAM, leaves VRAM for long videos or large images and switches models fast, needs a lot of RAM
+- **Profile 3**: each model loaded whole in VRAM, only the main models kept in Reserved RAM. Fast generations with less RAM, needs enough VRAM for the whole model
+- **Profile 3+** (3.5, recommended for audio models): Profile 3 without any Reserved RAM. Audio models are usually small enough to fit whole in VRAM, where the language models many of them include run much faster and can use the faster CUDA Graph or vLLM engines; models load more slowly
+- **Profile 4** (recommended): only the main models kept in Reserved RAM, sent to the GPU part by part. The most versatile: runs models larger than your VRAM and leaves VRAM for long videos or large images
+- **Profile 4+** (4.5): Profile 4 sending one part at a time. Saves up to about 1 GB of VRAM, slightly slower
+- **Profile 5** (fail safe): almost no Reserved RAM, all models sent to the GPU part by part. For PCs short of RAM and VRAM, slower with short steps such as images
+
+### Preloading Part of the Model in VRAM
+With profiles 2, 4 and 5, models are transferred to the GPU block by block at every denoising step. Image models such as Flux have short steps, so with profile 4 these transfers, rather than the GPU computation, can set the speed. In *Configuration / RAM/VRAM Management*, a *VRAM Preload* choice next to the default memory profile of each kind of output (video, image and audio) decides how much of each model stays in VRAM, so that less is transferred at each step:
+- *Default*: the memory profile's own choice.
+- *Dynamic*: as much of each model as the generation leaves free, adapted as it goes (below).
+- *Manual*: the amount set with the *VRAM Preload (MB)* slider shown below it, spread across the blocks of each model.
+
+The choice is hidden for profiles 1, 3 and 3+, which load models entirely in VRAM. A memory profile chosen in the settings of a generation uses the VRAM Preload of its kind of output, and `--preload` sets a manual value for all three.
+
+For Flux dev at 1024x1024, a manual 6000 MB shortened the profile 4 steps by about 22%, to within about 20% of profile 1, with about half of its peak VRAM. Preloading uses VRAM during denoising only: at this resolution it did not raise the peak VRAM, which the image decoding sets.
+
+#### Dynamic VRAM Preload
+*Dynamic* helps most where transfers set the speed: images and low resolutions, with short steps. Video steps are usually long enough to hide the transfers, so *Default* is about as fast for videos. It needs the *MMGP Optimized VRAM Allocator* ([VRAM Allocator](#vram-allocator), the default); with PyTorch's allocator, or with Profile 4+, which sends one part at a time, the profile default applies.
+
+- The first step of a new resolution, frame count or denoising stage runs with the profile default (as with a preload of 0) and measures the VRAM that the generation itself needs. During the next step, the parts of the model that fit in the rest of the VRAM stay there as they are transferred, without extra transfers, and the following steps no longer transfer them. This shortens the steps that transfers slow down, such as images and low resolutions; when the whole model fits, the speed then matches Profile 1.
+- When the *Reserved RAM for Pinning* cannot hold the whole model, the parts that are not pinned, the slowest to transfer, are the first kept in VRAM.
+- Each denoising stage has its own preload: a low resolution first stage (LTX-2, two-pass H3) keeps more of the model in VRAM than the full resolution stage that follows, and each model of a two-model video generator (Wan 2.2) gets its own.
+- What is measured is kept for each model until WanGP closes or its definitions are refreshed (for instance after a finetune is edited), and is measured again with another quantization. Later generations with the same settings skip the measuring step: from their second step, the model fills the free VRAM.
+- If VRAM runs short anyway (another program took VRAM, or a later step needs more than the first), parts of the model that are quick to transfer leave the VRAM instead of an out of memory error, and the following steps of that resolution keep that much less in VRAM so that it does not happen again. The generated images and videos are the same as with a manual preload.
+- The VRAM stays filled during denoising: other programs that need VRAM at the same time get less. Not used with compilation (*Compile Transformer Model*) or when `--preload` is set.
 
 ### Memory Management
 ```bash
---perc-reserved-mem-max FLOAT # Max percentage of RAM for reserved memory (< 0.5)
+--perc-reserved-mem-max FLOAT # Share of RAM that pinning may lock, as a fraction (0.4 = 40%)
 ```
+Pinned ("reserved") RAM makes the transfers to the GPU fast, but nothing else can use it. *Configuration / RAM/VRAM Management / Reserved RAM for Pinning* sets the share of RAM that WanGP may pin, in percent (0 = automatic: 40% on Windows, 80% on Linux). `--perc-reserved-mem-max` takes precedence over this setting, which takes precedence over the `perc_reserved_mem_max` environment variable.
+
+When the models do not all fit in it, WanGP reserves first the parts used at every step; with [Smart Memory Pinning](#smart-memory-pinning), the rest still reaches the GPU almost as fast, so a smaller share mostly costs speed on short steps.
+
+### VRAM Allocator
+```bash
+--vram-allocator vmm_spill  # MMGP Optimized VRAM Allocator with RAM spilling (default)
+--vram-allocator vmm        # MMGP Optimized VRAM Allocator, an out of memory error when no VRAM is left
+--vram-allocator default    # PyTorch's allocator
+```
+The *MMGP Optimized VRAM Allocator* (*Configuration / RAM/VRAM Management / VRAM Allocator*, on by default) recycles more efficiently the VRAM that is no longer used, which lowers the peak VRAM of long videos, large images and Deepy, with the same outputs and speed:
+
+| Workload | VRAM saved |
+|---|---:|
+| H3 1920x1088, 241 frames | about 5.4 GB |
+| H3 1280x720, 241 frames | about 1.5 GB |
+| Flux dev 1024x1024 (image decoding) | about 1.3 GB |
+| Deepy, Bonsai 2 27B, 20K-token prompt | about 0.2 GB |
+
+The gain grows with the resolution and duration. The setting applies when WanGP starts; `--vram-allocator` takes precedence over it. It works on Windows and Linux with PyTorch 2.3 or newer and NVIDIA GPUs; elsewhere, WanGP says so at startup and uses PyTorch's allocator. The VRAM used by other programs on the same GPU (another WanGP, ComfyUI, a game, a browser) is left to them; only when a generation would otherwise stop with an out of memory error does WanGP take the VRAM they are not using, which Windows then moves to system RAM. When the error happens anyway, its message shows the VRAM free on the whole GPU and for WanGP, how much more was needed, and why it was refused.
+
+*With RAM Spilling* (the default), when VRAM runs out, what no longer fits goes to system RAM instead of stopping the generation: the steps that use it are much slower, but a generation slightly too large for your VRAM can finish. Spilling stops, with an out of memory error, when it would leave less than a tenth of the RAM (at least 4 GB) available. On a GPU that also drives your display, the screen may flash or go black for a moment meanwhile, without affecting the generation. Without spilling (`vmm`), running out of VRAM stops the generation with an out of memory error, instead of slowly spilling into shared GPU memory as the NVIDIA driver otherwise does on Windows.
+
+### VRAM Debug Mode
+```bash
+--vram-allocator vmm --vram-debug 16   # Record the allocations of 16 MB and more
+```
+For developers and agents looking for VRAM to save: with the *MMGP Optimized VRAM Allocator*, `--vram-debug MIN_MB` records every allocation of `MIN_MB` and more with the model module that made it and its Python stack. After each generation WanGP writes a report to `vram_debug` in the output folder: for each phase (text encoding, denoising, decoding), the tensors alive at its peak with their sizes, modules and source lines, the totals of the short-lived scratch buffers, and the large tensors still alive at the end. `python -m mmgp.allocator.debug summary <report.json>` prints a report, `python -m mmgp.allocator.debug diff <before.json> <after.json>` compares the peaks of two runs. Generation speed is unchanged.
+
+### Windows Power Throttling
+```bash
+--no-prevent-power-throttling # Let Windows slow down WanGP in the background to save power
+```
+On Windows, WanGP asks by default to keep its full CPU speed when its window is minimized or in the background. Windows may otherwise slow down a background application several times, which slows down generation on the steps where the GPU waits for the CPU. On a laptop running on battery, `--no-prevent-power-throttling` saves power at the cost of slower generations while WanGP is in the background.
+
+### Smart Memory Pinning
+*Configuration / RAM/VRAM Management / Smart Memory Pinning* (On by default) speeds up the models that the memory profile does not keep in Reserved RAM: the text encoders with Profile 4, every model with Profile 5, and the part of a model that does not fit when *Reserved RAM for Pinning* is low. With it, they reach the GPU almost as fast as the models kept in Reserved RAM, for about 1-2 GB of Reserved RAM.
+
+- It helps most with Profile 5, with image models and other generations made of short steps (low resolutions, the first pass of distilled models), and on PCs with little RAM to reserve. With long steps (high resolutions, long videos), the difference is small.
+- Off: these models reach the GPU more slowly, and the 1-2 GB of Reserved RAM stay free for other programs.
+- Changing this option reloads the model.
 
 ## Lora Configuration
 
@@ -397,6 +459,7 @@ While not command line options, these environment variables can affect behavior:
 - `PYTORCH_CUDA_ALLOC_CONF` - CUDA memory allocation settings
 - `TRITON_CACHE_DIR` - Triton cache directory (for Sage attention) 
 - `WAN2GP_DEEPY_TELEMETRY=1` - Enable detailed Deepy decode, MTP, CUDA-memory, and GPU telemetry when verbose level 2 is active (disabled by default)
+- `WAN2GP_FFMPEG_TIMEOUT` - Timeout in seconds when finalizing ffmpeg containers or merging continuation segments in Media Flow (default: `300.0`)
 
 ---
 

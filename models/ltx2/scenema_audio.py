@@ -731,7 +731,8 @@ def _transcribe_words(alignment_whisper: torch.nn.Module, audio_np: np.ndarray, 
     if int(sample_rate) != 16000:
         mono_tensor = torchaudio.functional.resample(mono_tensor.unsqueeze(0), int(sample_rate), 16000).squeeze(0)
     model_dtype = getattr(alignment_whisper, "_model_dtype", next(alignment_whisper.parameters()).dtype)
-    result = alignment_whisper.transcribe(mono_tensor.numpy(), language=language, word_timestamps=True, fp16=model_dtype == torch.float16, verbose=None)
+    with torch.device("cuda" if torch.cuda.is_available() else "cpu"):  # openai-whisper creates its tensors on the default device
+        result = alignment_whisper.transcribe(mono_tensor.numpy(), language=language, word_timestamps=True, fp16=model_dtype == torch.float16, verbose=None)
     words = []
     for segment in result.get("segments", []):
         for word in segment.get("words", []) or []:
@@ -1045,6 +1046,7 @@ class ScenemaAudioPipeline(LTXAudioTTSPipelineBase):
         input_waveform=None,
         input_waveform_sample_rate=None,
         audio_guide2: Optional[str] = None,
+        audio_guide3: Optional[str] = None,
         audio_prompt_type: str = "",
         custom_settings=None,
         duration_seconds: Optional[float] = None,
@@ -1095,6 +1097,15 @@ class ScenemaAudioPipeline(LTXAudioTTSPipelineBase):
             speaker_ref_waveforms[2] = (reference_waveform, reference_rate)
             if not seedvc_enabled:
                 speaker_ref_latents[2] = self._encode_reference_waveform(self._reference_tail_waveform(reference_waveform, reference_rate), reference_rate)
+        if "D" in audio_prompt_type and audio_guide3:
+            if set_progress_status is not None:
+                set_progress_status("Encoding Speaker 3 Reference")
+            reference_waveform, reference_rate = self._waveform_from_input(None, None, audio_guide3)
+            if reference_waveform is None or reference_rate <= 0:
+                raise ValueError("Scenema Audio could not encode the third reference audio.")
+            speaker_ref_waveforms[3] = (reference_waveform, reference_rate)
+            if not seedvc_enabled:
+                speaker_ref_latents[3] = self._encode_reference_waveform(self._reference_tail_waveform(reference_waveform, reference_rate), reference_rate)
 
         if self._interrupt:
             return None

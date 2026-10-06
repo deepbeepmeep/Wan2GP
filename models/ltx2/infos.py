@@ -36,7 +36,7 @@ Some IC-LoRAs, such as the union-control LoRA used by pose, depth, and canny con
 - `LTX2 Raw Format / Control Video for Ic Lora`: uses the Control Video frames directly. Use this for IC-LoRA style control, to provide the video to be outpainted, and for `Generate Audio based on Control Video`.
 - `Inpaint Masked Area`: 22B only. Uses the Control Video plus a Video Mask to regenerate the masked area. This mode requires `Control Video Strength` set to `1` and `Unmasked Area Strength` set to `0`; the unmasked area is preserved by the inpainting workflow.
 - `Ingredients Reference Sheet`: 22B only. Duplicates one uploaded reference-sheet image as the IC-LoRA guide video; use a clean composite sheet on a white background, with black separator lines between individual pieces and without text.
-- `Convert SDR to HDR (IC-LoRA)`: 22B only. Converts an SDR Control Video toward HDR output.
+- `Convert SDR to HDR (IC-LoRA)`: 22B only. Converts an SDR Control Video into an HDR video (10-bit HDR10 output). The text prompt is ignored: the conversion follows the Control Video.
 - `Inject Frames`: places selected Reference Images at exact frame positions. In `Positions of Injected Frames`, `1` means the first frame and `L` means the last frame of a sliding-window segment. Each `X` skips a window without consuming an image.
 
 ## Audio Options
@@ -78,7 +78,8 @@ A selected LoRA will be automatically used instead of a system LoRA if it contai
 Recognized system LoRA signatures:
 - `distilled-lora`: distilled stage LoRA used by dev models for two-phase, Distilled 8 Steps, HQ/res2s, and some ID-LoRA cases.
 - `union-control`: IC-LoRA used by Pose, Pose Alignment, Depth, and Canny control.
-- `ic-lora-hdr`: HDR IC-LoRA used by 22B HDR output.
+- `ic-lora-hdr`: HDR IC-LoRA used by LTX-2.3 HDR output.
+- `ic-lora-sdr-to-hdr`: SDR-to-HDR IC-LoRA used by LTX-2.5 HDR output.
 - `ic-lora-outpaint`: outpainting IC-LoRA used by 22B legacy spatial outpainting.
 - `in-outpainting`: inpainting/outpainting IC-LoRA used by 22B mask-based inpainting and new outpainting.
 - `ic-lora-ingredients`: Ingredients IC-LoRA used by the 22B Ingredients Reference Sheet process.
@@ -120,7 +121,21 @@ Result: the reference voice workflow uses your ID-LoRA file and weight.
 ```
 """
 
-LTX2_25_INFOS = LTX2_INFOS + "\nReference Voice (ID-LoRA) is unavailable for LTX-2.5.\n"
+LTX2_25_INFOS = LTX2_INFOS + """
+Reference Voice (ID-LoRA) is unavailable for LTX-2.5.
+
+## SDR to HDR Conversion (LTX-2.5)
+
+Select `Convert SDR to HDR (IC-LoRA)` and provide the SDR clip as Control Video. LTX-2.5 uses its own SDR-to-HDR IC-LoRA, which recovers highlight range and detail that an SDR grade clipped or compressed. The result is saved as a 10-bit HDR10 video; SDR white is placed at the standard 203-nit reference level, and only the recovered highlights go brighter.
+
+- No prompt is needed: the conversion is driven entirely by the Control Video, and the text prompt is ignored.
+- The conversion always runs as one pass of 8 distilled steps at the selected resolution, without guidance. Steps, guidance, sampler and two-phase settings have no effect. The Dev model automatically adds the distilled LoRA for this mode.
+- Choose `Control Video` in `Force FPS` to keep the frame rate of the source clip. Frame rates above 30 fps are supported: the model's internal timing is capped at 30 fps, but the output keeps the source frame rate.
+- For the best quality, select `NAD Diffusion Decoder` in the `VAE` configuration. Every 24 or 32 frames the model also generates a full-detail keyframe, and only the NAD decoder uses these keyframes when decoding the video. Other decoders still convert the video, without that extra detail.
+- Long clips are converted by sliding windows. Each window continues from the previous HDR frames, and Continue Video also works with HDR sources.
+- Start / End Images, Video Masks, Inject Frames, pose / depth / canny control and outpainting cannot be combined with HDR conversion.
+- Decoding needs more VRAM than denoising, especially with the NAD decoder. If decoding runs out of memory, enable VAE tiling or convert shorter windows.
+"""
 
 LTX2_25_DEEPY_INFOS = """Generate video and synchronized sound from `prompt`. `image_start` / `image_end` anchor the opening / ending; `video_source` continues video. Sliding windows carry overlapping video and audio forward.
 
@@ -129,6 +144,8 @@ Control Video (`video_guide`) supplies raw frames or a selected pose/depth/edge 
 `audio_prompt_type`: empty = generate soundtrack; `A` = condition on `audio_guide`; `K` = control video and its audio; `2` = generate audio for control frames. A complete input soundtrack is normally reused; a shorter one allows audio continuation. Make action and speech agree with soundtrack timing.
 
 For continuation, the alignment selector places controls/injected frames relative to source-video time zero or the new continuation. Use capabilities for window limits and `prompt_infos` for speech and timed prompting.
+
+SDR to HDR: `video_prompt_type` `V&G` with the SDR clip as `video_guide` gives an HDR10 video. The prompt is ignored, and the mode always uses 8 distilled steps without guidance. `force_fps` `control` keeps the source frame rate, and the `NAD Diffusion Decoder` VAE config gives the best quality. Start/End images and masks are not supported.
 """
 
 LTX2_MSR_INFOS = """

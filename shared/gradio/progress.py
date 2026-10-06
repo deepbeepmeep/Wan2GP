@@ -120,7 +120,7 @@ class WangpProgress:
                 amount = f"{index}" + (f" / {total}" if total is not None else "") + f" {unit}"
             elif total is None and ratio == 0:
                 ratio = None
-            if unit == "phases" and title.startswith("Loading ") and " - " in title:
+            if title.removeprefix("Stopping… ").startswith("Loading ") and " - " in title:
                 title, subtask = title.rsplit(" - ", 1)
                 title += "..."
                 if bar_text is None:

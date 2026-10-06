@@ -590,7 +590,8 @@ class MiniMaxH3VideoViTDecoder3d(nn.Module):
 
         self.gradient_checkpointing = False
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, tokens: bool = False) -> torch.Tensor:
+        """tokens: return the normalized output tokens (batch, latent positions, dim), to project and unpatchify part by part."""
         batch_size, num_channels, num_frames, height, width = hidden_states.shape
 
         hidden_states = hidden_states.permute(0, 2, 3, 4, 1).reshape(
@@ -619,28 +620,18 @@ class MiniMaxH3VideoViTDecoder3d(nn.Module):
             hidden_states = block([hidden_states], rotary_emb)
 
         hidden_states = self.norm_out(hidden_states)
+        if tokens:
+            return hidden_states[:, :num_patches, :]
         hidden_states = self.proj_out(hidden_states)
         hidden_states = hidden_states[:, :num_patches, :]
+        return self.unpatchify(hidden_states, num_frames, height, width)
 
-        patch_size, patch_size_t = self.patch_size, self.patch_size_t
-        hidden_states = hidden_states.view(
-            batch_size,
-            num_frames,
-            height,
-            width,
-            self.out_channels,
-            patch_size_t,
-            patch_size,
-            patch_size,
-        )
+    def unpatchify(self, hidden_states: torch.Tensor, num_frames: int, height: int, width: int) -> torch.Tensor:
+        """Output tokens (batch, latent positions, channels * patch volume) to pixels (batch, channels, frames, height, width)."""
+        batch_size, patch_size, patch_size_t = hidden_states.shape[0], self.patch_size, self.patch_size_t
+        hidden_states = hidden_states.view(batch_size, num_frames, height, width, self.out_channels, patch_size_t, patch_size, patch_size)
         hidden_states = hidden_states.permute(0, 4, 1, 5, 2, 6, 3, 7).contiguous()
-        return hidden_states.reshape(
-            batch_size,
-            self.out_channels,
-            num_frames * patch_size_t,
-            height * patch_size,
-            width * patch_size,
-        )
+        return hidden_states.reshape(batch_size, self.out_channels, num_frames * patch_size_t, height * patch_size, width * patch_size)
 
 
 class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, AutoencoderMixin):
@@ -875,7 +866,8 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         for i_pos, i_len in zip(y_indices, y_lengths):
             row = []
             for j_pos, j_len in zip(x_indices, x_lengths):
-                tile = x[..., i_pos : i_pos + i_len, j_pos : j_pos + j_len]
+                # Compact the tile so padding does not inherit full-video strides.
+                tile = x[..., i_pos : i_pos + i_len, j_pos : j_pos + j_len].contiguous()
                 row.append(self.quant_conv(self.encoder(tile)))
             rows.append(row)
 
@@ -909,10 +901,11 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         del tiles
         hidden_states = self.post_quant_conv(tile_batch)
         del tile_batch
-        decoded = self.decoder(hidden_states)
+        tile_dims = hidden_states.shape[2:]
+        decoded = self.decoder(hidden_states, tokens=True)  # projected and unpatchified tile by tile below: no full-size output tensors
         del hidden_states
 
-        canvas = torch.empty(batch_size, *decoded.shape[1:-2], height, width,
+        canvas = torch.empty(batch_size, self.decoder.out_channels, tile_dims[0] * self.decoder.patch_size_t, height, width,
                              dtype=decoded.dtype, device=decoded.device)
         row_tails = []
         out_y = 0
@@ -922,7 +915,7 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             left_tail = None
             out_x = 0
             for j in range(len(x_indices)):
-                tile = decoded[tile_index * batch_size : (tile_index + 1) * batch_size]
+                tile = self.decoder.unpatchify(self.decoder.proj_out(decoded[tile_index * batch_size : (tile_index + 1) * batch_size]), *tile_dims)
                 tile_index += 1
                 if i > 0:
                     tile = self._blend(row_tails[j], tile, y_overlaps[i - 1], dim=-2)
@@ -990,19 +983,25 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
         temporal_ratio = self.temporal_compression_ratio
         chunk_num_frames = tokens_chunk_size * temporal_ratio
 
-        num_tokens = z.shape[2] + token_drop
-        pad_tokens = (-num_tokens) % tokens_chunk_size
-        num_chunks = (num_tokens + pad_tokens) // tokens_chunk_size - int(token_drop > 0)
-        if pad_tokens > 0:
-            z = torch.cat([z, z[:, :, -1:].repeat(1, 1, pad_tokens, 1, 1)], dim=2)
+        if z.shape[2] == 1:
+            # Fizgig H3 Still's decode recipe: five identical latents, then keep pixel frame 3.
+            # https://github.com/shootthesound/ComfyUI-Fizgig-H3-Still (MIT)
+            z = z.repeat(1, 1, tokens_chunk_size, 1, 1)
+            num_chunks, output_frames = 0, 1
+        else:
+            num_tokens = z.shape[2] + token_drop
+            pad_tokens = (-num_tokens) % tokens_chunk_size
+            num_chunks = (num_tokens + pad_tokens) // tokens_chunk_size - int(token_drop > 0)
+            if pad_tokens > 0:
+                z = torch.cat([z, z[:, :, -1:].repeat(1, 1, pad_tokens, 1, 1)], dim=2)
 
-        intra_tail = self.config.clip_length % temporal_ratio
-        num_tokens_before_pad = z.shape[2] - pad_tokens
-        pad_frames = sum(
-            intra_tail if intra_tail and (num_tokens_before_pad + k) % tokens_chunk_size == 0 else temporal_ratio
-            for k in range(pad_tokens)
-        )
-        output_frames = num_chunks * (chunk_num_frames - self.frame_pre_padding) + self.frame_overlap - pad_frames
+            intra_tail = self.config.clip_length % temporal_ratio
+            num_tokens_before_pad = z.shape[2] - pad_tokens
+            pad_frames = sum(
+                intra_tail if intra_tail and (num_tokens_before_pad + k) % tokens_chunk_size == 0 else temporal_ratio
+                for k in range(pad_tokens)
+            )
+            output_frames = num_chunks * (chunk_num_frames - self.frame_pre_padding) + self.frame_overlap - pad_frames
         spatial_tiles = 1
         if self.use_tiling:
             height, width = z.shape[-2] * self.spatial_compression_ratio, z.shape[-1] * self.spatial_compression_ratio
@@ -1010,24 +1009,26 @@ class AutoencoderKLMiniMaxH3(ModelMixin, ConfigMixin, AttentionMixin, Autoencode
             cols = self._split_tiles(width, self.tile_sample_min_width, self.tile_sample_min_overlap_width)[0]
             spatial_tiles = len(rows) * len(cols)
         with PhaseProgress(max(1, num_chunks) * spatial_tiles) as progress, progress.track(self.decoder, spatial_tiles):
-            if num_chunks == 0:
-                # Short videos still need one decode, without an overlapping temporal chunk.
-                chunk = self._decode_clip(z)[:, :, self.frame_pre_padding : self.frame_pre_padding + output_frames]
-                return self._prepare_decoded_chunk(chunk).to(device="cpu", non_blocking=False)
             decoded = None
             write_position = 0
             overlap = None
 
             def write_chunk(chunk):
+                # finalized pixels converted and copied to the CPU output by groups of frames (no full-clip conversion copies)
                 nonlocal decoded, write_position
                 copy_frames = min(chunk.shape[2], output_frames - write_position)
-                if copy_frames <= 0:
-                    return
-                chunk = self._prepare_decoded_chunk(chunk[:, :, :copy_frames])
-                if decoded is None:
-                    decoded = torch.empty(*chunk.shape[:2], output_frames, *chunk.shape[3:], dtype=chunk.dtype, device="cpu")
-                decoded[:, :, write_position : write_position + copy_frames].copy_(chunk, non_blocking=False)
-                write_position += copy_frames
+                for start in range(0, copy_frames, 4):
+                    part = self._prepare_decoded_chunk(chunk[:, :, start : min(start + 4, copy_frames)])
+                    if decoded is None:
+                        decoded = torch.empty(*part.shape[:2], output_frames, *part.shape[3:], dtype=part.dtype, device="cpu")
+                    decoded[:, :, write_position : write_position + part.shape[2]].copy_(part, non_blocking=False)
+                    write_position += part.shape[2]
+                    del part
+
+            if num_chunks == 0:
+                # Short videos still need one decode, without an overlapping temporal chunk.
+                write_chunk(self._decode_clip(z)[:, :, self.frame_pre_padding : self.frame_pre_padding + output_frames])
+                return decoded
 
             for i in range(num_chunks):
                 start = i * tokens_chunk_size

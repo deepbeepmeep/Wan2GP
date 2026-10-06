@@ -327,9 +327,6 @@ class model_factory:
         if images is None:
             return None
 
-        if not torch.is_tensor(images):
-            images = torch.tensor(images)
-
         return images.transpose(0, 1)
 
     def get_loras_transformer(self, *args, **kwargs):

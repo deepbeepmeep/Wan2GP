@@ -115,6 +115,7 @@ class family_handler:
         if base_model_type == LAYER_ARCHITECTURE:
             return {
                 "image_outputs": True,
+                "device_explicit": True,
                 "skip_prompt_template": True,
                 "embedded_guidance": False,
                 "guidance_max_phases": 1,
@@ -189,6 +190,7 @@ class family_handler:
             }
         return {
             "image_outputs": True,
+            "device_explicit": True,
             "skip_prompt_template": True,
             "prompt_helper_popup_dims": [86, 94],
             "prompt_enhancer_def": {

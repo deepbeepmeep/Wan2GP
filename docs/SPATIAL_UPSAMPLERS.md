@@ -8,6 +8,11 @@ parsing, validation helpers, config nesting, downloads and dispatch.
 
 ## Upsampler types
 
+**MiniMax H3 VAE** is available in Spatial Upsampling during H3 video or image
+generation. It replaces the default VAE and handles VAE decoding and upsampling
+together. Choose **×2** to double the output width and height, or **×1** to keep
+the original size.
+
 - `postprocessing`: works on decoded frames. Interchangeable: WanGP can call any of
   them through the same `upscale()` interface, both at generation time and in
   **late post processing** (Post Processing tab on existing media). Image-only
@@ -67,6 +72,7 @@ class MyUpsampler:
     def validate_upsampling(self, value, image_mode): ...  # -> "" or error text
     # postprocessing type only:
     def upscale(self, sample, value, *, seed, ..., abort_callback, progress_callback): ...
+    # progress_callback(phase, current=None, total=None, unit=None): unit (e.g. "tiles") labels the counter, default "steps"
     def download(self, process_files, send_cmd=None, status_text=None, spatial_upsampling=None): ...
     def load_upsampler(self, value, **kwargs): ...            # optional pre-dispatch load hook
     def supports_loaded_model(self, value, context, **kwargs): ... # optional core-model borrowing
@@ -252,6 +258,33 @@ the VAE's `8n+1` frame cadence; window size ranges from 9 to 481 frames, with 81
 as the default. The values are read at the start of every native or Media Flow
 upscale. Audio remains under the existing WGP and Media Flow preservation paths;
 the LTX spatial upsampler itself only returns video frames.
+
+The same handler also exposes **LTX 2.5 Detail Refiner** (`ltx25_refine`, x1,
+x1.5 or x2) with the Refine Details IC-LoRA on the LTX 2.5 distilled checkpoint.
+The source is Lanczos-resized to the target size, padded to multiples of 32 and
+by eight frames, and refined from a canvas that is split into overlapping
+1024x576 tiles (576x1024 for portrait) and 97-frame temporal windows. Every
+denoising step evaluates each tile with its own crop of a freshly encoded
+reference window and fuses the tile predictions with Gaussian weights
+(`shared/utils/tiled_fusion.py`), so tiles share one trajectory and no seams form.
+Gentle mode (default) starts from the encoded source at sigma 0.909 with three
+steps; full mode starts from noise with the eight distilled steps. The
+`refiner_window_size` (49 to 121 frames, default 97), `refiner_gentle` and
+`refiner_tiles_per_call` (0 = automatic from free VRAM, or 1 to 16 tiles per
+transformer call; the output does not depend on it) options live under
+`spatial_upsamplers.ltx2`. The canvas, its blend buffer and the window
+references move to system RAM when they would need more than 10 % of free VRAM.
+In Media Flow each refiner chunk returns its refined overlap frames, re-encoded
+as a short clip, through the continue cache; the next chunk starts from them at
+half conditioning strength, and the process handler's `overlap_output_split()`
+tells Media Flow to keep the previous chunk's frames in the overlap instead of
+crossfading. The re-encoded last written overlap frames a resumed run needs are
+kept in a `.ltx25_refine_cache.safetensors` sidecar; data whose start frame or
+mode does not match the chunk is ignored. The x2
+methods and the refiner share one private model; switching between them only
+swaps LoRAs. Outputs are limited to a 4320p short side; a larger request fails
+before denoising with the largest multiplier that fits. Its progress counts
+tiles, text-encoder layers and VAE tiles with their units.
 
 Model persistence is a registry-wide setting stored at
 `wgp_config["spatial_upsamplers"]["persistence"]`; handlers must not expose a

@@ -278,7 +278,7 @@ class HeartMuLaPipeline:
         if tags_ids[-1] != self.gen_config.text_eos_id:
             tags_ids = tags_ids + [self.gen_config.text_eos_id]
 
-        muq_embed = torch.zeros([self._muq_dim], dtype=self.mula_dtype)
+        muq_embed = torch.zeros([self._muq_dim], dtype=self.mula_dtype, device="cpu")
         muq_idx = len(tags_ids)
 
         lyrics = lyrics.lower()
@@ -290,15 +290,15 @@ class HeartMuLaPipeline:
 
         prompt_len = len(tags_ids) + 1 + len(lyrics_ids)
 
-        tokens = torch.zeros([prompt_len, self._parallel_number], dtype=torch.long)
-        tokens[: len(tags_ids), -1] = torch.tensor(tags_ids)
-        tokens[len(tags_ids) + 1 :, -1] = torch.tensor(lyrics_ids)
+        tokens = torch.zeros([prompt_len, self._parallel_number], dtype=torch.long, device="cpu")
+        tokens[: len(tags_ids), -1] = torch.tensor(tags_ids, device="cpu")
+        tokens[len(tags_ids) + 1 :, -1] = torch.tensor(lyrics_ids, device="cpu")
 
         tokens_mask = torch.zeros_like(tokens, dtype=torch.bool)
         tokens_mask[:, -1] = True
 
         bs_size = 2 if cfg_scale != 1.0 else 1
-        muq_idx_tensor = torch.full((bs_size,), muq_idx, dtype=torch.long)
+        muq_idx_tensor = torch.full((bs_size,), muq_idx, dtype=torch.long, device="cpu")
 
         def _cfg_cat(tensor: torch.Tensor, cfg_scale: float):
             tensor = tensor.unsqueeze(0)
@@ -311,7 +311,7 @@ class HeartMuLaPipeline:
             "tokens_mask": _cfg_cat(tokens_mask, cfg_scale),
             "muq_embed": _cfg_cat(muq_embed, cfg_scale),
             "muq_idx": muq_idx_tensor,
-            "pos": _cfg_cat(torch.arange(prompt_len, dtype=torch.long), cfg_scale),
+            "pos": _cfg_cat(torch.arange(prompt_len, dtype=torch.long, device="cpu"), cfg_scale),
         }
 
     def _forward(

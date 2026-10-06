@@ -1,6 +1,6 @@
 /* Shared presentation for gallery media and the existing Python property formatter. */
 (() => {
-  const documentHtml = html => '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><style>body{margin:0;color:#24485d;font:13px/1.5 system-ui}table{width:100%;table-layout:fixed}td{overflow-wrap:anywhere}td:first-child{width:28%;white-space:normal!important}#video_info td{font-size:12px}b{font-weight:500}.copy-swap__full{display:none}.copy-swap:focus .copy-swap__trunc{display:none}.copy-swap:focus .copy-swap__full{display:inline}</style>' + html;
+  const documentHtml = html => '<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'"><style>body{margin:0;color:#24485d;font:13px/1.5 system-ui}table{width:100%;table-layout:fixed}td{overflow-wrap:anywhere}td:first-child{width:28%;white-space:normal!important}#video_info td{font-size:12px}#video_info .selected-media-prompt{display:block;max-height:20lh;overflow-y:auto;overflow-wrap:anywhere}b{font-weight:500}.copy-swap__full{display:none}.copy-swap:focus .copy-swap__trunc{display:none}.copy-swap:focus .copy-swap__full{display:inline}</style>' + html;
   function media(item) {
     const node = document.createElement(item.kind === 'image' ? 'img' : item.kind);
     node.setAttribute('aria-label', item.name);

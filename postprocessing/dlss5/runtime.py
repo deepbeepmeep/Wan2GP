@@ -18,6 +18,7 @@ import numpy as np
 import torch
 from mmgp import offload
 from shared.utils import offload_registry
+from shared.utils.media_control import controlled_model_loading, loading_callback, checkpoint_modules
 
 
 RUNTIME = Path(__file__).resolve().parents[2] / "dlss5"
@@ -62,11 +63,12 @@ def configure_depth_estimator(server_config):
 
 
 def _offload_guide_model(name, model):
-    offloadobj = offload.profile({"model": model}, profile_no=3, quantizeTransformer=False, convertWeightsFloatTo=None, pinnedMemory=False, verboseLevel=-1)
+    offloadobj = offload.profile({"model": model}, loading_callback=loading_callback(), profile_no=3, quantizeTransformer=False, convertWeightsFloatTo=None, pinnedMemory=False, verboseLevel=-1)
     _GUIDE_OFFLOADS[name] = offloadobj
     offload_registry.register_offloadobj(name, offloadobj, release_flow_model)
 
 
+@controlled_model_loading
 def _raft_model(device: torch.device):
     key = str(device)
     if key not in _RAFT_MODELS:
@@ -96,6 +98,7 @@ def release_flow_model():
     _RAFT_MODELS.clear()
 
 
+@controlled_model_loading
 def _depth_model(device: torch.device):
     variant = DEPTH_MODEL_VARIANT
     key = (variant, str(device))
@@ -141,6 +144,24 @@ def _gpu_series() -> int:
     except (OSError, subprocess.TimeoutExpired):
         return 0
     series = [int(match.group(1)) for match in re.finditer(r"GeForce\s+RTX\s+(\d{2})\d{2}", result.stdout, re.IGNORECASE)]
+    if not series:
+        # Workstation / datacenter cards carry no GeForce tag (e.g. RTX PRO
+        # 5000 Blackwell, RTX 5000 Ada, RTX A6000, L40S), so the GeForce-only
+        # match above reads them as series 0 and they falsely report
+        # "RTX 30+/40+ required". Tier them by architecture instead; GeForce
+        # behavior is unchanged.
+        up = result.stdout.upper()
+        if any(k in up for k in ("PRO 6000", "PRO 5000", "PRO 4000", "B100", "B200", "GB100", "H100", "H200")):
+            return 50
+        if "ADA" in up or "L40" in up or " L4" in up:
+            return 40
+        if "RTX A" in up or any(k in up for k in (" A40", " A30", " A16", " A10", " A80")):
+            return 30
+        if "QUADRO" in up:
+            return 20
+        match = re.search(r"RTX\D*?(\d{2})\d{2}", up)
+        if match:
+            return int(match.group(1))
     return max(series, default=0)
 
 
@@ -281,7 +302,7 @@ class FlowGuides:
         previous_tensor = torch.from_numpy(self.previous[..., :3]).permute(2, 0, 1).float().unsqueeze(0).to(self.device)
         padder = InputPadder(current_tensor.shape)
         current_tensor, previous_tensor = padder.pad(current_tensor, previous_tensor)
-        with torch.inference_mode():
+        with torch.inference_mode(), checkpoint_modules(module for module in self.flow.modules() if not module._modules):
             _low, motion = self.flow(current_tensor, previous_tensor, iters=RAFT_ITERATIONS, test_mode=True)
         return padder.unpad(motion)[0].permute(1, 2, 0).cpu().numpy()
 
@@ -324,16 +345,17 @@ class DepthGuides:
 
     def process(self, rgba: np.ndarray, reset: bool) -> np.ndarray:
         inference_frame = rgba if (self.inference_width, self.inference_height) == (self.width, self.height) else cv2.resize(rgba, (self.inference_width, self.inference_height), interpolation=cv2.INTER_AREA)
-        if self.variant == "da3_metric_large":
-            from preprocessing.depth_anything_v3.depth import _run_da3_depth_prediction
+        with checkpoint_modules(module for module in self.estimator.model.modules() if not module._modules):
+            if self.variant == "da3_metric_large":
+                from preprocessing.depth_anything_v3.depth import _run_da3_depth_prediction
 
-            metric_depth = _run_da3_depth_prediction(self.estimator.model, inference_frame[None, ..., :3], self.inference_width, chunk_size=1)[0]
-            disparity = 1.0 / np.maximum(metric_depth, 1e-6)
-            del metric_depth
-        else:
-            bgr = cv2.cvtColor(inference_frame, cv2.COLOR_RGBA2BGR)
-            disparity = self.estimator.model.infer_image(bgr, input_size=min(self.inference_width, self.inference_height))
-            del bgr
+                metric_depth = _run_da3_depth_prediction(self.estimator.model, inference_frame[None, ..., :3], self.inference_width, chunk_size=1)[0]
+                disparity = 1.0 / np.maximum(metric_depth, 1e-6)
+                del metric_depth
+            else:
+                bgr = cv2.cvtColor(inference_frame, cv2.COLOR_RGBA2BGR)
+                disparity = self.estimator.model.infer_image(bgr, input_size=min(self.inference_width, self.inference_height))
+                del bgr
         del inference_frame
         low, high = (float(value) for value in np.nanpercentile(disparity, (2, 98)))
         if reset or self.low is None:

@@ -1,4 +1,6 @@
 from __future__ import annotations
+from shared.utils.media_control import checkpoint_modules
+from shared.utils.media_control import controlled_model_loading, loading_callback
 
 import gc
 import importlib.util
@@ -121,6 +123,7 @@ class PrismAudioRuntime:
         self.tokenizer = None
         self.offloadobj = None
 
+    @controlled_model_loading
     def load(self, paths: PrismAudioPaths, *, init_pipe, profile, progress_callback=None, verbose_level: int = 1) -> None:
         if self.diffusion is not None and self.feature_extractor is not None and self.paths == paths and self.profile == profile:
             return
@@ -172,7 +175,7 @@ class PrismAudioRuntime:
         }
         kwargs: dict[str, Any] = {}
         profile_no = init_pipe(pipe, kwargs, profile) if callable(init_pipe) else int(profile)
-        self.offloadobj = offload.profile(pipe, profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=self.dtype, verboseLevel=verbose_level, **kwargs)
+        self.offloadobj = offload.profile(pipe, loading_callback=loading_callback(), profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=self.dtype, verboseLevel=verbose_level, **kwargs)
         offload_registry.register_offloadobj("PrismAudio", self.offloadobj, self.release)
         self.paths = paths
         self.profile = profile
@@ -227,7 +230,7 @@ class PrismAudioRuntime:
         inputs["input_ids"] = inputs["input_ids"].to(dtype=torch.long)
         if "attention_mask" in inputs:
             inputs["attention_mask"] = inputs["attention_mask"].to(dtype=torch.long)
-        with _autocast_context(self.device, self.dtype):
+        with _autocast_context(self.device, self.dtype), checkpoint_modules(self.feature_extractor.t5.encoder.block):
             text_features = self.feature_extractor.t5(**inputs).last_hidden_state[0].cpu()
         if _check_abort(abort_callback):
             return None
@@ -284,7 +287,8 @@ class PrismAudioRuntime:
                 return None
             if self.diffusion.pretransform is not None:
                 _report_progress(progress_callback, "Decoding Audio")
-                sampled = self.diffusion.pretransform.decode(sampled)
+                with checkpoint_modules(module for module in self.diffusion.pretransform.modules() if not module._modules):
+                    sampled = self.diffusion.pretransform.decode(sampled)
         audio = sampled.float()
         peak = torch.max(torch.abs(audio)).clamp_min(1e-8)
         return audio.div(peak).clamp(-1, 1).detach().cpu()

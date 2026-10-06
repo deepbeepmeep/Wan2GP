@@ -9,6 +9,7 @@ class family_handler:
         guidance_max_phases = 1 if z_image_base else 0
         extra_model_def = {
             "image_outputs": True,
+            "device_explicit": base_model_type != "z_image_control",
             "guidance_max_phases": guidance_max_phases,
             "fit_into_canvas_image_refs": 0,
             "profiles_dir": [],

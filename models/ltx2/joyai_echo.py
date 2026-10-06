@@ -501,7 +501,7 @@ def validate_control_memory_positions(raw_value: str, fps: float, *, max_seconds
 
 
 def _normalize_waveform(waveform, *, channels_first: bool, max_seconds: float | None = None, sample_rate: int | None = None) -> torch.Tensor:
-    waveform = torch.as_tensor(waveform).detach().cpu().float()
+    waveform = torch.as_tensor(waveform, device="cpu").detach().float()
     if waveform.ndim == 1:
         waveform = waveform.unsqueeze(0)
     elif waveform.ndim == 2 and not channels_first:
@@ -528,7 +528,7 @@ def _audio_processor(model):
     from .ltx_core.model.audio_vae import AudioProcessor
 
     encoder = model.audio_encoder
-    return AudioProcessor(sample_rate=encoder.sample_rate, mel_bins=encoder.mel_bins, mel_hop_length=encoder.mel_hop_length, n_fft=encoder.n_fft)
+    return AudioProcessor(sample_rate=encoder.sample_rate, mel_bins=encoder.mel_bins, mel_hop_length=encoder.mel_hop_length, n_fft=encoder.n_fft, device=model.device)
 
 
 def _audio_latent_downsample(model) -> int:

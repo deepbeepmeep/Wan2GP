@@ -20,7 +20,7 @@ from shared.utils.text_encoder_cache import TextEncoderCache
 
 from models.ideogram4.qwen3_vl_configuration import Qwen3VLConfig, register_qwen3_vl_config
 from models.ideogram4.qwen3_vl_transformers import Qwen3VLModel, Qwen3VLTextModel, Qwen3VLVisionModel
-from models.qwen.autoencoder_kl_qwenimage import AutoencoderKLQwenImage
+from models.qwen.vae_variants import load_vae
 
 from .krea2_mmdit import SingleStreamDiT, config_from_diffusers
 
@@ -43,8 +43,8 @@ def preprocess_sd(state_dict):
     return {key[prefix_len:] if key.startswith(_TRANSFORMER_STATE_DICT_PREFIX) else key: value for key, value in state_dict.items()}
 
 
-def _timesteps(seq_len, steps, x1, x2, y1=0.5, y2=1.15, sigma=1.0, mu=None):
-    ts = torch.linspace(1, 0, steps + 1)
+def _timesteps(seq_len, steps, x1, x2, device, y1=0.5, y2=1.15, sigma=1.0, mu=None):
+    ts = torch.linspace(1, 0, steps + 1, device=device)
     if mu is None:
         slope = (y2 - y1) / (x2 - x1)
         mu = slope * seq_len + (y1 - slope * x1)
@@ -197,8 +197,8 @@ class Krea2Pipeline:
 
     def _decode_latents_to_cpu_uint8(self, latents):
         latents = rearrange(latents, "b c h w -> b c 1 h w").to(self.vae.dtype)
-        latents_mean = torch.tensor(self.vae.config.latents_mean).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
-        latents_std = torch.tensor(self.vae.config.latents_std).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_mean = torch.tensor(self.vae.config.latents_mean, device=latents.device).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_std = torch.tensor(self.vae.config.latents_std, device=latents.device).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
         latents = (latents * latents_std) + latents_mean
         return self.vae.decode_to_cpu_uint8(latents)[:, :, 0]
 
@@ -225,8 +225,8 @@ class Krea2Pipeline:
             image = image.resize((width, height), resample=Image.Resampling.LANCZOS)
         tensor = convert_image_to_tensor(image).unsqueeze(0).unsqueeze(2).to(device=device, dtype=self.vae.dtype)
         latents = self.vae.encode(tensor).latent_dist.mode()
-        latents_mean = torch.tensor(self.vae.config.latents_mean).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
-        latents_std = torch.tensor(self.vae.config.latents_std).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_mean = torch.tensor(self.vae.config.latents_mean, device=latents.device).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_std = torch.tensor(self.vae.config.latents_std, device=latents.device).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
         latents = (latents - latents_mean) / latents_std
         return latents[:, :, 0].to(device=device, dtype=dtype)
 
@@ -353,7 +353,7 @@ class Krea2Pipeline:
                 _, unpos, unmask = _prepare(noise, untxt.shape[1], patch, untxtmask)
         x1 = (256 // align) ** 2
         x2 = (1280 // align) ** 2
-        ts = _timesteps(x.shape[1], steps, x1, x2, y1=y1, y2=y2, mu=mu)
+        ts = _timesteps(x.shape[1], steps, x1, x2, x.device, y1=y1, y2=y2, mu=mu)
         img = x
         reference_tokens = []
         if edit:
@@ -697,18 +697,6 @@ def _load_text_encoder(text_encoder_filename, config_path, dtype, with_vision=Fa
     return text_encoder
 
 
-def _load_vae(filename, config_path, dtype, upsampler_factor=1, preprocess_sd=None):
-    config = _load_json(config_path)
-    for key in ("_class_name", "_diffusers_version", "_name_or_path"):
-        config.pop(key, None)
-    config["upsampler_factor"] = upsampler_factor
-    with init_empty_weights(include_buffers=True):
-        vae = AutoencoderKLQwenImage(**config)
-    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=None, preprocess_sd=preprocess_sd)
-    vae.eval().requires_grad_(False)
-    return vae
-
-
 class model_factory:
     def __init__(
         self,
@@ -753,17 +741,7 @@ class model_factory:
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, max_length=512, trust_remote_code=True, extra_special_tokens={})
         image_processor = Qwen2VLImageProcessorFast.from_pretrained(tokenizer_path)
         processor = Krea2Qwen3VLProcessor(image_processor, tokenizer)
-        vae_upsampler_factor = 2 if VAE_upsampling is not None else 1
-        if vae_upsampler_factor == 2:
-            from models.qwen.convert_diffusers_qwen_vae import convert_state_dict
-
-            vae_filename = "Wan2.1_VAE_upscale2x_imageonly_real_v1.safetensors"
-            preprocess_vae_sd = convert_state_dict
-        else:
-            vae_filename = "qwen_vae.safetensors"
-            preprocess_vae_sd = None
-        vae = _load_vae(fl.locate_file(vae_filename), fl.locate_file("qwen_vae_config.json"), VAE_dtype, upsampler_factor=vae_upsampler_factor, preprocess_sd=preprocess_vae_sd)
-        vae.upsampling_set = VAE_upsampling
+        vae = load_vae(model_def, VAE_upsampling)
         self.pipeline = Krea2Pipeline(transformer, vae, Qwen3VLConditioner(text_encoder, tokenizer, processor), dtype=dtype)
         self.transformer = transformer
         self.text_encoder = text_encoder

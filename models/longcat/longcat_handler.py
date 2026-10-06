@@ -33,6 +33,7 @@ class family_handler:
     @staticmethod
     def query_model_def(base_model_type, model_def):
         extra_model_def = {
+            "device_explicit": base_model_type == "longcat_avatar_v1_5",
             "frames_minimum": 5,
             "frames_steps": 4,
             "sliding_window": True,

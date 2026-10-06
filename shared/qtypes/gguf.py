@@ -254,9 +254,6 @@ def set_gguf_cuda_kernels_enabled(enabled=None):
     return _probe_gguf_cuda_runtime(force=True)
 
 
-_probe_gguf_cuda_runtime()
-
-
 def _gguf_read_array(data, offset, dtype, byte_order):
     dtype = np.dtype(dtype).newbyteorder(byte_order)
     value = np.frombuffer(data, dtype=dtype, count=1, offset=offset)
@@ -570,6 +567,7 @@ def load_gguf_state_dict(
         raise RuntimeError("GGUF support requires the 'gguf' package.")
     if pin_to_memory:
         raise Exception("Pinning to memory while loading GGUF files is not supported")
+    _gguf_cuda_kernels_enabled() # probes the llama.cpp CUDA kernels on first GGUF use, before any forward or graph capture
 
     import warnings
 
@@ -1706,9 +1704,10 @@ class QLinearGGUF(QModuleMixin, torch.nn.Linear):
             handoff.clear()
         qweight = self.qweight
         optimized = getattr(self, "_use_optimized_kernels", False)
-        # Typed MMVQ stores help single-token decode; keep the established
-        # multi-token kernels for prefill and speculative verification.
-        if optimized and input.numel() == input.shape[-1] and input.is_cuda and torch.version.hip is None and isinstance(qweight, GGUFWeightTensor):
+        # Decode and short speculative batches (up to 8 rows): typed outputs and
+        # fused SiLU-multiply avoid separate conversion and activation kernels
+        # (bit-identical results). Prefill keeps the established kernels.
+        if optimized and input.numel() <= 8 * input.shape[-1] and input.is_cuda and torch.version.hip is None and isinstance(qweight, GGUFWeightTensor):
             native = _gguf_cuda_module()
             supports = getattr(native, "supports_linear_fusions", None)
             if callable(supports) and supports(qweight._tensor_type.name, input.numel() // input.shape[-1], input.device.index):

@@ -8,6 +8,7 @@ from .types import (
     AudioConditionByAppendedReferenceLatent,
     AudioConditionByReferenceLatent,
     VideoConditionByKeyframeIndex,
+    VideoGeneratedKeyframeSlots,
     VideoConditionByLatentIndex,
     VideoConditionByReferenceLatent,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "AudioConditionByAppendedReferenceLatent",
     "AudioConditionByReferenceLatent",
     "VideoConditionByKeyframeIndex",
+    "VideoGeneratedKeyframeSlots",
     "VideoConditionByLatentIndex",
     "VideoConditionByReferenceLatent",
 ]

@@ -13,6 +13,7 @@ import numpy as np
 from typing import Union,Optional
 from mmgp import offload
 from mmgp.offload import get_cache, clear_caches
+from shared import attention_kit
 from shared.attention import pay_attention
 from torch.backends.cuda import sdp_kernel
 from ..multitalk.multitalk_utils import get_attn_map_with_target
@@ -37,7 +38,7 @@ def sinusoidal_embedding_1d(dim, position):
 
     # calculation
     sinusoid = torch.outer(
-        position, torch.pow(10000, -torch.arange(half).to(position).div(half)))
+        position, torch.pow(10000, -torch.arange(half, device=position.device).to(position).div(half)))
     x = torch.cat([torch.cos(sinusoid), torch.sin(sinusoid)], dim=1)
     return x
 
@@ -162,6 +163,19 @@ class WanRMSNorm(nn.Module):
         Args:
             x(Tensor): Shape [B, L, C]
         """
+        if in_place and x.is_contiguous():  # float32 statistics by chunks of rows: the same values without a float32 copy of x
+            rows = x.view(-1, x.shape[-1])
+            step = max(1, (64 << 20) // (rows.shape[-1] * 4))
+            for start in range(0, rows.shape[0], step):
+                part = rows[start:start + step]
+                y = part.float()
+                y.pow_(2)
+                y = y.mean(dim=-1, keepdim=True)
+                y += self.eps
+                y.rsqrt_()
+                part *= y
+            x *= self.weight
+            return x
         y = x.float()
         y.pow_(2)
         y = y.mean(dim=-1, keepdim=True)
@@ -212,7 +226,7 @@ class WanLayerNorm(nn.LayerNorm):
         return x
         # return super().forward(x).type_as(x)
 
-from .posemb_layers import apply_rotary_emb, get_rotary_pos_embed, apply_rotary_source_id
+from .posemb_layers import apply_rotary_emb, apply_rotary_emb_single, get_rotary_pos_embed, apply_rotary_source_id
 
 class WanSelfAttention(nn.Module):
 
@@ -306,6 +320,19 @@ class WanSelfAttention(nn.Module):
         else:
             return x, None
     
+    def _norm_rope_(self, query, key, group, freqs):
+        """attention_kit callback: norm_q/norm_k (over all heads) and RoPE of q and/or k in place."""
+        for tensor, norm, heads, index in ((query, self.norm_q, group.q, 0), (key, self.norm_k, group.kv, 1)):
+            if tensor is None:
+                continue
+            rows = tensor.flatten(2)
+            if group.mean_squares is None:
+                norm(rows)
+            else:
+                rows.mul_(group.mean_squares[index].add(norm.eps).rsqrt_())
+                rows.mul_(norm.weight[heads.start * self.head_dim:heads.stop * self.head_dim])
+            apply_rotary_emb_single([tensor], freqs, head_first=False)
+
     def forward(self, xlist, grid_sizes, freqs, block_mask = None, ref_target_masks = None, ref_images_count = 0, standin_phase =-1, lynx_ref_buffer = None, lynx_ref_scale = 0, sub_x_no=0):
         r"""
         Args:
@@ -313,6 +340,12 @@ class WanSelfAttention(nn.Module):
             grid_sizes(Tensor): Shape [B, 3], the second dimension contains (F, H, W)
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
         """
+        if (block_mask is None and ref_target_masks is None and standin_phase < 1 and lynx_ref_buffer is None and isinstance(freqs, tuple)
+                and not offload.shared_state.get("_chipmunk", False) and not offload.shared_state.get("_radial", False)):
+            x = attention_kit.qkv_attention(xlist, self.q, self.k, self.v, self.num_heads, self.head_dim,
+                                            lambda query, key, group: self._norm_rope_(query, key, group, freqs),
+                                            norm_spans_heads=isinstance(self.norm_q, WanRMSNorm))
+            return self.o(x.flatten(2)), None
         x = xlist[0]
         xlist.clear()
 
@@ -697,13 +730,14 @@ class WanAttentionBlock(nn.Module):
 
         y_shape = y.shape
         y = y.view(-1, y_shape[-1])
-        chunk_size = int(y.shape[0]/2.7)
+        chunk_size = max(1, int(y.shape[0]/5.4)) # expanded chunks of about half the hidden states
         chunks =torch.split(y, chunk_size)
         for y_chunk  in chunks:
             mlp_chunk = ffn(y_chunk)
-            mlp_chunk = gelu(mlp_chunk)
+            for part in torch.split(mlp_chunk, max(1, (64 << 20) // (mlp_chunk.shape[-1] * mlp_chunk.element_size()))):
+                part.copy_(gelu(part)) # in place by rows: the same values without a second expanded chunk
             y_chunk[...] = ffn2(mlp_chunk)
-            del mlp_chunk 
+            del mlp_chunk
         y = y.view(y_shape)
         y = y.to(dtype)
         x, y = reshape_latent(x , latent_frames), reshape_latent(y , latent_frames)
@@ -844,13 +878,15 @@ class Head(nn.Module):
         # modulation
         self.modulation = nn.Parameter(torch.randn(1, 2, dim) / dim**0.5)
 
-    def forward(self, x, e):
+    def forward(self, x_list, e):
         r"""
         Args:
             x(Tensor): Shape [B, L1, C]
             e(Tensor): Shape [B, C]
         """
         # assert e.dtype == torch.float32
+        x = x_list[0]  # handed off: the hidden states are released once normalized, before the float32 copy
+        x_list.clear()
         dtype = x.dtype
 
         latent_frames = e.shape[0]
@@ -1612,7 +1648,7 @@ class WanModel(ModelMixin, ConfigMixin):
                     for source_latent, source_id in bernini_sources[i]:
                         source_latent = source_latent.to(device=device, dtype=self.patch_embedding.weight.dtype)
                         source_tokens_i = self.patch_embedding(source_latent).to(modulation_dtype).flatten(2).transpose(1, 2)
-                        source_freqs = apply_rotary_source_id(get_rotary_pos_embed(tuple(source_latent.shape[2:])), source_id, self.dim // self.num_heads)
+                        source_freqs = apply_rotary_source_id(get_rotary_pos_embed(tuple(source_latent.shape[2:]), device=source_latent.device), source_id, self.dim // self.num_heads)
                         source_freqs = (source_freqs[0].to(device), source_freqs[1].to(device))
                         source_tokens.append(source_tokens_i)
                         cos_parts.append(source_freqs[0])
@@ -1620,7 +1656,7 @@ class WanModel(ModelMixin, ConfigMixin):
                     x = self.patch_embedding(x).to(modulation_dtype)
                     grid_sizes = x.shape[2:]
                     x = x.flatten(2).transpose(1, 2)
-                    target_freqs = freqs if freqs is not None else get_rotary_pos_embed(tuple(grid_sizes))
+                    target_freqs = freqs if freqs is not None else get_rotary_pos_embed(tuple(grid_sizes), device=x.device)
                     target_freqs = (target_freqs[0].to(device), target_freqs[1].to(device))
                     bernini_freqs_list.append((torch.cat([target_freqs[0]] + cos_parts, dim=0), torch.cat([target_freqs[1]] + sin_parts, dim=0)))
                     bernini_output_slices.append(slice(0, x.shape[1]))
@@ -2080,7 +2116,8 @@ class WanModel(ModelMixin, ConfigMixin):
                 x = x[:, :real_seq]
 
             # head
-            x = self.head(x, e)
+            head_input, x = [x], None
+            x = self.head(head_input, e)
 
             # unpatchify
             x = self.unpatchify(x, output_grid_sizes if output_grid_sizes is not None else grid_sizes)

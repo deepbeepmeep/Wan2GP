@@ -460,6 +460,7 @@ def generate_freq_grid_np(
     positional_embedding_theta: float,
     positional_embedding_max_pos_count: int,
     inner_dim: int,
+    device: torch.device,
 ) -> torch.Tensor:
     theta = positional_embedding_theta
     start = 1
@@ -474,19 +475,20 @@ def generate_freq_grid_np(
             dtype=np.float64,
         ),
     )
-    return torch.tensor(pow_indices * math.pi / 2, dtype=torch.float32)
+    return torch.tensor(pow_indices * math.pi / 2, dtype=torch.float32, device=device)
 
 
 def generate_freq_grid_pytorch(
     positional_embedding_theta: float,
     positional_embedding_max_pos_count: int,
     inner_dim: int,
+    device: torch.device,
 ) -> torch.Tensor:
     theta = positional_embedding_theta
     start = 1
     end = theta
     n_elem = 2 * positional_embedding_max_pos_count
-    indices = theta ** torch.linspace(math.log(start, theta), math.log(end, theta), inner_dim // n_elem, dtype=torch.float32)
+    indices = theta ** torch.linspace(math.log(start, theta), math.log(end, theta), inner_dim // n_elem, dtype=torch.float32, device=device)
     return indices.to(dtype=torch.float32) * math.pi / 2
 
 
@@ -556,7 +558,7 @@ def precompute_freqs_cis(
     if max_pos is None:
         max_pos = [20, 2048, 2048]
     freqs_dtype = torch.float32 if USE_FP32_ROPE_FREQS else out_dtype
-    indices = freq_grid_generator(theta, indices_grid.shape[1], dim)
+    indices = freq_grid_generator(theta, indices_grid.shape[1], dim, indices_grid.device)
     freqs = generate_freqs(indices, indices_grid, max_pos, use_middle_indices_grid)
 
     if rope_type == LTXRopeType.SPLIT:
@@ -838,7 +840,7 @@ def build_rope_cache(
     rope_type: LTXRopeType = LTXRopeType.INTERLEAVED,
     rope_axes: tuple[int, ...] | None = None,
     rope_max_pos: list[int] | None = None,
-    freq_grid_generator: Callable[[float, int, int], torch.Tensor] = generate_freq_grid_pytorch,
+    freq_grid_generator: Callable[[float, int, int, torch.device], torch.Tensor] = generate_freq_grid_pytorch,
 ) -> RopeCache:
     if max_pos is None:
         max_pos = [20, 2048, 2048]
@@ -869,7 +871,7 @@ def build_rope_cache(
             split_max_freq_width=0,
         )
 
-    indices = freq_grid_generator(theta, num_rope_axes, dim).to(device=positions_mid.device)
+    indices = freq_grid_generator(theta, num_rope_axes, dim, positions_mid.device)
     axis_width = indices.shape[0]
     if rope_type == LTXRopeType.SPLIT:
         freq_dim = dim // 2

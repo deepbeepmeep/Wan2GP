@@ -62,7 +62,7 @@ def prepare_prompt(t5: HFEmbedder, clip: HFEmbedder, bs: int, prompt: str | list
         txt = t5(prompt)
         if txt.shape[0] == 1 and bs > 1:
             txt = repeat(txt, "1 ... -> bs ...", bs=bs)
-        txt_ids = torch.zeros(bs, txt.shape[1], 3)
+        txt_ids = torch.zeros(bs, txt.shape[1], 3, device=device)
 
         vec = clip(prompt)
         if vec.shape[0] == 1 and bs > 1:
@@ -82,9 +82,9 @@ def prepare_img(img: Tensor, patch_size: int = 2) -> dict[str, Tensor]:
     if img.shape[0] == 1 and bs > 1:
         img = repeat(img, "1 ... -> bs ...", bs=bs)
 
-    img_ids = torch.zeros(h // patch_size, w // patch_size, 3)
-    img_ids[..., 1] = img_ids[..., 1] + torch.arange(h // patch_size)[:, None]
-    img_ids[..., 2] = img_ids[..., 2] + torch.arange(w // patch_size)[None, :]
+    img_ids = torch.zeros(h // patch_size, w // patch_size, 3, device=img.device)
+    img_ids[..., 1] = img_ids[..., 1] + torch.arange(h // patch_size, device=img.device)[:, None]
+    img_ids[..., 2] = img_ids[..., 2] + torch.arange(w // patch_size, device=img.device)[None, :]
     img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
 
     return {
@@ -120,9 +120,9 @@ def prepare_redux(
     if img.shape[0] == 1 and bs > 1:
         img = repeat(img, "1 ... -> bs ...", bs=bs)
 
-    img_ids = torch.zeros(h // 2, w // 2, 3)
-    img_ids[..., 1] = img_ids[..., 1] + torch.arange(h // 2)[:, None]
-    img_ids[..., 2] = img_ids[..., 2] + torch.arange(w // 2)[None, :]
+    img_ids = torch.zeros(h // 2, w // 2, 3, device=img.device)
+    img_ids[..., 1] = img_ids[..., 1] + torch.arange(h // 2, device=img.device)[:, None]
+    img_ids[..., 2] = img_ids[..., 2] + torch.arange(w // 2, device=img.device)[None, :]
     img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
 
     if isinstance(prompt, str):
@@ -131,7 +131,7 @@ def prepare_redux(
     txt = torch.cat((txt, img_cond.to(txt)), dim=-2)
     if txt.shape[0] == 1 and bs > 1:
         txt = repeat(txt, "1 ... -> bs ...", bs=bs)
-    txt_ids = torch.zeros(bs, txt.shape[1], 3)
+    txt_ids = torch.zeros(bs, txt.shape[1], 3, device=txt.device)
 
     vec = clip(prompt)
     if vec.shape[0] == 1 and bs > 1:
@@ -220,10 +220,10 @@ def prepare_kontext(
 
         # image ids are the same as base image with the first dimension set to 1
         # instead of 0
-        img_cond_ids = torch.zeros(height // 2, width // 2, 3)
+        img_cond_ids = torch.zeros(height // 2, width // 2, 3, device=img_cond_latents.device)
         img_cond_ids[..., 0] = 1
-        img_cond_ids[..., 1] = img_cond_ids[..., 1] + torch.arange(height // 2)[:, None] + height_offset
-        img_cond_ids[..., 2] = img_cond_ids[..., 2] + torch.arange(width // 2)[None, :] + width_offset
+        img_cond_ids[..., 1] = img_cond_ids[..., 1] + torch.arange(height // 2, device=img_cond_latents.device)[:, None] + height_offset
+        img_cond_ids[..., 2] = img_cond_ids[..., 2] + torch.arange(width // 2, device=img_cond_latents.device)[None, :] + width_offset
         img_cond_ids = repeat(img_cond_ids, "h w c -> b (h w) c", b=bs)
         height_offset +=  height // 2 
         width_offset +=  width // 2
@@ -277,14 +277,14 @@ def generalized_time_snr_shift(t: Tensor, mu: float, sigma: float) -> Tensor:
     return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
 
 
-def get_schedule_flux2(num_steps: int, image_seq_len: int) -> list[float]:
+def get_schedule_flux2(num_steps: int, image_seq_len: int, device: torch.device) -> list[float]:
     mu = compute_empirical_mu(image_seq_len, num_steps)
-    timesteps = torch.linspace(1, 0, num_steps + 1)
+    timesteps = torch.linspace(1, 0, num_steps + 1, device=device)
     timesteps = generalized_time_snr_shift(timesteps, mu, 1.0)
     return timesteps.tolist()
 
 
-def get_schedule_piflux2(num_steps: int, image_seq_len: int) -> list[float]:
+def get_schedule_piflux2(num_steps: int, image_seq_len: int, device: torch.device) -> list[float]:
     """
     pi-FLUX.2 FlowMapSDE schedule with shift=3.2 and final_step_size_scale=0.5.
     """
@@ -294,10 +294,10 @@ def get_schedule_piflux2(num_steps: int, image_seq_len: int) -> list[float]:
     final_step_size_scale = 0.5
     end = (final_step_size_scale - 1.0) / (num_steps + final_step_size_scale - 1.0)
     step = (end - 1.0) / num_steps
-    raw_timesteps = 1.0 + step * torch.arange(num_steps, dtype=torch.float32)
+    raw_timesteps = 1.0 + step * torch.arange(num_steps, dtype=torch.float32, device=device)
     raw_timesteps = raw_timesteps.clamp(min=0)
     sigmas = shift * raw_timesteps / (1 + (shift - 1) * raw_timesteps)
-    sigmas = torch.cat([sigmas, torch.zeros(1, dtype=sigmas.dtype)])
+    sigmas = torch.cat([sigmas, sigmas.new_zeros(1)])
     return sigmas.tolist()
 
 
@@ -498,9 +498,10 @@ def get_schedule(
     base_shift: float = 0.5,
     max_shift: float = 1.15,
     shift: bool = True,
+    device: torch.device = None,
 ) -> list[float]:
     # extra step for zero
-    timesteps = torch.linspace(1, 0, num_steps + 1)
+    timesteps = torch.linspace(1, 0, num_steps + 1, device=device)
 
     # shifting the schedule to favor high timesteps for higher signal images
     if shift:
@@ -855,9 +856,9 @@ def prepare_multi_ip(
     if img.shape[0] == 1 and bs > 1:
         img = repeat(img, "1 ... -> bs ...", bs=bs)
 
-    img_ids = torch.zeros(h // patch_size, w // patch_size, 3)
-    img_ids[..., 1] = img_ids[..., 1] + torch.arange(h // patch_size)[:, None]
-    img_ids[..., 2] = img_ids[..., 2] + torch.arange(w // patch_size)[None, :]
+    img_ids = torch.zeros(h // patch_size, w // patch_size, 3, device=img.device)
+    img_ids[..., 1] = img_ids[..., 1] + torch.arange(h // patch_size, device=img.device)[:, None]
+    img_ids[..., 2] = img_ids[..., 2] + torch.arange(w // patch_size, device=img.device)[None, :]
     img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
     img_cond_seq = img_cond_seq_ids = None
     if conditions_zero_start:
@@ -871,16 +872,16 @@ def prepare_multi_ip(
         )
         if ref_img.shape[0] == 1 and bs > 1:
             ref_img = repeat(ref_img, "1 ... -> bs ...", bs=bs)
-        ref_img_ids1 = torch.zeros(ref_h1 // 2, ref_w1 // 2, 3)
+        ref_img_ids1 = torch.zeros(ref_h1 // 2, ref_w1 // 2, 3, device=ref_img.device)
         if set_cond_index:
             ref_img_ids1[..., 0] = cond_no + 1
         h_offset = pe_shift_h if pe in {"d", "h"} else 0
         w_offset = pe_shift_w if pe in {"d", "w"} else 0
         ref_img_ids1[..., 1] = (
-            ref_img_ids1[..., 1] + torch.arange(ref_h1 // 2)[:, None] + h_offset
+            ref_img_ids1[..., 1] + torch.arange(ref_h1 // 2, device=ref_img.device)[:, None] + h_offset
         )
         ref_img_ids1[..., 2] = (
-            ref_img_ids1[..., 2] + torch.arange(ref_w1 // 2)[None, :] + w_offset
+            ref_img_ids1[..., 2] + torch.arange(ref_w1 // 2, device=ref_img.device)[None, :] + w_offset
         )
         ref_img_ids1 = repeat(ref_img_ids1, "h w c -> b (h w) c", b=bs)
 

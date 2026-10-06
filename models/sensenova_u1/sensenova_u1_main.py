@@ -95,11 +95,11 @@ class model_factory:
         references = [_as_pil(image) for image in references]
         use_kv_cache = isinstance(custom_settings, dict) and custom_settings.get("sensenova_kv_cache") == "Enabled"
 
-        if callback is not None:
-            callback(-1, None, True, override_num_inference_steps=sampling_steps)
-
         def step_callback(step_idx, image):
             if callback is not None:
+                if step_idx == -1:
+                    callback(-1, None, True, override_num_inference_steps=sampling_steps)
+                    return
                 preview_height = min(200, image.shape[-2])
                 preview_width = max(1, round(image.shape[-1] * preview_height / image.shape[-2]))
                 preview = torch.nn.functional.interpolate(image, size=(preview_height, preview_width), mode="bilinear", align_corners=False) if image.shape[-2:] != (preview_height, preview_width) else image

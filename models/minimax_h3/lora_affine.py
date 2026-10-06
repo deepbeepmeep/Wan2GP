@@ -13,6 +13,8 @@ _MAP_DIR = Path(__file__).with_name("lora_affine_maps")
 _ARCHITECTURES = {
     "minimax_h3_fl2va": "fl2va",
     "minimax_h3_fl2va_pruned": "fl2va",
+    "minimax_h3_control": "fl2va",
+    "minimax_h3_control_pruned": "fl2va",
     "minimax_h3_ref2va": "ref2va",
     "minimax_h3_ref2va_pruned": "ref2va",
     "viggle_animate": "viggle",
@@ -58,7 +60,7 @@ def _aligned_affine_map(architecture, target_table):
         raise ValueError(f"Unsupported MiniMax H3 {architecture} AdaLN target table shape {tuple(target_table.shape)}")
     canonical_table, canonical_affine = _load_affine_package(architecture, target_table.shape[1])
     if target_table.shape[0] != canonical_table.shape[0]:
-        position = torch.linspace(0, canonical_table.shape[0] - 1, target_table.shape[0], dtype=torch.float64)
+        position = torch.linspace(0, canonical_table.shape[0] - 1, target_table.shape[0], dtype=torch.float64, device=target_table.device)
         lower = position.floor().long().clamp(max=canonical_table.shape[0] - 2)
         canonical_table = torch.lerp(canonical_table[lower].double(), canonical_table[lower + 1].double(), (position - lower).unsqueeze(1))
     elif torch.equal(target_table.float(), canonical_table):

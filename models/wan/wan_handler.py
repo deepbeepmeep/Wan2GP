@@ -179,6 +179,8 @@ class family_handler():
     @staticmethod
     def query_model_def(base_model_type, model_def):
         extra_model_def = {}
+        extra_model_def["device_explicit"] = base_model_type in ["t2v", "t2v_1.3B", "t2v_2_2", "i2v", "i2v_2_2", "flf2v_720p", "fun_inp", "fun_inp_1.3B", "ti2v_2_2", "i2v_2_2_svi2pro", "bernini_1.3B", "kiwi_edit", "vace_14B_2_2", "bernini", "steadydancer", "scail", "scail2_14B", "wanmove",
+                                                                 "lynx", "standin", "vace_14B", "vace_ditto_14B", "vace_lynx_14B", "vace_standin_14B", "infinitetalk"]
         if base_model_type not in ["mocha", "recam_1.3B", "scail2_14B", "scail2_1.3B", "vista4d"]:
             extra_model_def["riflex"] = True
         override_text_encoder_urls = model_def.get("text_encoder_URLs", None)

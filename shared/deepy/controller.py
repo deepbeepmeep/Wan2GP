@@ -1177,8 +1177,7 @@ class DeepyController:
             cancelled_job_id = self._cancel_active_prime_job(session, "Stop")
             self._debug_log(f"Stop requested worker_active=True active_prime_mcp_job={cancelled_job_id or 'none'}")
             status_text = "Stopping generation..." if cancelled_job_id else "Interrupting the current assistant task..."
-            status = {"visible": True, "kind": "queued", "text": status_text}
-            return assistant_chat.build_sync_event(session, status=status), gr.update(), gr.update(), gr.update()
+            return assistant_chat.build_status_event(status_text, kind="stop_pending", session=session), gr.update(), gr.update(), gr.update()
         cancelled_user_text = self._cancel_next_queued_request(session)
         if cancelled_user_text:
             chat_event = assistant_chat.build_sync_event(session)

@@ -168,6 +168,7 @@ class family_handler:
         text_encoder_filename = "Qwen3-VL-8B-Instruct_nf4.safetensors" if _model_uses_nf4(model_def) else "Qwen3-VL-8B-Instruct_fp8.safetensors"
         model_def_update = {
             "image_outputs": True,
+            "device_explicit": True,
             "flux2": True,
             "vae_upsamplers": {"flux2_vae_pid": [1]},
             "excluded_spatial_upsamplers": ["flux2_pid"],

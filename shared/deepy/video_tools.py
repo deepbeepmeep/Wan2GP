@@ -15,7 +15,7 @@ import ffmpeg
 from PIL import Image, ImageDraw, ImageFont
 
 from shared.ffmpeg_setup import download_ffmpeg
-from shared.utils.audio_video import get_mp4_audio_codec_settings
+from shared.utils.audio_video import get_video_audio_encode_args
 from shared.utils.video_codecs import get_video_container_extension, get_video_encode_args
 from shared.utils.utils import get_video_frame, get_video_info
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi"}
@@ -71,11 +71,7 @@ def get_audio_standalone_extension(codec_key: str | None) -> str:
 
 
 def _get_mp4_audio_encode_args(codec_key: str | None) -> list[str]:
-    settings = get_mp4_audio_codec_settings(codec_key)
-    args = ["-c:a", settings["codec"]]
-    if settings.get("bitrate"):
-        args += ["-b:a", settings["bitrate"]]
-    return args
+    return get_video_audio_encode_args(codec_key)
 
 
 def _get_standalone_audio_encode_args(codec_key: str | None) -> list[str]:
@@ -85,7 +81,7 @@ def _get_standalone_audio_encode_args(codec_key: str | None) -> list[str]:
     if codec_key == "wav":
         return ["-c:a", "pcm_s16le"]
     if codec_key == "flac":
-        return ["-c:a", "flac"]
+        return ["-c:a", "flac", "-sample_fmt", "s16"]
     if codec_key in {"m4a", "alac"}:
         return ["-c:a", "alac"]
     bitrate = {"mp3_128": "128k", "mp3_192": "192k", "mp3_320": "320k"}.get(codec_key, "192k")

@@ -14,7 +14,7 @@ def shifted_sigma(shift, sigma):
 
 
 def pdd_time_grid(shift, num_steps=PDD_NUM_STEPS):
-    sigma = torch.linspace(1.0, 0.0, int(num_steps) + 1, dtype=torch.float64)
+    sigma = torch.linspace(1.0, 0.0, int(num_steps) + 1, dtype=torch.float64, device="cpu")
     return 1.0 - shifted_sigma(shift, sigma)
 
 

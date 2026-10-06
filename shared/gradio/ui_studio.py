@@ -38,8 +38,8 @@ icons = {
     'Download Lora': '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',
     'Exit': '<path d="M9 4H4v16h5M8 12h13m-5-5 5 5-5 5"/>',
     'Abort': '<rect x="5" y="5" width="14" height="14" rx="2"/>',
-    'One More Sample': '<rect x="3" y="3" width="12" height="14" rx="2"/><path d="M7 21h10a2 2 0 0 0 2-2v-4M9 7v6M6 10h6"/>',
-    'Extend this Sample': '<path d="M4 5v14M4 12h16m-5-5 5 5-5 5"/>',
+    'One More': '<rect x="3" y="3" width="12" height="14" rx="2"/><path d="M7 21h10a2 2 0 0 0 2-2v-4M9 7v6M6 10h6"/>',
+    'Extend': '<path d="M4 5v14M4 12h16m-5-5 5 5-5 5"/>',
     'Pause': '<rect x="5" y="4" width="4" height="16" rx="1"/><rect x="15" y="4" width="4" height="16" rx="1"/>',
     'Resume': '<path d="m8 4 12 8-12 8Z"/>',
     'Early Stop': '<path d="m4 5 10 7-10 7Z"/><path d="M19 5v14"/>',
@@ -61,8 +61,8 @@ def style_config(config, theme):
     visit(config['layout'])
     scope = config['layout']['id']
     navigation = {next(node for node in reversed(paths[c['id']]) if components[node]['type'] == 'row') for c in components.values() if c['props'].get('elem_id') == 'family_list'}
-    kinds = {kind: 'field' for kind in ('textbox', 'dropdown', 'slider', 'number', 'checkbox', 'checkboxgroup', 'radio', 'hierarchyselector', 'rangeslider', 'file', 'image', 'video', 'audio')}
-    kinds.update(button='button', uploadbutton='button', downloadbutton='button', accordion='accordion', tabs='tabs', gallery='gallery')
+    kinds = {kind: 'field' for kind in ('textbox', 'dropdown', 'slider', 'number', 'checkbox', 'checkboxgroup', 'radio', 'hierarchyselector', 'rangeslider', 'file', 'image', 'audio')}
+    kinds.update(button='button', uploadbutton='button', downloadbutton='button', accordion='accordion', tabs='tabs', gallery='gallery', video='gallery')
     selectors = {'wangp-studio-scope': [f'#component-{scope}'], 'wangp-studio-dropdown': []}
     for component_id, component in components.items():
         if component_id not in paths or scope not in paths[component_id]:

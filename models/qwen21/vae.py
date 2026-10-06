@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import math
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
@@ -22,6 +23,7 @@ from diffusers.models.activations import get_activation
 from diffusers.utils import logging
 from shared.utils.phase_progress import check_abort
 from shared.attention import pay_attention
+from shared.utils.conv_bands import conv_bands
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -87,11 +89,9 @@ class QwenImage21CausalConv3d(nn.Conv2d):
         padding = list(self._padding)
         if cache_x is not None:
             raise ValueError("This convolution is the image specialization of Wan's causal 3D one: it folds the single frame away and has no temporal context to prepend, so it cannot take a feature cache.")
-        x = x.squeeze(2)
-        x = F.pad(x, padding)
-        x = super().forward(x)
-        x = x.unsqueeze(2)
-        return x
+        # zero padding by the convolution itself (no padded copy), by bands of rows (no full-image cuDNN workspace)
+        conv = functools.partial(F.conv2d, weight=self.weight, bias=self.bias, stride=self.stride, padding=(padding[2], padding[0]))
+        return conv_bands(x.squeeze(2), conv).unsqueeze(2)
 
 class QwenImage21RMS_norm(nn.Module):
 
@@ -105,9 +105,16 @@ class QwenImage21RMS_norm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(shape, device="cpu")) if bias else 0.0
 
     def forward(self, x):
-        needs_fp32_normalize = x.dtype in (torch.float16, torch.bfloat16)
-        normalized = F.normalize(x.float() if needs_fp32_normalize else x, dim=1 if self.channel_first else -1).to(x.dtype)
-        return normalized * self.scale * self.gamma + self.bias
+        dim = 1 if self.channel_first else -1
+        if x.dtype in (torch.float16, torch.bfloat16):
+            # F.normalize(x.float()).to(x.dtype) with the same float32 norm, then the division by chunks of rows: no full-size float32 result
+            denom = x.float().norm(2.0, dim, keepdim=True).clamp_min_(1e-12)
+            normalized, rows = torch.empty_like(x), max(1, (64 << 20) * x.shape[-2] // (x.numel() * 4))
+            for start in range(0, x.shape[-2], rows):
+                normalized[..., start:start + rows, :] = x[..., start:start + rows, :] / denom[..., start:start + rows, :]
+        else:
+            normalized = F.normalize(x, dim=dim)
+        return normalized.mul_(self.scale).mul_(self.gamma).add_(self.bias)  # in place: one full-size tensor
 
 class QwenImage21Upsample(nn.Upsample):
 
@@ -162,7 +169,10 @@ class QwenImage21Resample(nn.Module):
                     x = x.reshape(b, c, t * 2, h, w)
         t = x.shape[2]
         x = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
-        x = self.resample(x)
+        if self.mode in ('upsample2d', 'upsample3d'):  # nearest x2 + conv by bands of rows: no full-size upsampled input
+            x = conv_bands(x, self.resample[1], upsample=True, mode='nearest-exact')
+        else:
+            x = self.resample(x)
         x = x.view(b, t, x.size(1), x.size(2), x.size(3)).permute(0, 2, 1, 3, 4)
         if self.mode == 'downsample3d':
             if feat_cache is not None:
@@ -574,6 +584,9 @@ class AutoencoderKLQwenImage21(ModelMixin, ConfigMixin, AutoencoderMixin):
         self.quant_conv = QwenImage21CausalConv3d(z_dim * 2, z_dim * 2, 1)
         self.post_quant_conv = QwenImage21CausalConv3d(z_dim, z_dim, 1)
         self.decoder = QwenImage21Decoder3d(dim=decoder_base_dim, z_dim=z_dim, dim_mult=dim_mult, num_res_blocks=num_res_blocks, attn_scales=attn_scales, temperal_upsample=self.temperal_upsample, dropout=dropout, out_channels=out_channels, is_residual=is_residual)
+        for module in self.modules():  # every activation follows a normalization (a fresh tensor): in place, without a second full-size tensor
+            if isinstance(module, nn.SiLU):
+                module.inplace = True
         self.spatial_compression_ratio = scale_factor_spatial
         self.use_slicing = False
         self.use_tiling = False

@@ -176,7 +176,7 @@ class NEOChatModel(PreTrainedModel):
         "Qwen3DecoderLayer",
         "Qwen3MoeDecoderLayer",
     ]
-    _denoise_offload_module_paths = (
+    _offload_separate_blocks = (  # mmgp loads them only while they run: the prompt's embedding and the thinking text's head, not while denoising
         "language_model.model.embed_tokens",
         "language_model.lm_head",
     )
@@ -1623,6 +1623,9 @@ class NEOChatModel(PreTrainedModel):
         if enable_timestep_shift:
             timesteps = self._apply_time_schedule(timesteps, token_h * token_w, timestep_shift)
 
+        if callback is not None:
+            callback(-1, None)
+
         for step_i in tqdm(range(num_steps), total=num_steps, desc="SenseNova-U1 denoising"):
             t = timesteps[step_i]
             t_next = timesteps[step_i + 1]
@@ -1833,6 +1836,9 @@ class NEOChatModel(PreTrainedModel):
         timesteps = torch.linspace(0.0, 1.0, num_steps+1, device=device)
         if enable_timestep_shift:
             timesteps = self._apply_time_schedule(timesteps, token_h*token_w, timestep_shift)
+
+        if callback is not None:
+            callback(-1, None)
 
         for step_i in tqdm(range(num_steps), total=num_steps, desc="SenseNova-U1 denoising"):
             t = timesteps[step_i]

@@ -1,6 +1,8 @@
 ############# WanGP Copyright DeepBeepMeep 2025-2026 #############
 import os, sys
 os.environ["GRADIO_LANG"] = "en"
+# ROCm: without it, SDPA silently falls back to the math kernel on GPUs where AOTriton is still marked experimental
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 p = os.path.dirname(os.path.abspath(__file__))
 if p not in sys.path:
     sys.path.insert(0, p)
@@ -29,12 +31,16 @@ is_mps = sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.b
 if is_mps:
     from shared.mps.device_patch import apply_mps_patch
     apply_mps_patch()
+from shared.cuda_memory import apply_startup_settings, write_vram_debug_report; apply_startup_settings(sys.argv, "wgp_config.json") # VRAM allocator and CUDA stack reserve, before anything initializes CUDA
 
 import time
 import threading
 from functools import partial
 from shared.utils.download_progress import DownloadCancelled, check_download_cancelled
 from shared.utils.download import DownloadError, generation_downloads
+from shared.utils.media_control import MediaProcessingAborted, controlled_model_loading, media_abort_requested
+from shared.utils.default_device import call_with_default_device
+from shared.utils.power_throttling import prevent_power_throttling
 from shared.gradio import metadata_events
 from shared.utils.config_store import config_lock, read_config, write_config, update_config
 import warnings
@@ -46,6 +52,7 @@ try:
 except ImportError:
     pass
 from pathlib import Path
+from shared.tinyvae.media import VideoPreview
 from datetime import datetime
 import gradio as gr
 from shared.gradio import downloads as gradio_downloads
@@ -60,11 +67,12 @@ import importlib
 from models import model_metadata
 from shared import notifications
 from shared.utils import notification_sound
+from shared.utils.setting_names import unknown_settings_error
 from shared.utils.loras_mutipliers import preparse_loras_multipliers, parse_loras_multipliers
 from shared.utils.utils import convert_tensor_to_image, convert_video_tensor_to_uint8_chunked, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, image_editor_layer_to_rgb_mask, to_rgb_tensor, get_resampled_video_transparent, get_video_summary_extras
 from shared.utils.utils import calculate_new_dimensions, get_outpainting_dims, get_outpainting_frame_location, get_outpainting_full_area_dimensions, resolve_outpainting_dims
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension
-from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_pair_volumes_to_temp_files, save_video, save_hdr_video, save_image, get_image_format, get_media_duration_and_audio_layouts
+from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_volumes_to_temp_files, save_video, save_hdr_video, save_image, get_image_format, get_media_duration_and_audio_layouts
 from shared.utils.audio_video import append_sliding_window_audio, read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension, create_silent_wav_file
 from shared.utils.audio_video import truncate_audio, shift_audio_trim_ranges, trim_audio_ranges, trim_audio_file_ranges, slice_audio_window, resolve_mux_audio_sampling_rate
 from shared.utils.audio_metadata import read_audio_metadata, extract_creation_datetime_from_metadata, resolve_audio_creation_datetime
@@ -170,8 +178,7 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-target_mmgp_version = "3.8.1"
-WanGP_version = "13.1315"
+WanGP_version = "17.01"
 settings_version = 2.79
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -190,14 +197,9 @@ theme_radius_size = Size("0.9px", "1.8px", "3.6px", "5.4px", "7.2px", "10.8px", 
 app = None
 # All media attachment keys for queue save/load
 ATTACHMENT_KEYS = ["image_start", "image_end", "image_refs", "image_guide", "image_mask",
-                   "video_guide", "video_guide2", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_source", "replace_voice_sample", "replace_voice_sample2", "custom_guide"]
+                   "video_guide", "video_guide2", "video_guide3", "video_mask", "video_source", "audio_guide", "audio_guide2", "audio_guide3", "audio_source", "replace_voice_sample", "replace_voice_sample2", "custom_guide"]
 PRESERVE_MEDIA_ON_SETTINGS_IMPORT = True
 
-from importlib.metadata import version
-mmgp_version = version("mmgp")
-if mmgp_version != target_mmgp_version:
-    print(f"Incorrect version of mmgp ({mmgp_version}), version {target_mmgp_version} is needed. Please upgrade with the command 'pip install -r requirements.txt'")
-    exit()
 lock = threading.Lock()
 current_task_id = None
 task_id = 0
@@ -222,6 +224,7 @@ for handler in _HANDLER_MODULES:
 from shared.qtypes import gguf as gguf_handler
 quant_router.register_file_extension("gguf", gguf_handler)
 from shared.kernels import int8_backend, kernel_policy
+from shared import attention_kit
 
 
 def apply_int8_kernel_setting(selection: str, notify_disabled=False, resolved=None) -> bool:
@@ -1025,6 +1028,9 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             gr.Info(error)
         return None, None, None, None, error
 
+    unknown_error = unknown_settings_error(inputs)
+    if unknown_error:
+        return err(unknown_error)
     model_def = get_model_def(model_type)
     model_handler = get_model_handler(model_type)
     image_outputs = inputs["image_mode"] > 0
@@ -1122,12 +1128,14 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     force_fps = inputs["force_fps"]
     audio_guide = inputs["audio_guide"]
     audio_guide2 = inputs["audio_guide2"]
+    audio_guide3 = inputs["audio_guide3"]
     audio_source = inputs["audio_source"]
     replace_voice_method = audio_processor_api.normalize_method(inputs.get("replace_voice_method", "") or "")
     replace_voice_sample = inputs.get("replace_voice_sample", None)
     replace_voice_sample2 = inputs.get("replace_voice_sample2", None)
     video_guide = inputs["video_guide"]
     video_guide2 = inputs["video_guide2"]
+    video_guide3 = inputs["video_guide3"]
     image_guide = inputs["image_guide"]
     video_mask = inputs["video_mask"]
     image_mask = inputs["image_mask"]
@@ -1362,6 +1370,11 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
             return err("You must provide a second Audio Source")
     else:
         audio_guide2 = None
+    if "D" in audio_prompt_type:
+        if audio_guide3 == None:
+            return err("You must provide a third Audio Source")
+    else:
+        audio_guide3 = None
     if not all_letters(audio_prompt_type, "AB"):
         audio_prompt_type = del_in_sequence(audio_prompt_type, "N")
     if model_type in ["vace_multitalk_14B"] and ("B" in audio_prompt_type or "X" in audio_prompt_type):
@@ -1397,6 +1410,8 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
                 return err("You must provide a Control Video")
         if "+" in video_prompt_type and video_guide2 is None:
             return err("You must provide a second Control Video")
+        if "*" in video_prompt_type and video_guide3 is None:
+            return err("You must provide a third Control Video")
         if "A" in video_prompt_type and not "U" in video_prompt_type:             
             if image_outputs:
                 if image_mask is None:
@@ -1429,6 +1444,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     else:
         video_guide = None
         video_guide2 = None
+        video_guide3 = None
         image_guide = None
         video_mask = None
         image_mask = None
@@ -1439,6 +1455,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
     if image_outputs:
         video_guide = None
         video_guide2 = None
+        video_guide3 = None
         video_mask = None
     else:
         image_guide = None
@@ -1528,6 +1545,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         "image_refs": image_refs,
         "audio_guide": audio_guide,
         "audio_guide2": audio_guide2,
+        "audio_guide3": audio_guide3,
         "audio_source": audio_source,
         "replace_voice_method": replace_voice_method,
         "replace_voice_sample": replace_voice_sample,
@@ -1535,6 +1553,7 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
         "postprocess_audio": postprocess_audio,
         "video_guide": video_guide,
         "video_guide2": video_guide2,
+        "video_guide3": video_guide3,
         "image_guide": image_guide,
         "video_mask": video_mask,
         "image_mask": image_mask,
@@ -1570,8 +1589,8 @@ def validate_settings(state, model_type, single_prompt, inputs, silent=False):
 
 
 def get_preview_images(inputs):
-    inputs_to_query = ["image_start", "video_source", "image_end", "video_guide", "video_guide2", "image_guide", "video_mask", "image_mask", "image_refs"]
-    labels = ["Start Image", "Video Source", "End Image", "Video Guide", "Video Guide 2", "Image Guide", "Video Mask", "Image Mask", "Image Reference"]
+    inputs_to_query = ["image_start", "video_source", "image_end", "video_guide", "video_guide2", "video_guide3", "image_guide", "video_mask", "image_mask", "image_refs"]
+    labels = ["Start Image", "Video Source", "End Image", "Video Guide", "Video Guide 2", "Video Guide 3", "Image Guide", "Video Mask", "Image Mask", "Image Reference"]
     start_image_data = None
     start_image_labels = []
     end_image_data = None
@@ -1940,7 +1959,7 @@ def _extract_model_type(params, state, log_prefix="[load]"):
         model_type = base_model_type
 
     if model_type is None:
-        return None, "Settings must contain 'model_type'"
+        return None, f"Unknown model type: {original_model_type}" if original_model_type is not None else "Settings must contain 'model_type'"
     params["model_type"] = model_type
     if get_model_def(model_type) is None:
         return None, f"Unknown model type: {original_model_type}"
@@ -2554,6 +2573,7 @@ attention_modes_supported = get_supported_attention_modes()
 override_attention_modes_installed = get_override_attention_modes()
 override_attention_modes_supported = get_supported_override_attention_modes()
 args = parse_wgp_args(CONFIG_FILENAME)
+if args.prevent_power_throttling: prevent_power_throttling()
 migrate_loras_layout()
 
 gpu_major, gpu_minor = torch.cuda.get_device_capability(args.gpu if len(args.gpu) > 0 else None)
@@ -2638,11 +2658,16 @@ if not Path(config_load_filename).is_file():
         "boost" : 1,
         "int8_kernels": "auto",
         "kernel_precision": "fast",
+        "attention_head_split": 0,
         "clear_file_list" : 5,
         "keep_intermediate_sliding_windows": 1,
         "keep_resolution_on_model_switch": True,
         "enable_4k_resolutions": 0,
         "max_reserved_loras": -1,
+        "read_ahead": False,
+        "video_preload_mode": "default",
+        "image_preload_mode": "default",
+        "audio_preload_mode": "default",
         "vae_config": 0,
         "profile" : profile_type.LowRAM_LowVRAM,
         "video_profile": profile_type.LowRAM_LowVRAM,
@@ -2650,6 +2675,7 @@ if not Path(config_load_filename).is_file():
         "audio_profile": 3.5,
         "preload_model_policy": [],
         "UI_theme": "default",
+        "floating_generate_button": True,
         "checkpoints_paths": fl.default_checkpoints_paths,
         "loras_root": DEFAULT_LORA_ROOT,
         "save_queue_if_crash": 1,
@@ -2676,6 +2702,7 @@ if not Path(config_load_filename).is_file():
 else:
     server_config = read_config(config_load_filename)
 
+server_config.setdefault("clear_file_list", 5)
 server_config.setdefault("prompt_enhancer_quantization", "quanto_int8")
 notifications.apply_defaults(server_config)
 server_config.setdefault(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)
@@ -3403,6 +3430,7 @@ boost = server_config.get("boost", 1)
 int8_kernels = server_config.get("int8_kernels", "auto")
 apply_int8_kernel_setting(int8_kernels)
 kernel_policy.configure(server_config.get("kernel_precision", "fast"))
+attention_kit.configure(server_config.get("attention_head_split", 0))
 vae_config = server_config.get("vae_config", 0)
 if len(args.vae_config) > 0:
     vae_config = int(args.vae_config)
@@ -3894,10 +3922,27 @@ def get_profile_type_for_model(model_type, image_mode=0):
         return "image"
     return "video"
 
-def init_pipe(pipe, kwargs, profile):
+def preload_mode(output_type):
+    # the VRAM preload of a kind of output with memory profiles 2, 4 and 5: "default" (the profile's), "manual" (its VRAM Preload value) or
+    # "dynamic" (the preload follows the VRAM left by each workload, the profile default until measured; mmgp says when it cannot apply it:
+    # without an MMGP VRAM allocator, or with Profile 4+, which sends one part at a time)
+    return "manual" if int(args.preload) > 0 else server_config[f"{_normalize_output_type(output_type)}_preload_mode"]
+
+auto_preload_measures = {} # model type -> (its model definition, the measures of the automatic preload): measured again with a new definition
+
+def auto_preload_store(model_type):
+    model_def = get_model_def(model_type)
+    stored = auto_preload_measures.get(model_type, None)
+    if stored is None or stored[0] is not model_def: # definitions are rebuilt when they are refreshed, e.g. after a finetune was edited
+        stored = auto_preload_measures[model_type] = (model_def, {})
+    return stored[1]
+
+def init_pipe(pipe, kwargs, profile, output_type="video"):
     preload =int(args.preload)
-    if preload == 0:
-        preload = server_config.get("preload_in_VRAM", 0)
+    if preload == 0 and preload_mode(output_type) == "manual": # the VRAM preload of this kind of output, also when a generation overrides its memory profile
+        preload = server_config.get(f"{_normalize_output_type(output_type)}_preload_in_VRAM", 0)
+    kwargs["readAhead"] = server_config.get("read_ahead", False)
+    kwargs["perc_reserved_mem_max"] = args.perc_reserved_mem_max or server_config.get("perc_reserved_mem_max", 0) / 100 # 0: mmgp's environment variable or default
 
     kwargs["extraModelsToQuantize"]=  None
     source_budgets = kwargs.get("budgets", None)
@@ -3914,7 +3959,7 @@ def init_pipe(pipe, kwargs, profile):
             budgets["transformer2"] = default_transformer2_budget if preload  == 0 else preload
         source_budgets.update(budgets)
     elif mmgp_profile == 3:
-        source_budgets.update({ "*" : "70%" })
+        source_budgets.update({ "*" : "80%" }) # a model larger than 80% of the VRAM is processed block by block
 
     if "transformer2" in pipe:
         if profile in [3,4]:
@@ -4022,6 +4067,7 @@ def ensure_prompt_enhancer_loaded(override_profile=-1, progress=None, send_cmd=N
         raise gr.Error("Prompt enhancer text runtime is not available.")
     return prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer
 
+@controlled_model_loading
 def load_models(model_type, override_profile = -1, output_type="video", config_id = None, runtime_model_type=None, track_as_main=True, gen=None, loading_callback=None, **model_kwargs):
     global transformer_type, loaded_profile, loaded_config
     def _load_models_info(message):
@@ -4063,7 +4109,6 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
     if quantizeTransformer or "quanto" in model_filename:
         transformer_dtype = torch.bfloat16 if "bf16" in model_filename or "BF16" in model_filename else transformer_dtype
         transformer_dtype = torch.float16 if "fp16" in model_filename or"FP16" in model_filename else transformer_dtype
-    perc_reserved_mem_max = args.perc_reserved_mem_max
     vram_safety_coefficient = args.vram_safety_coefficient 
     model_file_list = [model_filename]
     model_type_list = [model_type]
@@ -4130,11 +4175,26 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
     if lm_decoder_engine_obtained in ("cg", "vllm") and int(profile) not in [ 1, 3]:
         _load_models_info(f"Unable to use LM Engine '{lm_decoder_engine_obtained}' as it requires a Memory Profile such as 1,3 or 3+ that loads entirely the Main Models in VRAM. Switching to Legacy LM Engine...")
         lm_decoder_engine_obtained = "legacy"
+    preview_mode = server_config.get("generation_preview", "rgb")
+    preview_name = preview_path = preview_decoder = None
+    if preview_mode not in ("rgb", "tiny_vae_frames", "tiny_vae_video"):
+        raise ValueError("generation_preview must be rgb, tiny_vae_frames or tiny_vae_video")
+    if preview_mode != "rgb":
+        from shared.tinyvae.decoder import decoder_for, prepare_decoder, load_decoder
+        preview_name = decoder_for(base_model_type, model_def)
+        if preview_name is not None:
+            if not getattr(offload.offload, "supports_cotenant_wildcards", False):
+                raise RuntimeError("GPU TinyVAE previews require MMGP with wildcard cotenant support. Please update MMGP.")
+            preview_path = prepare_decoder(preview_name, gen=gen)
     loading_model_ids = {filename: "transformer" if i == 0 else f"transformer {i + 1}" for i, filename in enumerate(local_model_file_list)}
     if text_encoder_filename:
         loading_model_ids[text_encoder_filename] = "text_encoder"
+    if preview_path is not None:
+        loading_model_ids[preview_path] = "tiny_vae"
     with model_unload_guard(), offload.loading_context(loading_callback, loading_model_ids):
-        torch.set_default_device('cpu')
+        torch.set_default_device(None) # cpu, without the DeviceContext mode that routes every torch call through Python
+        if preview_path is not None:
+            preview_decoder = load_decoder(preview_name, preview_path)
         wan_model, pipe = model_type_handler.load_model(
                     local_model_file_list, runtime_model_type or model_type, base_model_type, model_def, quantizeTransformer = quantizeTransformer, text_encoder_quantization = text_encoder_quantization,
                     dtype = transformer_dtype, VAE_dtype = VAE_dtype, mixed_precision_transformer = mixed_precision_transformer, save_quantized = save_quantized, submodel_no_list   = model_submodel_no_list, text_encoder_filename = text_encoder_filename, profile=profile, lm_decoder_engine=lm_decoder_engine_obtained, **model_kwargs )
@@ -4144,7 +4204,12 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
             kwargs = pipe
             pipe = kwargs.pop("pipe")
         if "coTenantsMap" not in kwargs: kwargs["coTenantsMap"] = {}
-        mmgp_profile = init_pipe(pipe, kwargs, profile)
+        if preview_decoder is not None:
+            pipe["tiny_vae"] = preview_decoder
+            kwargs["coTenantsMap"]["tiny_vae"] = "*"
+        mmgp_profile = init_pipe(pipe, kwargs, profile, output_type)
+        if mmgp_profile in (2, 4, 5) and preload_mode(output_type) == "dynamic":
+            kwargs["autoPreload"] = auto_preload_store(model_type)
         loras_transformer = kwargs.pop("loras", [])
         if "transformer" in pipe:
             loras_transformer += ["transformer"]
@@ -4158,7 +4223,10 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
         if compile_modules == False and len(compile):
             _load_models_info("Pytorch compilation is not supported for this Model")
         # kwargs["pinnedMemory"] = "text_encoder"
-        offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, perc_reserved_mem_max = perc_reserved_mem_max , vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, loading_callback=loading_callback, **kwargs)
+        if "prefetch_window" in server_config: kwargs["prefetchWindow"] = server_config["prefetch_window"]
+        if server_config.get("smart_memory_pinning", True): kwargs["smartPinning"] = 0 # the models processed block by block that the profile does not pin cross a staging ring
+        offloadobj = offload.profile(pipe, profile_no= mmgp_profile, compile = compile_modules, quantizeTransformer = False, loras = loras_transformer, vram_safety_coefficient = vram_safety_coefficient , convertWeightsFloatTo = transformer_dtype, loading_callback=loading_callback, **kwargs)
+    offloadobj.tiny_vae = preview_decoder
     if len(args.gpu) > 0:
         torch.set_default_device(args.gpu)
     if track_as_main:
@@ -4252,7 +4320,7 @@ def get_gen_info(state):
         state["gen"] = cache
     return cache
 
-def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None):
+def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_meta=None, tiny_preview=None):
     gen = get_gen_info(state)
     gen["num_inference_steps"] = num_inference_steps
     generation_start_time = last_refresh_time = time.time()
@@ -4372,23 +4440,32 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
         last_refresh_time = current_time
         if latent is not None:
             payload = pipe.prepare_preview_payload(latent, preview_meta) if hasattr(pipe, "prepare_preview_payload") else latent
+            if tiny_preview is not None:
+                lat = payload["latents"] if isinstance(payload, dict) else payload
+                if lat is not None:
+                    if preview_meta is not None and preview_meta.get("first_latent_only", False):
+                        lat = lat[:, :1]
+                    tiny_preview.capture(lat, step_idx - 1, num_inference_steps, pass_no)
+                return
             if isinstance(payload, dict):
                 data = payload.copy()
                 lat = data.get("latents")
                 if torch.is_tensor(lat):
                     if preview_meta is not None and preview_meta.get("first_latent_only", False) and lat.ndim == 4:
                         lat = lat[:, :1]
-                    data["latents"] = lat.to("cpu", non_blocking=True)
+                    data["latents"] = lat.to("cpu")
                 payload = data
             elif torch.is_tensor(payload):
                 if preview_meta is not None and preview_meta.get("first_latent_only", False) and payload.ndim == 4:
                     payload = payload[:, :1]
-                payload = payload.to("cpu", non_blocking=True)
+                payload = payload.to("cpu")
             if payload is not None:
                 send_cmd("preview", payload)
             
         # gen["progress_args"] = progress_args
             
+    callback.checkpoint = lambda: callback(-1, None, False, True)
+    callback.tiny_vae = tiny_preview is not None
     return callback
 
 def pause_generation(state):
@@ -4801,6 +4878,7 @@ def format_media_info(file_name, configs):
     if file_name is not None:
         values = [html.escape(os.path.basename(strip_virtual_media_suffix(file_name)))]
         labels = [ "File Name"]
+        prompt_labels = {"Prompt", "Negative Prompt"}
         misc_values= []
         misc_labels = []
         pp_values= []
@@ -4953,7 +5031,7 @@ def format_media_info(file_name, configs):
             enhanced_video_prompt = html.escape(enhanced_video_prompt_text[:4096]).replace("\n", "<BR>")
             map_video_prompt  = {"V" : "Control Image" if image_outputs else "Control Video", ("VA", "U") : "Mask Image" if image_outputs else "Mask Video", "I" : "Reference Images", "&": "HDR Output"}
             map_image_prompt  = {"V" : "Source Video", "L" : "Last Video", "S" : "Start Image", "E" : "End Image"}
-            map_audio_prompt  = {"A" : "Audio Source", "O": "Force Output Audio", "B" : "Audio Source #2", "K": "Control Video Audio Track", "N": "Normalized Audio Volumes"}
+            map_audio_prompt  = {"A" : "Audio Source", "O": "Force Output Audio", "B" : "Audio Source #2", "D" : "Audio Source #3", "K": "Control Video Audio Track", "N": "Normalized Audio Volumes"}
             custom_audio_option_label, custom_audio_option_flag = get_audio_prompt_type_custom_option_def(model_def)
             if len(custom_audio_option_flag) > 0:
                 map_audio_prompt[custom_audio_option_flag] = custom_audio_option_label
@@ -5069,6 +5147,7 @@ def format_media_info(file_name, configs):
                 misc_values += [ f"{video_duration_seconds}s"]
                 misc_labels += [html.escape(duration_def.get("name", duration_def.get("label", "Max Duration")))]
             prompt_class = model_def.get("prompt_class","Text Prompt")
+            prompt_labels.update((prompt_class, f"Original {prompt_class}"))
             values +=  misc_values + [video_prompt]
             labels += misc_labels + [f"Original {prompt_class}" if enhanced_video_prompt else prompt_class]
             video_comments = html.escape(str(configs.get("comments", "") or "")[:4096]).replace("\n", "<BR>")
@@ -5078,6 +5157,7 @@ def format_media_info(file_name, configs):
             alt_prompt_def = model_def.get("alt_prompt", None)
             if alt_prompt_def is not None:
                 alt_prompt_label = alt_prompt_def.get("name", alt_prompt_def.get("label")) 
+                prompt_labels.update((alt_prompt_label, f"Original {alt_prompt_label}"))
                 alt_prompt_text = str(configs.get("alt_prompt", "") or "")
                 enhanced_alt_prompt_text = str(configs.get("enhanced_alt_prompt", "") or "")
                 alt_prompt_mode = multi_prompts_gen_type if model_def.get("alt_prompt_inherits_prompt_paragraphs", False) else "FG"
@@ -5286,7 +5366,7 @@ def format_media_info(file_name, configs):
             }
             </STYLE>
         """
-        rows = [f"<TR><TD style='text-align: right;' WIDTH=1% NOWRAP VALIGN=TOP>{label}</TD><TD><B>{value}</B></TD></TR>" for label, value in zip(labels, values)]
+        rows = [f"<TR><TD style='text-align: right;' WIDTH=1% NOWRAP VALIGN=TOP>{label}</TD><TD><B class='{'selected-media-prompt' if label in prompt_labels else ''}'>{value}</B></TD></TR>" for label, value in zip(labels, values)]
         html_content = f"{table_style}<TABLE ID=video_info WIDTH=100%>" + "".join(rows) + "</TABLE>"
     else:
         html_content =  get_default_video_info()
@@ -5844,7 +5924,7 @@ def perform_spatial_upsampling(sample, spatial_upsampling, seed=0, flashvsr_cont
             profile = get_default_profile("audio")
         else:
             profile = loaded_profile if loaded_profile >= 0 else get_default_profile("video")
-        sample, upsampler_cache = upsampler_api.upscale_postprocessing(edit_upsampler, sample, spatial_upsampling, main_offloadobj=offloadobj, loaded_model_context=get_loaded_model_context(), seed=seed, continue_cache=flashvsr_continue_cache, return_continue_cache=return_flashvsr_continue_cache, vae_tile_size=vae_tile_size, process_files=process_files_def, vae_config=vae_config, init_pipe=init_pipe, profile=profile, still_image=still_image, fps=fps, frame_offset=frame_offset, prompt=prompt, negative_prompt=negative_prompt, audio_waveform=audio_waveform, audio_sample_rate=audio_sample_rate, source_audio_path=source_audio_path, reference_images=reference_images, image_refs_relative_size=image_refs_relative_size, abort_callback=abort_callback, progress_callback=progress_callback, **parameter_values)
+        sample, upsampler_cache = upsampler_api.upscale_postprocessing(edit_upsampler, sample, spatial_upsampling, main_offloadobj=offloadobj, loaded_model_context=get_loaded_model_context(), seed=seed, continue_cache=flashvsr_continue_cache, return_continue_cache=return_flashvsr_continue_cache, vae_tile_size=vae_tile_size, process_files=process_files_def, vae_config=vae_config, init_pipe=partial(init_pipe, output_type=profile_type), profile=profile, still_image=still_image, fps=fps, frame_offset=frame_offset, prompt=prompt, negative_prompt=negative_prompt, audio_waveform=audio_waveform, audio_sample_rate=audio_sample_rate, source_audio_path=source_audio_path, reference_images=reference_images, image_refs_relative_size=image_refs_relative_size, abort_callback=abort_callback, progress_callback=progress_callback, **parameter_values)
         return (sample, upsampler_cache) if return_flashvsr_continue_cache else sample
     raise ValueError(f"No spatial upsampler registered for '{spatial_upsampling}'")
 
@@ -5924,14 +6004,6 @@ def edit_media(
 
     operation_start_time = time.time()
     gen = get_gen_info(state)
-    from shared.deepy.media_pause import postprocessing_pause_checkpoint
-    publish_progress = send_cmd
-
-    def send_cmd(command, data=None):
-        publish_progress(command, data)
-        if command == "progress":
-            postprocessing_pause_checkpoint(gen)
-
     api_return_video_uint8, api_return_audio = get_api_output_options(plugin_data)
     api_options = plugin_data.get("api", {}) if isinstance(plugin_data, dict) and isinstance(plugin_data.get("api", {}), dict) else {}
     api_suppress_source_audio = bool(api_options.get("suppress_source_audio"))
@@ -6036,16 +6108,16 @@ def edit_media(
             frames_count = sample.shape[1] 
 
         output_fps = fps
-        def upsampler_progress(phase, current_step=None, total_steps=None):
+        def upsampler_progress(phase, current_step=None, total_steps=None, unit=None):
             phase_text = str(phase)
             gen["progress_phase"] = (phase_text, int(current_step) if current_step is not None else -1)
             status_msg = get_latest_status(state, phase_text)
             if current_step is not None and total_steps is not None and int(total_steps) > 0:
-                send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)])
+                send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)] + ([unit] if unit else []))
             else:
                 send_cmd("progress", [0, status_msg])
         if len(temporal_upsampling) > 0:
-            sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, None, temporal_upsampling, fps, abort_callback=lambda: gen.get("abort", False), progress_callback=upsampler_progress)
+            sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, None, temporal_upsampling, fps, abort_callback=lambda: media_abort_requested(gen), progress_callback=upsampler_progress)
             if gen.get("abort", False) or sample is None:
                 return
             configs["temporal_upsampling"] = temporal_upsampling
@@ -6054,10 +6126,10 @@ def edit_media(
 
         if len(spatial_upsampling) > 0:
             if source_is_image:
-                sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, fps=output_fps, prompt=spatial_upsampling_prompt, negative_prompt=str(configs.get("negative_prompt", "")), spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: gen.get("abort", False), progress_callback=upsampler_progress)
+                sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, fps=output_fps, prompt=spatial_upsampling_prompt, negative_prompt=str(configs.get("negative_prompt", "")), spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: media_abort_requested(gen), progress_callback=upsampler_progress)
                 flashvsr_continue_cache = None
             else:
-                sample = perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, flashvsr_continue_cache=flashvsr_continue_cache, return_flashvsr_continue_cache=return_flashvsr_continue_cache, fps=output_fps, frame_offset=upsampler_frame_offset, prompt=spatial_upsampling_prompt, negative_prompt=str(configs.get("negative_prompt", "")), source_audio_path=conditioning_audio_path, reference_images=reference_images, image_refs_relative_size=image_refs_relative_size, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: gen.get("abort", False), progress_callback=upsampler_progress)
+                sample = perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, flashvsr_continue_cache=flashvsr_continue_cache, return_flashvsr_continue_cache=return_flashvsr_continue_cache, fps=output_fps, frame_offset=upsampler_frame_offset, prompt=spatial_upsampling_prompt, negative_prompt=str(configs.get("negative_prompt", "")), source_audio_path=conditioning_audio_path, reference_images=reference_images, image_refs_relative_size=image_refs_relative_size, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: media_abort_requested(gen), progress_callback=upsampler_progress)
             if return_flashvsr_continue_cache and not source_is_image:
                 sample, flashvsr_continue_cache = sample
             if gen.get("abort", False) or sample is None:
@@ -6168,9 +6240,9 @@ def edit_media(
                 verbose_level=verbose_level,
                 audio_codec_key=server_config.get("audio_output_codec", "aac_128"),
                 process_files=process_files_def,
-                init_pipe=init_pipe,
+                init_pipe=partial(init_pipe, output_type="audio"),
                 profile=server_config.get("audio_profile", 4),
-                abort_callback=lambda: gen.get("abort", False),
+                abort_callback=lambda: media_abort_requested(gen),
                 progress_callback=audio_progress,
             )
             if gen.get("abort", False) or generated_audio_path is None:
@@ -6195,7 +6267,7 @@ def edit_media(
                     process_files=process_files_def,
                     profile_no=server_config.get("audio_profile", 4),
                     verbose_level=verbose_level,
-                    init_pipe=init_pipe,
+                    init_pipe=partial(init_pipe, output_type="audio"),
                     voice_sample2=replace_voice_sample2,
                     status_callback=lambda status: send_cmd("progress", [0, get_latest_status(state, status)]),
                 )
@@ -6293,7 +6365,7 @@ def edit_audio(send_cmd, state, audio_source, postprocess_audio, replace_voice_s
         process_files=process_files_def,
         profile_no=server_config.get("audio_profile", 4),
         verbose_level=verbose_level,
-        init_pipe=init_pipe,
+        init_pipe=partial(init_pipe, output_type="audio"),
         status_callback=lambda status: send_cmd("progress", [0, get_latest_status(state, status)]),
     )
     configs["postprocess_audio"] = postprocess_audio
@@ -6797,7 +6869,7 @@ def record_file_metadata(video_path, configs, is_image, audio_only, gen, embedde
         notifications.record_generation(server_config, gen, video_path, configs, replace_last=replace_last_file, notify=notify_generation)
 
 
-@generation_downloads(get_gen_info)
+@generation_downloads(get_gen_info, lambda: offloadobj)
 def generate_media(
     task,
     send_cmd,
@@ -6848,6 +6920,7 @@ def generate_media(
     frames_positions,
     video_guide,
     video_guide2,
+    video_guide3,
     image_guide,
     keep_frames_video_guide,
     denoising_strength,
@@ -6863,6 +6936,7 @@ def generate_media(
     mask_expand,
     audio_guide,
     audio_guide2,
+    audio_guide3,
     custom_guide,
     audio_source,
     replace_voice_method,
@@ -7041,8 +7115,9 @@ def generate_media(
         send_cmd("status", f"Loading Model {loading_model_name}...")
         def loading_progress(phase, completed, total, model_id):
             component = " ".join(word.upper() if word.lower() in ("vae", "clip", "llm", "t5") else word.capitalize() for word in model_id.replace("_", " ").split())
-            title = f"Loading {loading_model_name} - {phase}" + (f" {component} Model" if component else "")
-            send_cmd("progress", [(completed, total), title, total, "phases"])
+            subtask = f"Pinning Model{' ' + component if component else ''} to Reserved RAM" if phase == "Pinning" else phase + (f" {component} Model" if component else "")
+            title = f"Loading {loading_model_name} - {subtask}"
+            send_cmd("progress", [(completed, total), title, total, "blocks" if phase == "Pinning" else "phases"])
 
         try:
             wan_model, offloadobj = load_models(model_type, override_profile, output_type=output_type, config_id=config, gen=gen, loading_callback=offload.LoadingCallback(lambda: gen.get("abort", False), loading_progress), **model_kwargs)
@@ -7058,7 +7133,7 @@ def generate_media(
     if vae_upsampler_handler is not None and hasattr(vae_upsampler_handler, "prepare_vae_upsampler"):
         upsampler_name = vae_upsampler_handler.query_upsampler_def()["name"]
         send_cmd("status", f"Preparing {upsampler_name} upsampler...")
-        vae_upsampler_session = upsampler_api.prepare_vae_upsampler(vae_upsampler_handler, spatial_upsampling, send_cmd=send_cmd, process_files=process_files_def, init_pipe=init_pipe, profile=compute_profile(override_profile, upsampler_api.profile_type_for_handler(vae_upsampler_handler)), attention_mode=attention_mode, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters)
+        vae_upsampler_session = upsampler_api.prepare_vae_upsampler(vae_upsampler_handler, spatial_upsampling, send_cmd=send_cmd, process_files=process_files_def, init_pipe=partial(init_pipe, output_type=upsampler_api.profile_type_for_handler(vae_upsampler_handler)), profile=compute_profile(override_profile, upsampler_api.profile_type_for_handler(vae_upsampler_handler)), attention_mode=attention_mode, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters)
         send_cmd("status", f"{upsampler_name} upsampler prepared")
     if args.test and auto_prompt_enhancer_requested:
         try:
@@ -7272,8 +7347,8 @@ def generate_media(
     if postprocess_audio == "control" and video_guide is not None:
         control_audio_tracks, _  = extract_audio_tracks(video_guide, temp_format="wav")
     if "K" in audio_prompt_type and video_guide is not None:
-        extracted_guides = [None, None]
-        for index, guide in enumerate((video_guide, video_guide2)):
+        extracted_guides = [None, None, None]
+        for index, guide in enumerate((video_guide, video_guide2, video_guide3)):
             if guide is None:
                 continue
             try:
@@ -7284,7 +7359,7 @@ def generate_media(
                     temp_filenames_list.append(extracted_guides[index])
             except Exception as e:
                 print(f"Unable to extract Audio track from Control Video #{index + 1}: {e}")
-        audio_guide, audio_guide2 = extracted_guides
+        audio_guide, audio_guide2, audio_guide3 = extracted_guides
     if video_source is not None:
         source_audio_tracks, source_audio_metadata = extract_audio_tracks(video_source, temp_format="wav")
         video_fps, _, _, video_frames_count = get_video_info(video_source)
@@ -7308,7 +7383,7 @@ def generate_media(
     # Image Ref (non background and non positioned frames) are boxed in a white canvas in order to keep their own width/height ratio
     frames_to_inject = []
     any_background_ref  = 0
-    custom_frames_injection = model_def.get("custom_frames_injection", False) and image_refs is not None and len(image_refs) > 0
+    custom_frames_injection = model_def.get("custom_frames_injection", False) and "F" in video_prompt_type and image_refs is not None and len(image_refs) > 0
     if "K" in video_prompt_type: 
         any_background_ref = 2 if model_def.get("all_image_refs_are_background_ref", False) or custom_frames_injection else 1
     fit_canvas = server_config.get("fit_canvas", 0)
@@ -7345,6 +7420,7 @@ def generate_media(
     output_new_audio_filepath = None
     original_audio_guide = audio_guide
     original_audio_guide2 = audio_guide2
+    original_audio_guide3 = audio_guide3
     audio_proj_split = None
     audio_proj_full = None
     audio_scale = audio_scale if model_def.get("audio_scale_name") else None
@@ -7360,20 +7436,26 @@ def generate_media(
         clean_audio_files = "V" in audio_prompt_type
         if audio_guide2 is not None:
             duration2 = librosa.get_duration(path=audio_guide2)
+            if clean_audio_files:  # isolate vocals first so normalization measures the voices, not the music
+                audio_guide = get_vocals(original_audio_guide, get_available_filename(save_path, audio_guide, "_clean", ".wav"))
+                audio_guide2 = get_vocals(original_audio_guide2, get_available_filename(save_path, audio_guide2, "_clean2", ".wav"))
+                temp_filenames_list += [audio_guide, audio_guide2]
+                if audio_guide3 is not None:
+                    audio_guide3 = get_vocals(original_audio_guide3, get_available_filename(save_path, audio_guide3, "_clean3", ".wav"))
+                    temp_filenames_list.append(audio_guide3)
             if "N" in audio_prompt_type:
                 max_total_duration = model_def.get("audio_reference_max_total_duration", None)
-                normalization_max_duration = float(max_total_duration) / 2 if max_total_duration is not None and duration + duration2 > float(max_total_duration) else None
-                audio_guide, audio_guide2, _ = normalize_audio_pair_volumes_to_temp_files(audio_guide, audio_guide2, output_dir=save_path, prefix="audio_norm_", max_duration_seconds=normalization_max_duration)
-                temp_filenames_list += [audio_guide, audio_guide2]
+                guides = [guide for guide in (audio_guide, audio_guide2, audio_guide3) if guide is not None]
+                total_duration = duration + duration2 + (librosa.get_duration(path=audio_guide3) if audio_guide3 is not None else 0)
+                normalization_max_duration = float(max_total_duration) / len(guides) if max_total_duration is not None and total_duration > float(max_total_duration) else None
+                normalized_guides = normalize_audio_volumes_to_temp_files(guides, output_dir=save_path, prefix="audio_norm_", max_duration_seconds=normalization_max_duration)
+                temp_filenames_list += normalized_guides
+                audio_guide, audio_guide2, audio_guide3 = (normalized_guides + [None])[:3]
                 if normalization_max_duration is not None:
                     duration, duration2 = min(duration, normalization_max_duration), min(duration2, normalization_max_duration)
             if "C" in audio_prompt_type: duration += duration2
             else: duration = min(duration, duration2)
-            combination_type = "para" if "P" in audio_prompt_type else "add" 
-            if clean_audio_files:
-                audio_guide = get_vocals(original_audio_guide, get_available_filename(save_path, audio_guide, "_clean", ".wav"))
-                audio_guide2 = get_vocals(original_audio_guide2, get_available_filename(save_path, audio_guide2, "_clean2", ".wav"))
-                temp_filenames_list += [audio_guide, audio_guide2]
+            combination_type = "para" if "P" in audio_prompt_type else "add"
         else:
             if "X" in audio_prompt_type: 
                 # dual speaker, voice separation
@@ -7493,12 +7575,13 @@ def generate_media(
             scheduled_windows = [dict(window) for window in scheduled_windows_template]
         else:
             default_windows = [dict(window) for window in default_windows_template]
-        src_video = src_video2 = src_mask = src_mask2 = src_faces = sparse_video_image = full_generated_audio =None
+        src_video = src_video2 = src_video3 = src_mask = src_mask2 = src_faces = sparse_video_image = full_generated_audio =None
         prefix_video = pre_video_frame = None
         source_video_overlap_frames_count = 0 # number of frames overalapped in source video for first window
         source_video_frames_count = 0  # number of frames to use in source video (processing starts source_video_overlap_frames_count frames before )
         frames_already_processed = []
         frames_already_processed_count = 0
+        retained_video_frames = 0  # output timeline at generation FPS, before temporal upsampling
         external_audio_trim_ranges = []
         overlapped_latents = None
         pre_video_guide_is_hdr = False
@@ -7520,7 +7603,7 @@ def generate_media(
         input_waveform, input_waveform_sample_rate = None, 0
         num_frames_generated = 0 # num of new frames created (lower than the number of frames really processed due to overlaps and discards)
         requested_frames_to_generate = default_requested_frames_to_generate # num  of num frames to create (if any source window this num includes also the overlapped source window frames)
-        cached_video_guide_processed = cached_video_mask_processed = cached_video_guide_processed2 = cached_video_mask_processed2 = None
+        cached_video_guide_processed = cached_video_mask_processed = cached_video_guide_processed2 = cached_video_mask_processed2 = cached_video_guide_processed3 = None
         cached_video_video_start_frame = cached_video_video_end_frame = -1
         start_time = time.time()
         prompt_was_enhanced = prompt_has_history
@@ -7697,7 +7780,7 @@ def generate_media(
                         image_size  = image_end_tensor.shape[-2:]
                         sample_fit_canvas = None
                 image_end_list= None
-            image_end_frame_position = current_video_length - tail_trim_frames - 1 if image_end_tensor is not None and model_def.get("image_end_frame_position", False) else None
+            image_end_frame_position = current_video_length - tail_trim_frames - 1 if model_def.get("image_end_frame_position", False) else None  # also locates an injected frame used as the window's end image
             window_start_frame = guide_start_frame - (reuse_frames if window_no > 1 else source_video_overlap_frames_count)
             guide_end_frame = guide_start_frame + current_video_length - (source_video_overlap_frames_count if window_no == 1 else reuse_frames)
             alignment_shift = source_video_frames_count if reset_control_aligment else 0
@@ -7735,8 +7818,9 @@ def generate_media(
                     for i, pos in enumerate(frames_positions_list):
                         frames_to_inject[pos] = image_refs[i] 
 
-            video_guide_processed = video_mask_processed = video_guide_processed2 = video_mask_processed2 = sparse_video_image = None
-            skip_video_guide_preprocess = bool(model_def.get("skip_video_guide_preprocess", False))
+            video_guide_processed = video_mask_processed = video_guide_processed2 = video_mask_processed2 = video_guide_processed3 = sparse_video_image = None
+            skip_video_guide_preprocess = model_def.get("skip_video_guide_preprocess", False)  # True, or video_prompt_type letters that make the model read the guide itself
+            skip_video_guide_preprocess = any_letters(video_prompt_type, skip_video_guide_preprocess) if isinstance(skip_video_guide_preprocess, str) else bool(skip_video_guide_preprocess)
             if video_guide is not None and not skip_video_guide_preprocess:
                 guide_frames_limit = round(model_def["reference_video_max_frames"] * fps / model_def["fps"]) if reference_videos else max(aligned_guide_end_frame, source_video_frames_count - source_video_overlap_frames_count + requested_frames_to_generate)
                 keep_frames_parsed_full, error = parse_keep_frames_video_guide(keep_frames_video_guide, guide_frames_limit)
@@ -7829,13 +7913,16 @@ def generate_media(
                             video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(None, video_guide2, None, height=guide2_height, width=guide2_width, max_frames=guide_frames_extract_count, start_frame=guide_frames_extract_start, fit_canvas=guide2_fit_canvas, fit_crop=fit_crop, target_fps=fps, process_type=preprocess_type, proc_no=2, block_size=block_size)
                         elif preprocess_type2 != None:
                             video_guide_processed2, video_mask_processed2 = preprocess_video_with_mask(ref_pose_tensor, video_guide, video_mask, height=image_size[0], width = image_size[1], max_frames= guide_frames_extract_count, start_frame = guide_frames_extract_start, fit_canvas = sample_fit_canvas, fit_crop = fit_crop, target_fps = fps,  process_type = preprocess_type2, expand_scale = mask_expand, RGB_Mask = True, negate_mask = "N" in video_prompt_type, process_outside_mask = process_outside_mask, outpainting_dims = outpainting_dims, outpainting_ratio = video_guide_outpainting_ratio, proc_no =2, block_size = block_size, to_bbox = "H" in video_prompt_type, outpainting_quantize_margins = outpainting_quantize_margins)
+                        if preprocess_video_guide2 and "*" in video_prompt_type and video_guide3 is not None:
+                            guide3_height, guide3_width = get_reference_video_dimensions(video_guide3, *image_size, model_def["reference_video_max_size"], block_size) if reference_videos else image_size
+                            video_guide_processed3, _ = preprocess_video_with_mask(None, video_guide3, None, height=guide3_height, width=guide3_width, max_frames=guide_frames_extract_count, start_frame=guide_frames_extract_start, fit_canvas=None if reference_videos else sample_fit_canvas, fit_crop=fit_crop, target_fps=fps, process_type=preprocess_type, proc_no=3, block_size=block_size)
 
                     if video_guide_processed is not None and sample_fit_canvas is not None and not reference_videos:
                         image_size = video_guide_processed.shape[-2:]
                         sample_fit_canvas = None
 
                     if process_all:
-                        cached_video_guide_processed, cached_video_mask_processed, cached_video_guide_processed2, cached_video_mask_processed2 = video_guide_processed, video_mask_processed, video_guide_processed2, video_mask_processed2
+                        cached_video_guide_processed, cached_video_mask_processed, cached_video_guide_processed2, cached_video_mask_processed2, cached_video_guide_processed3 = video_guide_processed, video_mask_processed, video_guide_processed2, video_mask_processed2, video_guide_processed3
                         cached_video_video_start_frame = guide_frames_extract_start
 
                 if process_all:
@@ -7844,6 +7931,7 @@ def generate_media(
                     video_mask_processed =  None if cached_video_mask_processed is None else cached_video_mask_processed[:, process_slice] 
                     video_guide_processed2 =  None if cached_video_guide_processed2 is None else cached_video_guide_processed2[:, process_slice] 
                     video_mask_processed2 = None if cached_video_mask_processed2 is None else cached_video_mask_processed2[:, process_slice] 
+                    video_guide_processed3 = None if cached_video_guide_processed3 is None else cached_video_guide_processed3[:, process_slice]
                     
             if window_no == 1 and image_refs is not None and len(image_refs) > 0:
                 ignored_image_refs = model_def.get("no_processing_on_last_images_refs", 0)
@@ -7912,18 +8000,15 @@ def generate_media(
                 any_guide_padding = model_def.get("pad_guide_video", False)
                 dont_cat_preguide = extract_guide_from_window_start or model_def.get("dont_cat_preguide", False) or sparse_video_image is not None 
                 from shared.utils.utils import prepare_video_guide_and_mask
-                src_videos, src_masks = prepare_video_guide_and_mask(   [video_guide_processed] + ([] if video_guide_processed2 is None else [video_guide_processed2]), 
-                                                                        [video_mask_processed] + ([] if video_guide_processed2 is None else [video_mask_processed2]),
+                src_videos, src_masks = prepare_video_guide_and_mask(   [video_guide_processed] + ([] if video_guide_processed2 is None else [video_guide_processed2]) + ([] if video_guide_processed3 is None else [video_guide_processed3]),
+                                                                        [video_mask_processed] + ([] if video_guide_processed2 is None else [video_mask_processed2]) + ([] if video_guide_processed3 is None else [None]),
                                                                         None if dont_cat_preguide or fake_start_image and window_no==1 else pre_video_guide, 
                                                                         image_size, current_video_length, latent_size,
                                                                         any_mask, any_guide_padding, guide_inpaint_color, 
                                                                         keep_frames_parsed, [] if custom_frames_injection else frames_to_inject_parsed , outpainting_dims, video_guide_outpainting_ratio, outpainting_quantize_margins=outpainting_quantize_margins, frame_offset=frames_offset)
-                video_guide_processed = video_guide_processed2 = video_mask_processed = video_mask_processed2 = None
-                if len(src_videos) == 1:
-                    src_video, src_video2, src_mask, src_mask2 = src_videos[0], None, src_masks[0], None 
-                else:
-                    src_video, src_video2 = src_videos 
-                    src_mask, src_mask2 = src_masks 
+                video_guide_processed = video_guide_processed2 = video_guide_processed3 = video_mask_processed = video_mask_processed2 = None
+                src_video, src_video2, src_video3 = (src_videos + [None, None])[:3]
+                src_mask, src_mask2 = (src_masks + [None])[:2] 
                 src_videos = src_masks = None
                 if control_video_trim:
                     if src_video is None:
@@ -7987,7 +8072,11 @@ def generate_media(
             gen["progress_status"] = status
             progress_phase = "Generating Audio" if audio_only else "Encoding Prompt"
             gen["progress_phase"] = (progress_phase , -1 )
-            callback = build_callback(state, trans, send_cmd, status, num_inference_steps, preview_meta={"first_latent_only": not model_def.get("preview_all_images", False)} if is_image else None)
+            tiny_preview = None
+            if offloadobj.tiny_vae is not None:
+                from shared.tinyvae.session import PreviewSession
+                tiny_preview = PreviewSession(offloadobj.tiny_vae, send_cmd, gen, is_image, video=server_config.get("generation_preview", "rgb") == "tiny_vae_video", duration=floor_frame_count(current_video_length, frames_minimum, latent_size, frames_offset) / fps)
+            callback = build_callback(state, trans, send_cmd, status, num_inference_steps, preview_meta={"first_latent_only": not model_def.get("preview_all_images", False)} if is_image else None, tiny_preview=tiny_preview)
             progress_args = [0, merge_status_context(status, progress_phase )]
             send_cmd("progress", progress_args)
 
@@ -8028,8 +8117,8 @@ def generate_media(
                         model_outpainting_dims = resolve_outpainting_dims(control_source_height, control_source_width, outpainting_dims, video_guide_outpainting_ratio)
                 overridden_inputs = None
                 if vae_upsampler_handler is not None and vae_upsampler_session is None:
-                    vae_upsampler_session = upsampler_api.prepare_vae_upsampler(vae_upsampler_handler, spatial_upsampling, send_cmd=send_cmd, process_files=process_files_def, init_pipe=init_pipe, profile=compute_profile(override_profile, upsampler_api.profile_type_for_handler(vae_upsampler_handler)), attention_mode=attention_mode, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters)
-                samples = wan_model.generate(
+                    vae_upsampler_session = upsampler_api.prepare_vae_upsampler(vae_upsampler_handler, spatial_upsampling, send_cmd=send_cmd, process_files=process_files_def, init_pipe=partial(init_pipe, output_type=upsampler_api.profile_type_for_handler(vae_upsampler_handler)), profile=compute_profile(override_profile, upsampler_api.profile_type_for_handler(vae_upsampler_handler)), attention_mode=attention_mode, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters)
+                samples = call_with_default_device(model_def, model_type, wan_model.generate,
                     input_prompt = prompt,
                     alt_prompt = current_alt_prompt,
                     image_start = image_start_tensor,  
@@ -8037,6 +8126,7 @@ def generate_media(
                     image_end_frame_position=image_end_frame_position,
                     input_frames = src_video,
                     input_frames2 = src_video2,
+                    input_frames3 = src_video3,
                     input_ref_images=  src_ref_images,
                     input_ref_masks = src_ref_masks,
                     input_masks = src_mask,
@@ -8046,6 +8136,7 @@ def generate_media(
                     input_custom = custom_guide,
                     video_guide= video_guide,
                     video_guide2=video_guide2,
+                    video_guide3=video_guide3,
                     denoising_strength=denoising_strength,
                     masking_strength=masking_strength,
                     prefix_frames_count = prefix_frames_count,
@@ -8084,6 +8175,7 @@ def generate_media(
                     input_waveform_sample_rate=input_waveform_sample_rate,
                     audio_guide=audio_guide,
                     audio_guide2=audio_guide2,
+                    audio_guide3=audio_guide3,
                     audio_prompt_type=audio_prompt_type,
                     audio_proj= audio_proj_split,
                     audio_scale= audio_scale,
@@ -8149,9 +8241,13 @@ def generate_media(
                     vae_upsampler=vae_upsampler_session,
                     save_masks=args.save_masks,
                 )
+                if tiny_preview is not None:
+                    tiny_preview.close()
                 upsampler_api.release_vae_upsampler(vae_upsampler_handler, vae_upsampler_session)
                 vae_upsampler_session = None
             except Exception as e:
+                if tiny_preview is not None:
+                    tiny_preview.close(cancel=True)
                 upsampler_api.release_vae_upsampler(vae_upsampler_handler, vae_upsampler_session)
                 vae_upsampler_session = None
                 if len(control_audio_tracks) > 0 or len(source_audio_tracks) > 0:
@@ -8172,9 +8268,14 @@ def generate_media(
                 #     torch.compiler.reset()
                 #     torch._dynamo.config.cache_size_limit = cache_size
 
+                reraise = isinstance(e, (DownloadCancelled, DownloadError, MediaProcessingAborted))
+                tb = traceback.format_exc().split('\n')[:-1]
+                exc = None if reraise else e
+                while exc is not None:  # the failed generation's frames, and the generators and closures they ran, still hold its tensors
+                    exc.__traceback__, exc = None, exc.__context__
                 gc.collect()
                 torch.cuda.empty_cache()
-                if isinstance(e, (DownloadCancelled, DownloadError)):
+                if reraise:
                     raise
                 s = str(e)
                 keyword_list = {"CUDA out of memory" : "VRAM", "Tried to allocate":"VRAM", "CUDA error: out of memory": "RAM", "CUDA error: too many resources requested": "RAM"}
@@ -8190,12 +8291,11 @@ def generate_media(
                     new_error = "The generation of the video has encountered an error: it is likely that you have unsufficient RAM and / or Reserved RAM allocation should be reduced using 'perc_reserved_mem_max' or using a different Profile."
                 else:
                     new_error =  gr.Error(f"The generation of the video has encountered an error, please check your terminal for more information. '{s}'")
-                tb = traceback.format_exc().split('\n')[:-1] 
                 print('\n'.join(tb))
                 send_cmd("error", new_error)
                 clear_status(state)
                 return False
-            src_video = src_video2 = src_mask = src_mask2 = None
+            src_video = src_video2 = src_video3 = src_mask = src_mask2 = None
             if skip_steps_cache != None :
                 skip_steps_cache.previous_residual = None
                 skip_steps_cache.previous_modulated_input = None
@@ -8215,8 +8315,9 @@ def generate_media(
                     overridden_inputs = samples.get("overridden_inputs", None)
                     output_audio_sampling_rate = samples.get("audio_sampling_rate", audio_sampling_rate)
                     input_fills_window = input_waveform is not None and input_waveform.shape[0] >= int(round(current_video_length * input_waveform_sample_rate / fps))
+                    keep_input_audio = (model_def.get("output_audio_is_input_audio", False) or "S" in audio_prompt_type) and output_new_audio_filepath is not None and "O" not in audio_prompt_type
                     if generated_audio is not None:
-                        if model_def.get("output_audio_is_input_audio", False) and output_new_audio_filepath is not None and "O" not in audio_prompt_type and input_fills_window:
+                        if keep_input_audio and input_fills_window:
                             drop_generated_audio = True
                         elif input_fills_window:
                             output_new_audio_filepath = None
@@ -8274,7 +8375,7 @@ def generate_media(
                     window_overlap_frames = source_video_overlap_frames_count if window_no == 1 else reuse_frames
                     trim_first_frames = min(sliding_window_trim_first_frames, max(0, sample.shape[1] - 1)) if window_overlap_frames == 0 else 0
                     if trim_first_frames > 0:
-                        audio_trim_start_frame = frames_already_processed_count + (prefix_video.shape[1] if prefix_video is not None and window_no == 1 else 0)
+                        audio_trim_start_frame = retained_video_frames + (prefix_video.shape[1] if prefix_video is not None and window_no == 1 else 0)
                         external_audio_trim_ranges.append((audio_trim_start_frame, trim_first_frames))
                         sample = sample[:, trim_first_frames:]
                         if generated_audio is not None:
@@ -8317,12 +8418,20 @@ def generate_media(
                 num_frames_generated = guide_start_frame - (source_video_frames_count - source_video_overlap_frames_count) 
                 if drop_generated_audio: generated_audio = None
                 if generated_audio is not None:
-                    committed_audio_samples = int(round((num_frames_generated - sample.shape[1]) * output_audio_sampling_rate / fps))
+                    # generated audio starts after the Source Video frames (its overlap frames were already removed from the sample)
+                    source_audio_frames = source_video_frames_count if video_source is not None else 0
+                    committed_audio_samples = int(round(max(0, retained_video_frames - source_audio_frames) * output_audio_sampling_rate / fps))
                     if full_generated_audio is None:
-                        full_generated_audio = append_sliding_window_audio(output_new_audio_data, output_new_audio_filepath, generated_audio, output_audio_sampling_rate, committed_audio_samples) if output_new_audio_data is not None or output_new_audio_filepath is not None else generated_audio
+                        # a kept soundtrack file is aligned with the start of the Source Video unless control alignment is reset: skip the source part
+                        prefix_start_samples = 0 if reset_control_aligment or output_new_audio_data is not None else int(round(source_audio_frames * output_audio_sampling_rate / fps))
+                        full_generated_audio = append_sliding_window_audio(output_new_audio_data, output_new_audio_filepath, generated_audio, output_audio_sampling_rate, committed_audio_samples,
+                                                                           prefix_start_samples=prefix_start_samples, keep_existing=keep_input_audio and output_new_audio_data is None,
+                                                                           trim_ranges=shift_audio_trim_ranges(external_audio_trim_ranges, source_audio_frames), video_fps=fps) if output_new_audio_data is not None or output_new_audio_filepath is not None else generated_audio
                     else:
                         full_generated_audio = np.concatenate([full_generated_audio, generated_audio], axis=0)
                     output_new_audio_data = full_generated_audio
+                if not (audio_only or is_image):
+                    retained_video_frames += sample.shape[1]
 
 
                 if len(temporal_upsampling) > 0 or len(spatial_upsampling) > 0 and (not upsampler_api.is_vae_upsampling(spatial_upsampling) or upsampler_api.has_post_model_process_vae_upsampling(spatial_upsampling)):
@@ -8330,23 +8439,23 @@ def generate_media(
                     send_cmd("progress", [0, merge_status_context(status, spatial_status)])
                 
                 output_fps  = fps
-                def upsampler_progress(phase, current_step=None, total_steps=None):
+                def upsampler_progress(phase, current_step=None, total_steps=None, unit=None):
                     phase_text = str(phase)
                     gen["progress_phase"] = (phase_text, int(current_step) if current_step is not None else -1)
                     status_msg = merge_status_context(status, phase_text)
                     if current_step is not None and total_steps is not None and int(total_steps) > 0:
-                        send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)])
+                        send_cmd("progress", [(int(current_step), int(total_steps)), status_msg, int(total_steps)] + ([unit] if unit else []))
                     else:
                         send_cmd("progress", [0, status_msg])
                 if len(temporal_upsampling) > 0:
-                    sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, previous_last_frame if sliding_window and window_no > 1 else None, temporal_upsampling, fps, abort_callback=lambda: gen.get("abort", False), progress_callback=upsampler_progress)
+                    sample, previous_last_frame, output_fps = perform_temporal_upsampling(sample, previous_last_frame if sliding_window and window_no > 1 else None, temporal_upsampling, fps, abort_callback=lambda: media_abort_requested(gen), progress_callback=upsampler_progress)
                     if gen.get("abort", False) or sample is None:
                         abort = True
                         break
 
                 if len(spatial_upsampling) > 0:
                     if is_image:
-                        sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, vae_tile_size=VAE_tile_size, fps=output_fps, prompt=prompt, negative_prompt=negative_prompt, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: gen.get("abort", False), progress_callback=upsampler_progress)
+                        sample = perform_image_spatial_upsampling(sample, spatial_upsampling, seed=seed, vae_tile_size=VAE_tile_size, fps=output_fps, prompt=prompt, negative_prompt=negative_prompt, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: media_abort_requested(gen), progress_callback=upsampler_progress)
                         flashvsr_continue_cache = None
                     else:
                         late_upsampler = upsampler_api.find_postprocessing_upsampler(spatial_upsampling)
@@ -8360,7 +8469,7 @@ def generate_media(
                             else:
                                 upsampler_audio = upsampler_audio[-required_audio_samples:]
                         upsampler_reference_images = original_image_refs[nb_frames_positions:] if original_image_refs is not None else None
-                        sample = perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, flashvsr_continue_cache=flashvsr_continue_cache, return_flashvsr_continue_cache=return_flashvsr_continue_cache, vae_tile_size=VAE_tile_size, fps=output_fps, prompt=prompt, negative_prompt=negative_prompt, audio_waveform=upsampler_audio, audio_sample_rate=upsampler_audio_sample_rate, reference_images=upsampler_reference_images, image_refs_relative_size=image_refs_relative_size, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: gen.get("abort", False), progress_callback=upsampler_progress)
+                        sample = perform_spatial_upsampling(sample, spatial_upsampling, seed=seed, flashvsr_continue_cache=flashvsr_continue_cache, return_flashvsr_continue_cache=return_flashvsr_continue_cache, vae_tile_size=VAE_tile_size, fps=output_fps, prompt=prompt, negative_prompt=negative_prompt, audio_waveform=upsampler_audio, audio_sample_rate=upsampler_audio_sample_rate, reference_images=upsampler_reference_images, image_refs_relative_size=image_refs_relative_size, spatial_upsampler_prompt=spatial_upsampler_prompt, spatial_upsampler_reference_images=spatial_upsampler_reference_images, spatial_upsampler_param=spatial_upsampler_param, spatial_upsampler_param2=spatial_upsampler_param2, spatial_upsampler_parameters=spatial_upsampler_parameters, abort_callback=lambda: media_abort_requested(gen), progress_callback=upsampler_progress)
                     if return_flashvsr_continue_cache and not is_image:
                         sample, flashvsr_continue_cache = sample
                     if gen.get("abort", False) or sample is None:
@@ -8465,9 +8574,9 @@ def generate_media(
                             verbose_level=verbose_level,
                             audio_codec_key=server_config.get("audio_output_codec", "aac_128"),
                             process_files=process_files_def,
-                            init_pipe=init_pipe,
+                            init_pipe=partial(init_pipe, output_type="audio"),
                             profile=server_config.get("audio_profile", 4),
-                            abort_callback=lambda: gen.get("abort", False),
+                            abort_callback=lambda: media_abort_requested(gen),
                             progress_callback=audio_progress,
                         )
                         if gen.get("abort", False) or output_new_audio_filepath is None:
@@ -8492,7 +8601,7 @@ def generate_media(
                         new_audio_tracks = trimmed_mux_audio_tracks = [ trim_audio_file_ranges(path, new_audio_trim_ranges, fps, get_available_filename(save_path, path, suffix=f"_trim{i}", force_extension=".wav")) for i, path in enumerate(new_audio_tracks) ]
                     replace_voice_temp_audio_tracks = []
                     if replace_voice_method and replace_voice_sample is not None and len(new_audio_tracks) > 0:
-                        new_audio_tracks, replace_voice_temp_audio_tracks = audio_processor_api.replace_voice_tracks(replace_voice_method, new_audio_tracks, voice_sample=replace_voice_sample, output_dir=save_path, prefix=f"tmp{time_flag}", process_files=process_files_def, profile_no=server_config.get("audio_profile", 4), verbose_level=verbose_level, init_pipe=init_pipe, voice_sample2=replace_voice_sample2, status_callback=lambda status: send_cmd("progress", [0, get_latest_status(state, status)]))
+                        new_audio_tracks, replace_voice_temp_audio_tracks = audio_processor_api.replace_voice_tracks(replace_voice_method, new_audio_tracks, voice_sample=replace_voice_sample, output_dir=save_path, prefix=f"tmp{time_flag}", process_files=process_files_def, profile_no=server_config.get("audio_profile", 4), verbose_level=verbose_level, init_pipe=partial(init_pipe, output_type="audio"), voice_sample2=replace_voice_sample2, status_callback=lambda status: send_cmd("progress", [0, get_latest_status(state, status)]))
                     if generated_audio is not None: output_new_audio_filepath = None
                     mux_audio_sampling_rate = resolve_mux_audio_sampling_rate(output_audio_sampling_rate, source_audio_metadata, new_audio_tracks)
 
@@ -8613,6 +8722,8 @@ def prepare_generate_media(state):
 
 
 def generate_preview(model_type, payload):
+    if isinstance(payload, (Image.Image, VideoPreview)):
+        return payload
     import einops
     if payload is None:
         return None
@@ -8761,6 +8872,7 @@ def _process_tasks(state):
                         filtered_params.setdefault("model_type", "")
                     plugin_data = task.pop('plugin_data', {})
                     success = generate_media(task, send_cmd, plugin_data=plugin_data,  **filtered_params)
+                    write_vram_debug_report(save_path, params.get("model_type"))
 
                 except DownloadCancelled:
                     success = True
@@ -8854,7 +8966,8 @@ def _process_tasks(state):
                     current_model_type = queue[0]["params"].get("model_type")
             
             try:
-                torch.cuda.current_stream().synchronize()
+                if not isinstance(data, (Image.Image, VideoPreview)):
+                    torch.cuda.current_stream().synchronize()
                 preview = None if data is None else generate_preview(current_model_type, data) 
                 gen["preview"] = preview
                 yield time.time(), gr.Text(), gr.update()
@@ -9016,6 +9129,7 @@ def process_tasks_cli(queue, state):
                     filtered_params.setdefault("client_id", "")
                     plugin_data = task.get('plugin_data', {})
                     generate_media(task, send_cmd, plugin_data=plugin_data, **filtered_params)
+                    write_vram_debug_report(save_path, params.get("model_type"))
                 except Exception as e:
                     print(f"\n  [ERROR] {e}")
                     traceback.print_exc()
@@ -10535,6 +10649,7 @@ def save_inputs(
             frames_positions,
             video_guide,
             video_guide2,
+            video_guide3,
             image_guide,
             keep_frames_video_guide,
             denoising_strength,
@@ -10548,6 +10663,7 @@ def save_inputs(
             mask_expand,
             audio_guide,
             audio_guide2,
+            audio_guide3,
             custom_guide,
             audio_source,            
             replace_voice_method,
@@ -10952,7 +11068,7 @@ def refresh_audio_prompt_type_sources(state, audio_prompt_type, audio_prompt_typ
     audio_prompt_type = del_in_sequence(audio_prompt_type, letters_filter)
     audio_prompt_type = add_to_sequence(audio_prompt_type, audio_prompt_type_sources)
     audio_only = model_def.get("audio_only", False) if model_def is not None else False
-    speakers_visible = ("B" in audio_prompt_type or "X" in audio_prompt_type) and not audio_only
+    speakers_visible = ("B" in audio_prompt_type or "X" in audio_prompt_type) and not audio_only and (model_def.get("multitalk_class", False) or model_def.get("speaker_locations", False))
     remove_background_visible = any_letters(audio_prompt_type, "ABXK")
     normalize_audio_visible = all_letters(audio_prompt_type, "AB")
     _, custom_audio_option_flag = get_audio_prompt_type_custom_option_def(model_def)
@@ -10966,6 +11082,7 @@ def refresh_audio_prompt_type_sources(state, audio_prompt_type, audio_prompt_typ
         audio_prompt_type,
         gr.update(visible="A" in audio_prompt_type),
         gr.update(visible="B" in audio_prompt_type),
+        gr.update(visible="D" in audio_prompt_type),
         gr.update(visible=speakers_visible),
         gr.update(visible=remove_background_visible),
         gr.update(visible=normalize_audio_visible),
@@ -11101,7 +11218,7 @@ def refresh_video_prompt_type_video_guide(state, filter_type, video_prompt_type,
             custom_checkbox = custom_video_selection.get("type","") == "checkbox"
     mask_strength_always_enabled = model_def.get("mask_strength_always_enabled", False)  
     magic_image_btn, magic_video_btn = MagicMaskUI.button_updates(image_mode, video_prompt_type)
-    return video_prompt_type, gr.update(visible=visible and not image_outputs), gr.update(visible="+" in video_prompt_type and not image_outputs), image_guide, gr.update(visible=keep_frames_video_guide_visible), gr.update(visible=visible and "G" in video_prompt_type), gr.update(visible=mask_visible and (mask_strength_always_enabled or "G" in video_prompt_type)), gr.update(visible=(visible or injected_frames_positions_visible(video_prompt_type) or "K" in video_prompt_type) and any_outpainting), mask_selector_update, gr.update(visible=mask_visible and not image_outputs), image_mask, image_mask_guide, gr.update(visible=mask_visible), gr.update(visible=ref_images_visible), gr.update(visible=remove_background_images_ref_visible), gr.update(visible=injected_frames_positions_visible(video_prompt_type)), gr.update(visible=custom_options and not custom_checkbox), gr.update(visible=custom_options and custom_checkbox), gr.update(visible=input_video_strength_visible(model_def, image_prompt_type, video_prompt_type)), magic_image_btn, magic_video_btn, gr.update(visible=force_control_video_trim_visible(model_def, image_mode, video_prompt_type, audio_prompt_type)), custom_settings_visibility_trigger_update(state, old_video=old_video_prompt_type, new_video=video_prompt_type)
+    return video_prompt_type, gr.update(visible=visible and not image_outputs), gr.update(visible="+" in video_prompt_type and not image_outputs), gr.update(visible="*" in video_prompt_type and not image_outputs), image_guide, gr.update(visible=keep_frames_video_guide_visible), gr.update(visible=visible and "G" in video_prompt_type), gr.update(visible=mask_visible and (mask_strength_always_enabled or "G" in video_prompt_type)), gr.update(visible=(visible or injected_frames_positions_visible(video_prompt_type) or "K" in video_prompt_type) and any_outpainting), mask_selector_update, gr.update(visible=mask_visible and not image_outputs), image_mask, image_mask_guide, gr.update(visible=mask_visible), gr.update(visible=ref_images_visible), gr.update(visible=remove_background_images_ref_visible), gr.update(visible=injected_frames_positions_visible(video_prompt_type)), gr.update(visible=custom_options and not custom_checkbox), gr.update(visible=custom_options and custom_checkbox), gr.update(visible=input_video_strength_visible(model_def, image_prompt_type, video_prompt_type)), magic_image_btn, magic_video_btn, gr.update(visible=force_control_video_trim_visible(model_def, image_mode, video_prompt_type, audio_prompt_type)), custom_settings_visibility_trigger_update(state, old_video=old_video_prompt_type, new_video=video_prompt_type)
 
 def refresh_video_prompt_type_video_custom_dropbox(state, video_prompt_type, video_prompt_type_video_custom_dropbox):
     model_type = get_state_model_type(state)
@@ -11129,6 +11246,8 @@ def refresh_preview(state):
     gen = get_gen_info(state)
     placeholder = '<div style="text-align: center; color: var(--body-text-color-subdued); padding: 16px 0;">Preview not yet Available</div>'
     preview_image = gen.get("preview", None)
+    if isinstance(preview_image, VideoPreview):
+        return preview_image.to_html()
     if preview_image is None:
         return placeholder
     
@@ -11137,9 +11256,9 @@ def refresh_preview(state):
         return placeholder
 
     html_content = f"""
-    <div style="display: flex; justify-content: center; align-items: center; height: 200px; cursor: pointer;" onclick="showImageModal('preview_0')">
+    <div style="display: flex; justify-content: center; align-items: center; cursor: pointer;" onclick="showImageModal('preview_0')">
         <img src="{preview_base64}"
-             style="max-height: 100%; max-width: 100%; object-fit: contain;" 
+             style="display: block; height: auto; max-height: 200px; max-width: 100%; object-fit: contain;"
              alt="Preview">
     </div>
     """
@@ -11175,6 +11294,9 @@ def show_modal_image(state, action_string):
 
         if parts[0] == 'preview':
             preview_image = gen.get("preview", None)
+            if isinstance(preview_image, VideoPreview):
+                html_content = '<div class="modal-flex-container" onclick="closeImageModal()"><div class="modal-content-wrapper" onclick="event.stopPropagation()"><div class="modal-close-btn" onclick="closeImageModal()">×</div><div class="modal-label">Preview</div>' + preview_image.to_html(modal=True) + '</div></div>'
+                return gr.HTML(value=html_content), gr.Column(visible=True)
             if preview_image:
                 preview_base64 = pil_to_base64_uri(preview_image)
                 if preview_base64:
@@ -11348,13 +11470,13 @@ def change_guidance_phases(state, guidance_phases, video_prompt_type):
     return gr.update(visible= guidance_phases >=3 and visible_phases >=3 and multiple_submodels) , gr.update(visible=phase_controls_visible), gr.update(visible=phase_controls_visible and switch_threshold_def.visible, label=switch_threshold_def.label), gr.update(visible= guidance_phases >=3 and visible_phases >=3), gr.update(visible= guidance_phases >=2 and visible_phases >=2), gr.update(visible= guidance_phases >=3 and visible_phases >=3), video_prompt_type
 
 
-memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: at least 64 GB of RAM and 24 GB of VRAM, the fastest for short videos with a RTX 3090 / RTX 4090", 1),
-                            ("Profile 2, HighRAM_LowVRAM: at least 64 GB of RAM and 12 GB of VRAM, the most versatile profile with high RAM, better suited for RTX 3070/3080/4070/4080 or for RTX 3090 / RTX 4090 with large pictures batches or long videos", 2),
-                            ("Profile 3, LowRAM_HighVRAM: at least 32 GB of RAM and 24 GB of VRAM, adapted for RTX 3090 / RTX 4090 with limited RAM for good speed short video",3),
-                            ("Profile 3+, VeryLowRAM_HighVRAM: at least 32 GB of RAM and 24 GB of VRAM, variant of Profile 3 that won't used Reserved Memory to reduce RAM usage",3.5),
-                            ("Profile 4, LowRAM_LowVRAM (Recommended): at least 32 GB of RAM and 12 GB of VRAM, if you have little VRAM or want to generate longer videos",4),
-                            ("Profile 4+, LowRAM_LowVRAM+: at least 32 GB of RAM and 12 GB of VRAM, variant of Profile 4, slightly slower but needs less VRAM",4.5),
-                            ("Profile 5, VerylowRAM_LowVRAM (Fail safe): at least 24 GB of RAM and 10 GB of VRAM, if you don't have much it won't be fast but maybe it will work",5)]
+memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: each model loaded whole in VRAM, all models kept in Reserved RAM. The fastest generations and model switches, needs the most RAM and VRAM", 1),
+                            ("Profile 2, HighRAM_LowVRAM: all models kept in Reserved RAM, sent to the GPU part by part. Runs models larger than your VRAM, leaves VRAM for long videos or large images and switches models fast, needs a lot of RAM", 2),
+                            ("Profile 3, LowRAM_HighVRAM: each model loaded whole in VRAM, only the main models kept in Reserved RAM. Fast generations with less RAM, needs enough VRAM for the whole model", 3),
+                            ("Profile 3+, VeryLowRAM_HighVRAM (Recommended for Audio): Profile 3 without any Reserved RAM. Audio models are small enough to fit whole in VRAM, where their language models run much faster; models load more slowly", 3.5),
+                            ("Profile 4, LowRAM_LowVRAM (Recommended): only the main models kept in Reserved RAM, sent to the GPU part by part. The most versatile: runs models larger than your VRAM and leaves VRAM for long videos or large images", 4),
+                            ("Profile 4+, LowRAM_LowVRAM+: Profile 4 sending one part at a time. Saves up to about 1 GB of VRAM, slightly slower", 4.5),
+                            ("Profile 5, VerylowRAM_LowVRAM (Fail safe): almost no Reserved RAM, all models sent to the GPU part by part. For PCs short of RAM and VRAM, slower with short steps such as images", 5)]
 
 def check_attn(mode):
     if mode not in attention_modes_installed: return " (NOT INSTALLED)"
@@ -11367,7 +11489,7 @@ attention_modes_choices= [
     (f'flash{check_attn("flash")}: High quality, requires manual install', "flash"),
     (f'xformers{check_attn("xformers")}: Good quality, less VRAM, requires manual install', "xformers"),
     (f'sage{check_attn("sage")}: ~30% faster, requires manual install', "sage"),
-    (f'sage2/sage2++{check_attn("sage2")}: ~40% faster, requires manual install', "sage2"),
+    (f'sage2/sage2++{check_attn("sage2")}: ~40% faster, (recommended, extra optims when used) requires manual install', "sage2"),
 ] + ([(f'radial{check_attn("radial")}: Experimental, may be faster, requires manual install', "radial")] if args.betatest else []) + [
     (f'sage3{check_attn("sage3")}: >50% faster, may have quality trade-offs, requires manual install', "sage3"),
 ]
@@ -11531,6 +11653,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
     global inputs_names #, advanced
     plugin_data = gr.State({})
     edit_mode = tab_id=='edit'
+    floating_generate_button = server_config.get("floating_generate_button", True)
 
     if update_form:
         model_type = ui_defaults.get("model_type", state_dict["model_type"])
@@ -11611,7 +11734,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
     launch_loras = update_loras_url_cache(get_lora_dir(model_type), launch_loras)
     with gr.Row():
         column_kwargs = {'elem_id': 'edit-tab-content'} if tab_id == 'edit' else {}
-        with gr.Column(**column_kwargs):
+        with gr.Column(**column_kwargs, elem_classes=["wangp-actions-column"] if floating_generate_button else None):
             with gr.Column(visible=False, elem_id="image-modal-container") as modal_container:
                 modal_html_display = gr.HTML()
                 modal_action_input = gr.Text(elem_id="modal_action_input", visible=False)
@@ -11941,6 +12064,9 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 video_guide2_label = model_def.get("video_guide2_label", "Control Video 2")
                 video_guide2_value = ui_defaults.get("video_guide2", None)
                 video_guide2 = gr.Video(label=video_input_label_with_info(video_guide2_label, video_guide2_value), height=gallery_height, visible=(not image_outputs) and "+" in video_prompt_type_value, value=video_guide2_value, elem_id="video_input2")
+                video_guide3_label = model_def.get("video_guide3_label", "Control Video 3")
+                video_guide3_value = ui_defaults.get("video_guide3", None)
+                video_guide3 = gr.Video(label=video_input_label_with_info(video_guide3_label, video_guide3_value), height=gallery_height, visible=(not image_outputs) and "*" in video_prompt_type_value, value=video_guide3_value, elem_id="video_input3")
                 magic_mask_visible = video_mask_area_visible(video_prompt_type_value)
                 magic_mask_uis = []
                 if image_mode_value >= 1:  
@@ -12099,6 +12225,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 any_audio_guide = any_audio_prompt and not image_outputs
                 audio_guide = gr.Audio(value= ui_defaults.get("audio_guide", None), type="filepath", label= model_def.get("audio_guide_label","Voice to follow"), show_download_button= True, visible= any_audio_prompt and any_letters(audio_prompt_type_value, "A") )
                 audio_guide2 = gr.Audio(value= ui_defaults.get("audio_guide2", None), type="filepath", label=model_def.get("audio_guide2_label","Voice to follow #2"), show_download_button= True, visible= any_audio_prompt and "B" in audio_prompt_type_value )
+                audio_guide3 = gr.Audio(value= ui_defaults.get("audio_guide3", None), type="filepath", label=model_def.get("audio_guide3_label","Voice to follow #3"), show_download_button= True, visible= any_audio_prompt and "D" in audio_prompt_type_value )
             custom_guide_def = model_def.get("custom_guide", None)
             any_custom_guide= custom_guide_def is not None
             with gr.Row(visible=custom_setting_visible(custom_guide_def, video_prompt_type_value, audio_prompt_type_value)) as custom_guide_row:
@@ -12114,7 +12241,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 remove_background_sound = gr.Checkbox(label="Remove Background Music / Noise" if audio_only else "Ignore Background Music (for better LipSync)", value="V" in audio_prompt_type_value, visible=remove_background_visible)
                 normalize_audio_volumes = gr.Checkbox(label="Normalize Audio Volumes", value="N" in audio_prompt_type_value, visible=normalize_audio_visible)
                 audio_prompt_type_custom_option = gr.Checkbox(label=custom_audio_option_label, value=custom_audio_option_flag in audio_prompt_type_value, visible=custom_audio_option_visible)
-            with gr.Row(visible = any_audio_prompt and any_multi_speakers and ("B" in audio_prompt_type_value or "X" in audio_prompt_type_value) and not image_outputs ) as speakers_locations_row:
+            with gr.Row(visible = any_audio_prompt and any_multi_speakers and (model_def.get("multitalk_class", False) or model_def.get("speaker_locations", False)) and ("B" in audio_prompt_type_value or "X" in audio_prompt_type_value) and not image_outputs ) as speakers_locations_row:
                 speakers_locations = gr.Text( ui_get("speakers_locations"), label="Speakers Locations separated by a Space. Each Location = Left:Right or a BBox Left:Top:Right:Bottom", visible= True)
 
             advanced_prompt = advanced_ui
@@ -12158,11 +12285,15 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             with gr.Row(visible=server_config.get("enhancer_enabled", 0) > 0 and any(value for _, value in prompt_enhancer_choices)) as prompt_enhancer_row:
                 prompt_enhancer_value = str(ui_get("prompt_enhancer") or "")
                 prompt_enhancer_btn_label = str(model_def.get("prompt_enhancer_button_label", "Enhance Prompt"))
-                prompt_enhancer_btn = gr.Button( value =prompt_enhancer_btn_label, visible= on_demand_prompt_enhancer, size="lg", scale=1, elem_classes="btn_centered")
+                # Always visible (not only in on-demand mode): Automatic-mode
+                # users otherwise lose the manual trigger entirely, e.g. to
+                # re-enhance after editing the prompt. The dropdown default
+                # is unchanged; the button just runs enhancement on demand.
+                prompt_enhancer_btn = gr.Button( value =prompt_enhancer_btn_label, visible= True, size="lg", scale=1, elem_classes="btn_centered")
                 prompt_enhancer_values = [value for _, value in prompt_enhancer_choices]
                 prompt_enhancer_mode_value = prompt_enhancer_chaining.normalize_choice(prompt_enhancer_value, prompt_enhancer_values, prompt_enhancer_default, require_choice=on_demand_prompt_enhancer)
 
-                prompt_enhancer_think_visible = server_config.get("enhancer_enabled", 0) in (3, 4, 5)
+                prompt_enhancer_think_visible = server_config.get("enhancer_enabled", 0) in (3, 4, 5, 6)
                 prompt_enhancer_think_value = prompt_enhancer_think_visible and "K" in prompt_enhancer_value and len(prompt_enhancer_mode_value) > 0
                 prompt_enhancer_value = build_prompt_enhancer_value(prompt_enhancer_mode_value, prompt_enhancer_think_value)
                 prompt_enhancer_think_classes = "cbx_centered" if on_demand_prompt_enhancer else "cbx_bottom"
@@ -12804,7 +12935,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         config = gr.Text(value=config_value, interactive=False, visible=False)
 
             if not update_form:
-                with gr.Row(visible=(tab_id == 'edit')):
+                with gr.Row(visible=(tab_id == 'edit'), elem_classes=["wangp-settings-actions"] if floating_generate_button else None):
                     edit_btn = gr.Button("Apply Edits", elem_id="edit_tab_apply_button")
                     cancel_btn = gr.Button("Cancel", elem_id="edit_tab_cancel_button")
                     silent_cancel_btn = gr.Button("Silent Cancel", elem_id="silent_edit_tab_cancel_button", visible=False)
@@ -12835,7 +12966,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             mode = gr.Text(value="", visible = False)
 
-        with gr.Column(visible=(tab_id == 'generate')):
+        with gr.Column(visible=(tab_id == 'generate'), elem_classes=["wangp-actions-column"] if floating_generate_button else None):
             if not update_form:
                 if tab_id == 'generate' and default_state is None:
                     global _deepy_hybrid
@@ -12945,25 +13076,27 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             video_info_add_videos_btn = gr.Button("Import Videos / Images / Audio Files", size ="sm")
  
             if not update_form:
-                generate_btn = gr.Button("Generate")
                 generate_trigger = gr.Text(visible = False) 
                 add_to_queue_trigger = gr.Text(visible = False)
                 js_trigger_index = gr.Text(visible=False, elem_id="js_trigger_for_edit_refresh")
 
-                with gr.Column(visible= False) as current_gen_column:
-                    with gr.Row() as current_gen_buttons_row:
-                        onemoresample_btn = gr.Button("One More Sample", visible = True, size='md', min_width=1)
-                        onemorewindow_btn = gr.Button("Extend this Sample", visible = False, size='md', min_width=1)
-                        pause_btn = gr.Button("Pause", visible = True, size='md', min_width=1)
-                        resume_btn = gr.Button("Resume", visible = False, size='md', min_width=1)
-                        abort_btn = gr.Button("Abort", visible = True, size='md', min_width=1)
-                        earlystop_btn = gr.Button("Early Stop", visible = False, size='md', min_width=1)
+                with gr.Column(elem_classes=["wangp-settings-actions"] if floating_generate_button else None):
+                    generate_btn = gr.Button("Generate")
+                    with gr.Column(visible=False, elem_id=f"wangp-{tab_id}-current-actions" if floating_generate_button else None) as current_gen_column:
+                        with gr.Row() as current_gen_buttons_row:
+                            onemoresample_btn = gr.Button("One More", visible = True, size='md', min_width=1)
+                            onemorewindow_btn = gr.Button("Extend", visible = False, size='md', min_width=1)
+                            pause_btn = gr.Button("Pause", visible = True, size='md', min_width=1)
+                            resume_btn = gr.Button("Resume", visible = False, size='md', min_width=1)
+                            abort_btn = gr.Button("Abort", visible = True, size='md', min_width=1)
+                            earlystop_btn = gr.Button("Early Stop", visible = False, size='md', min_width=1)
+                    add_to_queue_btn = gr.Button("Add New Prompt To Queue", visible=False)
+                with gr.Column(elem_classes=["wangp-generation-details"]) if floating_generate_button else current_gen_column:
                     with gr.Accordion("Preview", open=False):
                         preview = gr.HTML(value=refresh_preview(state_dict), label="Preview", show_label= False)
                         preview_trigger = gr.Text(visible= False)
                     with gr.Accordion("Current Prompt and Media", open=True, visible=False) as gen_info_accordion:
                         gen_info = gr.HTML(visible=False, min_height=1)
-                add_to_queue_btn = gr.Button("Add New Prompt To Queue", visible=False)
                 with gr.Accordion("Queue Management", open=False) as queue_accordion:
                     with gr.Row():
                         queue_html = gr.HTML(
@@ -13027,12 +13160,13 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             video_source.change(fn=refresh_video_input_label, inputs=[video_source, gr.State(video_source_label)], outputs=video_source, show_progress="hidden")
             video_guide.change(fn=refresh_video_input_label, inputs=[video_guide, gr.State(video_guide_label)], outputs=video_guide, show_progress="hidden")
             video_guide2.change(fn=refresh_video_input_label, inputs=[video_guide2, gr.State(video_guide2_label)], outputs=video_guide2, show_progress="hidden")
+            video_guide3.change(fn=refresh_video_input_label, inputs=[video_guide3, gr.State(video_guide3_label)], outputs=video_guide3, show_progress="hidden")
             video_mask.change(fn=refresh_video_input_label, inputs=[video_mask, gr.State(video_mask_label)], outputs=video_mask, show_progress="hidden")
             guidance_phases.change(fn=change_guidance_phases, inputs= [state, guidance_phases, video_prompt_type], outputs =[model_switch_phase, guidance_phases_row, switch_threshold, switch_threshold2, guidance2_scale, guidance3_scale, video_prompt_type])
             remove_background_sound.input(fn=refresh_remove_background_sound, inputs=[state, audio_prompt_type, remove_background_sound], outputs=[audio_prompt_type])
             normalize_audio_volumes.input(fn=refresh_normalize_audio_volumes, inputs=[state, audio_prompt_type, normalize_audio_volumes], outputs=[audio_prompt_type])
             audio_prompt_type_custom_option.input(fn=refresh_audio_prompt_type_custom_option, inputs=[state, audio_prompt_type, audio_prompt_type_custom_option], outputs=[audio_prompt_type])
-            audio_prompt_type_sources.change(fn=refresh_audio_prompt_type_sources, inputs=[state, audio_prompt_type, audio_prompt_type_sources, video_prompt_type, image_mode], outputs=[audio_prompt_type, audio_guide, audio_guide2, speakers_locations_row, remove_background_sound, normalize_audio_volumes, audio_prompt_type_custom_option, audio_options_row, audio_guide_row, force_control_video_trim, custom_settings_visibility_trigger])
+            audio_prompt_type_sources.change(fn=refresh_audio_prompt_type_sources, inputs=[state, audio_prompt_type, audio_prompt_type_sources, video_prompt_type, image_mode], outputs=[audio_prompt_type, audio_guide, audio_guide2, audio_guide3, speakers_locations_row, remove_background_sound, normalize_audio_volumes, audio_prompt_type_custom_option, audio_options_row, audio_guide_row, force_control_video_trim, custom_settings_visibility_trigger])
             prompt_enhancer_mode_dropdown.input(fn=build_prompt_enhancer_value, inputs=[prompt_enhancer_mode_dropdown, prompt_enhancer_think], outputs=[prompt_enhancer], show_progress="hidden")
             prompt_enhancer_think.input(fn=build_prompt_enhancer_value, inputs=[prompt_enhancer_mode_dropdown, prompt_enhancer_think], outputs=[prompt_enhancer], show_progress="hidden")
             image_prompt_type_radio.change(fn=refresh_image_prompt_type_radio, inputs=[state, image_prompt_type, image_prompt_type_radio, video_prompt_type], outputs=[image_prompt_type, image_start_row, image_end_row, video_source, input_video_strength, keep_frames_video_source, image_prompt_type_endcheckbox], show_progress="hidden" ) 
@@ -13041,8 +13175,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
             enhancer_label_inputs = [image_mode, video_prompt_type, image_prompt_type, image_start, image_end, image_refs, image_guide, image_mask_guide, video_source]
             enhancer_metadata_sources = [(model_choice_target, "value"), *zip(enhancer_label_inputs, ["value", "value", "value", "presence", "presence", "count", "presence", "editor", "presence"]), (audio_prompt_type, "value")]
             metadata_events.bind([component.change for component in [*enhancer_label_inputs, audio_prompt_type]], enhancer_metadata_sources, lambda s, values: refresh_prompt_enhancer_labels(s, values, tab_id=tab_id), state, [prompt_enhancer_mode_dropdown, custom_guide_row])
-            video_prompt_type_video_guide.input(fn=refresh_video_prompt_type_video_guide,     inputs = [state, gr.State(""),   video_prompt_type, video_prompt_type_video_guide,     image_mode, image_mask_guide, image_guide, image_mask, image_prompt_type, audio_prompt_type], outputs = [video_prompt_type, video_guide, video_guide2, image_guide, keep_frames_video_guide, denoising_strength, masking_strength, video_guide_outpainting_col, video_prompt_type_video_mask, video_mask, image_mask, image_mask_guide, mask_expand, image_refs_row, remove_background_images_ref, frames_positions, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox, input_video_strength, magic_mask_image_btn, magic_mask_video_btn, force_control_video_trim, custom_settings_visibility_trigger], show_progress="hidden", queue=False)
-            video_prompt_type_video_guide_alt.input(fn=refresh_video_prompt_type_video_guide, inputs = [state, gr.State("alt"),video_prompt_type, video_prompt_type_video_guide_alt, image_mode, image_mask_guide, image_guide, image_mask, image_prompt_type, audio_prompt_type], outputs = [video_prompt_type, video_guide, video_guide2, image_guide, keep_frames_video_guide, denoising_strength, masking_strength, video_guide_outpainting_col, video_prompt_type_video_mask, video_mask, image_mask, image_mask_guide, mask_expand, image_refs_row, remove_background_images_ref, frames_positions, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox, input_video_strength, magic_mask_image_btn, magic_mask_video_btn, force_control_video_trim, custom_settings_visibility_trigger], show_progress="hidden", queue=False)
+            video_prompt_type_video_guide.input(fn=refresh_video_prompt_type_video_guide,     inputs = [state, gr.State(""),   video_prompt_type, video_prompt_type_video_guide,     image_mode, image_mask_guide, image_guide, image_mask, image_prompt_type, audio_prompt_type], outputs = [video_prompt_type, video_guide, video_guide2, video_guide3, image_guide, keep_frames_video_guide, denoising_strength, masking_strength, video_guide_outpainting_col, video_prompt_type_video_mask, video_mask, image_mask, image_mask_guide, mask_expand, image_refs_row, remove_background_images_ref, frames_positions, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox, input_video_strength, magic_mask_image_btn, magic_mask_video_btn, force_control_video_trim, custom_settings_visibility_trigger], show_progress="hidden", queue=False)
+            video_prompt_type_video_guide_alt.input(fn=refresh_video_prompt_type_video_guide, inputs = [state, gr.State("alt"),video_prompt_type, video_prompt_type_video_guide_alt, image_mode, image_mask_guide, image_guide, image_mask, image_prompt_type, audio_prompt_type], outputs = [video_prompt_type, video_guide, video_guide2, video_guide3, image_guide, keep_frames_video_guide, denoising_strength, masking_strength, video_guide_outpainting_col, video_prompt_type_video_mask, video_mask, image_mask, image_mask_guide, mask_expand, image_refs_row, remove_background_images_ref, frames_positions, video_prompt_type_video_custom_dropbox, video_prompt_type_video_custom_checkbox, input_video_strength, magic_mask_image_btn, magic_mask_video_btn, force_control_video_trim, custom_settings_visibility_trigger], show_progress="hidden", queue=False)
             custom_settings_visibility_trigger.change(fn=refresh_custom_settings_visibility, inputs=[state, video_prompt_type, audio_prompt_type], outputs=custom_settings_rows + custom_setting_extra_inputs, show_progress="hidden")
             # video_prompt_type_video_guide_alt.input(fn=refresh_video_prompt_type_video_guide_alt, inputs = [state, video_prompt_type, video_prompt_type_video_guide_alt, image_mode, image_mask_guide, image_guide, image_mask], outputs = [video_prompt_type, video_guide, image_guide, image_refs_row, denoising_strength, masking_strength, video_mask, mask_expand, image_mask_guide, image_guide, image_mask, keep_frames_video_guide ], show_progress="hidden")
             video_prompt_type_video_custom_dropbox.input(fn= refresh_video_prompt_type_video_custom_dropbox, inputs=[state, video_prompt_type, video_prompt_type_video_custom_dropbox], outputs = video_prompt_type)

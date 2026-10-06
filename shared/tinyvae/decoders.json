@@ -1,0 +1,148 @@
+{
+  "decoders": {
+    "taeltx_2": {
+      "filename": "taeltx_2.safetensors",
+      "channels": 128,
+      "patch": 4,
+      "temporal": [
+        true,
+        true,
+        true
+      ],
+      "kind": "video",
+      "repo": "DeepBeepMeep/LTX-2",
+      "sha256": "6e4cc0469134213d0101a46877ea2bce1dc7cf06ff5f5aefb9e4076c03542f7b"
+    },
+    "taeltx2_3": {
+      "filename": "taeltx2_3.safetensors",
+      "channels": 128,
+      "patch": 4,
+      "temporal": [
+        true,
+        true,
+        true
+      ],
+      "kind": "video",
+      "repo": "DeepBeepMeep/LTX-2",
+      "sha256": "f0773b4e3e57318e6aa4dd4a35e1d16213a5f160fbc0376163f06888bbcbe246"
+    },
+    "taef2": {
+      "filename": "taef2_decoder.safetensors",
+      "channels": 32,
+      "patch": 1,
+      "temporal": [],
+      "kind": "image",
+      "repo": "DeepBeepMeep/Flux2",
+      "sha256": "83841c5ca153e4cae60f03e2bedc7a49cb8b157da17623e5f137cce2fa183624"
+    },
+    "taef1": {
+      "filename": "taef1_decoder.safetensors",
+      "channels": 16,
+      "patch": 1,
+      "temporal": [],
+      "kind": "image",
+      "repo": "DeepBeepMeep/Flux",
+      "sha256": "5283b341ac4358818690111b9c2e760ef1958888e32b03568c75f8006423c272"
+    },
+    "taew2_1": {
+      "filename": "taew2_1.safetensors",
+      "channels": 16,
+      "patch": 1,
+      "temporal": [
+        false,
+        true,
+        true
+      ],
+      "kind": "video",
+      "repo": "DeepBeepMeep/Wan2.1",
+      "sha256": "04766eac0221b5390b985ae3fdcca652cbb4b1e8b82b28ea7ff89dfad1b1a93f"
+    },
+    "taew2_2": {
+      "filename": "taew2_2.safetensors",
+      "channels": 48,
+      "patch": 2,
+      "temporal": [
+        false,
+        true,
+        true
+      ],
+      "kind": "video",
+      "repo": "DeepBeepMeep/Wan2.2",
+      "sha256": "b84609b2a133d48434bd9636bfcb44bf05168dc436e2d3cecf26256faa1f5325"
+    },
+    "taehv": {
+      "filename": "taehv.safetensors",
+      "channels": 16,
+      "patch": 1,
+      "temporal": [
+        false,
+        true,
+        true
+      ],
+      "kind": "video",
+      "repo": "DeepBeepMeep/HunyuanVideo",
+      "sha256": "032ad4ddc689513287ce02fcc099b5278592526ed1eac0324a7fab94bb690ed9"
+    },
+    "taehv1_5": {
+      "filename": "taehv1_5.safetensors",
+      "channels": 32,
+      "patch": 2,
+      "temporal": [
+        false,
+        true,
+        true
+      ],
+      "kind": "video",
+      "repo": "DeepBeepMeep/HunyuanVideo1.5",
+      "sha256": "b52e245bb86c62e159f50338e2e8f422d4b6f98b467164939c1c031c7d61352e"
+    },
+    "taeh3": {
+      "filename": "taeh3.safetensors",
+      "channels": 24,
+      "patch": 1,
+      "temporal": [
+        false,
+        false,
+        false
+      ],
+      "kind": "h3",
+      "repo": "DeepBeepMeep/MiniMax-H3",
+      "sha256": "f0f60fa072089997f817402098c2fd90777cb2660dd79cf5df42fc1e3e08e527"
+    }
+  },
+  "architectures": {
+    "ltx2_19B": "taeltx_2",
+    "ltx2_25_22B": "taeltx2_3",
+    "ltx2_22B": "taeltx2_3",
+    "flux2_klein_4b": "taef2",
+    "ideogram4_turbotime": "taef2",
+    "flux2_klein_9b": "taef2",
+    "ideogram4": "taef2",
+    "z_image": "taef1",
+    "flux": "taef1",
+    "krea2_raw_edit": "taew2_1",
+    "krea2_raw": "taew2_1",
+    "qwen_image_edit_plus2_20B": "taew2_1",
+    "qwen_image_edit_20B": "taew2_1",
+    "krea2_turbo": "taew2_1",
+    "krea2_turbo_edit": "taew2_1",
+    "qwen_image_20B": "taew2_1",
+    "qwen_image_edit_plus_20B": "taew2_1",
+    "i2v": "taew2_1",
+    "i2v_2_2": "taew2_1",
+    "t2v": "taew2_1",
+    "t2v_2_2": "taew2_1",
+    "t2v_1.3B": "taew2_1",
+    "ti2v_2_2": "taew2_2",
+    "hunyuan_i2v": "taehv",
+    "hunyuan": "taehv",
+    "hunyuan_1_5_t2v": "taehv1_5",
+    "hunyuan_1_5_i2v": "taehv1_5",
+    "minimax_h3_fl2va": "taeh3",
+    "minimax_h3_fl2va_pruned": "taeh3",
+    "minimax_h3_control": "taeh3",
+    "minimax_h3_control_pruned": "taeh3",
+    "minimax_h3_ref2va_pruned": "taeh3",
+    "minimax_h3_ref2va": "taeh3"
+  }
+}

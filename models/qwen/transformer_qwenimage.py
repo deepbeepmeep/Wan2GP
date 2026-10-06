@@ -702,7 +702,7 @@ class QwenImageTransformer2DModel(nn.Module):
     def preprocess_loras(self, model_type, sd):
         from shared.utils.lora_mapping import convert_lora_keys
         from .qwen_main import _QWEN_FUSED_SPLIT_MAP
-        return convert_lora_keys(sd, dict(self.named_modules()), fused_split_map=_QWEN_FUSED_SPLIT_MAP)
+        return convert_lora_keys(sd, dict(self.named_modules()), fused_split_map=_QWEN_FUSED_SPLIT_MAP, compose_lokr=True)
 
     def __init__(
         self,

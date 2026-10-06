@@ -372,9 +372,9 @@ class model_factory:
 
                 noise_patch_size = 2
                 if self.is_piflux2:
-                    timesteps = get_schedule_piflux2(sampling_steps, inp["img"].shape[1])
+                    timesteps = get_schedule_piflux2(sampling_steps, inp["img"].shape[1], device)
                 else:
-                    timesteps = get_schedule_flux2(sampling_steps, inp["img"].shape[1])
+                    timesteps = get_schedule_flux2(sampling_steps, inp["img"].shape[1], device)
                 unpack_latent = lambda x : self.vae.pre_decode(torch.cat(scatter_ids(x, inp["img_ids"])).squeeze(2))
                 ref_style_imgs = []
                 image_mask = None
@@ -494,7 +494,7 @@ class model_factory:
                     neg_txt_ids = torch.zeros(neg_bs, neg_txt.shape[1], 3, device=device)
                     inp.update({"neg_txt": neg_txt.to(device), "neg_txt_ids": neg_txt_ids.to(device), "neg_vec": neg_vec.to(device)})
 
-                timesteps = get_schedule(sampling_steps, inp["img"].shape[1], shift=(self.name != "flux-schnell"))
+                timesteps = get_schedule(sampling_steps, inp["img"].shape[1], shift=(self.name != "flux-schnell"), device=device)
 
                 ref_style_imgs = [self.vision_encoder_processor(img, return_tensors="pt").to(self.device) for img in ref_style_imgs]
                 if self.feature_embedder is not None and ref_style_imgs is not None and len(ref_style_imgs) > 0 and self.vision_encoder is not None:
@@ -502,7 +502,7 @@ class model_factory:
                     set_phase_status("Encoding Image Features")
                     siglip_embedding = [self.vision_encoder(**emb, output_hidden_states=True) for emb in ref_style_imgs]
                     siglip_embedding = torch.cat([self.feature_embedder(emb) for emb in siglip_embedding], dim=1)
-                    siglip_embedding_ids = torch.zeros( siglip_embedding.shape[0], siglip_embedding.shape[1], 3 ).to(device)
+                    siglip_embedding_ids = torch.zeros( siglip_embedding.shape[0], siglip_embedding.shape[1], 3, device=device)
                     inp["siglip_embedding"] = siglip_embedding
                     inp["siglip_embedding_ids"] = siglip_embedding_ids
                     if NAG is not None:

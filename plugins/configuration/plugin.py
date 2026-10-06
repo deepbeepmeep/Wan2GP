@@ -1,4 +1,5 @@
 from shared.kernels import int8_backend, kernel_policy
+from shared import attention_kit
 import gradio as gr
 from shared.utils.plugins import WAN2GPPlugin
 import copy
@@ -97,6 +98,7 @@ from shared.remote_llm.config import (
     ENGINE_CODEX,
     ENGINE_OPENCODE,
     ENGINE_QWEN35_4B,
+    ENGINE_QWEN38_9B,
     LLM_CONFIG_KEY,
     is_remote_engine,
     local_enhancer_id,
@@ -121,7 +123,10 @@ from shared.utils.wgp_config_migration import (
 
 QWEN35_PROMPT_ENHANCER_IDS = (3, 4)
 QWEN38_PROMPT_ENHANCER_ID = 5
+QWEN38_9B_PROMPT_ENHANCER_ID = 6
+QWEN_PROMPT_ENHANCER_IDS = (3, 4, 5, 6)
 QWEN35_QUANTIZATION_CHOICES = [("Quanto Int8 (recommended, better quality)", "quanto_int8"), ("GGUF Q4 (less VRAM/RAM & faster if kernels are installed, but worse quality)", "gguf")]
+QWEN38_9B_QUANTIZATION_CHOICES = [("GGUF Uncensored Q4_K_M (default, fits 8 GB of VRAM)", "gguf"), ("GGUF Uncensored Q8_0 (closest to full precision, needs about 12 GB of VRAM)", "gguf_q8")]
 QWEN38_QUANTIZATION_CHOICES = [("GGUF Uncensored Q4 (default, highest quality and VRAM/RAM use)", "gguf"), ("GGUF Uncensored IQ3_S (recommended Q3, middle quality and VRAM/RAM use)", "gguf_q3"), ("GGUF Uncensored Q2 (lowest quality and VRAM/RAM use)", "gguf_q2"), ("Bonsai 2 Abliterated PTQ1_0 (ternary, requires kernels 1.0.22+)", "gguf_ptq1")]
 
 
@@ -130,6 +135,8 @@ def prompt_enhancer_quantization_ui_state(enhancer_enabled, quantization):
     if enhancer_enabled == QWEN38_PROMPT_ENHANCER_ID:
         value = quantization if quantization in ("gguf", "gguf_q3", "gguf_q2", "gguf_ptq1") else "gguf"
         return QWEN38_QUANTIZATION_CHOICES, value, True
+    if enhancer_enabled == QWEN38_9B_PROMPT_ENHANCER_ID:
+        return QWEN38_9B_QUANTIZATION_CHOICES, quantization if quantization in ("gguf", "gguf_q8") else "gguf", True
     value = "gguf" if quantization in ("gguf", "gguf_q3", "gguf_q2", "gguf_ptq1") else "quanto_int8"
     return QWEN35_QUANTIZATION_CHOICES, value, enhancer_enabled in QWEN35_PROMPT_ENHANCER_IDS
 
@@ -148,6 +155,19 @@ def deepy_filesystem_ui_state(deepy_type):
     }
     return access, everywhere
 
+
+WHOLE_MODEL_PROFILES = (1, 3, 3.5) # memory profiles that load each model whole in VRAM: nothing to preload
+PRELOAD_MODES = [("Default", "default"), ("Dynamic", "dynamic"), ("Manual", "manual")]
+MEMORY_ADVICE = """**Profile 4 is recommended for most PCs.** It sends the main model to the GPU part by part while the GPU works: models larger than your VRAM still run, most of the VRAM stays free for long videos or large images, and the speed cost is small. *Reserved RAM* is memory set aside to make these transfers fast. Other programs cannot use it, so only part of your RAM is reserved.
+
+**For image models, use Profile 4 or 5 with a *Dynamic* or *Manual* VRAM Preload for faster generations.** Their steps are short, so the transfers set the speed. The *VRAM Preload* next to each memory profile (Profiles 2, 4 and 5) keeps part of each model in VRAM: *Default* keeps the profile's choice; *Dynamic* keeps as much of the model as each generation leaves free and gives part of it back if VRAM runs short (it needs the MMGP Optimized VRAM Allocator); *Manual* keeps the amount set below it (8000 MB or more brings Flux close to Profile 1). Video steps are usually long enough to hide the transfers.
+
+**Profile 3+ is recommended for audio models** (their default): they are usually small enough to fit entirely in VRAM, where the language model many of them include runs much faster and can use the faster CUDA Graph or vLLM engines (*Performance* tab).
+
+Change the settings below only if needed:
+- **Your PC runs short of RAM:** lower *Reserved RAM for Pinning* and keep *Smart Memory Pinning* On.
+- **Out of VRAM errors:** lower the preloads, or choose a higher *VAE Tiling* preset or Profile 4+.
+- **Plenty of RAM and VRAM for your models:** Profile 1 is a bit faster."""
 
 class ConfigTabPlugin(WAN2GPPlugin):
     def __init__(self):
@@ -260,6 +280,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         choices=self.attention_modes_choices,
                         value=self.attention_mode, label="Attention Type", interactive=not self.args.lock_config
                     )
+                    self.generation_preview_choice = gr.Dropdown(
+                        choices=[("Frames Selection using RGB Factors (fast)", "rgb"), ("Frames Selection using Tiny VAE (when available, slower)", "tiny_vae_frames"), ("Video using Tiny VAE (when available, even slower)", "tiny_vae_video")],
+                        value=self.server_config.get("generation_preview", "rgb"), label="Generation Preview",
+                        info="Tiny VAE modes use additional GPU memory and download a small decoder on first use. Unsupported models keep RGB previews; image generations show still images.",
+                        interactive=not self.args.lock_config,
+                    )
                     self.preload_model_policy_choice = gr.CheckboxGroup(
                         [("Preload Model on App Launch","P"), ("Preload Model on Switch", "S"), ("Unload Model when Queue is Done", "U")],
                         value=self.preload_model_policy, label="Model Loading/Unloading Policy"
@@ -315,6 +341,12 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         choices=ui_studio.THEME_CHOICES,
                         value=self.server_config.get("UI_theme", "default"), label="UI Theme (requires restart)"
                     )
+                    self.floating_generate_button_choice = gr.Checkbox(
+                        value=self.server_config.get("floating_generate_button", True),
+                        label="Enable Floating Generate Button (requires restart)",
+                        info="Keep generation controls visible on the right until they reach their place below the gallery. Also enables floating Edit Mode controls.",
+                        interactive=not self.args.lock_config
+                    )
                     self.queue_color_scheme_choice = gr.Dropdown(
                         choices=[
                             ("Pastel (Unique color for each item)", "pastel"),
@@ -351,10 +383,66 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             ("vllm: up to x10 faster, whole LM will be loaded in VRAM, requires Triton & Flash Attention 2", "vllm"),
                         ],
                         value=self.server_config.get("lm_decoder_engine", ""),
-                        label="Language Models Decoder Engine (when available for a model)",
+                        label="Language Models Decoder Engine (when available for a model, used also by Prompt Enhancer and Deepy)",
                     )
                     self.VAE_precision_choice = gr.Dropdown(choices=[("16-bit (faster, less VRAM)", "16"), ("32-bit (slower, better for sliding window)", "32")], value=self.server_config.get("vae_precision", "16"), label="VAE Encoding/Decoding Precision")
                     self.compile_choice = gr.Dropdown(choices=[("On (up to 20% faster, requires Triton)", "transformer"), ("Off", "")], value=self.compile, label="Compile Transformer Model (slight speed again, but first generation is slower and potential compatibility issues with some GPUs/Models)", interactive=not self.args.lock_config)
+                    self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
+                    self.int8_kernels_choice = gr.Dropdown(choices=int8_backend.CHOICES, value=self.server_config.get("int8_kernels", "auto"), label="INT8 Math Kernels", info="Auto selects Comfy Kitchen, then Triton, then PyTorch. Disabled uses PyTorch. Changes apply to the next generation without reloading weights.")
+                    self.kernel_precision_choice = gr.Dropdown(choices=kernel_policy.CHOICES, value=self.server_config.get("kernel_precision", "fast"), label="CUDA Kernels Optimized Ops Precision (When Available)", info="Fast allows additional VAE optimizations with small rounding differences. Allow Faster Approximate Kernels is the default. INT8 math is controlled separately.")
+                    self.attention_head_split_choice = gr.Dropdown(choices=attention_kit.HEAD_SPLIT_CHOICES, value=self.server_config.get("attention_head_split", 0), label="Attention Head Split (much lower VRAM for long videos, up to 10% slower)", info="Models that support it compute attention one group of heads at a time for long sequences, which lowers the VRAM peak of denoising. Higher levels use more groups, saving more VRAM at a small speed cost; how many groups each level gives depends on the model. Applies to the next generation without reloading.")
+
+                with gr.Tab("RAM/VRAM Management"):
+                    self.vram_allocator_choice = gr.Dropdown(
+                        choices=[("MMGP Optimized VRAM Allocator with RAM Spilling (a generation slightly too large for the VRAM can still finish, more slowly)", "vmm_spill"),
+                                 ("MMGP Optimized VRAM Allocator (out of memory error when no VRAM is left)", "vmm"),
+                                 ("PyTorch Default VRAM Allocator", "default")],
+                        value=self.server_config.get("vram_allocator", "vmm_spill"),
+                        label="VRAM Allocator (requires restart)",
+                        info="The MMGP Optimized VRAM Allocator recycles more efficiently the VRAM that is no longer used: lower peak VRAM with long videos, large images and Deepy. Same as --vram-allocator, which takes precedence.",
+                    )
+                    gr.Markdown(MEMORY_ADVICE)
+                    preload_info = "This part of each model stays in VRAM: less to transfer at each step, faster for short steps such as images, at the cost of VRAM."
+                    profiles, modes, preloads = {}, {}, {}
+                    for output_type, title, profile in (("video", "Video", self.default_profile_video), ("image", "Image", self.default_profile_image), ("audio", "Audio", self.default_profile_audio)):
+                        streamed, mode = profile not in WHOLE_MODEL_PROFILES, self.server_config[f"{output_type}_preload_mode"]
+                        with gr.Group():
+                            with gr.Row():
+                                profiles[output_type] = gr.Dropdown(choices=self.memory_profile_choices, value=profile, label=f"{title} - Default Memory Profile", scale=6)
+                                modes[output_type] = gr.Dropdown(choices=PRELOAD_MODES, value=mode, label="VRAM Preload", scale=1, min_width=140, visible=streamed)
+                            preloads[output_type] = gr.Slider(0, 40000, value=self.server_config.get(f"{output_type}_preload_in_VRAM", 0), step=100, label=f"{title} VRAM Preload (MB)", info=preload_info, visible=streamed and mode == "manual")
+                    self.video_profile_choice, self.image_profile_choice, self.audio_profile_choice = profiles.values()
+                    self.video_preload_mode_choice, self.image_preload_mode_choice, self.audio_preload_mode_choice = modes.values()
+                    self.video_preload_choice, self.image_preload_choice, self.audio_preload_choice = preloads.values()
+                    with gr.Row():
+                        self.smart_memory_pinning_choice = gr.Dropdown(
+                            choices=[("On: faster, uses 1-2 GB more Reserved RAM", True), ("Off: slower, saves 1-2 GB of Reserved RAM", False)],
+                            value=self.server_config.get("smart_memory_pinning", True),
+                            label="Smart Memory Pinning",
+                            info="Helps most with Profile 5 and image models. Allocate a 1-2GB Reserved RAM buffer to accelerate transfers.",
+                        )
+                        self.perc_reserved_mem_max_choice = gr.Slider(
+                            0, 80, value=self.server_config.get("perc_reserved_mem_max", 0), step=5,
+                            label="Reserved RAM for Pinning (% of RAM, 0 = Auto)",
+                            info="Auto: 40% on Windows, 80% on Linux. Same as the command line --perc-reserved-mem-max (a fraction, e.g. 0.4), which takes precedence, and as the environment variable perc_reserved_mem_max, which this setting overrides.",
+                        )
+                    self.read_ahead_choice = gr.Checkbox(
+                        value=self.server_config.get("read_ahead", False), label="Read Ahead (Windows)",
+                        info="Reads the model files ahead of their use: faster loading when they are not already in RAM, such as the first load after a restart or with Profile 5. Windows may then keep more file data in its cache, shown as used RAM. Applies when models reload.",
+                    )
+                    def update_preload_visibility(profile, mode):
+                        streamed = profile not in WHOLE_MODEL_PROFILES
+                        return gr.update(visible=streamed), gr.update(visible=streamed and mode == "manual")
+                    for output_type in profiles:
+                        for trigger in (profiles[output_type], modes[output_type]):
+                            trigger.change(fn=update_preload_visibility, inputs=[profiles[output_type], modes[output_type]], outputs=[modes[output_type], preloads[output_type]], show_progress="hidden")
+                    self.max_reserved_loras_choice = gr.Slider(
+                        -1,
+                        10000,
+                        value=self.server_config.get("max_reserved_loras", -1),
+                        step=1,
+                        label="Max Amount of Loras (in MB) to be Pinned To Reserved Memory (set it to 0-500MB if Out of Memory when starting Gen, -1= No limit)"
+                    )
                     vae_config_value = self.vae_config if self.vae_config in [0, 1, 2, 3] else 0
                     self.vae_config_choice = gr.Dropdown(
                         choices=[
@@ -365,32 +453,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         ],
                         value=vae_config_value,
                         label="VAE Tiling (higher presets use less VRAM and may increase artifacts like banding)",
-                    )
-                    self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost (~10% speedup for ~1GB VRAM)")
-                    self.int8_kernels_choice = gr.Dropdown(choices=int8_backend.CHOICES, value=self.server_config.get("int8_kernels", "auto"), label="INT8 Math Kernels", info="Auto selects Comfy Kitchen, then Triton, then PyTorch. Disabled uses PyTorch. Changes apply to the next generation without reloading weights.")
-                    self.kernel_precision_choice = gr.Dropdown(choices=kernel_policy.CHOICES, value=self.server_config.get("kernel_precision", "fast"), label="CUDA Kernels Optimized Ops Precision (When Available)", info="Fast allows additional VAE optimizations with small rounding differences. Allow Faster Approximate Kernels is the default. INT8 math is controlled separately.")
-                    self.video_profile_choice = gr.Dropdown(
-                        choices=self.memory_profile_choices,
-                        value=self.default_profile_video,
-                        label="Default Memory Profile (Video)",
-                    )
-                    self.image_profile_choice = gr.Dropdown(
-                        choices=self.memory_profile_choices,
-                        value=self.default_profile_image,
-                        label="Default Memory Profile (Image)",
-                    )
-                    self.audio_profile_choice = gr.Dropdown(
-                        choices=self.memory_profile_choices,
-                        value=self.default_profile_audio,
-                        label="Default Memory Profile (Audio)",
-                    )
-                    self.preload_in_VRAM_choice = gr.Slider(0, 40000, value=self.server_config.get("preload_in_VRAM", 0), step=100, label="VRAM (MB) for Preloaded Models (0=profile default)")
-                    self.max_reserved_loras_choice = gr.Slider(
-                        -1,
-                        10000,
-                        value=self.server_config.get("max_reserved_loras", -1),
-                        step=1,
-                        label="Max Amount of Loras (in MB) to be Pinned To Reserved Memory (set it to 0-500MB if Out of Memory when starting Gen, -1= No limit)"
                     )
                     self.release_RAM_btn = gr.Button("Force Unload Models from RAM")
 
@@ -428,7 +490,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     deepy_remote_default = is_remote_engine(resolve_role_engine(llm_config_view, "deepy"))
                     deepy_type_default = deepy_mode_from_config(self.server_config.get(DEEPY_ENABLED_KEY, 0), self.server_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT))
                     with gr.Group(elem_classes=["wangp-transparent-group"]):
-                        self.deepy_llm_engine_choice = gr.Dropdown(choices=DEEPY_ENGINE_CHOICES, value=llm_config["deepy"], label="Prompt Enhancer / Deepy LLM Engine")
+                        self.deepy_llm_engine_choice = gr.Dropdown(choices=[choice for choice in DEEPY_ENGINE_CHOICES if choice[1] != ENGINE_QWEN38_9B or llm_config["deepy"] == ENGINE_QWEN38_9B], value=llm_config["deepy"], label="Prompt Enhancer / Deepy LLM Engine")  # Qwen3.8 9B hidden until it works reliably
                         self.remote_llm_warning_md = gr.Markdown(value=privacy_warning(self.server_config))
                         self.remote_llm_auth_md = gr.Markdown("Authentication is managed by each external engine. WanGP does not request or store passwords, API keys, access tokens, or refresh tokens.", visible=deepy_remote_default)
                         self.codex_config_ui = create_codex_config_ui(gr, llm_config["profiles"][ENGINE_CODEX], visible=ENGINE_CODEX in active_llm_engines, lock_config=self.args.lock_config)
@@ -461,7 +523,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             return DEEPY_COMPACTION_CHOICE_THINKING
                         return compaction_type
                     with gr.Row():
-                        self.enhancer_mode_choice = gr.Dropdown(choices=[("On-Demand Button Only", 1),("Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
+                        self.enhancer_mode_choice = gr.Dropdown(choices=[("Manual Button Only", 1),("Manual Button + Automatic on Generation", 0)], value=self.server_config.get("enhancer_mode", 1), label="Prompt Enhancer Usage")
                     with gr.Row(visible=not deepy_remote_default) as self.enhancer_sampling_row:
                         self.prompt_enhancer_temperature_choice = gr.Slider(
                             0.1,
@@ -490,7 +552,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     speculative_choices, speculative_method, token_choices, speculative_tokens = speculative_decoding_ui_state(
                         enhancer_enabled_value, enhancer_quantization_value, self.server_config.get("lm_decoder_engine", ""),
                         self.server_config.get(PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT))
-                    with gr.Row(visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.enhancer_speculative_row:
+                    with gr.Row(visible=not deepy_remote_default and enhancer_enabled_value in QWEN_PROMPT_ENHANCER_IDS) as self.enhancer_speculative_row:
                         self.enhancer_speculative_decoding_choice = gr.Dropdown(
                             choices=speculative_choices, value=speculative_method, label="Speculative Decoding",
                             info="Speculative decoding uses extra VRAM. For Bonsai PTQ1, Auto disables MTP at 10 GiB VRAM or less and uses 2 draft tokens above 10 GiB.",
@@ -501,7 +563,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             info="Maximum draft tokens per prediction. More tokens can increase memory use and may be slower",
                             interactive=bool(token_choices) and not self.args.lock_config,
                         )
-                    with gr.Row(visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.enhancer_decoding_row:
+                    with gr.Row(visible=not deepy_remote_default and enhancer_enabled_value in QWEN_PROMPT_ENHANCER_IDS) as self.enhancer_decoding_row:
                         self.deepy_kv_cache_quantization_choice = gr.Dropdown(
                             choices=[("Auto", DEEPY_KV_CACHE_QUANTIZATION_AUTO), ("Disabled (BF16)", ""), ("INT8 (about half the KV-cache VRAM)", "int8")],
                             value=deepy_kv_cache_quantization_default,
@@ -513,13 +575,13 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             value=normalize_deepy_repetition_penalty(self.server_config.get(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT)),
                             label="Repetition Penalty",
                             info="Reduces repeated phrases in Prompt Enhancer and Deepy; about 10% slower.",
-                            visible=not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID),
+                            visible=not deepy_remote_default and enhancer_enabled_value in QWEN_PROMPT_ENHANCER_IDS,
                         )
                     self.deepy_type_choice = gr.Dropdown(
                         choices=[("Disabled", DEEPY_TYPE_DISABLED), ("Deepy Zero", DEEPY_TYPE_ZERO), ("Deepy Prime", DEEPY_TYPE_PRIME)],
                         value=deepy_type_default,
                         label="Deepy",
-                        info="Deepy Zero uses local Qwen models for focused tasks such as generation, editing and transcription. Deepy Prime plans multi-step projects, manages workspace files and can use external tools; it requires Qwen3.8 VL 27B locally or an external LLM.",
+                        info="Deepy Zero uses local Qwen models for focused tasks such as generation, editing and transcription. Deepy Prime plans multi-step projects, manages workspace files and can use external tools; it requires a local Qwen3.8 VL model (9B or 27B) or an external LLM.",
                         elem_id="deepy_type_choice",
                     )
                     with gr.Row(visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default) as self.deepy_vram_row:
@@ -532,7 +594,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             value=normalize_deepy_vram_mode(self.server_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD)),
                             label="Deepy VRAM Loading Mode (the longer Deepy stays in VRAM, the faster Deepy is)",
                         )
-                    with gr.Row(visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.deepy_context_row:
+                    with gr.Row(visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default and enhancer_enabled_value in QWEN_PROMPT_ENHANCER_IDS) as self.deepy_context_row:
                         with gr.Column(scale=2):
                             self.deepy_context_tokens_choice = gr.Slider(
                                 minimum=DEEPY_CONTEXT_TOKENS_MIN,
@@ -543,7 +605,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                                 label=format_deepy_context_tokens_label(self.server_config.get("enhancer_enabled", 0), deepy_context_tokens_default, deepy_kv_cache_quantization_default),
                                 info="More tokens retain more conversation and tool history, but use more VRAM.",
                             )
-                        with gr.Column(scale=1, visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default and enhancer_enabled_value in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)) as self.deepy_compaction_column:
+                        with gr.Column(scale=1, visible=deepy_type_default != DEEPY_TYPE_DISABLED and not deepy_remote_default and enhancer_enabled_value in QWEN_PROMPT_ENHANCER_IDS) as self.deepy_compaction_column:
                             self.deepy_compaction_type_choice = gr.Dropdown(
                                 choices=[("Discard Oldest Entries", DEEPY_COMPACTION_TYPE_DISCARD), (f"Summarize (recommended, {DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:,}+ tokens)", DEEPY_COMPACTION_TYPE_SUMMARIZE), (f"Summarize with Thinking ({DEEPY_COMPACTION_THINKING_MIN_TOKENS:,}+ tokens)", DEEPY_COMPACTION_CHOICE_THINKING)],
                                 value=current_compaction_choice,
@@ -621,6 +683,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                             ("AAC 256 kbps (High Quality, Recommended)", "aac_256"),
                             ("AAC 320 kbps (Very High Quality)", "aac_320"),
                             ("ALAC Lossless (preview/playback compatibility may be limited)", "alac"),
+                            ("FLAC Lossless (MP4/MKV only, playback compatibility may be limited)", "flac"),
                         ],
                         value=self.server_config.get("audio_output_codec", "aac_128"),
                         visible=True,
@@ -632,6 +695,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.audio_stand_alone_output_codec_choice = gr.Dropdown(
                         choices=[
                             ("WAV (Lossless)", "wav"),
+                            ("FLAC (Lossless)", "flac"),
                             ("MP3 128 kbps", "mp3_128"),
                             ("MP3 192 kbps", "mp3_192"),
                             ("MP3 320 kbps", "mp3_320"),
@@ -689,7 +753,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         def enforce_deepy_prime_requirements(deepy_type_choice, deepy_context_tokens_choice, deepy_compaction_type_choice, enhancer_enabled_choice, deepy_kv_cache_quantization_choice, deepy_llm_engine_choice):
             if deepy_type_choice == DEEPY_TYPE_DISABLED:
                 return gr.update(), gr.update(), "", DEEPY_TYPE_DISABLED, gr.update()
-            qwen_local = not is_remote_engine(deepy_llm_engine_choice) and enhancer_enabled_choice in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)
+            qwen_local = not is_remote_engine(deepy_llm_engine_choice) and enhancer_enabled_choice in QWEN_PROMPT_ENHANCER_IDS
             runtime_config = dict(self.server_config)
             deepy_enabled_choice, deepy_type_choice = split_deepy_mode(deepy_type_choice)
             runtime_config["enhancer_enabled"] = enhancer_enabled_choice
@@ -711,7 +775,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.deepy_type_choice.input(fn=enforce_deepy_prime_requirements, inputs=[self.deepy_type_choice, self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.enhancer_enabled_choice, self.deepy_kv_cache_quantization_choice, self.deepy_llm_engine_choice], outputs=[self.deepy_context_tokens_choice, self.deepy_compaction_type_choice, self.deepy_requirement_md, self.deepy_type_value, self.deepy_prime_recommendation], show_progress="hidden")
 
         def update_deepy_context_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice, deepy_type_choice, deepy_llm_engine_choice):
-            if deepy_type_choice == DEEPY_TYPE_DISABLED or is_remote_engine(deepy_llm_engine_choice) or enhancer_enabled_choice not in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID):
+            if deepy_type_choice == DEEPY_TYPE_DISABLED or is_remote_engine(deepy_llm_engine_choice) or enhancer_enabled_choice not in QWEN_PROMPT_ENHANCER_IDS:
                 return gr.update()
             return gr.update(label=format_deepy_context_tokens_label(enhancer_enabled_choice, deepy_context_tokens_choice, deepy_kv_cache_quantization_choice))
 
@@ -744,7 +808,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             deepy_remote = is_remote_engine(resolve_role_engine(runtime_config, "deepy"))
             active = {resolve_role_engine(runtime_config, "deepy")}
             quantization_choices, quantization_value, quantization_visible = prompt_enhancer_quantization_ui_state(local_enhancer_id(deepy_engine), enhancer_quantization)
-            qwen_local = not deepy_remote and local_enhancer_id(deepy_engine) in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)
+            qwen_local = not deepy_remote and local_enhancer_id(deepy_engine) in QWEN_PROMPT_ENHANCER_IDS
             deepy_enabled = deepy_type != DEEPY_TYPE_DISABLED
             return (
                 privacy_warning(runtime_config),
@@ -785,15 +849,16 @@ class ConfigTabPlugin(WAN2GPPlugin):
         inputs = [
             self.state,
             self.transformer_types_choices, self.model_hierarchy_type_choice, self.fit_canvas_choice,
-            self.attention_choice, self.preload_model_policy_choice, self.clear_file_list_choice, self.multi_prompts_gen_type_choice, self.keep_intermediate_sliding_windows_choice,
+            self.attention_choice, self.generation_preview_choice, self.preload_model_policy_choice, self.clear_file_list_choice, self.multi_prompts_gen_type_choice, self.keep_intermediate_sliding_windows_choice,
             self.display_stats_choice, self.max_frames_multiplier_choice, self.keep_resolution_on_model_switch_choice, self.enable_4k_resolutions_choice, self.checkpoints_paths_choice, self.loras_root_choice, self.save_queue_if_crash_choice,
-            self.UI_theme_choice, self.queue_color_scheme_choice, self.process_queues_when_browser_unfocused_choice,
+            self.UI_theme_choice, self.floating_generate_button_choice, self.queue_color_scheme_choice, self.process_queues_when_browser_unfocused_choice,
             self.quantization_choice, self.transformer_dtype_policy_choice, self.mixed_precision_choice,
             self.text_encoder_quantization_choice, self.lm_decoder_engine_choice, self.VAE_precision_choice, self.compile_choice,
             self.depth_anything_v2_variant_choice,
-            self.vae_config_choice, self.boost_choice, self.int8_kernels_choice, self.kernel_precision_choice,
-            self.video_profile_choice, self.image_profile_choice, self.audio_profile_choice,
-            self.preload_in_VRAM_choice, self.max_reserved_loras_choice,
+            self.vae_config_choice, self.boost_choice, self.int8_kernels_choice, self.kernel_precision_choice, self.attention_head_split_choice,
+            self.video_profile_choice, self.image_profile_choice, self.audio_profile_choice, self.video_preload_choice, self.image_preload_choice, self.audio_preload_choice,
+            self.video_preload_mode_choice, self.image_preload_mode_choice, self.audio_preload_mode_choice,
+            self.smart_memory_pinning_choice, self.perc_reserved_mem_max_choice, self.read_ahead_choice, self.vram_allocator_choice, self.max_reserved_loras_choice,
             self.deepy_llm_engine_choice,
             *self.codex_config_ui.save_components,
             *self.claude_config_ui.save_components,
@@ -880,15 +945,16 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         (
             transformer_types_choices, model_hierarchy_type_choice, fit_canvas_choice,
-            attention_choice, preload_model_policy_choice, clear_file_list_choice, multi_prompts_gen_type_choice, keep_intermediate_sliding_windows_choice,
+            attention_choice, generation_preview_choice, preload_model_policy_choice, clear_file_list_choice, multi_prompts_gen_type_choice, keep_intermediate_sliding_windows_choice,
             display_stats_choice, max_frames_multiplier_choice, keep_resolution_on_model_switch_choice, enable_4k_resolutions_choice, checkpoints_paths_choice, loras_root_choice, save_queue_if_crash_choice,
-            UI_theme_choice, queue_color_scheme_choice, process_queues_when_browser_unfocused_choice,
+            UI_theme_choice, floating_generate_button_choice, queue_color_scheme_choice, process_queues_when_browser_unfocused_choice,
             quantization_choice, transformer_dtype_policy_choice, mixed_precision_choice,
             text_encoder_quantization_choice, lm_decoder_engine_choice, VAE_precision_choice, compile_choice,
             depth_anything_v2_variant_choice,
-            vae_config_choice, boost_choice, int8_kernels_choice, kernel_precision_choice,
-            video_profile_choice, image_profile_choice, audio_profile_choice,
-            preload_in_VRAM_choice, max_reserved_loras_choice,
+            vae_config_choice, boost_choice, int8_kernels_choice, kernel_precision_choice, attention_head_split_choice,
+            video_profile_choice, image_profile_choice, audio_profile_choice, video_preload_choice, image_preload_choice, audio_preload_choice,
+            video_preload_mode_choice, image_preload_mode_choice, audio_preload_mode_choice,
+            smart_memory_pinning_choice, perc_reserved_mem_max_choice, read_ahead_choice, vram_allocator_choice, max_reserved_loras_choice,
             deepy_llm_engine_choice,
             codex_executable_choice, codex_model_choice, codex_reasoning_effort_choice,
             claude_executable_choice, claude_model_choice, claude_reasoning_effort_choice,
@@ -926,12 +992,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
         deepy_remote = is_remote_engine(deepy_llm_engine_choice)
         if not deepy_remote:
             enhancer_enabled_choice = local_enhancer_id(deepy_llm_engine_choice, enhancer_enabled_choice)
-        qwen_local = not deepy_remote and enhancer_enabled_choice in (*QWEN35_PROMPT_ENHANCER_IDS, QWEN38_PROMPT_ENHANCER_ID)
+        qwen_local = not deepy_remote and enhancer_enabled_choice in QWEN_PROMPT_ENHANCER_IDS
 
         if not deepy_remote and int(enhancer_enabled_choice) == QWEN38_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q3", "gguf_q2", "gguf_ptq1"):
             error = "Qwen3.8-27B is available only as GGUF. Select GGUF Q2, Q3, Q4, or Bonsai PTQ1_0 as the Qwen LLM quantization."
             gr.Info(f"Configuration was not saved: {error}")
             return f"<div style='color:red; text-align:center;'>Configuration was not saved: {error}</div>", *[gr.update()]*9
+        if not deepy_remote and int(enhancer_enabled_choice) == QWEN38_9B_PROMPT_ENHANCER_ID and enhancer_quantization_choice not in ("gguf", "gguf_q8"):
+            enhancer_quantization_choice = "gguf"
         if not deepy_remote and int(enhancer_enabled_choice) in QWEN35_PROMPT_ENHANCER_IDS and enhancer_quantization_choice not in ("quanto_int8", "gguf"):
             error = "Qwen3.5 is available as Quanto Int8 or GGUF Q4."
             gr.Info(f"Configuration was not saved: {error}")
@@ -949,8 +1017,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
             if deepy_enabled_choice:
                 if not deepy_remote and not qwen_local:
                     raise ValueError("Florence 2 is not compatible with Deepy. Select a Qwen model or disable Deepy before saving.")
-                if not deepy_remote and deepy_type_choice == DEEPY_TYPE_PRIME and enhancer_enabled_choice != QWEN38_PROMPT_ENHANCER_ID:
-                    raise ValueError("Deepy Prime requires the Qwen3.8 VL 27B model.")
+                if not deepy_remote and deepy_type_choice == DEEPY_TYPE_PRIME and enhancer_enabled_choice not in (QWEN38_PROMPT_ENHANCER_ID, QWEN38_9B_PROMPT_ENHANCER_ID):
+                    raise ValueError("Deepy Prime requires a Qwen3.8 VL model.")
                 if qwen_local:
                     deepy_compaction_thinking_choice = deepy_compaction_type_choice == DEEPY_COMPACTION_CHOICE_THINKING
                     deepy_compaction_type_choice = normalize_deepy_compaction_type(deepy_compaction_type_choice)
@@ -995,18 +1063,23 @@ class ConfigTabPlugin(WAN2GPPlugin):
         new_server_config = copy.deepcopy(old_server_config)
         new_server_config.update({
             "attention_mode": attention_choice, "transformer_types": transformer_types_choices,
+            "generation_preview": generation_preview_choice,
             "text_encoder_quantization": text_encoder_quantization_choice, "save_path": save_path_choice,
             "image_save_path": image_save_path_choice, "audio_save_path": audio_save_path_choice,
             "lm_decoder_engine": lm_decoder_engine_choice,
             "compile": compile_choice, "profile": video_profile_choice,
             "video_profile": video_profile_choice, "image_profile": image_profile_choice, "audio_profile": audio_profile_choice,
+            "video_preload_in_VRAM": video_preload_choice, "image_preload_in_VRAM": image_preload_choice, "audio_preload_in_VRAM": audio_preload_choice,
+            "video_preload_mode": video_preload_mode_choice, "image_preload_mode": image_preload_mode_choice, "audio_preload_mode": audio_preload_mode_choice,
+            "smart_memory_pinning": smart_memory_pinning_choice, "perc_reserved_mem_max": perc_reserved_mem_max_choice, "read_ahead": read_ahead_choice, "vram_allocator": vram_allocator_choice,
             "vae_config": vae_config_choice, "vae_precision": VAE_precision_choice,
             "mixed_precision": mixed_precision_choice, "metadata_type": metadata_choice,
             "transformer_quantization": quantization_choice, "transformer_dtype_policy": transformer_dtype_policy_choice,
-            "boost": boost_choice, "int8_kernels": int8_kernels_choice, "kernel_precision": kernel_precision_choice, "clear_file_list": clear_file_list_choice,
+            "boost": boost_choice, "int8_kernels": int8_kernels_choice, "kernel_precision": kernel_precision_choice, "attention_head_split": attention_head_split_choice, "clear_file_list": clear_file_list_choice,
             "multi_prompts_gen_type": prompt_parser.normalize_multi_prompts_mode(multi_prompts_gen_type_choice, default=prompt_parser.DEFAULT_MULTI_PROMPTS_MODE),
             "keep_intermediate_sliding_windows": keep_intermediate_sliding_windows_choice,
             "preload_model_policy": preload_model_policy_choice, "UI_theme": UI_theme_choice,
+            "floating_generate_button": floating_generate_button_choice,
             "fit_canvas": fit_canvas_choice,
             LLM_CONFIG_KEY: llm_config_choice,
             "enhancer_mode": enhancer_mode_choice,
@@ -1015,7 +1088,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             DEEPY_TYPE_KEY: normalize_deepy_type(deepy_type_choice),
             DEEPY_VOICE_LANGUAGE_KEY: normalize_deepy_voice_language(deepy_voice_language_choice),
             VOICE_MODE_KEY: voice_mode({VOICE_MODE_KEY: voice_mode_choice}),
-            "preload_in_VRAM": preload_in_VRAM_choice, "depth_anything_v2_variant": depth_anything_v2_variant_choice,
+            "depth_anything_v2_variant": depth_anything_v2_variant_choice,
             "notification_sound_enabled": notification_sound_enabled_choice,
             "notification_sound_volume": notification_sound_volume_choice,
             **notification_config_update,
@@ -1113,7 +1186,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         no_reload_keys = [
             VOICE_MODE_KEY,
             DEEPY_VOICE_LANGUAGE_KEY,
-            "attention_mode", "vae_config", "boost", "int8_kernels", "kernel_precision", "save_path", "image_save_path", "audio_save_path",
+            "attention_mode", "vae_config", "boost", "int8_kernels", "kernel_precision", "attention_head_split", "save_path", "image_save_path", "audio_save_path",
             "metadata_type", "clear_file_list", "multi_prompts_gen_type", "keep_intermediate_sliding_windows", "fit_canvas", "depth_anything_v2_variant",
             "notification_sound_enabled", "notification_sound_volume", *notifications.CONFIG_KEYS, "audio_processors", "temporal_upsamplers", "spatial_upsamplers", "matanyone_version",
             "prompt_enhancer_temperature", "prompt_enhancer_top_p", "prompt_enhancer_randomize_seed", "prompt_enhancer_quantization", PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, "enhancer_mode",
@@ -1121,7 +1194,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             LLM_CONFIG_KEY,
             "max_frames_multiplier", "display_stats", "keep_resolution_on_model_switch", "enable_4k_resolutions", "max_reserved_loras", "video_output_codec", "hdr_video_crf", "video_container",
             "embed_source_images", "image_output_codec", "audio_output_codec", "audio_stand_alone_output_codec", "checkpoints_paths", "loras_root", "save_queue_if_crash",
-            "model_hierarchy_type", "UI_theme", "queue_color_scheme", gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY
+            "model_hierarchy_type", "UI_theme", "floating_generate_button", "queue_color_scheme", gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY
         ]
 
         needs_reload = not all(change in no_reload_keys for change in changes)
@@ -1179,6 +1252,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         upsampler_api.release_changed_config_upsamplers(old_server_config, new_server_config, changes)
         if "kernel_precision" in changes:
             kernel_policy.configure(new_server_config["kernel_precision"])
+        if "attention_head_split" in changes:
+            attention_kit.configure(new_server_config["attention_head_split"])
         if "int8_kernels" in changes:
             self.apply_int8_kernel_setting(new_server_config["int8_kernels"], True, resolved=int8_resolution)
 

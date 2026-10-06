@@ -127,9 +127,9 @@ def normalize_latent(latent: torch.Tensor, device: torch.device, dtype: torch.dt
 def _coerce_image_input(image_input: object) -> torch.Tensor:
     if isinstance(image_input, Image.Image):
         image = np.array(image_input)[..., :3]
-        return torch.tensor(image, dtype=torch.float32)
+        return torch.tensor(image, dtype=torch.float32, device="cpu")
     if isinstance(image_input, np.ndarray):
-        return torch.tensor(image_input[..., :3], dtype=torch.float32)
+        return torch.tensor(image_input[..., :3], dtype=torch.float32, device="cpu")
     if torch.is_tensor(image_input):
         return image_input.detach().clone().to(dtype=torch.float32)
     raise TypeError(f"Unsupported image input type: {type(image_input)}")
@@ -150,9 +150,9 @@ def _normalize_image_tensor(image: torch.Tensor) -> torch.Tensor:
 def _coerce_video_input(video_input: object) -> torch.Tensor:
     if isinstance(video_input, Image.Image):
         image = np.array(video_input)[..., :3]
-        return torch.tensor(image, dtype=torch.float32)
+        return torch.tensor(image, dtype=torch.float32, device="cpu")
     if isinstance(video_input, np.ndarray):
-        return torch.tensor(video_input, dtype=torch.float32)
+        return torch.tensor(video_input, dtype=torch.float32, device="cpu")
     if torch.is_tensor(video_input):
         return video_input.detach().clone().to(dtype=torch.float32)
     raise TypeError(f"Unsupported video input type: {type(video_input)}")
@@ -200,7 +200,7 @@ def load_image_conditioning(
     if isinstance(image_path, str):
         image = decode_image(image_path=image_path)
         image = preprocess(image=image)
-        image = torch.tensor(image, dtype=torch.float32)
+        image = torch.tensor(image, dtype=torch.float32, device="cpu")
     else:
         image = _coerce_image_input(image_path)
     image = _normalize_image_tensor(image)

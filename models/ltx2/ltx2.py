@@ -13,7 +13,7 @@ from accelerate import init_empty_weights
 from safetensors.torch import load_file
 from shared.utils import files_locator as fl
 from shared.utils.phase_progress import generation_progress
-from shared.utils.hdr import VIDEO_PROMPT_HDR_OUTPUT_FLAG, hdr_linear_to_vae_range
+from shared.utils.hdr import VIDEO_PROMPT_HDR_OUTPUT_FLAG, hdr_linear_to_vae_range, sdr_to_vae_range
 
 from .ltx_core.conditioning import AudioConditionByLatent, AudioConditionByLatentPrefix, AudioConditionByReferenceLatent
 from .ltx_core.model.audio_vae import (
@@ -66,6 +66,7 @@ from .ltx2_runtime import (
     LTX2_PAD_MASKED_CONTROL_VIDEO_TAIL,
 )
 from .ltx_pipelines.distilled import DistilledPipeline
+from .ltx_pipelines.hdr_ic_lora import convert_sdr_to_hdr
 from .ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
 from .ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE, DEFAULT_NEGATIVE_PROMPT, DISTILLED_SIGMA_VALUES
 
@@ -77,7 +78,6 @@ LTX2_ID_LORA_GUIDANCE_SCALE = 3.0
 LTX2_ID_LORA_AUDIO_CFG_SCALE = 7.0
 LTX2_ID_LORA_MAX_REFERENCE_SECONDS = 121.0 / 25.0
 LTX2_OUTPAINT_GAMMA = 2.0
-LTX2_HDR_TRANSFORM = "logc3"
 LTX2_DISABLE_STAGE2_WITH_CONTROL_VIDEO = True
 LTX2_ENABLE_EMBEDDING_LORAS = False
 LTX2_VAE_TEMPORAL_TILING_FPS = 24.0
@@ -276,8 +276,6 @@ def _split_diffusion_vae_state_dict(state_dict: dict, prefix: str):
         if key.startswith(prefix):
             key = key[len(prefix):]
         elif not key.startswith(("encoder.", "decoder.", "per_channel_statistics.")):
-            continue
-        if key == "decoder.type_emb":
             continue
         if key.startswith("per_channel_statistics."):
             suffix = key[len("per_channel_statistics."):]
@@ -1105,7 +1103,8 @@ class LTX2:
             return cached
         path = fl.locate_file(self.model_def.get("ltx2_hdr_scene_embeddings_file", ""), error_if_none=False)
         tensors = load_file(path, device="cpu")
-        self._hdr_scene_context = (tensors["video_context"].detach().cpu(), tensors["audio_context"].detach().cpu())
+        # LTX-2.3 stores (1, L, D) contexts, LTX-2.5 (L, D).
+        self._hdr_scene_context = tuple(tensors[name].detach().cpu().reshape(1, *tensors[name].shape[-2:]) for name in ("video_context", "audio_context"))
         return self._hdr_scene_context
 
     def _detach_text_encoder_connectors(self) -> None:
@@ -1142,6 +1141,7 @@ class LTX2:
             trans = self.model
         return trans, None
 
+    @generation_progress
     def upscale_video(
         self,
         sample: torch.Tensor,
@@ -1185,7 +1185,7 @@ class LTX2:
                 waveform = waveform[:, :target_channels]
                 if waveform.shape[1] < target_channels:
                     waveform = torch.cat((waveform, waveform.new_zeros(waveform.shape[0], target_channels - waveform.shape[1], waveform.shape[2])), dim=1)
-        audio_processor = AudioProcessor(sample_rate=audio_encoder.sample_rate, mel_bins=audio_encoder.mel_bins, mel_hop_length=audio_encoder.mel_hop_length, n_fft=audio_encoder.n_fft)
+        audio_processor = AudioProcessor(sample_rate=audio_encoder.sample_rate, mel_bins=audio_encoder.mel_bins, mel_hop_length=audio_encoder.mel_hop_length, n_fft=audio_encoder.n_fft, device=self.device)
         mel = audio_processor.waveform_to_mel(waveform, int(audio_sample_rate))
         audio_params = next(audio_encoder.parameters())
         audio_latent = audio_encoder(mel.to(device=audio_params.device, dtype=audio_params.dtype))
@@ -1209,6 +1209,66 @@ class LTX2:
             return None
         decoded = decoded[:frame_count, :source_height * 2, :source_width * 2]
         return decoded.permute(3, 0, 1, 2).contiguous()
+
+    @generation_progress
+    def refine_video(
+        self,
+        load_window,
+        frame_count: int,
+        height: int,
+        width: int,
+        output_frames: int,
+        output_height: int,
+        output_width: int,
+        prompt: str,
+        seed: int,
+        fps: float,
+        window_frames: int,
+        tile_height: int,
+        tile_width: int,
+        gentle: bool,
+        tiles_per_call: int = 0,
+        conditioning_latent: torch.Tensor | None = None,
+        carry_frames: int = 0,
+        fusion_previous: torch.Tensor | None = None,
+        fusion_export: slice | None = None,
+        pixel_frame_offset: int = 0,
+        VAE_tile_size=None,
+        callback=None,
+        set_progress_status=None,
+        interrupt_check=None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None] | None:
+        if not isinstance(self.pipeline, DistilledPipeline):
+            raise RuntimeError("LTX detail refinement requires a distilled checkpoint")
+        if frame_count > LTX2_UPSCALE_MAX_FRAMES:
+            raise ValueError(f"LTX detail refinement expects at most {LTX2_UPSCALE_MAX_FRAMES} frames per call")
+        decoded = self.pipeline.refine_video(
+            load_window=load_window,
+            frame_count=frame_count,
+            height=height,
+            width=width,
+            output_frames=output_frames,
+            output_height=output_height,
+            output_width=output_width,
+            prompt=prompt,
+            seed=seed,
+            frame_rate=fps,
+            window_frames=window_frames,
+            tile_height=tile_height,
+            tile_width=tile_width,
+            gentle=gentle,
+            tiles_per_call=tiles_per_call,
+            conditioning_latent=conditioning_latent,
+            carry_frames=carry_frames,
+            fusion_previous=fusion_previous,
+            fusion_export=fusion_export,
+            latent_frame_offset=int(pixel_frame_offset) // 8,
+            tiling_config=_build_tiling_config(VAE_tile_size, fps),
+            callback=callback,
+            set_progress_status=set_progress_status,
+            interrupt_check=interrupt_check,
+        )
+        return None if decoded is None else (decoded[0].permute(3, 0, 1, 2), decoded[1])
 
     def get_loras_transformer(self, get_model_recursive_prop, model_type, video_prompt_type, base_model_type=None, model_def = None, lora_dir = None, sample_solver = None, **kwargs):
         control_map = {
@@ -1257,7 +1317,12 @@ class LTX2:
             loras_mult.append(multiplier)
 
         distilled_samplers = {"distilled_8_steps", "distilled_8_steps_ancestral"}
-        if pipeline_kind != "distilled" and (guidance_phases > 1 or sample_solver in distilled_samplers | {"res2s"}):
+        hdr_enabled = _ltx2_main_loras_compatible(resolved_base_model_type) and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
+        hdr_conversion = hdr_enabled and model_def["ltx2_hdr_transform"] == "acescct"
+        if pipeline_kind != "distilled" and hdr_conversion:
+            # The LTX-2.5 SDR-to-HDR IC-LoRA runs on the distilled model: one phase of the 8 distilled steps.
+            _append_system_lora("distilled", 1.0, "distilled-lora")
+        elif pipeline_kind != "distilled" and (guidance_phases > 1 or sample_solver in distilled_samplers | {"res2s"}):
             use_hq_sampler = sample_solver == "res2s"
             use_distilled_8_steps = sample_solver in distilled_samplers
             use_id_lora = "1" in audio_prompt_type
@@ -1275,8 +1340,8 @@ class LTX2:
                 mult = "0;1"
             distilled_lora_name = "distilled_1_1" if resolved_base_model_type == "ltx2_22B" and sample_solver in distilled_samplers | {"res2s"} else "distilled"
             _append_system_lora(distilled_lora_name, mult, "distilled-lora")
-        if _ltx2_main_loras_compatible(resolved_base_model_type) and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type:
-            _append_system_lora("hdr", 1.0, "ic-lora-hdr")
+        if hdr_enabled:
+            _append_system_lora("hdr", 1.0, "ic-lora-sdr-to-hdr" if hdr_conversion else "ic-lora-hdr")
         if any(letter in video_prompt_type for letter in control_map):
             _append_system_lora("union_control", 1.0, "union-control")
         any_outpainting = get_outpainting_dims(outpainting_setting, outpainting_ratio) is not None
@@ -1388,6 +1453,7 @@ class LTX2:
                 frame_num = max(frame_num, msr_frame_count)
 
         hdr_enabled = _ltx2_main_loras_compatible(self.base_model_type) and VIDEO_PROMPT_HDR_OUTPUT_FLAG in video_prompt_type
+        hdr_transform = self.model_def["ltx2_hdr_transform"] if hdr_enabled else None
         input_video_is_hdr = bool(input_video_is_hdr)
         hdr_scene_context = self._load_hdr_scene_context(lora_dir) if hdr_enabled else None
         if hdr_enabled:
@@ -1459,8 +1525,9 @@ class LTX2:
             masking_strength = 0.0
         if ltx2_inpainting or new_outpainting:
             masking_strength = 0.0
-        if hdr_enabled and input_video_is_hdr and torch.is_tensor(input_video):
-            input_video = hdr_linear_to_vae_range(input_video, transform=LTX2_HDR_TRANSFORM).to(dtype=input_video.dtype)
+        if hdr_enabled and torch.is_tensor(input_video) and (input_video_is_hdr or hdr_transform == "acescct"):
+            to_working_space = hdr_linear_to_vae_range if input_video_is_hdr else sdr_to_vae_range
+            input_video = to_working_space(input_video, transform=hdr_transform, channel_dim=0).to(dtype=input_video.dtype)
         control_strength = denoising_strength
         ic_lora_downscale_factor = None
         ic_lora_downscale_factor = _infer_ic_lora_downscale_factor(loras_selected)
@@ -1618,7 +1685,10 @@ class LTX2:
         _append_injected_ref_entries(guiding_images, guiding_images_stage2)
 
         tiling_config = _build_tiling_config(VAE_tile_size, fps)
-        interrupt_check = lambda: self._interrupt
+        def interrupt_check():
+            if callback is not None:
+                callback(-1, None, False, True)
+            return self._interrupt
         text_connectors = text_connectors or getattr(self, "_text_connectors", None)
         editanything_ref_images = input_ref_images if editanything else None
 
@@ -1651,10 +1721,7 @@ class LTX2:
                         waveform = waveform[:, :target_channels, :]
                         if waveform.shape[1] < target_channels:
                             pad_channels = target_channels - waveform.shape[1]
-                            pad = torch.zeros(
-                                (waveform.shape[0], pad_channels, waveform.shape[2]),
-                                dtype=waveform.dtype,
-                            )
+                            pad = waveform.new_zeros((waveform.shape[0], pad_channels, waveform.shape[2]))
                             waveform = torch.cat([waveform, pad], dim=1)
 
                 waveform = waveform.to(device="cpu", dtype=torch.float32)
@@ -1666,6 +1733,7 @@ class LTX2:
                     mel_bins=self.audio_encoder.mel_bins,
                     mel_hop_length=self.audio_encoder.mel_hop_length,
                     n_fft=self.audio_encoder.n_fft,
+                    device=self.device,
                 )
                 skip_audio_conditioning = False
                 waveform_sample_rate = int(waveform_sample_rate or 0)
@@ -1769,7 +1837,9 @@ class LTX2:
             with pipeline_context:
                 return self.pipeline(**pipeline_kwargs)
 
-        if isinstance(self.pipeline, TI2VidTwoStagesPipeline):
+        if hdr_transform == "acescct":
+            pipeline_output = convert_sdr_to_hdr(self.model, self.video_encoder, self.video_decoder, self.pipeline.pipeline_components, self.device, input_frames, prefix_frames_count if images else 0, images, hdr_scene_context[0], int(frame_num), target_height, target_width, float(fps), int(seed), tiling_config=tiling_config, loras_slists=loras_slists, callback=callback, set_progress_status=set_progress_status, interrupt_check=interrupt_check), None
+        elif isinstance(self.pipeline, TI2VidTwoStagesPipeline):
             pipeline_output = run_ltx2_pipeline(
                 prompt=input_prompt,
                 negative_prompt=negative_prompt,
@@ -1824,7 +1894,7 @@ class LTX2:
                 self_refiner_max_plans=self_refiner_max_plans,
                 editanything_ref_images=editanything_ref_images,
                 ltx2_22B_class=ltx2_22B_class,
-                hdr_transform=LTX2_HDR_TRANSFORM if hdr_enabled else None,
+                hdr_transform=hdr_transform,
                 skip_audio=hdr_enabled,
             )
         else:
@@ -1870,7 +1940,7 @@ class LTX2:
                 masking_source=masking_source,
                 masking_strength=masking_strength,
                 return_latent_slice=return_latent_slice,
-                hdr_transform=LTX2_HDR_TRANSFORM if hdr_enabled else None,
+                hdr_transform=hdr_transform,
                 precomputed_contexts=hdr_scene_context,
                 skip_audio=hdr_enabled,
                 continuous_conditioning_and_guide=continuous_conditioning_and_guide,
@@ -1945,7 +2015,7 @@ class LTX2:
         if hdr_enabled:
             result["hdr"] = True
             result["hdr_format"] = "linear_srgb"
-            result["hdr_transform"] = LTX2_HDR_TRANSFORM
+            result["hdr_transform"] = hdr_transform
         if latent_slice is not None:
             result["latent_slice"] = latent_slice
         if memory_latents is not None:

@@ -9,6 +9,6 @@
     "guidance_scale": 1.7,
     "seed": -1,
     "audio_prompt_type": "",
-    "prompt_enhancer": "",
+    "prompt_enhancer": "T",
     "type": "MiniMax Music 3"
 }

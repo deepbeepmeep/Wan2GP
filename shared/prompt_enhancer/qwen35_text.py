@@ -116,6 +116,8 @@ def _resolve_gguf_linear_attention_layout_from_filename(model_path: str) -> tupl
         "qwen3.8-27b-uncensored-q4-k-m.gguf",
         "qwen3.8-27b-uncensored-nomtp-iq3-s.gguf",
         "qwen3.8-27b-uncensored-iq2-m.gguf",
+        "qwen3.8-9b-uncensored-heretic-q4-k-m.gguf",
+        "qwen3.8-9b-uncensored-heretic-q8-0.gguf",
     }:
         return True, True, False
     if filename in {

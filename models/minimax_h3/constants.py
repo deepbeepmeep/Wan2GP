@@ -3,6 +3,10 @@ H3_AUDIO_REFINEMENT_SETTING = "audio_refinement"
 H3_AUDIO_REFINEMENT_DENOISE = 0.5
 H3_AUDIO_REFINEMENT_STEPS = 6
 
+# Retain the latent-handoff experiment for further investigation. It worsened the
+# first outpainting join; False restores pixel conditioning and 1 + 17n overlaps.
+H3_CONTROL_LATENT_CONTINUATION = False
+
 H3_MASK_MODE_SETTING = "h3_mask_mode"
 H3_MASK_MODE_SHARED_TIMESTEP = "shared_timestep"
 H3_MASK_MODE_GROUPED_ROWS = "grouped_rows"

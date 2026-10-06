@@ -397,26 +397,26 @@ V2 toolboxes use progressive discovery for advanced operations: omit `action` an
 
 For a named model, use `wangp_models(query="SenseNova")` directly. The case-insensitive substring search covers name, ID, family and description; it needs no wildcard. Omit all arguments for discovery. For advanced filters, use `action="search", arguments={"query":"SenseNova","filters":{"main_output":"image"}}`; do not combine the shortcut with action/arguments. String filters match whole values, with optional `*` and `?` globs. An incomplete shortcut result includes a `next_call` recipe for continuation.
 
-For contract discovery, `null` replaces the entire `arguments` object: `{"action":"deepy_template_settings","arguments":null}`. Partial objects and null values inside them are execution attempts. Validation errors reject them and explain how to retrieve the contract. Action lists are compact name-to-description maps. Template discovery additionally returns `tool_ids`, a map of Deepy usages to descriptions, and the complete call recipe for reading a configured default directly. A known call recipe can be executed without another contract request.
+For contract discovery, `null` replaces the entire `arguments` object: `{"action":"capabilities","arguments":null}`. Partial objects and null values inside them are execution attempts. Validation errors reject them and explain how to retrieve the contract. Action lists are compact name-to-description maps. A known call recipe can be executed without another contract request.
 
 V2 rejects unknown top-level tool parameters instead of discarding them. Single-path IO actions use `path`, including `read_text`, `write_text`, `append_text` and `edit`; `file_path` remains accepted as a compatibility alias. `info` also accepts the historical `source` alias. Ripgrep uses `wangp_io(action="rg", arguments={"command":"-n pattern -- @workspace/file.txt"})`; its former inner `arguments` name remains accepted. Conflicting alias values are rejected. Action contracts contain complete call examples. Markdown appends return a compact `structure` receipt with heading count, headings added, last heading and its occurrence count. This can replace routine heading searches; it does not establish semantic consistency. V1 and Deepy Zero retain their existing call formats and append receipts.
 
-Discovery also gives direct execution syntax for actions with no parameters and for ordinary generation. The model `capabilities` result includes `input_guidance` for available input instructions (`infos`) and `prompt_guidance` for available prompt instructions (`prompt_infos`); reuse the same `model_type` with each recipe. These properties can also be read directly through `definition` without a capabilities query. Shared setting meanings belong to `wangp://docs/settings`. Workflow resources include `wangp://guides/workflows` and `wangp://guides/long-video`; writable-workspace servers also expose the long-story and long-generation-prompt skills on demand.
+Discovery also gives direct execution syntax for actions with no parameters. Generation needs no discovery: `wangp_generate(settings={...})` takes one flat settings object with `model_type` and a non-empty `prompt` (or a list of them for a batch). Keys in `custom_settings` must be custom settings declared by the model. The earlier `wangp_generate(action="generate", arguments={"source": ...})` form remains accepted. The model `capabilities` result includes `input_guidance` for available input instructions (`infos`) and `prompt_guidance` for available prompt instructions (`prompt_infos`); reuse the same `model_type` with each recipe. These properties can also be read directly through `definition` without a capabilities query. Shared setting meanings belong to `wangp://docs/settings`. Workflow resources include `wangp://guides/workflows` and `wangp://guides/long-video`; writable-workspace servers also expose the long-story and long-generation-prompt skills on demand.
 
 V2 accepts two exact model-query aliases: `definition` with `property="defaults"` or `property="capabilities"` reads the corresponding action when no actual declaration has that name. Other unknown properties return a complete call for reading available properties. For `wangp_toolbox(action="inspect_media", arguments={...})`, `media` is accepted as an alias for `media_id` when a string, or `media_ids` when a list. Conflicting values or multiple input forms are rejected before inspection. All inspection inputs belong inside `arguments`; a single video reference still inspects frame 0 by default, while `inspect_video` samples a time range. V1 and Deepy Zero retain their existing contracts.
 
 In Deepy Prime's in-process model definitions, optional `deepy_infos` and `deepy_prompt_infos` replace the corresponding `infos` and `prompt_infos` values. Each override is independent; absent overrides retain the standard help. Responses expose only the canonical names, and `prompt_guidance` reads the selected `prompt_infos`. Root definitions retain their 256-character previews; requesting a property returns its complete text. This does not add startup context. The UI, Python API, external MCP servers and MCP v1 keep the full standard help.
 
-`deepy_templates` is only for browsing alternatives and requires one `tool_id`. It returns `tool_id` and `default_template` once, a `deepy_templates` array of names, and `labels` only where display labels differ. Small lists have no pagination metadata. Large lists are bounded by the usual page limits and return `next_call`; repeat the same toolbox with that object to continue the stored snapshot. The ordinary listing contract omits paging controls; the continuation supplies the cursor when needed. Existing explicit `limit`, `cursor` and `summary_only` arguments remain accepted. The fixed usage map itself is never paginated.
+Deepy templates and the Gallery need no discovery. `wangp_deepy_templates(tool_id="gen_image")` returns the configured default template's settings, the model's supported `media_inputs`, and a `templates` array naming the usage's templates, with `labels` only where display labels differ; the tool schema lists every `tool_id` with its meaning. Pass `template` only to choose an alternative. A catalog longer than one page returns `next_call`; call the tool with that object to continue the stored snapshot. `wangp_list_gallery(media_type="video", selected_only=true)` takes its filters and paging options directly. The earlier `action`/`arguments` forms of both tools remain accepted.
 
 | Historical capability | V2 owner / action |
 |---|---|
 | Model search | `wangp_models` / `search` |
 | Model schema, definition, defaults | `wangp_model` / `capabilities`, `definition`, `defaults` |
-| Saved settings, profiles, presets, LoRAs | `wangp_model` / `saved_settings`, `loras` |
-| Deepy templates and merged settings | `wangp_deepy_templates` / `deepy_templates`, `deepy_template_settings` |
-| Gallery inventory / selections | `wangp_list_gallery` / `list` |
-| Generation | `wangp_generate` / `generate` |
+| Accelerator profiles, presets, user settings, LoRAs | `wangp_model` / `profiles` (with the recommended profile's settings), `presets`, `user_settings`, `loras` |
+| Deepy templates and merged settings | `wangp_deepy_templates(tool_id=..., template="default")` |
+| Gallery inventory / selections | `wangp_list_gallery(media_type=..., selected_only=...)` |
+| Generation | `wangp_generate(settings=...)`: one settings object, or a list for a batch |
 | Post-processing | `wangp_postprocess` / discovered processor ID |
 | Media utilities / previous generation settings | `wangp_toolbox` / discovered action or `media_settings` |
 | File navigation, search, text edits, archives | `wangp_io` / `list`, `rg`, `read_text`, `info`, `edit`, `append_text`, `write_text`, etc. |
@@ -426,10 +426,10 @@ In Deepy Prime's in-process model definitions, optional `deepy_infos` and `deepy
 Example v2 calls:
 
 ```python
-wangp_deepy_templates()
-wangp_deepy_templates(action="deepy_template_settings", arguments={"tool_id": "gen_image", "template": "default"})
-wangp_generate(action="generate")
-wangp_generate(action="generate", arguments={"source": prepared_settings})
+wangp_deepy_templates(tool_id="gen_image")
+wangp_list_gallery(selected_only=True)
+wangp_generate(settings=prepared_settings)
+wangp_generate(settings=[first_settings, second_settings])
 wangp_io(action="info", arguments={"path": "@outputs/example.png"})
 wangp_io(action="info", arguments={"paths": ["@outputs/clip.mp4", "@outputs/voice.wav"]})
 ```
@@ -442,7 +442,7 @@ On the external MCP server, generation and post-processing retain `wait`, `timeo
 
 Deepy Prime manages synchronous waiting itself, including with remote LLMs. Its generation and post-processing contracts omit `wait` and `timeout_s`; Prime accepts but ignores these two controls at the top level or inside action arguments and reports this in the result. Other unknown arguments remain errors. `event_limit` still controls the returned event count. External MCP v1/v2 and Deepy Zero keep their existing behavior.
 
-Batch generation is preserved: `source` accepts a settings list, a task list, or a manifest containing `tasks`. The entire batch is passed in one submission to the existing WanGP queue, with its order and per-task settings intact. V2 does not split it into separate jobs or alter queue scheduling.
+Batch generation is preserved: `settings` accepts a settings list, a task list, or a manifest containing `tasks`. The entire batch is passed in one submission to the existing WanGP queue, with its order and per-task settings intact. V2 does not split it into separate jobs or alter queue scheduling.
 
 V2 checks the required model field before submitting any part of a generation batch. Each settings object, supplied directly or wrapped in `params` / `settings`, needs a non-empty `model_type`; legacy `base_model_type` is accepted when `model_type` is absent. Existing `edit_*` post-processing tasks need no model. A missing/invalid model field or malformed task container rejects the whole call with its exact location (for example `source.tasks[1].params.model_type`) and creates no job. V1 and Deepy Zero retain their existing validation paths.
 
@@ -911,7 +911,7 @@ Known `kind` values:
 - `progress`
   - Structured progress update.
 - `preview`
-  - RGB preview update.
+  - Generation preview update, using the configured RGB or Tiny VAE mode.
 - `stream`
   - One stdout/stderr line.
 - `status`
@@ -1051,7 +1051,9 @@ PreviewUpdate(
 Fields:
 
 - `image: PIL.Image.Image | None`
-  - RGB preview image generated from WanGP's latent preview payload.
+  - The frame strip or image preview. For video previews, this is the first frame, so existing image consumers keep working.
+- `video: bytes | None`
+  - A complete, silent MP4 preview when Generation Preview uses Tiny VAE video mode; otherwise `None`. Save these bytes with an `.mp4` extension or play them as `video/mp4`.
 - `phase`, `status`, `progress`, `current_step`, `total_steps`
   - Same interpretation as `ProgressUpdate`.
 
@@ -1105,8 +1107,8 @@ Supported callback methods:
   - Use this for progress bars, step counters, and status text.
 
 - `on_preview(preview_update)`
-  - Called when a preview image is available.
-  - Use this when you want live RGB preview frames during inference.
+  - Called when a generation preview is available.
+  - Use `image` for still previews or `video` for animated Tiny VAE previews during inference.
 
 - `on_stream(stream_message)`
   - Called for every redirected stdout/stderr line.

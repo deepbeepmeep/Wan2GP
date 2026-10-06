@@ -359,6 +359,9 @@ _PATCHES = {
         # Let earlier completion callbacks retire first; idle sessions stay shut.
         ('if(u.msg==="close_stream"){ze(r,n.abort_controller);return}',
          'if(u.msg==="close_stream"){ze(r,n.abort_controller);setTimeout(()=>{if(!n.closed&&!r.open&&Object.keys(e).some(id=>o.has(id)))n.open_stream()},0);return}'),
+        # A server restart also closes the stream without a close_stream message.
+        # Clear its open flag so the next queued audio/UI update can reconnect.
+        ('s.onerror=async function(){await Promise.all', 's.onerror=async function(){ze(r,n.abort_controller);await Promise.all'),
         ('function q(){l.update(k=>{for(let g=0;', 'function q(){l.update(k=>{const wangpDirty=new Set;for(let g=0;'),
         ('f.props[v.prop]=j}return k}),ge=[]', 'f.props[v.prop]=j;' + _MARK_ANCESTORS + 'return k}),ge=[]'),
         ('l.set(h)', 'Object.values(s).forEach(node=>node.__wangp_revision=(node.__wangp_revision||0)+1),l.set(h)'),

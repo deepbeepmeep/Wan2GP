@@ -251,7 +251,7 @@ class DeepyService(WorkspaceSupport, GenerationRuntime):
         controller = self._deps.controller
         if action == "abort":
             with self._mutation_lock:
-                if self.generation_running and self._progress is not None and not self._generation_aborting:
+                if self.generation_running and not self._generation_aborting:
                     self._generation_aborting = True
                     self._generation_event("status", "Aborting generation…")
                     self.command("abort_client_id", self._active_generation_client_id)

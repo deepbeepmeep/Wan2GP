@@ -137,6 +137,7 @@ class family_handler:
         prompt_enhancer_instructions, prompt_enhancer_max_tokens, prompt_enhancer_button_label = get_stable_audio3_prompt_enhancer(_model_id(base_model_type, model_def))
         return {
             "group": "music",
+            "device_explicit": True,
             "audio_only": True,
             "image_outputs": False,
             "sliding_window": False,

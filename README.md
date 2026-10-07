@@ -101,6 +101,8 @@ By pure coincidence, WanGP has just hit **10,000 GitHub stars**. If you're enjoy
 - **LTX-2.5 Alpha Gen**: extract a soft alpha matte from any video, optionally restricted by a selection mask, and get the original footage back with transparency as PNG frames (ZIP) or ProRes 4444. Pick the format in *Config → Outputs → RGBA Video Output*.
 - **Two Phases with Tiling** (LTX-2, 2.3 and 2.5): a new *Guidance Phases* choice. Phase 1 lays out the whole scene, then phase 2 refines it in overlapping tiles blended at every step. It is particularly suited to generate 4K because LTX will see in the worst case 2K tiles (bye bye freak show). Don't be surprised if it is slower since proper tiling requires a 50% overlap. 
 
+### v17.17: New MMPG RAM Allocator
+New Allocator should reduce now RAM usage: open the new *Config → RAM/VRAM Management* tab, choose *MMGP Optimized RAM Allocator* in *RAM Allocator* 
 
 ## 29th of September 2026: WanGP v13.141 — Community Release
 

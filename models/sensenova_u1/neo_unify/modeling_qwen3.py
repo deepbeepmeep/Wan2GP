@@ -180,17 +180,13 @@ def _apply_rotary_inplace(x, cos, sin, scratch, unsqueeze_dim):
     return x
 
 
-def _norm_rope_rows(x, norm_t, norm_hw, rope):
-    """forward_gen's norms of the t and hw halves of the head dimension, then RoPE of the t, h and w parts, of rows x (batch, tokens,
-    heads, head_dim) in place; rope: (cos_t, sin_t, cos_h, sin_h, cos_w, sin_w) of these tokens."""
-    x_t, x_hw = x.chunk(2, dim=-1)
-    x_t.copy_(norm_t(x_t))
-    x_hw.copy_(norm_hw(x_hw))
-    x_h, x_w = x_hw.chunk(2, dim=-1)
-    scratch = torch.empty_like(x_t[..., :x_t.shape[-1] // 2])
-    for part, cos, sin in zip((x_t, x_h, x_w), rope[0::2], rope[1::2]):
-        _apply_rotary_inplace(part, cos, sin, scratch, 2)
-    return x
+def _norm_rope_rows(x, norm_t, norm_hw, cos, sin, partner):
+    """forward_gen's norms of the t and hw halves of the head dimension, then RoPE of its t, h and w parts, of rows x (batch, tokens,
+    heads, head_dim), in one pass each: the same arithmetic as the Qwen3RMSNorm calls and the three rotate-half passes."""
+    normed = F.rms_norm(x.unflatten(-1, (2, -1)).float(), (x.shape[-1] // 2,), eps=norm_t.variance_epsilon)
+    normed = normed.to(x.dtype).mul_(torch.stack((norm_t.weight, norm_hw.weight))).flatten(-2)
+    rotated = normed[..., partner]
+    return normed.mul_(cos).addcmul_(rotated, sin)
 
 
 def apply_rotary_pos_emb(qk_list, cos, sin, scratch, position_ids=None, unsqueeze_dim=1):
@@ -551,18 +547,32 @@ class Qwen3Attention(nn.Module):
     #     attn_output = self.o_proj_mot_gen(attn_output)
     #     return attn_output, attn_weights
 
+    def gen_rope_tables(self, hidden_states, indexes):
+        """forward_gen's t, h and w rotary tables over the whole head dimension, for one rotate-half pass: cos and signed sin
+        (1, tokens, 1, head_dim), and the index of each channel's partner. The same for every layer of a step."""
+        cos_t, sin_t = self.rotary_emb(hidden_states, indexes[0].unsqueeze(0))
+        cos_h, sin_h = self.rotary_emb_hw(hidden_states, indexes[1].unsqueeze(0))
+        cos_w, sin_w = self.rotary_emb_hw(hidden_states, indexes[2].unsqueeze(0))
+        cos = torch.cat((cos_t, cos_t, cos_h, cos_h, cos_w, cos_w), dim=-1).unsqueeze(2)
+        sin = torch.cat((-sin_t, sin_t, -sin_h, sin_h, -sin_w, sin_w), dim=-1).unsqueeze(2)
+        partner, start = [], 0
+        for half in (cos_t.shape[-1], cos_h.shape[-1], cos_w.shape[-1]):  # each part: the first half takes the second one, and back
+            partner += [torch.arange(start + half, start + 2 * half, device=cos.device), torch.arange(start, start + half, device=cos.device)]
+            start += 2 * half
+        return cos, sin, torch.cat(partner)
+
     def _norm_rope_gen_(self, query, key, rope):
         """attention_kit callback: forward_gen's norms and RoPE of q and/or k in place, by chunks of tokens."""
+        cos, sin, partner = rope
         for tensor, norm_t, norm_hw in ((query, self.q_norm_mot_gen, self.q_norm_hw_mot_gen), (key, self.k_norm_mot_gen, self.k_norm_hw_mot_gen)):
             if tensor is not None:
-                attention_kit.rows_(tensor, lambda part, first, last: _norm_rope_rows(part, norm_t, norm_hw, [r[:, first:last] for r in rope]))
+                attention_kit.rows_(tensor, lambda part, first, last: _norm_rope_rows(part, norm_t, norm_hw, cos[:, first:last], sin[:, first:last], partner))
 
-    def _forward_gen_kit(self, hidden_states_list, indexes, past_key_values):
-        """forward_gen without mask: the current tokens attend to the cached prefix and themselves through attention_kit."""
-        hidden_states = hidden_states_list[0]
-        rope = (*self.rotary_emb(hidden_states, indexes[0].unsqueeze(0)), *self.rotary_emb_hw(hidden_states, indexes[1].unsqueeze(0)),
-                *self.rotary_emb_hw(hidden_states, indexes[2].unsqueeze(0)))
-        del hidden_states
+    def _forward_gen_kit(self, hidden_states_list, indexes, past_key_values, rope):
+        """forward_gen without mask: the current tokens attend to the cached prefix and themselves through attention_kit; rope: the
+        step's gen_rope_tables, computed here when not given."""
+        if rope is None:
+            rope = self.gen_rope_tables(hidden_states_list[0], indexes)
         kv_prefix = None
         if past_key_values is not None and past_key_values.layers[self.layer_idx].keys is not None:  # cached prefix (batch, kv heads, tokens, head_dim)
             layer = past_key_values.layers[self.layer_idx]
@@ -585,7 +595,7 @@ class Qwen3Attention(nn.Module):
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         update_cache = kwargs.get("update_cache", True)
         if attention_mask is None and (past_key_values is None or not update_cache):
-            return self._forward_gen_kit(hidden_states_list, indexes, past_key_values), None
+            return self._forward_gen_kit(hidden_states_list, indexes, past_key_values, kwargs.get("rope")), None
         hidden_states = _take_tensor(hidden_states_list)
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -939,6 +949,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
                 past_key_values=branch["past_key_values"],
                 use_cache=True,
                 update_cache=False,
+                rope=branch["rope"],
             ))
         return outputs
 
@@ -1174,6 +1185,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
     def forward_gen_branches(self, input_embeds_list, branches):
         input_embeds = _take_tensor(input_embeds_list)
+        # the rotary tables depend on the positions only: computed once per branch for all the layers
+        attention = self.layers[0].self_attn
+        branches = [dict(branch, rope=attention.gen_rope_tables(input_embeds, branch["indexes"])) for branch in branches]
         hidden_states = [input_embeds]
         hidden_states.extend(input_embeds.clone() for _ in branches[1:])
         del input_embeds

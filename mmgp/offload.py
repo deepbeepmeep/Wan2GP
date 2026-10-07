@@ -4240,7 +4240,7 @@ class offload:
             if any_dora and any_lokr:
                 break
 
-        dtype = weight.dtype
+        dtype = submodule.__dict__.get("_mm_weight_dtype", None) or weight.dtype # cached by _mm_lora_linear_forward: a quantized weight's dtype costs a Python dispatch
         if any_dora and not any_lokr: # sum base weight and lora matrices instead of applying input on each sub lora matrice if input is too large. This will save a lot VRAM and compute
             original_bias = True
             if isinstance(submodule, QModuleMixin):
@@ -4289,11 +4289,10 @@ class offload:
 
             if active_adapters:
                 compute_dtype = result.dtype
-                if result.dtype != compute_dtype:
-                    result = result.to(compute_dtype)
-                x = x.to(compute_dtype)
-                x_2d = x.reshape(-1, x.shape[-1])
-                result_2d = result.reshape(-1, result.shape[-1])
+                if x.dtype != compute_dtype:
+                    x = x.to(compute_dtype)
+                x_2d = x if x.dim() == 2 else x.reshape(-1, x.shape[-1])
+                result_2d = result if result.dim() == 2 else result.reshape(-1, result.shape[-1])
 
                 for active_adapter in active_adapters:
                     data = loras_data.get(active_adapter + '_GPU', None)

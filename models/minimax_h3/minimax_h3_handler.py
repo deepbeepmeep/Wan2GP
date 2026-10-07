@@ -332,6 +332,11 @@ H3_FINETUNES_PARAMS = {
 }
 
 
+def _uint8_guides(video_prompt_type, audio_prompt_type, any_outpainting):
+    # with the audio generated from the control video, the control video becomes the output video: float control videos for this mode
+    return "2" not in (audio_prompt_type or "")
+
+
 def _notify_audio_reference_limit(audio_durations):
     total_duration = sum(audio_durations)
     if total_duration <= 15 or not audio_durations:
@@ -559,6 +564,7 @@ class family_handler:
         result = {
             "dtype": "bf16",
             "device_explicit": True,
+            "uint8_guides": _uint8_guides,
             "tiny_vae_architecture": REF2VA_ARCHITECTURE,
             "size": "lighter" if pruned else "large",
             **({"accelerated": "native"} if pdd or vdn else {}),

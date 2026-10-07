@@ -69,6 +69,7 @@ from .ltx2_runtime import (
 from .ltx_pipelines.distilled import DistilledPipeline
 from .ltx_pipelines.hdr_ic_lora import convert_sdr_to_hdr
 from .ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
+from .ltx_pipelines.utils.media_io import UInt8Guide
 from .ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE, DEFAULT_NEGATIVE_PROMPT, DISTILLED_SIGMA_VALUES
 
 
@@ -1597,22 +1598,21 @@ class LTX2:
                     input_frames2, input_masks2 = _pad_ltx2_masked_control_video_tail(input_frames2, input_masks2, target_control_frames)
 
                 conditioning_entries = []
-                if input_frames is not None:
-                    conditioning_entries.append((input_frames, control_start_frame, control_strength))
-                if input_frames2 is not None:
-                    conditioning_entries.append((input_frames2, control_start_frame, control_strength))
+                for control_frames in (input_frames, input_frames2):
+                    if control_frames is not None:
+                        conditioning_entries.append((UInt8Guide(control_frames) if control_frames.dtype == torch.uint8 else control_frames, control_start_frame, control_strength))
                 if conditioning_entries:
                     video_conditioning = conditioning_entries
                 if masking_strength > 0.0:
                     if input_masks is not None and input_frames is not None:
                         masking_source = {
-                            "video": input_frames,
+                            "video": UInt8Guide(input_frames) if input_frames.dtype == torch.uint8 else input_frames,
                             "mask": input_masks,
                             "start_frame": control_start_frame,
                         }
                     elif input_masks2 is not None and input_frames2 is not None:
                         masking_source = {
-                            "video": input_frames2,
+                            "video": UInt8Guide(input_frames2) if input_frames2.dtype == torch.uint8 else input_frames2,
                             "mask": input_masks2,
                             "start_frame": control_start_frame,
                         }

@@ -2571,19 +2571,22 @@ def flush_torch_caches():
                 kernel32.CloseHandle(handle)
         except Exception:
             pass
-    from accelerate import init_empty_weights
-    with init_empty_weights():
-        try:
-            for _ in range(3):
-                dummy_tensor = torch.nn.Embedding(256384, 1024)
-                dummy_tensor = None    
-        except Exception:
-            pass
-        dummy_tensor = None    
+    from .allocator import ram
+    if not ram.active:  # with PyTorch's CPU allocator: large dummy allocations push it to give freed memory back
+        from accelerate import init_empty_weights
+        with init_empty_weights():
+            try:
+                for _ in range(3):
+                    dummy_tensor = torch.nn.Embedding(256384, 1024)
+                    dummy_tensor = None
+            except Exception:
+                pass
+            dummy_tensor = None
 
     if torch.cuda.is_available():
         gc.collect()
         torch.cuda.empty_cache()
+    ram.release()  # the MMGP RAM allocator's freed blocks go back to the system
 
 
 def map_state_dict(state_dict, rules):

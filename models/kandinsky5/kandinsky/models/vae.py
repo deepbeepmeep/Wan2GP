@@ -1301,7 +1301,7 @@ def build_vae(conf):
             from mmgp import offload
             return offload.fast_load_transformers_model(
                 checkpoint_path,
-                writable_tensors=True,
+                writable_tensors=False,
                 modelClass=model_class,
                 defaultConfigPath=config_path,
                 default_dtype=torch.float16,

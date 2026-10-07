@@ -192,7 +192,7 @@ class model_factory:
 
         text_encoder = offload.fast_load_transformers_model(
             text_encoder_filename,
-            writable_tensors=True,
+            writable_tensors=False,
             modelClass=Qwen3ForCausalLM,
             defaultConfigPath=text_encoder_config,
             preprocess_sd=_build_qwen3_state_dict_preprocessor(text_encoder_config),
@@ -207,7 +207,7 @@ class model_factory:
 
         vae = offload.fast_load_transformers_model(
             vae_filename,
-            writable_tensors=True,
+            writable_tensors=False,
             modelClass=AutoencoderKL,
             defaultConfigPath=vae_config_path,
             default_dtype=None,

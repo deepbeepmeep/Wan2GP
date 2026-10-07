@@ -157,7 +157,7 @@ class model_factory:
 
         vae = offload.fast_load_transformers_model(
             vae_filename,
-            writable_tensors=True,
+            writable_tensors=False,
             modelClass=AutoencoderKLCausal3D,
             defaultConfigPath=vae_config,
             default_dtype=VAE_dtype,

@@ -25,7 +25,7 @@ from diffusers.models.attention_processor import Attention
 from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.normalization import AdaLayerNormContinuous, RMSNorm
-from shared.attention import pay_attention
+from shared import attention_kit
 import functools
 
 def get_timestep_embedding(
@@ -120,6 +120,24 @@ def apply_rotary_emb_qwen_inplace(x_list: list, freqs_cis: torch.Tensor) -> torc
     x1.addcmul_(x0_orig, sin)
 
     return x.flatten(3).to(dtype)
+
+
+def _norm_rope_rows(x, norm, freqs):
+    """norm then RoPE of rows of q or k (batch, tokens, heads, head_dim), as QwenDoubleStreamAttnProcessor2_0 computes them."""
+    if norm is not None:
+        x = norm(x)
+    return x if freqs is None else apply_rotary_emb_qwen_inplace([x], freqs)
+
+
+def _norm_rope_(query, key, segments):
+    """attention_kit callback: per segment of tokens (start, stop, q norm, k norm, freqs), the norms and RoPE of q and/or k in place, by
+    chunks of tokens; freqs (segment tokens, head_dim // 2, 2) or None."""
+    for tensor, index in ((query, 2), (key, 3)):
+        if tensor is not None:
+            for segment in segments:
+                start, norm, freqs = segment[0], segment[index], segment[4]
+                if norm is not None or freqs is not None:
+                    attention_kit.rows_(tensor, lambda part, first, last: _norm_rope_rows(part, norm, None if freqs is None else freqs[first - start:last - start]), start, segment[1])
 
 
 class QwenTimestepProjEmbeddings(nn.Module):
@@ -397,83 +415,20 @@ class QwenDoubleStreamAttnProcessor2_0:
         hidden_states, encoder_hidden_states = hidden_states_list
         hidden_states_list.clear()
 
-        seq_txt = encoder_hidden_states.shape[1]
+        seq_txt, seq_img = encoder_hidden_states.shape[1], hidden_states.shape[1]
+        img_freqs, txt_freqs = (None, None) if image_rotary_emb is None else image_rotary_emb
+        # joint attention of the text then image tokens, each stream with its projections, QK norms and RoPE
+        streams = [([encoder_hidden_states], (attn.add_q_proj, attn.add_k_proj, attn.add_v_proj)), ([hidden_states], (attn.to_q, attn.to_k, attn.to_v))]
+        del hidden_states, encoder_hidden_states
+        segments = ((0, seq_txt, attn.norm_added_q, attn.norm_added_k, txt_freqs), (seq_txt, seq_txt + seq_img, attn.norm_q, attn.norm_k, img_freqs))
+        joint_hidden_states = attention_kit.joint_qkv_attention(streams, attn.heads, attn.to_q.out_features // attn.heads,
+                                                                lambda query, key, group: _norm_rope_(query, key, segments)).flatten(2, 3)
 
-        # Compute QKV for image stream (sample projections)
-        img_query = attn.to_q(hidden_states)
-        img_key = attn.to_k(hidden_states)
-        img_value = attn.to_v(hidden_states)
-        del hidden_states
-        # Compute QKV for text stream (context projections)
-        txt_query = attn.add_q_proj(encoder_hidden_states)
-        txt_key = attn.add_k_proj(encoder_hidden_states)
-        txt_value = attn.add_v_proj(encoder_hidden_states)
-        del encoder_hidden_states
-        # Reshape for multi-head attention
-        img_query = img_query.unflatten(-1, (attn.heads, -1))
-        img_key = img_key.unflatten(-1, (attn.heads, -1))
-        img_value = img_value.unflatten(-1, (attn.heads, -1))
-
-        txt_query = txt_query.unflatten(-1, (attn.heads, -1))
-        txt_key = txt_key.unflatten(-1, (attn.heads, -1))
-        txt_value = txt_value.unflatten(-1, (attn.heads, -1))
-
-        # Apply QK normalization
-        if attn.norm_q is not None:
-            img_query = attn.norm_q(img_query)
-        if attn.norm_k is not None:
-            img_key = attn.norm_k(img_key)
-        if attn.norm_added_q is not None:
-            txt_query = attn.norm_added_q(txt_query)
-        if attn.norm_added_k is not None:
-            txt_key = attn.norm_added_k(txt_key)
-
-        # Apply RoPE (in-place, no complex numbers for better torch.compile support)
-        if image_rotary_emb is not None:
-            img_freqs, txt_freqs = image_rotary_emb
-            x_list = [img_query]
-            del img_query
-            img_query = apply_rotary_emb_qwen_inplace(x_list, img_freqs)
-            x_list = [img_key]
-            del img_key
-            img_key = apply_rotary_emb_qwen_inplace(x_list, img_freqs)
-            x_list = [txt_query]
-            del txt_query
-            txt_query = apply_rotary_emb_qwen_inplace(x_list, txt_freqs)
-            x_list = [txt_key]
-            del txt_key
-            txt_key = apply_rotary_emb_qwen_inplace(x_list, txt_freqs)
-
-        # Concatenate for joint attention
-        # Order: [text, image]
-        joint_query = torch.cat([txt_query, img_query], dim=1)
-        del txt_query, img_query
-        joint_key = torch.cat([txt_key, img_key], dim=1)
-        del txt_key, img_key
-        joint_value = torch.cat([txt_value, img_value], dim=1)
-        del txt_value, img_value
-
-        # Compute joint attention
-        dtype = joint_query.dtype
-        qkv_list = [joint_query, joint_key, joint_value ]
-        del joint_query, joint_key, joint_value
-        joint_hidden_states = pay_attention(qkv_list)
-
-        # Reshape back
-        joint_hidden_states = joint_hidden_states.flatten(2, 3)
-        joint_hidden_states = joint_hidden_states.to(dtype)
-
-        # Split attention outputs back
-        txt_attn_output = joint_hidden_states[:, :seq_txt, :]  # Text part
-        img_attn_output = joint_hidden_states[:, seq_txt:, :]  # Image part
-        del joint_hidden_states
         # Apply output projections
-        img_attn_output = attn.to_out[0](img_attn_output)
+        img_attn_output = attn.to_out[0](joint_hidden_states[:, seq_txt:])
         if len(attn.to_out) > 1:
             img_attn_output = attn.to_out[1](img_attn_output)  # dropout
-
-        txt_attn_output = attn.to_add_out(txt_attn_output)
-
+        txt_attn_output = attn.to_add_out(joint_hidden_states[:, :seq_txt])
         return img_attn_output, txt_attn_output
 
 

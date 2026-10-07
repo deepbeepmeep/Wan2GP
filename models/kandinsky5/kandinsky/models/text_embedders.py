@@ -94,7 +94,7 @@ class Qwen2_5_VLTextEmbedder:
             config_path = os.path.join(os.path.dirname(checkpoint_path), "config.json")
             self.model = offload.fast_load_transformers_model(
                 checkpoint_path,
-                writable_tensors=True,
+                writable_tensors=False,
                 modelClass=Qwen2_5_VLForConditionalGeneration,
                 defaultConfigPath=config_path,
                 default_dtype=torch.bfloat16,

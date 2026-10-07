@@ -558,7 +558,7 @@ def load_gguf_state_dict(
     file_path,
     filters=None,
     keep_prefixes=False,
-    writable_tensors=True,
+    writable_tensors=False,
     verboseLevel=1,
     default_dtype=None,
     pin_to_memory=False,

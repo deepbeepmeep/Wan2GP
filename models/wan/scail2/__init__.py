@@ -1,4 +1,4 @@
-from shared.utils.phase_progress import control_video_encoding
+from shared.utils.phase_progress import check_abort, control_video_encoding
 # Copyright 2024-2026 The Alibaba Wan Team Authors. All rights reserved.
 # SCAIL-2 helpers for WanGP.
 
@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from shared.utils.utils import calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image, expand_or_shrink_mask, to_rgb_tensor
+from shared.utils.utils import calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image, expand_or_shrink_mask, guide_to_float, to_rgb_tensor
 from ..modules.posemb_layers import get_nd_rotary_pos_embed
 
 
@@ -109,10 +109,10 @@ def test_scail2_replace(video_prompt_type: str) -> bool:
     return "0" in (video_prompt_type or "")
 
 
-def prepare_scail2_mask(mask, frame_count, height, width, device, dtype):
+def prepare_scail2_mask(mask, frame_count, height, width, device, dtype, normalize=None):
     if mask is None:
         return torch.ones(3, frame_count, height, width, device=device, dtype=dtype)
-    mask = mask.to(device=device, dtype=dtype)
+    mask = guide_to_float(mask.to(device=device)).to(dtype)  # colored masks, uint8 ones (model_def "uint8_guides") as WanGP's [-1, 1] values
     if mask.ndim == 2:
         mask = mask.unsqueeze(0).unsqueeze(0)
     elif mask.ndim == 3:
@@ -132,9 +132,39 @@ def prepare_scail2_mask(mask, frame_count, height, width, device, dtype):
             mask = mask[:, :frame_count]
     if mask.shape[-2:] != (height, width):
         mask = F.interpolate(mask.permute(1, 0, 2, 3), size=(height, width), mode="nearest").permute(1, 0, 2, 3)
-    if mask.min() >= 0 and mask.max() <= 1:
+    if normalize is None:
+        normalize = mask.min() >= 0 and mask.max() <= 1
+    if normalize:
         mask = mask * 2 - 1
     return mask.clamp(-1, 1)
+
+
+def _resize_scail2_video(video, frame_count, height, width, device, dtype, is_mask=False):
+    """Downsample prepared CTHW guides without a full-resolution float GPU copy."""
+    size = (max(1, height // 2), max(1, width // 2))
+    if video is None:
+        return torch.ones((frame_count, 3, *size), device=device, dtype=dtype).permute(1, 0, 2, 3)
+    normalize = False
+    if is_mask:
+        # Decide once for the whole mask: a positive-only chunk must not change
+        # the interpretation of a video that contains negative values elsewhere.
+        bounds = guide_to_float(torch.stack(torch.aminmax(video[:, :frame_count])).to(device)).to(dtype)
+        normalize = bool((bounds[0] >= 0) & (bounds[1] <= 1))
+    for start in range(0, frame_count, 16):
+        check_abort()
+        end = min(start + 16, frame_count)
+        chunk = video[:, min(start, video.shape[1] - 1):end]
+        if is_mask:
+            pixels = prepare_scail2_mask(chunk, end - start, height, width, device, dtype, normalize=normalize)
+        else:
+            pixels = guide_to_float(chunk.to(device)).to(dtype)
+        resized = F.interpolate(pixels.permute(1, 0, 2, 3), size=size, mode="bilinear", align_corners=False)
+        if start == 0:
+            layout = torch.channels_last if resized.is_contiguous(memory_format=torch.channels_last) else torch.contiguous_format
+            output = torch.empty((frame_count, 3, *size), device=device, dtype=dtype, memory_format=layout)
+        output[start:end].copy_(resized)
+        del pixels, resized
+    return output.permute(1, 0, 2, 3)
 
 
 def as_batched_5d(tensor: torch.Tensor) -> torch.Tensor:
@@ -149,8 +179,8 @@ def _pack_ref_frames_as_video(frames):
     return torch.cat([frames[0]] + [frame.repeat(1, 4, 1, 1) for frame in frames[1:]], dim=1)
 
 
-def extract_and_compress_mask_to_latent(mask_cthw: torch.Tensor, additional_spatial_downsample: int = 1, temporal_compression_stride: int = 4, label: str = "mask") -> torch.Tensor:
-    """Convert a SCAIL-2 RGB mask video in [-1, 1] to 28 binary latent mask channels."""
+def extract_and_compress_mask_to_latent(mask_cthw: torch.Tensor, additional_spatial_downsample: int = 1, temporal_compression_stride: int = 4, label: str = "mask", dtype=torch.float32) -> torch.Tensor:
+    """Compress RGB masks in FP32 chunks, storing the latent channels in dtype."""
     if mask_cthw.ndim == 5:
         if mask_cthw.shape[0] != 1:
             raise ValueError(f"Expected a single batched mask, got shape {tuple(mask_cthw.shape)}")
@@ -162,19 +192,6 @@ def extract_and_compress_mask_to_latent(mask_cthw: torch.Tensor, additional_spat
 
     _, t, h, w = mask_cthw.shape
     on_threshold = (225.0 - 127.5) / 127.5
-    mask = mask_cthw.permute(1, 0, 2, 3).float()
-    r = (mask[:, 0:1] > on_threshold).float()
-    g = (mask[:, 1:2] > on_threshold).float()
-    b = (mask[:, 2:3] > on_threshold).float()
-    nr, ng, nb = 1 - r, 1 - g, 1 - b
-    binary_7ch = torch.cat([r * g * b, r * ng * nb, nr * g * nb, nr * ng * b, r * g * nb, r * ng * b, nr * g * b], dim=1)
-
-    total = h * w * t
-    for idx, name in enumerate(("white", "red", "green", "blue", "yellow", "magenta", "cyan")):
-        ratio = binary_7ch[:, idx].sum().item() / total
-        if ratio > 0.001:
-            logging.info(f"  [SCAIL-2 {label}] ch{idx} {name}: {ratio:.4f} ({ratio * 100:.2f}%)")
-
     h_lat, w_lat = h, w
     if additional_spatial_downsample > 1:
         h_lat //= additional_spatial_downsample
@@ -182,15 +199,35 @@ def extract_and_compress_mask_to_latent(mask_cthw: torch.Tensor, additional_spat
     for _ in range(3):
         h_lat = (h_lat + 1) // 2
         w_lat = (w_lat + 1) // 2
-    binary_7ch = F.interpolate(binary_7ch, size=(h_lat, w_lat), mode="area")
-
     t_latent = (t - 1) // temporal_compression_stride + 1
     target_t = t_latent * temporal_compression_stride
-    padded = torch.cat([binary_7ch[:1].repeat(temporal_compression_stride, 1, 1, 1), binary_7ch[1:]], dim=0)
-    if padded.shape[0] < target_t:
-        padded = torch.cat([padded, padded[-1:].repeat(target_t - padded.shape[0], 1, 1, 1)], dim=0)
-    elif padded.shape[0] > target_t:
-        padded = padded[:target_t]
+    padded = torch.empty((target_t, 7, h_lat, w_lat), device=mask_cthw.device, dtype=dtype)
+    counts = torch.zeros(7, device=mask_cthw.device, dtype=torch.float64)
+    for start in range(0, t, 16):
+        check_abort()
+        # Keep the original FP32 threshold and area averaging, only for this chunk.
+        mask = mask_cthw[:, start:start + 16].permute(1, 0, 2, 3).float()
+        r = (mask[:, 0:1] > on_threshold).float()
+        g = (mask[:, 1:2] > on_threshold).float()
+        b = (mask[:, 2:3] > on_threshold).float()
+        nr, ng, nb = 1 - r, 1 - g, 1 - b
+        binary = torch.cat([r * g * b, r * ng * nb, nr * g * nb, nr * ng * b, r * g * nb, r * ng * b, nr * g * b], dim=1)
+        counts += binary.sum(dim=(0, 2, 3)).double()
+        reduced = F.interpolate(binary, size=(h_lat, w_lat), mode="area")
+        # Repeat frame zero by the temporal stride, then append the other frames
+        # directly into the final buffer, trimming to complete latent groups.
+        if start == 0:
+            padded[:temporal_compression_stride].copy_(reduced[:1])
+        first = max(start, 1)
+        last = min(start + reduced.shape[0], target_t - temporal_compression_stride + 1)
+        if last > first:
+            padded[first + temporal_compression_stride - 1:last + temporal_compression_stride - 1].copy_(reduced[first - start:last - start])
+        del mask, r, g, b, nr, ng, nb, binary, reduced
+    total = h * w * t
+    for idx, (name, count) in enumerate(zip(("white", "red", "green", "blue", "yellow", "magenta", "cyan"), counts.tolist())):
+        ratio = count / total
+        if ratio > 0.001:
+            logging.info(f"  [SCAIL-2 {label}] ch{idx} {name}: {ratio:.4f} ({ratio * 100:.2f}%)")
     return padded.view(t_latent, temporal_compression_stride * 7, h_lat, w_lat).permute(1, 0, 2, 3)
 
 
@@ -278,23 +315,27 @@ def _iter_frame_jobs(frame_count, worker, max_workers=1):
                         next_frame += 1
 
 
-def _float_cthw_from_frames(tensor, frame_count, frame_processor, target_h, target_w, max_workers=1):
-    output = torch.empty((3, frame_count, target_h, target_w), dtype=torch.float32, device="cpu")
+def _float_cthw_from_frames(tensor, frame_count, frame_processor, target_h, target_w, max_workers=1, uint8=False):
+    # uint8: the frames as they are (model_def "uint8_guides"), converted to the same float values where they are read
+    output = torch.empty((3, frame_count, target_h, target_w), dtype=torch.uint8 if uint8 else torch.float32, device="cpu")
 
     def process_frame(frame_idx):
         arr = frame_processor(_frame_to_uint8_hwc(_get_hwc_frame(tensor, frame_idx)))
-        return frame_idx, torch.from_numpy(np.array(arr, copy=True)).permute(2, 0, 1).to(torch.float32).div_(127.5).sub_(1.0)
+        frame = torch.from_numpy(np.array(arr, copy=True)).permute(2, 0, 1)
+        return frame_idx, frame if uint8 else frame.to(torch.float32).div_(127.5).sub_(1.0)
 
     for frame_idx, frame in _iter_frame_jobs(frame_count, process_frame, max_workers=max_workers):
         output[:, frame_idx].copy_(frame)
     return output
 
 
-def _resize_video_cthw_float(tensor, target_h, target_w, crop=False, max_workers=1, frame_count=None):
+def _resize_video_cthw_float(tensor, target_h, target_w, crop=False, max_workers=1, frame_count=None, uint8=False):
     frame_count = _frame_count(tensor) if frame_count is None else min(frame_count, _frame_count(tensor))
     if not _is_thwc_video(tensor) and tensor.dtype != torch.uint8 and tensor.shape[-2:] == (target_h, target_w) and not crop:
-        return tensor if frame_count == tensor.shape[1] else tensor[:, :frame_count].contiguous()
-    return _float_cthw_from_frames(tensor, frame_count, lambda arr: _resize_hwc_uint8(arr, target_h, target_w, crop=crop, resample=Image.Resampling.LANCZOS), target_h, target_w, max_workers=max_workers)
+        tensor = tensor if frame_count == tensor.shape[1] else tensor[:, :frame_count].contiguous()
+        # WanGP's float guide values (k / 127.5 - 1) round back to k exactly
+        return tensor.add(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8) if uint8 else tensor
+    return _float_cthw_from_frames(tensor, frame_count, lambda arr: _resize_hwc_uint8(arr, target_h, target_w, crop=crop, resample=Image.Resampling.LANCZOS), target_h, target_w, max_workers=max_workers, uint8=uint8)
 
 
 def _first_frame_to_image(tensor):
@@ -369,7 +410,7 @@ def _expand_colored_frame(arr, object_colors, expand_scale, background_color=Non
     return output
 
 
-def _prepare_scail2_mask_cthw(mask, target_h, target_w, model_def, replace_mode, expand_scale, crop=False, max_workers=1, frame_count=None, resize_first=False):
+def _prepare_scail2_mask_cthw(mask, target_h, target_w, model_def, replace_mode, expand_scale, crop=False, max_workers=1, frame_count=None, resize_first=False, uint8=False):
     if mask is None:
         return None
     object_colors = (model_def or {}).get("magic_mask_object_colors", [])
@@ -384,7 +425,7 @@ def _prepare_scail2_mask_cthw(mask, target_h, target_w, model_def, replace_mode,
         arr = _expand_colored_frame(arr, object_colors, expand_scale, background_color=background_color)
         return arr if resize_first else _resize_hwc_uint8(arr, target_h, target_w, crop=crop, resample=Image.Resampling.NEAREST)
 
-    return _float_cthw_from_frames(mask, frame_count, process_frame, target_h, target_w, max_workers=max_workers)
+    return _float_cthw_from_frames(mask, frame_count, process_frame, target_h, target_w, max_workers=max_workers, uint8=uint8)
 
 
 def normalize_single_color_mask(mask_cthw: torch.Tensor, model_def) -> torch.Tensor:
@@ -482,9 +523,9 @@ def custom_preprocess_scail2(video_guide, video_mask, pre_video_guide=None, max_
         if fit_canvas is not None and not fit_crop:
             target_h, target_w = calculate_new_dimensions(target_h, target_w, source_h, source_w, fit_canvas, kwargs.get("block_size", 16))
         frame_count = _shared_frame_count(video_guide, video_mask)
-        frames = _resize_video_cthw_float(video_guide, target_h, target_w, crop=fit_crop, max_workers=max_workers, frame_count=frame_count)
+        frames = _resize_video_cthw_float(video_guide, target_h, target_w, crop=fit_crop, max_workers=max_workers, frame_count=frame_count, uint8=True)
         video_guide = None
-        video_mask = _prepare_scail2_mask_cthw(video_mask, target_h, target_w, model_def, replace_mode=True, expand_scale=expand_scale, crop=fit_crop, max_workers=max_workers, frame_count=frame_count, resize_first=True)
+        video_mask = _prepare_scail2_mask_cthw(video_mask, target_h, target_w, model_def, replace_mode=True, expand_scale=expand_scale, crop=fit_crop, max_workers=max_workers, frame_count=frame_count, resize_first=True, uint8=True)
         return frames, None, video_mask, None
 
     pose_mask = kwargs.get("pose_mask", None)
@@ -492,9 +533,9 @@ def custom_preprocess_scail2(video_guide, video_mask, pre_video_guide=None, max_
     animate_preprocessing = custom_settings.get("scail2_animate_preprocessing", SCAIL2_ANIMATE_PREPROCESSING_RAW)
     if animate_preprocessing != SCAIL2_ANIMATE_PREPROCESSING_POSE:
         fit_crop = kwargs.get("fit_crop", False)
-        frames = _resize_video_cthw_float(video_guide, target_h, target_w, crop=fit_crop, max_workers=max_workers, frame_count=frame_count)
+        frames = _resize_video_cthw_float(video_guide, target_h, target_w, crop=fit_crop, max_workers=max_workers, frame_count=frame_count, uint8=True)
         video_guide = None
-        video_mask = _prepare_scail2_mask_cthw(video_mask, target_h, target_w, model_def, replace_mode=False, expand_scale=expand_scale, crop=fit_crop, max_workers=max_workers, frame_count=frame_count)
+        video_mask = _prepare_scail2_mask_cthw(video_mask, target_h, target_w, model_def, replace_mode=False, expand_scale=expand_scale, crop=fit_crop, max_workers=max_workers, frame_count=frame_count, uint8=True)
         return frames, None, video_mask, None
 
     source_h, source_w = _video_hw(video_guide)
@@ -732,7 +773,7 @@ def prepare_scail2_conditioning(
     save_masks=False,
 ):
     enable_RIFLEx = False
-    pose_pixels = input_frames.to(device=pipeline.device, dtype=pipeline.VAE_dtype)
+    pose_frames = input_frames.shape[1]
     if input_ref_images is None or len(input_ref_images) < 2:
         raise ValueError("SCAIL-2 expected the prepared image reference and its colored mask as the first two image references.")
     image_ref = _tensor_or_image_to_cthw(input_ref_images[0], pipeline.device, pipeline.VAE_dtype)
@@ -742,7 +783,6 @@ def prepare_scail2_conditioning(
         raise ValueError("SCAIL-2 expected additional image references to be prepared as image/mask pairs.")
 
     lat_h, lat_w = height // pipeline.vae_stride[1], width // pipeline.vae_stride[2]
-    pose_frames = pose_pixels.shape[1]
     lat_t = int((pose_frames - 1) // pipeline.vae_stride[0]) + 1
 
     ref_mask = prepare_scail2_mask(ref_mask, 1, height, width, pipeline.device, pipeline.VAE_dtype)
@@ -767,7 +807,7 @@ def prepare_scail2_conditioning(
         ref_video = _pack_ref_frames_as_video([image_ref] + additional_refs)
         ref_mask_video = _pack_ref_frames_as_video([ref_mask] + additional_masks)
         packed_ref_latents = pipeline.vae.encode([ref_video], VAE_tile_size)[0]
-        packed_ref_mask_latents = extract_and_compress_mask_to_latent(ref_mask_video, additional_spatial_downsample=1, label="injected ref masks").to(device=pipeline.device, dtype=pipeline.VAE_dtype)
+        packed_ref_mask_latents = extract_and_compress_mask_to_latent(ref_mask_video, additional_spatial_downsample=1, label="injected ref masks", dtype=pipeline.VAE_dtype)
         # Keep the transformer's existing additional-refs-then-primary ordering.
         ref_latents = torch.cat([packed_ref_latents[:, 1:], packed_ref_latents[:, :1]], dim=1).unsqueeze(0)
         ref_mask_latents = torch.cat([packed_ref_mask_latents[:, 1:], packed_ref_mask_latents[:, :1]], dim=1)
@@ -777,8 +817,8 @@ def prepare_scail2_conditioning(
         additional_ref_latents = [pipeline.vae.encode([additional_ref], VAE_tile_size)[0] for additional_ref in additional_refs]
         if additional_ref_latents:
             ref_latents = torch.cat(additional_ref_latents + [ref_latents[0]], dim=1).unsqueeze(0)
-        additional_ref_mask_latents = [extract_and_compress_mask_to_latent(additional_mask, additional_spatial_downsample=1, label=f"additional ref mask {idx + 1}").to(device=pipeline.device, dtype=pipeline.VAE_dtype) for idx, additional_mask in enumerate(additional_masks)]
-        ref_mask_latent_28ch = extract_and_compress_mask_to_latent(ref_mask, additional_spatial_downsample=1, label="ref mask").to(device=pipeline.device, dtype=pipeline.VAE_dtype)
+        additional_ref_mask_latents = [extract_and_compress_mask_to_latent(additional_mask, additional_spatial_downsample=1, label=f"additional ref mask {idx + 1}", dtype=pipeline.VAE_dtype) for idx, additional_mask in enumerate(additional_masks)]
+        ref_mask_latent_28ch = extract_and_compress_mask_to_latent(ref_mask, additional_spatial_downsample=1, label="ref mask", dtype=pipeline.VAE_dtype)
         ref_mask_latents = torch.cat(additional_ref_mask_latents + [ref_mask_latent_28ch], dim=1) if additional_ref_mask_latents else ref_mask_latent_28ch
 
     history_latents = None
@@ -788,6 +828,7 @@ def prepare_scail2_conditioning(
     elif prefix_frames_count > 0 and input_video is not None:
         history_frames = input_video[:, :prefix_frames_count].to(device=pipeline.device, dtype=pipeline.VAE_dtype)
         history_latents = pipeline.vae.encode([history_frames], VAE_tile_size)[0].unsqueeze(0)
+        del history_frames
     history_lat_t = 0
     color_reference_frame = None
     history_mask = torch.zeros(4, lat_t, lat_h, lat_w, device=pipeline.device, dtype=pipeline.VAE_dtype)
@@ -800,14 +841,14 @@ def prepare_scail2_conditioning(
     else:
         extended_overlapped_latents = None
 
-    pose_pixels_ds = pose_pixels.permute(1, 0, 2, 3)
-    pose_pixels_ds = F.interpolate(pose_pixels_ds, size=(max(1, height // 2), max(1, width // 2)), mode="bilinear", align_corners=False).permute(1, 0, 2, 3)
+    pose_pixels_ds = _resize_scail2_video(input_frames, pose_frames, height, width, pipeline.device, pipeline.VAE_dtype)
     with control_video_encoding():
         pose_latents = pipeline.vae.encode([pose_pixels_ds], VAE_tile_size)[0].unsqueeze(0)
+    del pose_pixels_ds
 
-    driving_mask_video = prepare_scail2_mask(input_masks, pose_frames, height, width, pipeline.device, pipeline.VAE_dtype)
-    driving_mask_video = F.interpolate(driving_mask_video.permute(1, 0, 2, 3), size=(max(1, height // 2), max(1, width // 2)), mode="bilinear", align_corners=False).permute(1, 0, 2, 3)
-    driving_masks = extract_and_compress_mask_to_latent(driving_mask_video, additional_spatial_downsample=1, label="driving mask").to(device=pipeline.device, dtype=pipeline.VAE_dtype).unsqueeze(0)
+    driving_mask_video = _resize_scail2_video(input_masks, pose_frames, height, width, pipeline.device, pipeline.VAE_dtype, is_mask=True)
+    driving_masks = extract_and_compress_mask_to_latent(driving_mask_video, additional_spatial_downsample=1, label="driving mask", dtype=pipeline.VAE_dtype).unsqueeze(0)
+    del driving_mask_video
 
     null_noisy_mask = torch.zeros(ref_mask_latents.shape[0], lat_t, lat_h, lat_w, device=pipeline.device, dtype=ref_mask_latents.dtype)
     ref_masks = torch.cat([ref_mask_latents, null_noisy_mask], dim=1).unsqueeze(0)

@@ -78,11 +78,10 @@ def _resize_to_height(img: np.ndarray, target_h: int) -> np.ndarray:
 
 
 def _frames_to_tensor(frames: List[np.ndarray]) -> torch.Tensor:
-    """Convert a list of RGB uint8 frames to a tensor in [-1, 1] with shape 3,F,H,W."""
+    """Stack RGB uint8 frames as a uint8 tensor shaped 3,F,H,W (model_def "uint8_guides": read as the [-1, 1] values of WanGP's guides)."""
     if not frames:
         return torch.empty(0)
-    arr = np.stack(frames).astype(np.float32) / 127.5 - 1.0
-    return torch.from_numpy(arr).permute(3, 0, 1, 2)
+    return torch.from_numpy(np.stack(frames)).permute(3, 0, 1, 2)
 
 
 def _tensor_to_frames(tensor: torch.Tensor) -> List[np.ndarray]:
@@ -90,7 +89,8 @@ def _tensor_to_frames(tensor: torch.Tensor) -> List[np.ndarray]:
     if tensor.numel() == 0:
         return []
     arr = tensor.permute(1, 2, 3, 0).cpu().numpy()
-    arr = ((arr + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
+    if arr.dtype != np.uint8:
+        arr = ((arr + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
     return [frame for frame in arr]
 
 

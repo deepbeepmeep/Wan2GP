@@ -628,8 +628,13 @@ unsigned long long ram_margin(unsigned long long total) {
     return std::max(4ull << 30, total / 10);
 }
 
+void (*ram_release)() = nullptr;  // vmm_set_ram_release: the MMGP RAM allocator gives back the freed blocks it keeps (ram_alloc.cpp)
+
 bool ram_short(size_t bytes) {
     unsigned long long total, available;
+    ram_info(total, available);
+    if (available >= bytes + ram_margin(total) || ram_release == nullptr) return available < bytes + ram_margin(total);
+    ram_release();  // no CUDA call, no Python: safe here, also during a graph capture
     ram_info(total, available);
     return available < bytes + ram_margin(total);
 }
@@ -1218,6 +1223,11 @@ EXPORT void vmm_reset_peaks(int device) {
 EXPORT void vmm_set_pressure_callback(int64_t (*callback)(size_t, int)) {  // callback(size, device) -> bytes freed (see vmm_alloc); nullptr removes it
     std::lock_guard<std::mutex> guard(lock);
     pressure_callback = callback;
+}
+
+EXPORT void vmm_set_ram_release(void (*release)()) {  // the RAM allocator's ra_release, called before a spill is refused for lack of RAM
+    std::lock_guard<std::mutex> guard(lock);
+    ram_release = release;
 }
 
 EXPORT void vmm_set_oom_thrower(void (*thrower)(const char*)) {  // throws c10::OutOfMemoryError(message), see oom_error.cpp; nullptr removes it

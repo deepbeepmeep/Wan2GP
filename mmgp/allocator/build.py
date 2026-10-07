@@ -2,8 +2,8 @@
 """Rebuilds the prebuilt mmgp VRAM allocator libraries after a change to vmm_alloc.cpp: python -m mmgp.allocator.build
 On Windows it builds vmm_alloc_win_amd64.dll with MSVC (Visual Studio or Build Tools 2017+ with the C++ workload, found with vswhere),
 then vmm_alloc_linux_x86_64.so in WSL when WSL is installed (g++ needed there; MMGP_WSL_PYTHON: the Python run there, python3 by default).
-With PyTorch importable, it also builds the companion library that throws PyTorch's own out of memory error (oom_error.cpp, linked with
-PyTorch's c10 library; on Linux only for a PyTorch with the C++11 ABI). On Linux it builds the .so (g++, C++17), the C++ standard
+With PyTorch importable, it also builds the companion library that throws PyTorch's own out of memory error (oom_error.cpp) and the MMGP RAM
+allocator with the RAM debug mode's hooks (ram_alloc.cpp), both linked with PyTorch's c10 library (on Linux only for a PyTorch with the C++11 ABI). On Linux it builds the .so (g++, C++17), the C++ standard
 library linked statically so that the library only needs glibc 2.17+ (and libgcc_s, which every C++ program loads). No CUDA toolkit is needed: the driver is loaded at run time."""
 import glob
 import os
@@ -16,6 +16,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.join(HERE, "vmm_alloc.cpp")
 COMPANION = os.path.join(HERE, "oom_error.cpp")
+RAM_ALLOC = os.path.join(HERE, "ram_alloc.cpp")
 
 
 def _torch():
@@ -58,15 +59,18 @@ def build_windows():
 def build_windows_companion(env, cl):
     torch = _torch()
     if torch is None:
-        print("PyTorch is not installed: the companion library that throws PyTorch's out of memory error was not built")
+        print("PyTorch is not installed: the companion libraries (PyTorch's out of memory error, the RAM allocator) were not built")
         return 0
-    torch_root, target = os.path.dirname(torch.__file__), "oom_error_win_amd64.dll"
-    result = subprocess.run([cl, "/nologo", "/O2", "/EHs", "/LD", "/MD", "/std:c++17", "/I" + os.path.join(torch_root, "include"), COMPANION, f"/Fe{target}",
-                             "/link", "/LIBPATH:" + os.path.join(torch_root, "lib"), "c10.lib", "/NODEFAULTLIB:LIBCMT"], cwd=HERE, env=env)
-    for leftover in glob.glob(os.path.join(HERE, "oom_error*.obj")) + glob.glob(os.path.join(HERE, "oom_error*.lib")) + glob.glob(os.path.join(HERE, "oom_error*.exp")):
-        os.remove(leftover)
-    print(f"{'built' if result.returncode == 0 else 'failed to build'} {os.path.join(HERE, target)} (PyTorch {torch.__version__} headers)")
-    return result.returncode
+    torch_root, code = os.path.dirname(torch.__file__), 0
+    for source, target in ((COMPANION, "oom_error_win_amd64.dll"), (RAM_ALLOC, "ram_alloc_win_amd64.dll")):
+        stem = os.path.splitext(os.path.basename(source))[0]
+        result = subprocess.run([cl, "/nologo", "/O2", "/EHs", "/LD", "/MD", "/std:c++17", "/I" + os.path.join(torch_root, "include"), source, f"/Fe{target}",
+                                 "/link", "/LIBPATH:" + os.path.join(torch_root, "lib"), "c10.lib", "/NODEFAULTLIB:LIBCMT"], cwd=HERE, env=env)
+        for leftover in glob.glob(os.path.join(HERE, stem + "*.obj")) + glob.glob(os.path.join(HERE, stem + "*.lib")) + glob.glob(os.path.join(HERE, stem + "*.exp")):
+            os.remove(leftover)
+        print(f"{'built' if result.returncode == 0 else 'failed to build'} {os.path.join(HERE, target)} (PyTorch {torch.__version__} headers)")
+        code = code or result.returncode
+    return code
 
 
 def build_linux():
@@ -91,18 +95,21 @@ def build_linux():
 def build_linux_companion(compiler):
     torch = _torch()
     if torch is None or not torch.compiled_with_cxx11_abi():
-        print("PyTorch with the C++11 ABI is not installed: the companion library that throws PyTorch's out of memory error was not built")
+        print("PyTorch with the C++11 ABI is not installed: the companion libraries (PyTorch's out of memory error, the RAM allocator) were not built")
         return 0
-    torch_root, target = os.path.dirname(torch.__file__), f"oom_error_linux_{platform.machine().lower()}.so"
-    # the C++ runtime stays shared, as PyTorch's: c10 builds the error that PyTorch catches
-    result = subprocess.run([compiler, "-O2", "-std=c++17", "-shared", "-fPIC", "-fvisibility=hidden", "-D_GLIBCXX_USE_CXX11_ABI=1", "-I" + os.path.join(torch_root, "include"),
-                             COMPANION, "-o", target, "-L" + os.path.join(torch_root, "lib"), "-lc10"], cwd=HERE)
-    if result.returncode == 0 and shutil.which("objdump"):
-        symbols = subprocess.run(["objdump", "-T", os.path.join(HERE, target)], capture_output=True, text=True).stdout
-        needs = {name: max((tuple(int(x) for x in v.split(".")) for v in re.findall(name + r"_([0-9.]+)", symbols)), default=None) for name in ("GLIBC", "GLIBCXX", "CXXABI")}
-        print(f"{target} needs " + ", ".join(f"{name} {'.'.join(map(str, version))}" for name, version in needs.items() if version))
-    print(f"{'built' if result.returncode == 0 else 'failed to build'} {os.path.join(HERE, target)} (PyTorch {torch.__version__} headers)")
-    return result.returncode
+    torch_root, code = os.path.dirname(torch.__file__), 0
+    for source, name in ((COMPANION, "oom_error"), (RAM_ALLOC, "ram_alloc")):
+        target = f"{name}_linux_{platform.machine().lower()}.so"
+        # the C++ runtime stays shared, as PyTorch's: c10 builds the error that PyTorch catches, and the hooks exchange PyTorch's objects
+        result = subprocess.run([compiler, "-O2", "-std=c++17", "-shared", "-fPIC", "-fvisibility=hidden", "-D_GLIBCXX_USE_CXX11_ABI=1", "-I" + os.path.join(torch_root, "include"),
+                                 source, "-o", target, "-L" + os.path.join(torch_root, "lib"), "-lc10"], cwd=HERE)
+        if result.returncode == 0 and shutil.which("objdump"):
+            symbols = subprocess.run(["objdump", "-T", os.path.join(HERE, target)], capture_output=True, text=True).stdout
+            needs = {key: max((tuple(int(x) for x in v.split(".")) for v in re.findall(key + r"_([0-9.]+)", symbols)), default=None) for key in ("GLIBC", "GLIBCXX", "CXXABI")}
+            print(f"{target} needs " + ", ".join(f"{key} {'.'.join(map(str, version))}" for key, version in needs.items() if version))
+        print(f"{'built' if result.returncode == 0 else 'failed to build'} {os.path.join(HERE, target)} (PyTorch {torch.__version__} headers)")
+        code = code or result.returncode
+    return code
 
 
 def build_linux_in_wsl():

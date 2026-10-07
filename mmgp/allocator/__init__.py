@@ -97,9 +97,12 @@ def install(mode="vmm", large_mb=256, chunk_mb=32, spill=False):
     lib.vmm_mark_peak.restype = lib.vmm_room.restype = ctypes.c_int64
     lib.vmm_configure(large_mb << 20, chunk_mb << 20, 3 if spill else 0)  # spill modes: pinned system RAM, then the driver's allocation
     lib.vmm_set_oom_thrower.argtypes = (ctypes.c_void_p,)
+    lib.vmm_set_ram_release.argtypes = (ctypes.c_void_p,)
     _install_oom_error(lib)
     _lib, active = lib, mode
     _redirect_torch_memory_functions()
+    from . import ram
+    ram._link_vram_allocator()  # the RAM allocator, when installed first, gives its cache back before a spill is refused
 
 
 def _install_oom_error(lib):

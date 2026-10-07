@@ -3,6 +3,7 @@ import logging
 import os
 from mmgp import offload
 import torch
+from shared.utils.utils import guide_to_dtype
 from shared.utils.phase_progress import vae_encoding_progress, PhaseProgress, check_abort, set_phase_status
 import torch.cuda.amp as amp
 import torch.nn as nn
@@ -1029,10 +1030,11 @@ class WanVAE:
             tiles += temporal_tiles
         with vae_encoding_progress(tiles, self.model.encoder, cleanup=self.model.clear_cache, enabled=any(video.shape[1] > 1 for video in videos)):
             scale = [u.to(device = self.device) for u in self.scale]
+            # uint8 control videos (model_def "uint8_guides") get WanGP's float values, converted by chunks of frames
             if tile_size > 0:
-                return [ self.model.spatial_tiled_encode(u.to(self.dtype).unsqueeze(0), scale, tile_size, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
+                return [ self.model.spatial_tiled_encode(guide_to_dtype(u, self.dtype).unsqueeze(0), scale, tile_size, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
             else:
-                return [ self.model.encode(u.to(self.dtype).unsqueeze(0), scale, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
+                return [ self.model.encode(guide_to_dtype(u, self.dtype).unsqueeze(0), scale, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
 
 
     def decode(self, zs, tile_size, any_end_frame = False):

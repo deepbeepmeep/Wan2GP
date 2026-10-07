@@ -121,6 +121,30 @@ def to_rgb_tensor(value, device="cpu", dtype=torch.float):
             tensor = tensor[:3]
     return tensor.view(3, 1, 1)
 
+def guide_to_float(video, memory_format=torch.preserve_format):
+    """A control video in [-1, 1]. Models declaring model_def "uint8_guides" may receive uint8 control videos (0-255): they are converted
+    with the operations WanGP applies to float guides, so the values are identical (the divisor is a tensor: CUDA divides by a scalar
+    through its reciprocal, which changes some values). Float videos are returned as they are."""
+    if video is None or video.dtype != torch.uint8:
+        return video
+    return video.to(torch.float32, memory_format=memory_format).div_(torch.tensor(127.5, device=video.device)).sub_(1.0)
+
+def guide_to_dtype(video, dtype, chunk_frames=16):
+    """A control video (C, T, H, W) in dtype with the values of guide_to_float, converted by chunks of frames: a uint8 guide does not go
+    through a float32 copy of the whole video. Float videos are only cast."""
+    if video.dtype != torch.uint8:
+        return video.to(dtype)
+    output = torch.empty_like(video, dtype=dtype)
+    for start in range(0, video.shape[1], chunk_frames):
+        output[:, start:start + chunk_frames] = guide_to_float(video[:, start:start + chunk_frames])
+    return output
+
+def guide_mask_to_float(mask, memory_format=torch.preserve_format):
+    """A control mask in [0, 1]: uint8 masks (0 / 255, model_def "uint8_guides") as WanGP's float masks; float masks are returned as they are."""
+    if mask is None or mask.dtype != torch.uint8:
+        return mask
+    return mask.to(torch.float32, memory_format=memory_format).div_(torch.tensor(255.0, device=mask.device))
+
 def process_images_multithread(image_processor, items, process_type, wrap_in_list = True, max_workers: int = os.cpu_count()/ 2, in_place = False) :
     if not items:
        return []    
@@ -742,21 +766,33 @@ def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu
 
 def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, outpainting_ratio = "", device ="cpu", outpainting_quantize_margins = 0, frame_offset = 1):
     src_videos, src_masks = [], []
-    inpaint_color_compressed = to_rgb_tensor(guide_inpaint_color, device=device, dtype=torch.float) / 127.5 - 1
-    inpaint_color_compressed = inpaint_color_compressed.unsqueeze(1)
+    inpaint_color = to_rgb_tensor(guide_inpaint_color, device=device, dtype=torch.float)
+    inpaint_color_compressed = (inpaint_color / 127.5 - 1).unsqueeze(1)
     prepend_count = pre_video_guide.shape[1] if pre_video_guide is not None else 0
+    # uint8 guides and masks (model_def "uint8_guides") stay uint8 unless float frames are merged into them below (padding and frames
+    # that are not kept are filled in uint8 when the inpainting color is made of whole values)
+    whole_color = torch.equal(inpaint_color, inpaint_color.round())
+    if pre_video_guide is not None and any(guide is not None and guide.dtype == torch.uint8 for guide in video_guides):
+        # the frames prepended to uint8 guides are kept in uint8 when they are 8 bit frames (start image, previous window)
+        pre_video_guide_uint8 = pre_video_guide.add(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
+        if torch.equal(guide_to_float(pre_video_guide_uint8), pre_video_guide):
+            pre_video_guide = pre_video_guide_uint8
+    float_edits = pre_video_guide is not None and pre_video_guide.dtype != torch.uint8 or not (whole_color or all(keep_video_guide_frames)) or any(frame is not None for frame in inject_frames)
     for guide_no, (cur_video_guide, cur_video_mask) in enumerate(zip(video_guides, video_masks)):
-        src_video, src_mask = cur_video_guide, cur_video_mask
+        padded = any_guide_padding and (cur_video_guide is None or prepend_count + cur_video_guide.shape[1] < current_video_length)
+        src_video, src_mask = (guide_to_float(cur_video_guide), guide_mask_to_float(cur_video_mask)) if float_edits or padded and not whole_color else (cur_video_guide, cur_video_mask)
         if pre_video_guide is not None:
-            src_video = pre_video_guide if src_video is None else torch.cat( [pre_video_guide, src_video], dim=1)
+            pre_guide = pre_video_guide if src_video is None or src_video.dtype == pre_video_guide.dtype else guide_to_float(pre_video_guide)
+            src_video = pre_guide if src_video is None else torch.cat( [pre_guide, src_video], dim=1)
             if any_mask:
-                src_mask = torch.zeros_like(pre_video_guide[:1]) if src_mask is None else torch.cat( [torch.zeros_like(pre_video_guide[:1]), src_mask], dim=1)
+                src_mask = torch.zeros_like(pre_guide[:1]) if src_mask is None else torch.cat( [torch.zeros_like(pre_guide[:1], dtype=src_mask.dtype), src_mask], dim=1)
 
         if any_guide_padding:
             if src_video is None:
                 src_video = inpaint_color_compressed.expand(3, current_video_length, *image_size).clone()
             elif src_video.shape[1] < current_video_length:
-                pad = inpaint_color_compressed.to(src_video.device).expand(3, current_video_length - src_video.shape[1], *src_video.shape[-2:]).clone()
+                color = inpaint_color.to(torch.uint8).unsqueeze(1) if src_video.dtype == torch.uint8 else inpaint_color_compressed
+                pad = color.to(src_video.device).expand(3, current_video_length - src_video.shape[1], *src_video.shape[-2:]).clone()
                 src_video = torch.cat([src_video, pad], dim=1)
         elif src_video is not None:
             new_num_frames = src_video.shape[1] if src_video.shape[1] < frame_offset else (src_video.shape[1] - frame_offset) // latent_size * latent_size + frame_offset
@@ -764,11 +800,12 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
                 print(f"invalid number of control frames {src_video.shape[1]}, potentially {src_video.shape[1]-new_num_frames} frames will be lost")
             src_video = src_video[:, :new_num_frames]
 
+        full_mask = 255 if src_video is not None and src_video.dtype == torch.uint8 else 1
         if any_mask and src_video is not None:
-            if src_mask is None:                   
-                src_mask = torch.ones_like(src_video[:1])
+            if src_mask is None:
+                src_mask = torch.full_like(src_video[:1], full_mask)
             elif src_mask.shape[1] < src_video.shape[1]:
-                src_mask = torch.cat([src_mask, torch.full( (1, src_video.shape[1]- src_mask.shape[1], *src_mask.shape[-2:]  ), 1, dtype = src_video.dtype, device= src_video.device) ], dim=1)
+                src_mask = torch.cat([src_mask, torch.full( (1, src_video.shape[1]- src_mask.shape[1], *src_mask.shape[-2:]  ), full_mask, dtype = src_video.dtype, device= src_video.device) ], dim=1)
             else:
                 src_mask = src_mask[:, :src_video.shape[1]]                                        
 
@@ -776,8 +813,8 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
             for k, keep in enumerate(keep_video_guide_frames):
                 if not keep:
                     pos = prepend_count + k
-                    src_video[:, pos:pos+1] = inpaint_color_compressed.to(src_video.device)
-                    if any_mask: src_mask[:, pos:pos+1] = 1
+                    src_video[:, pos:pos+1] = (inpaint_color.to(torch.uint8).unsqueeze(1) if src_video.dtype == torch.uint8 else inpaint_color_compressed).to(src_video.device)
+                    if any_mask: src_mask[:, pos:pos+1] = full_mask
 
             for k, frame in enumerate(inject_frames):
                 if frame != None:

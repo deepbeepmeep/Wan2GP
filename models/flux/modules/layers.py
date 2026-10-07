@@ -5,7 +5,8 @@ import torch
 from einops import rearrange
 from torch import Tensor, nn
 
-from ..math import attention, rope
+from shared import attention_kit
+from ..math import apply_rope_, attention, rope
 
 def get_linear_split_map(
     hidden_size: int = 3072,
@@ -125,6 +126,18 @@ class QKNorm(torch.nn.Module):
         # q = self.query_norm(q)
         # k = self.key_norm(k)
         # return q.to(v), k.to(v)
+
+
+def _norm_rope_(query, key, pe, segments):
+    """attention_kit callback: the QKNorm of each segment of tokens (start, stop, QKNorm), then RoPE with pe (batch, 1, tokens, ...), of
+    q and/or k (batch, tokens, heads, head_dim) in place, by chunks of tokens: the values of QKNorm and math.attention's RoPE."""
+    pe = pe.transpose(1, 2)
+    for tensor, is_key in ((query, False), (key, True)):
+        if tensor is None:
+            continue
+        for start, stop, norm in segments:
+            normalize = (lambda part: norm(None, part, part)) if is_key else (lambda part: norm(part, None, part))
+            attention_kit.rows_(tensor, lambda part, first, last: apply_rope_([normalize(part)], pe[:, first:last]), start, stop)
 
 
 class SelfAttention(nn.Module):
@@ -255,6 +268,37 @@ class DoubleStreamBlock(nn.Module):
         img_modulated.mul_(1 + img_mod1.scale)
         img_modulated.add_(img_mod1.shift)
 
+        if NAG is None:
+            txt_modulated = self.txt_norm1(txt)
+            txt_modulated.mul_(1 + txt_mod1.scale)
+            txt_modulated.add_(txt_mod1.shift)
+            txt_len, head_dim = txt.shape[1], self.hidden_size // self.num_heads
+            streams = [([txt_modulated], (self.txt_attn.q, self.txt_attn.k, self.txt_attn.v)), ([img_modulated], (self.img_attn.q, self.img_attn.k, self.img_attn.v))]
+            del txt_modulated, img_modulated
+            segments = ((0, txt_len, self.txt_attn.norm), (txt_len, txt_len + img.shape[1], self.img_attn.norm))
+            attn = attention_kit.joint_qkv_attention(streams, self.num_heads, head_dim, lambda query, key, group: _norm_rope_(query, key, pe, segments)).flatten(2)
+        else:
+            img_list, img_modulated = [img_modulated], None
+            attn = self._attention_nag(img_list, txt, txt_mod1, pe, NAG)
+        txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
+
+        # calculate the img blocks
+        torch.addcmul(img, self.img_attn.proj(img_attn), img_mod1.gate, out=img)
+        mod_img = self.img_norm2(img)
+        mod_img.mul_(1 + img_mod2.scale)
+        mod_img.add_(img_mod2.shift)
+        mod_img = split_mlp(self.img_mlp, mod_img)
+        # mod_img = self.img_mlp(mod_img)
+        torch.addcmul(img, mod_img, img_mod2.gate, out=img)
+        mod_img = None
+
+        # calculate the txt blocks
+        torch.addcmul(txt, self.txt_attn.proj(txt_attn), txt_mod1.gate, out=txt)
+        torch.addcmul(txt, self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift), txt_mod2.gate, out=txt)
+        return img, txt
+
+    def _attention_nag(self, img_list, txt, txt_mod1, pe, NAG):
+        img_modulated = img_list.pop()
         shape = (*img_modulated.shape[:2], self.num_heads, int(img_modulated.shape[-1] / self.num_heads) )
         img_q = self.img_attn.q(img_modulated).view(*shape).transpose(1,2)
         img_k = self.img_attn.k(img_modulated).view(*shape).transpose(1,2) 
@@ -290,24 +334,7 @@ class DoubleStreamBlock(nn.Module):
 
         qkv_list = [q, k, v]
         del q, k, v
-        attn = attention(qkv_list, pe=pe, txt_len=txt.shape[1], NAG=NAG)
-
-        txt_attn, img_attn = attn[:, : txt.shape[1]], attn[:, txt.shape[1] :]
-
-        # calculate the img blocks
-        torch.addcmul(img, self.img_attn.proj(img_attn), img_mod1.gate, out=img)
-        mod_img = self.img_norm2(img)
-        mod_img.mul_(1 + img_mod2.scale)
-        mod_img.add_(img_mod2.shift)
-        mod_img = split_mlp(self.img_mlp, mod_img)
-        # mod_img = self.img_mlp(mod_img)
-        torch.addcmul(img, mod_img, img_mod2.gate, out=img)
-        mod_img = None
-
-        # calculate the txt blocks
-        torch.addcmul(txt, self.txt_attn.proj(txt_attn), txt_mod1.gate, out=txt)
-        torch.addcmul(txt, self.txt_mlp((1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift), txt_mod2.gate, out=txt)
-        return img, txt
+        return attention(qkv_list, pe=pe, txt_len=txt.shape[1], NAG=NAG)
 
 
 class SingleStreamBlock(nn.Module):
@@ -371,18 +398,23 @@ class SingleStreamBlock(nn.Module):
 
         # x_mod = (1 + mod.scale) * x + mod.shift
 
-        shape = (*x_mod.shape[:2], self.num_heads, int(x_mod.shape[-1] / self.num_heads) )
-        q = self.linear1_attn_q(x_mod).view(*shape).transpose(1,2)
-        k = self.linear1_attn_k(x_mod).view(*shape).transpose(1,2)
-        v = self.linear1_attn_v(x_mod).view(*shape).transpose(1,2)
+        if NAG is None:  # x_mod stays: the MLP reads it after the attention
+            segments = ((0, x_mod.shape[1], self.norm),)
+            attn = attention_kit.qkv_attention([x_mod], self.linear1_attn_q, self.linear1_attn_k, self.linear1_attn_v, self.num_heads,
+                                               self.hidden_size // self.num_heads, lambda query, key, group: _norm_rope_(query, key, pe, segments)).flatten(2)
+        else:
+            shape = (*x_mod.shape[:2], self.num_heads, int(x_mod.shape[-1] / self.num_heads) )
+            q = self.linear1_attn_q(x_mod).view(*shape).transpose(1,2)
+            k = self.linear1_attn_k(x_mod).view(*shape).transpose(1,2)
+            v = self.linear1_attn_v(x_mod).view(*shape).transpose(1,2)
 
-        q = self.norm(q, None, v)
-        k = self.norm(None, k, v)
+            q = self.norm(q, None, v)
+            k = self.norm(None, k, v)
 
-        # compute attention
-        qkv_list = [q, k, v]
-        del q, k, v
-        attn = attention(qkv_list, pe=pe, txt_len=txt_len, NAG=NAG)
+            # compute attention
+            qkv_list = [q, k, v]
+            del q, k, v
+            attn = attention(qkv_list, pe=pe, txt_len=txt_len, NAG=NAG)
         # compute activation in mlp stream, cat again and run second linear layer
 
         x_mod_shape = x_mod.shape

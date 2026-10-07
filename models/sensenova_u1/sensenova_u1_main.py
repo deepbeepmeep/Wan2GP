@@ -78,7 +78,6 @@ class model_factory:
         shift: float = 3.0,
         image_start=None,
         input_ref_images=None,
-        custom_settings=None,
         callback=None,
         loras_slists=None,
         set_progress_status=None,
@@ -93,7 +92,6 @@ class model_factory:
         if image_start is not None and not references:
             references.append(image_start)
         references = [_as_pil(image) for image in references]
-        use_kv_cache = isinstance(custom_settings, dict) and custom_settings.get("sensenova_kv_cache") == "Enabled"
 
         def step_callback(step_idx, image):
             if callback is not None:
@@ -119,7 +117,6 @@ class model_factory:
                         num_steps=sampling_steps,
                         batch_size=batch_size,
                         seed=seed or 0,
-                        use_kv_cache=use_kv_cache,
                         callback=step_callback,
                     )
                 else:
@@ -132,7 +129,6 @@ class model_factory:
                         num_steps=sampling_steps,
                         batch_size=batch_size,
                         seed=seed or 0,
-                        use_kv_cache=use_kv_cache,
                         callback=step_callback,
                     )
             except InterruptedError:

@@ -691,60 +691,37 @@ class VideoDecoder(nn.Module):
         if self.temporal_chunk_on_gpu and latent.device.type == "cuda":
             chunk_device = latent.device
 
-        previous_chunk = None
-        previous_weights = None
-        previous_temporal_slice = None
         buffer = None
         curr_weights = None
         work_buffer = None
         work_weights = None
-        blend_buffers = None
-        blend_weights = None
-        max_temporal_len = max(
-            self._normalize_temporal_slice(group_tiles[0].out_coords[2], total_frames).stop
-            - self._normalize_temporal_slice(group_tiles[0].out_coords[2], total_frames).start
-            for group_tiles in temporal_groups
-        )
-        slot_count = 1 if len(temporal_groups) == 1 else 2
+        temporal_slices = [self._normalize_temporal_slice(group_tiles[0].out_coords[2], total_frames) for group_tiles in temporal_groups]
+        max_temporal_len = max(temporal_slice.stop - temporal_slice.start for temporal_slice in temporal_slices)
+        # Frames of a group that the next group overlaps, carried unnormalized until that group is blended, so that a group can be
+        # emitted as soon as it is decoded and a single blend buffer is needed.
+        max_carry_len = max([prev.stop - curr.start for prev, curr in zip(temporal_slices, temporal_slices[1:]) if prev.stop > curr.start], default=0)
         reusable_shape = full_video_shape._replace(frames=max_temporal_len).to_torch_shape()
         reusable_weights_shape = (1, 1, max_temporal_len, reusable_shape[3], reusable_shape[4])
-
-        if chunk_device == blend_device:
-            blend_buffers = [torch.zeros(reusable_shape, device=blend_device, dtype=latent.dtype) for _ in range(slot_count)]
-            blend_weights = [torch.zeros(reusable_weights_shape, device=blend_device, dtype=latent.dtype) for _ in range(slot_count)]
-        else:
-            work_buffer = torch.zeros(reusable_shape, device=chunk_device, dtype=latent.dtype)
-            work_weights = torch.zeros(reusable_weights_shape, device=chunk_device, dtype=latent.dtype)
-            blend_buffers = [torch.zeros(reusable_shape, device=blend_device, dtype=latent.dtype) for _ in range(slot_count)]
-            blend_weights = [torch.zeros(reusable_weights_shape, device=blend_device, dtype=latent.dtype) for _ in range(slot_count)]
+        blend_buffer = torch.empty(reusable_shape, device=blend_device, dtype=latent.dtype)
+        blend_weights = torch.empty(reusable_weights_shape, device=blend_device, dtype=latent.dtype)
+        carry_buffer = blend_buffer.new_empty((*reusable_shape[:2], max_carry_len, *reusable_shape[3:]))
+        carry_weights = blend_weights.new_empty((1, 1, max_carry_len, *reusable_weights_shape[3:]))
+        if chunk_device != blend_device:
+            work_buffer = torch.empty(reusable_shape, device=chunk_device, dtype=latent.dtype)
+            work_weights = torch.empty(reusable_weights_shape, device=chunk_device, dtype=latent.dtype)
 
         with PhaseProgress(len(tiles)) as progress:
             try:
-                for group_idx, temporal_group_tiles in enumerate(temporal_groups):
+                carry_len = 0
+                for group_idx, (temporal_group_tiles, curr_temporal_slice) in enumerate(zip(temporal_groups, temporal_slices)):
                     if interrupt_check is not None and interrupt_check():
                         return
 
-                    curr_temporal_slice = self._normalize_temporal_slice(
-                        temporal_group_tiles[0].out_coords[2],
-                        total_frames,
-                    )
                     curr_len = curr_temporal_slice.stop - curr_temporal_slice.start
-                    slot = group_idx % slot_count
-
-                    if chunk_device == blend_device:
-                        buffer = blend_buffers[slot][:, :, :curr_len, :, :]
-                        curr_weights = blend_weights[slot][:, :, :curr_len, :, :]
-                        buffer.zero_()
-                        curr_weights.zero_()
-                        weights_buffer = curr_weights
-                    else:
-                        work_buffer_view = work_buffer[:, :, :curr_len, :, :]
-                        work_weights_view = work_weights[:, :, :curr_len, :, :]
-                        work_buffer_view.zero_()
-                        work_weights_view.zero_()
-                        buffer = work_buffer_view
-                        curr_weights = work_weights_view
-                        weights_buffer = work_weights_view
+                    buffer = (blend_buffer if work_buffer is None else work_buffer)[:, :, :curr_len]
+                    curr_weights = (blend_weights if work_weights is None else work_weights)[:, :, :curr_len]
+                    buffer.zero_()
+                    curr_weights.zero_()
 
                     curr_weights = self._accumulate_temporal_group_into_buffer(
                         group_tiles=temporal_group_tiles,
@@ -755,75 +732,49 @@ class VideoDecoder(nn.Module):
                         temporal_slice=curr_temporal_slice,
                         total_frames=total_frames,
                         interrupt_check=interrupt_check,
-                        weights_buffer=weights_buffer,
+                        weights_buffer=curr_weights,
                         progress=progress,
                     )
                     if curr_weights is None:
                         return
-                    if chunk_device != blend_device:
-                        blend_buffer_view = blend_buffers[slot][:, :, :curr_len, :, :]
-                        blend_weights_view = blend_weights[slot][:, :, :curr_len, :, :]
-                        blend_buffer_view.copy_(buffer)
-                        blend_weights_view.copy_(curr_weights)
-                        buffer = blend_buffer_view
-                        curr_weights = blend_weights_view
+                    if work_buffer is not None:
+                        # Channel by channel: each one is contiguous on both sides, whereas copying the strided view of a shorter group
+                        # would stage it in a CPU temporary as large as the group.
+                        for blend_channel, channel in zip(blend_buffer[:, :, :curr_len].flatten(0, 1), buffer.flatten(0, 1)):
+                            blend_channel.copy_(channel)
+                        blend_weights[:, :, :curr_len].copy_(curr_weights)
+                        buffer = blend_buffer[:, :, :curr_len]
+                        curr_weights = blend_weights[:, :, :curr_len]
 
-                    if previous_chunk is not None:
-                        if previous_temporal_slice.stop > curr_temporal_slice.start:
-                            overlap_len = previous_temporal_slice.stop - curr_temporal_slice.start
-                            temporal_overlap_slice = slice(curr_temporal_slice.start - previous_temporal_slice.start, None)
+                    if carry_len:
+                        buffer[:, :, :carry_len] += carry_buffer[:, :, :carry_len]
+                        curr_weights[:, :, :carry_len] += carry_weights[:, :, :carry_len]
 
-                            previous_chunk[:, :, temporal_overlap_slice, :, :] += buffer[:, :, slice(0, overlap_len), :, :]
-                            previous_weights[:, :, temporal_overlap_slice, :, :] += curr_weights[
-                                :, :, slice(0, overlap_len), :, :
-                            ]
+                    yield_len = curr_len
+                    if group_idx + 1 < len(temporal_slices):
+                        yield_len = min(curr_len, temporal_slices[group_idx + 1].start - curr_temporal_slice.start)
+                    carry_len = curr_len - yield_len
+                    if carry_len:
+                        carry_buffer[:, :, :carry_len].copy_(buffer[:, :, yield_len:])
+                        carry_weights[:, :, :carry_len].copy_(curr_weights[:, :, yield_len:])
 
-                            buffer[:, :, slice(0, overlap_len), :, :] = previous_chunk[:, :, temporal_overlap_slice, :, :]
-                            curr_weights[:, :, slice(0, overlap_len), :, :] = previous_weights[
-                                :, :, temporal_overlap_slice, :, :
-                            ]
-
-                        previous_weights = previous_weights.clamp_(min=1e-8)
-                        yield_len = curr_temporal_slice.start - previous_temporal_slice.start
-                        previous_chunk[:, :, :yield_len] /= previous_weights[:, :, :yield_len]
-                        yield_chunk = previous_chunk[:, :, :yield_len]
-                        if copy_emitted_chunks:
-                            yield_chunk = yield_chunk.clone()
-
-                        previous_chunk = buffer
-                        previous_weights = curr_weights
-                        previous_temporal_slice = curr_temporal_slice
-                        buffer = None
-                        curr_weights = None
-
-                        yield yield_chunk
-                        continue
-
-                    previous_chunk = buffer
-                    previous_weights = curr_weights
-                    previous_temporal_slice = curr_temporal_slice
+                    yield_chunk = buffer[:, :, :yield_len]
+                    yield_chunk /= curr_weights[:, :, :yield_len].clamp_(min=1e-8)
+                    if copy_emitted_chunks:
+                        yield_chunk = yield_chunk.clone()
                     buffer = None
                     curr_weights = None
-
-                if previous_chunk is not None:
-                    previous_weights = previous_weights.clamp_(min=1e-8)
-                    previous_chunk /= previous_weights
-                    previous_weights = None
-                    final_chunk = previous_chunk
-                    if copy_emitted_chunks:
-                        final_chunk = final_chunk.clone()
-                    previous_chunk = None
-                    yield final_chunk
+                    yield yield_chunk
+                    yield_chunk = None
             finally:
-                previous_chunk = None
-                previous_weights = None
-                previous_temporal_slice = None
                 buffer = None
                 curr_weights = None
                 work_buffer = None
                 work_weights = None
-                blend_buffers = None
+                blend_buffer = None
                 blend_weights = None
+                carry_buffer = None
+                carry_weights = None
                 temporal_groups = None
                 tiles = None
 

@@ -1,5 +1,6 @@
 """CUDA memory settings applied when WanGP starts, before anything initializes CUDA: the VRAM allocator (Configuration > RAM/VRAM
-Management or --vram-allocator), its debug mode (--vram-debug) and the per-thread stack reserve of the CUDA context."""
+Management or --vram-allocator), its debug mode (--vram-debug) and the per-thread stack reserve of the CUDA context; and the RAM debug
+mode (--ram-debug) and the MMGP RAM allocator (Configuration > RAM/VRAM Management or --ram-allocator)."""
 import ctypes
 import json
 import os
@@ -8,7 +9,10 @@ import time
 
 VRAM_ALLOCATOR_KEY = "vram_allocator"
 VRAM_ALLOCATOR_CHOICES = ("default", "vmm", "vmm_spill")
-_vram_debug = False
+RAM_ALLOCATOR_KEY = "ram_allocator"
+RAM_ALLOCATOR_CHOICES = ("default", "mmgp")
+RAM_ALLOCATOR_DEFAULT = "mmgp"
+_vram_debug = _ram_debug = False
 # The CUDA context reserves this much local memory for the call stack of every thread the GPU can run at once: with the driver's 1 KiB,
 # about 0.25 GiB of VRAM on a large GPU. WanGP's kernels need less; the driver raises the reserve when a kernel needs more.
 # WANGP_CUDA_STACK_BYTES overrides it (0 keeps the driver's default).
@@ -24,23 +28,49 @@ def _argv_value(argv, option):
     return None
 
 
-def requested_vram_allocator(argv, config_filename):
-    # wgp.py reads its configuration after CUDA has started: the allocator choice is read from the same file first
-    value = _argv_value(argv, "--vram-allocator")
+def _requested(argv, config_filename, option, key):
+    # wgp.py reads its configuration after CUDA has started: the allocator choices are read from the same file first
+    value = _argv_value(argv, option)
     if value is None:
         config_dir = _argv_value(argv, "--config")
         for path in ([os.path.join(os.path.abspath(config_dir), config_filename)] if config_dir else []) + [config_filename]:
             if os.path.isfile(path):
                 with open(path, encoding="utf-8") as reader:
-                    value = json.load(reader).get(VRAM_ALLOCATOR_KEY)
+                    value = json.load(reader).get(key)
                 break
-    return value or "vmm_spill"
+    return value
+
+
+def requested_vram_allocator(argv, config_filename):
+    return _requested(argv, config_filename, "--vram-allocator", VRAM_ALLOCATOR_KEY) or "vmm_spill"
 
 
 def apply_startup_settings(argv, config_filename):
     import torch
-    if torch.version.hip is not None or not torch.cuda.is_available():
-        return
+    if torch.version.hip is None and torch.cuda.is_available():
+        _apply_cuda_settings(argv, config_filename, torch)
+    ram_allocator = _requested(argv, config_filename, "--ram-allocator", RAM_ALLOCATOR_KEY) or RAM_ALLOCATOR_DEFAULT
+    if ram_allocator not in RAM_ALLOCATOR_CHOICES:
+        raise ValueError(f"Unknown RAM allocator {ram_allocator!r}: expected one of {RAM_ALLOCATOR_CHOICES}")
+    if ram_allocator == "mmgp":
+        from mmgp.allocator import ram
+        try:
+            ram.install()
+        except RuntimeError as error:  # a platform or PyTorch it does not support: the default must not stop WanGP
+            print(f"[RAM] MMGP RAM Allocator not available ({error}): PyTorch's CPU allocator is used")
+        else:
+            print("[RAM] MMGP RAM Allocator: the RAM of freed CPU tensors goes back to the system")
+    debug_mb = float(_argv_value(argv, "--ram-debug") or 0)
+    if debug_mb > 0:
+        from mmgp.allocator import ram_debug
+        ram_debug.start(min_mb=debug_mb)
+        global _ram_debug
+        _ram_debug = True
+        print(f"[RAM] Debug mode: a report of where the RAM goes is written after each generation and after each model release in <outputs>/ram_debug "
+              f"(allocations of {debug_mb:g} MB and more traced to their source)")
+
+
+def _apply_cuda_settings(argv, config_filename, torch):
     allocator = requested_vram_allocator(argv, config_filename)
     if allocator not in VRAM_ALLOCATOR_CHOICES:
         raise ValueError(f"Unknown VRAM allocator {allocator!r}: expected one of {VRAM_ALLOCATOR_CHOICES}")
@@ -80,3 +110,28 @@ def write_vram_debug_report(output_dir, label):
     debug.report(path)
     debug.reset()
     print(f"[VRAM debug] Report: {path} (summary: {os.path.splitext(path)[0]}.md)")
+
+
+def release_ram_cache():
+    """The end of a queue: the freed blocks the MMGP RAM allocator kept for reuse go back to the system (between generations of the same model
+    they are kept: the next one reuses them)."""
+    from mmgp.allocator import ram
+    ram.release()
+
+
+def ram_debug_mark(name):
+    """With --ram-debug: the RAM that follows counts for the peak of phase name."""
+    if _ram_debug:
+        from mmgp.allocator import ram_debug
+        ram_debug.mark(name)
+
+
+def write_ram_debug_report(output_dir, label, census_label="after generation"):
+    """With --ram-debug: a census of the RAM now (census_label) and the peaks of the phases since the previous report, in output_dir/ram_debug."""
+    if not _ram_debug:
+        return
+    from mmgp.allocator import ram_debug
+    path = os.path.join(output_dir, "ram_debug", f"{time.strftime('%Y-%m-%d-%Hh%Mm%Ss')}_{label or 'generation'}.json")
+    ram_debug.report(path, label=label, snapshot_label=census_label)
+    ram_debug.reset()
+    print(f"[RAM debug] Report: {path} (summary: {os.path.splitext(path)[0]}.md)")

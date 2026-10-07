@@ -61,7 +61,7 @@ class _Recording:
         self.tags_by_seq = {}
         self.module_names = {}  # id(module) -> path
         self.named_models = set()
-        self.hooks, self.patched = [], []
+        self.patched = []
         self.t0 = 0.0  # the library's recording clock starts with start()
 
 
@@ -135,6 +135,26 @@ def _module_left(module, args, output):
         modules.pop()
 
 
+_module_hooks, _module_hook_users = [], 0  # shared with the RAM debug mode (ram_debug), installed once while either records
+
+
+def _use_module_hooks():
+    global _module_hook_users
+    if _module_hook_users == 0:
+        _module_hooks[:] = [torch.nn.modules.module.register_module_forward_pre_hook(_module_entered),
+                            torch.nn.modules.module.register_module_forward_hook(_module_left, always_call=True)]
+    _module_hook_users += 1
+
+
+def _release_module_hooks():
+    global _module_hook_users
+    _module_hook_users -= 1
+    if _module_hook_users == 0:
+        for hook in _module_hooks:
+            hook.remove()
+        _module_hooks.clear()
+
+
 def _tag_get(tensor):
     return tensor.__dict__.get("_allocator_tag")
 
@@ -170,8 +190,7 @@ def start(min_mb=16, stacks=True, max_stacks_per_s=0, watch_mmgp=True):
         stop()
     lib = _library()
     rec = _Recording(min_mb, stacks, max_stacks_per_s)
-    rec.hooks = [torch.nn.modules.module.register_module_forward_pre_hook(_module_entered),
-                 torch.nn.modules.module.register_module_forward_hook(_module_left, always_call=True)]
+    _use_module_hooks()
     torch.Tensor._allocator_tag = property(_tag_get, _tag_set)
     if watch_mmgp:
         _watch_mmgp(rec)
@@ -188,8 +207,7 @@ def stop():
         return
     _library().vmm_debug_stop()
     _rec = None
-    for hook in rec.hooks:
-        hook.remove()
+    _release_module_hooks()
     for owner, attribute, original in rec.patched:
         setattr(owner, attribute, original)
     del torch.Tensor._allocator_tag

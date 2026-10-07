@@ -39,7 +39,7 @@ from shared.utils.vace_preprocessor import VaceVideoProcessor
 from shared.utils.basic_flowmatch import FlowMatchScheduler
 from shared.utils.euler_scheduler import EulerScheduler
 from shared.utils.lcm_scheduler import LCMScheduler
-from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image, fit_image_into_canvas
+from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image, fit_image_into_canvas, guide_mask_to_float, guide_to_float
 from .multitalk.multitalk_utils import MomentumBuffer, adaptive_projected_guidance, match_and_blend_colors, match_and_blend_colors_with_mask
 from .wanmove.trajectory import replace_feature, create_pos_feature_map
 from .alpha.utils import load_gauss_mask, apply_alpha_shift
@@ -874,7 +874,7 @@ class WanAny2V:
 
         # Animate 2
         if animate2:
-            input_frames = input_frames[:, :frame_num].to(device=self.device, dtype=self.VAE_dtype)
+            input_frames = guide_to_float(input_frames[:, :frame_num].to(self.device)).to(self.VAE_dtype)  # uint8 guides converted on the GPU
             if not input_ref_images:
                 input_ref_images = [image_start if image_start is not None else convert_image_to_tensor(pre_video_frame)]
             image_ref = input_ref_images[0].to(device=self.device, dtype=self.VAE_dtype)
@@ -977,7 +977,7 @@ class WanAny2V:
                 kwargs["animate2_ref_clip_fea"] = self.clip.visual([animate2_clip_image_ref[:, None, :, :]])
                 animate2_clip_image_ref = None
             if steadydancer:
-                kwargs['steadydancer_clip_fea_c'] = self.clip.visual([input_frames[:, :1]])
+                kwargs['steadydancer_clip_fea_c'] = self.clip.visual([guide_to_float(input_frames[:, :1])])
 
         # Recam Master & Lucy Edit
         if recam or lucy_edit:
@@ -1030,7 +1030,7 @@ class WanAny2V:
             injection_denoising_step = 0
             inject_from_start = False
             if input_frames != None and denoising_strength < 1 :
-                color_reference_frame = input_frames[:, -1:].clone()
+                color_reference_frame = guide_to_float(input_frames[:, -1:]).clone()
                 if prefix_frames_count > 0:
                     overlapped_frames_num = prefix_frames_count
                     overlapped_latents_frames_num = (overlapped_frames_num -1 // 4) + 1 
@@ -1056,7 +1056,7 @@ class WanAny2V:
                     injection_denoising_step = 0
 
             if input_masks is not None and not "U" in video_prompt_type:
-                image_mask_latents = torch.nn.functional.interpolate(input_masks, size= source_latents.shape[-2:], mode="nearest").unsqueeze(0)
+                image_mask_latents = torch.nn.functional.interpolate(guide_mask_to_float(input_masks), size= source_latents.shape[-2:], mode="nearest").unsqueeze(0)
                 if image_mask_latents.shape[2] !=1:
                     image_mask_latents = torch.cat([ image_mask_latents[:,:, :1], torch.nn.functional.interpolate(image_mask_latents, size= (source_latents.shape[-3]-1, *source_latents.shape[-2:]), mode="nearest") ], dim=2)
                 image_mask_latents = torch.where(image_mask_latents>=0.5, 1., 0. )[:1].to(self.device)
@@ -1148,8 +1148,9 @@ class WanAny2V:
         # Vace
         if vace :
             # vace context encode
-            input_frames = [input_frames.to(self.device)] +([] if input_frames2 is None else [input_frames2.to(self.device)])            
-            input_masks = [input_masks.to(self.device)] + ([] if input_masks2 is None else [input_masks2.to(self.device)])
+            # uint8 guides and masks (model_def "uint8_guides") are converted on the GPU: a quarter of the transfer, no float copy in RAM
+            input_frames = [guide_to_float(input_frames.to(self.device))] +([] if input_frames2 is None else [guide_to_float(input_frames2.to(self.device))])            
+            input_masks = [guide_mask_to_float(input_masks.to(self.device))] + ([] if input_masks2 is None else [guide_mask_to_float(input_masks2.to(self.device))])
             if lynx and input_ref_images is not None:
                 input_ref_images,input_ref_masks = input_ref_images[:-1], input_ref_masks[:-1]
             input_ref_images = None if input_ref_images is None else [ u.to(self.device) for u in input_ref_images]

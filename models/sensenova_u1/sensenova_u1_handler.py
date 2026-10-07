@@ -10,7 +10,6 @@ _ARCHITECTURE = "sensenova_u1_5_8b_mot"
 _PROJECT_REPO = "DeepBeepMeep/SenseNova"
 _PROJECT_FOLDER = "sensenova_u1_5"
 _PROFILE_FOLDER = _ARCHITECTURE
-_KV_CACHE_SETTING = "sensenova_kv_cache"
 
 SENSENOVA_INFOS = """## SenseNova-U1.5
 
@@ -23,7 +22,6 @@ SenseNova-U1.5 is a unified model for text-to-image generation and image editing
 - **Resolution:** `2048x2048` is a good general-purpose choice. Native 4K improves space for detail and typography but requires substantially more time and memory. WanGP keeps both dimensions aligned to the model's 32-pixel image grid.
 - **Reference mode:** the default treats the first image as the main subject or landscape and derives output dimensions from it. Select **Use Reference Images** instead when every image is an ordinary reference and the chosen output resolution should be kept.
 - **Reference quality:** use clean, high-resolution source images when possible. WanGP sends multiple references in their displayed order, so describe each image's role in the prompt.
-- **KV Cache:** leave it **Disabled** when memory is limited or when generating large images such as 4K; generation will take longer but is more likely to fit. Choose **Enabled** when you have ample memory and want faster generation. This setting does not change image quality.
 
 ### Current Limitations
 
@@ -119,18 +117,6 @@ class family_handler:
             "image_prompt_enhancer_max_tokens": 1024,
             "text_prompt_enhancer_max_tokens1": 1536,
             "image_prompt_enhancer_max_tokens1": 1536,
-            "custom_settings": [{
-                "id": _KV_CACHE_SETTING,
-                "name": "KV Cache",
-                "label": "KV Cache",
-                "type": "dropdown",
-                "default": "Disabled",
-                "choices": [
-                    ("Disabled (Slower but lower VRAM/RAM)", "Disabled"),
-                    ("Enabled (Faster but requires more VRAM/RAM)", "Enabled"),
-                ],
-                "info": "Disabled retains only compact prompt/reference K/V and builds the active layer's attention workspace on demand. Enabled preallocates full per-layer K/V buffers for faster denoising.",
-            }],
             "profiles_dir": [_PROFILE_FOLDER],
             "resolutions_categories": ["<=4096p"],
             "skip_prompt_template": True,

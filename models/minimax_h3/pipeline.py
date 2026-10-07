@@ -17,6 +17,7 @@ from mmgp import offload
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.phase_progress import control_video_encoding, generation_progress
+from shared.utils.utils import guide_mask_to_float, guide_to_float
 from shared.utils.frame_scheduler import floor_frame_count, normalize_frame_count, normalize_overlap
 from shared.utils.utils import convert_video_tensor_to_uint8_chunked
 from .constants import (H3_AUDIO_REFINEMENT_DENOISE, H3_AUDIO_REFINEMENT_SETTING, H3_AUDIO_REFINEMENT_STEPS, H3_CONTROL_LATENT_CONTINUATION,
@@ -88,6 +89,11 @@ def _resize_video(video, height, width):
     video = _as_video(video)
     if video is None or video.shape[-2:] == (height, width):
         return video
+    if video.dtype == torch.uint8:  # a uint8 control video (model_def "uint8_guides"): resized by chunks of frames from WanGP's float values
+        output = torch.empty((video.shape[0], video.shape[1], height, width), dtype=torch.float32, device=video.device)
+        for start in range(0, video.shape[1], 16):
+            output[:, start:start + 16] = _resize_video(guide_to_float(video[:, start:start + 16]), height, width)
+        return output
     return F.interpolate(video.permute(1, 0, 2, 3), size=(height, width), mode="bicubic", align_corners=False, antialias=True).permute(1, 0, 2, 3)
 
 
@@ -143,12 +149,12 @@ def _build_frozen_control_video(input_frames, input_video, frame_num, prefix_fra
     remaining = output_frames - sum(piece.shape[1] for piece in pieces)
     if remaining:
         control = control[:, -remaining:] if pieces and control.shape[1] > remaining else control[:, :remaining]
-        pieces.append(control)
+        pieces.append(guide_to_float(control))
     return torch.cat(pieces, dim=1) if len(pieces) > 1 else pieces[0]
 
 
 def _qwen_frames(video):
-    return video.permute(1, 2, 3, 0).add(1.0).mul_(0.5).clamp_(0.0, 1.0)
+    return guide_to_float(video).permute(1, 2, 3, 0).add(1.0).mul_(0.5).clamp_(0.0, 1.0)
 
 
 def _fit_audio_samples(audio, sample_count):
@@ -157,7 +163,7 @@ def _fit_audio_samples(audio, sample_count):
 
 def _resize_video_mask(mask, latent_shape, clip_length, temporal_ratio, binarize=True):
     latent_t, latent_h, latent_w = latent_shape
-    mask = mask[:1].unsqueeze(0).float()
+    mask = guide_mask_to_float(mask[:1]).unsqueeze(0).float()
     pad_frames = (-mask.shape[2]) % clip_length
     if pad_frames:
         mask = F.pad(mask, (0, 0, 0, 0, 0, pad_frames), mode="replicate")
@@ -691,8 +697,8 @@ class MiniMaxH3Pipeline:
             with control_video_encoding():
                 return _encode_video_source(self.vae, video, self.device).float().cpu()
 
-        frames = fit(control_frames)
-        mask = None if masks is None else fit(masks[:1]).gt(0.5)
+        frames = fit(guide_to_float(control_frames[:, :frame_count]))
+        mask = None if masks is None else fit(guide_mask_to_float(masks[:1, :frame_count])).gt(0.5)
         control_rows = inpaint_rows = None
         if not inpaint_only:
             control_rows = patchify_video(encode(frames if mask is None else torch.where(mask, frames, -1.0)), patch)
@@ -837,13 +843,15 @@ class MiniMaxH3Pipeline:
             # Raw preprocessing keeps the source picture; only the expanded borders are editable.
             input_masks = torch.zeros_like(input_frames[:1]) if outpainting_mask is None else outpainting_mask
         elif outpainting_mask is not None:
-            input_masks = outpainting_mask if input_masks is None else torch.maximum(input_masks.float(), outpainting_mask.to(device=input_masks.device))
+            input_masks = outpainting_mask if input_masks is None else torch.maximum(guide_mask_to_float(input_masks).float(), outpainting_mask.to(device=input_masks.device))
         video_to_video = control_video and not audio_from_control_video and (float(denoising_strength) < 1.0 or input_masks is not None)
         control_source = None
         if video_to_video:
             control_source = _as_video(input_frames)[:, history_count:history_count + aligned_target_frames]
             if control_start_frame is not None:
-                control_source = torch.cat((_resize_video(control_start_frame, *control_source.shape[-2:]).to(control_source), control_source[:, 1:]), dim=1)
+                control_frames = guide_to_float(control_source[:, 1:])
+                control_source = torch.cat((_resize_video(control_start_frame, *control_source.shape[-2:]).to(control_frames), control_frames), dim=1)
+                control_frames = None
         control_start_frame = None
         if grouped_masked_denoising and video_to_video and input_masks is not None and not preserve_input_mask_values and offload.shared_state.get("_attention") == "sol":
             raise ValueError("MiniMax H3 Grouped Rows mask denoising is not compatible with Sol Attention; select Shared Timestep or another attention mode")
@@ -987,7 +995,7 @@ class MiniMaxH3Pipeline:
                 target_video_condition = self._encode_video(_resize_video(frozen_target_video, height, width), keep_all_latents=True)
         if self.reference_mode and self.fixed_prompt is None:
             if image_outputs and video_references:
-                input_ref_images = [*(input_ref_images or []), input_frames]
+                input_ref_images = [*(input_ref_images or []), guide_to_float(input_frames)]
                 video_references = False
             for image in input_ref_images or []:
                 self._add_image_reference(image, width, height, image_refs_relative_size, presentation, visual_latents, refs)
@@ -1101,6 +1109,7 @@ class MiniMaxH3Pipeline:
         if set_progress_status is not None:
             set_progress_status("Encoding H3 prompt and references")
         context, text_tags = self._encode_prompt(input_prompt, presentation)
+        presentation = None  # the frames shown to the text encoder are no longer needed (phase 2 builds its own)
         self._check_abort()
         self._use_transformer()
         context = self.transformer.preprocess_text_embeds(context)

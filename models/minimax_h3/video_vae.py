@@ -18,6 +18,7 @@ import torch
 import torch.nn.functional as F
 
 from shared.utils.phase_progress import vae_encoding_progress
+from shared.utils.utils import guide_to_float
 
 from .components.video_autoencoder import AutoencoderKLMiniMaxH3, get_linear_split_map as get_video_vae_linear_split_map
 
@@ -79,8 +80,9 @@ class MiniMaxH3VideoVAE(AutoencoderKLMiniMaxH3):
             self.decoder._interrupt = self._abort
 
     def _pixels(self, video, device):
-        """``video`` in [-1, 1], possibly in RAM and FP32, is rounded to the model dtype on ``device`` before normalization."""
-        video = video.to(device=device, dtype=self._model_dtype).float().add(1.0).mul_(0.5)
+        """``video`` in [-1, 1], possibly in RAM and FP32, is rounded to the model dtype on ``device`` before normalization. A uint8 control
+        video (model_def "uint8_guides") gets WanGP's float values first, in RAM, a part of the video at a time."""
+        video = guide_to_float(video).to(device=device, dtype=self._model_dtype).float().add(1.0).mul_(0.5)
         video.sub_(self.pixel_mean.to(video)).div_(self.pixel_std.to(video))
         return video.to(self._model_dtype)
 

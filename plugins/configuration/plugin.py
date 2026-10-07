@@ -394,6 +394,13 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.attention_head_split_choice = gr.Dropdown(choices=attention_kit.HEAD_SPLIT_CHOICES, value=self.server_config.get("attention_head_split", 0), label="Attention Head Split (much lower VRAM for long videos, up to 10% slower)", info="Models that support it compute attention one group of heads at a time for long sequences, which lowers the VRAM peak of denoising. Higher levels use more groups, saving more VRAM at a small speed cost; how many groups each level gives depends on the model. Applies to the next generation without reloading.")
 
                 with gr.Tab("RAM/VRAM Management"):
+                    self.ram_allocator_choice = gr.Dropdown(
+                        choices=[("MMGP RAM Allocator (the RAM of freed CPU tensors goes back to the system when the queue is done, a model is released or the RAM runs short)", "mmgp"),
+                                 ("PyTorch Default RAM Allocator (keeps the RAM of freed CPU tensors for reuse)", "default")],
+                        value=self.server_config.get(RAM_ALLOCATOR_KEY, RAM_ALLOCATOR_DEFAULT),
+                        label="RAM Allocator (requires restart)",
+                        info="The MMGP RAM Allocator frees several GB that PyTorch would keep after a generation or a model release, at the same speed. Same as --ram-allocator, which takes precedence.",
+                    )
                     self.vram_allocator_choice = gr.Dropdown(
                         choices=[("MMGP Optimized VRAM Allocator with RAM Spilling (a generation slightly too large for the VRAM can still finish, more slowly)", "vmm_spill"),
                                  ("MMGP Optimized VRAM Allocator (out of memory error when no VRAM is left)", "vmm"),
@@ -401,13 +408,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         value=self.server_config.get("vram_allocator", "vmm_spill"),
                         label="VRAM Allocator (requires restart)",
                         info="The MMGP Optimized VRAM Allocator recycles more efficiently the VRAM that is no longer used: lower peak VRAM with long videos, large images and Deepy. Same as --vram-allocator, which takes precedence.",
-                    )
-                    self.ram_allocator_choice = gr.Dropdown(
-                        choices=[("MMGP RAM Allocator (the RAM of freed CPU tensors goes back to the system when the queue is done, a model is released or the RAM runs short)", "mmgp"),
-                                 ("PyTorch Default RAM Allocator (keeps the RAM of freed CPU tensors for reuse)", "default")],
-                        value=self.server_config.get(RAM_ALLOCATOR_KEY, RAM_ALLOCATOR_DEFAULT),
-                        label="RAM Allocator (requires restart)",
-                        info="The MMGP RAM Allocator frees several GB that PyTorch would keep after a generation or a model release, at the same speed. Same as --ram-allocator, which takes precedence.",
                     )
                     gr.Markdown(MEMORY_ADVICE)
                     preload_info = "This part of each model stays in VRAM: less to transfer at each step, faster for short steps such as images, at the cost of VRAM."

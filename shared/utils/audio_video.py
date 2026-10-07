@@ -616,13 +616,16 @@ def combine_and_concatenate_video_with_audio_tracks(
 
         maps += ['-map', f'[aout{i}]']
 
+    # cut at the exact video length: -shortest drops the last audio packet crossing the video end, leaving the audio up to one packet short
+    probe = ffmpeg.probe(video_path, cmd=_ffprobe_binary())
+    video_duration = float(next(s for s in probe['streams'] if s['codec_type'] == 'video').get('duration') or probe['format']['duration'])
     cmd = [_ffmpeg_binary(), '-y', *inputs,
            '-filter_complex', ';'.join(filters),  # ✅ Only change made
            *maps, *metadata_args,
            '-c:v', 'copy',
            *get_video_audio_encode_args(audio_codec_key),
            '-ar', str(audio_sampling_rate),
-           '-shortest', save_path_tmp]
+           '-t', str(video_duration), save_path_tmp]
 
     if verbose:
         print(f"ffmpeg command: {cmd}")

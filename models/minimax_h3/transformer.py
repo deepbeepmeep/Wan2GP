@@ -150,6 +150,33 @@ def _rope_table(angles, dtype):
     return torch.stack((angles.cos(), angles.sin()), dim=-1).unsqueeze(0).unsqueeze(2).to(dtype)
 
 
+def _nag_guidance(x_pos, x_neg, NAG):
+    # NAG over (rows, features) as models/flux/math.py computes it, in float32: the scale amplifies half-precision rounding.
+    dtype = x_pos.dtype
+    x_pos, x_guidance = x_pos.float(), x_neg.float()
+    nag_scale, nag_tau, nag_alpha = NAG["scale"], NAG["tau"], NAG["alpha"]
+    x_guidance.mul_(1 - nag_scale).add_(x_pos, alpha=nag_scale)
+    norm_positive = torch.norm(x_pos, p=1, dim=-1, keepdim=True)
+    norm_guidance = torch.norm(x_guidance, p=1, dim=-1, keepdim=True)
+    scale = norm_guidance / norm_positive
+    torch.nan_to_num(scale, nan=10.0, posinf=10.0, neginf=10.0, out=scale)
+    x_guidance.mul_(torch.where(scale > nag_tau, 1 / (norm_guidance + 1e-7) * norm_positive * nag_tau, 1.0))
+    del norm_positive, norm_guidance, scale
+    x_guidance.mul_(nag_alpha).add_(x_pos, alpha=1 - nag_alpha)
+    return x_guidance.to(dtype)
+
+
+def _nag_exchange(output, NAG):
+    """NAG runs every block twice (MiniMaxH3Model.forward): first over [negative caption | rows after the caption], then over the
+    block's own input. output is the attention of one pass, (rows, features): the first pass's is kept, the second's is guided
+    against it on every row after the caption."""
+    if "attention" not in NAG:
+        NAG["attention"] = output[NAG["caption_len"]:].clone()
+        return
+    rows = output[NAG["text_len"]:]
+    rows.copy_(_nag_guidance(rows, NAG.pop("attention"), NAG))
+
+
 class TimeEmbedder(nn.Module):
     def __init__(self, freq_dim, hidden, out, dtype=None, device=None):
         super().__init__()
@@ -271,13 +298,15 @@ class Attention(nn.Module):
         if rope is not None:
             _rope_([tensor for tensor, _ in tensors], rope)
 
-    def _out_projection(self, attention, seq_len, residual, gate, segments):
+    def _out_projection(self, attention, seq_len, residual, gate, segments, NAG=None):
         output = attention.reshape(seq_len, -1)
+        if NAG is not None:
+            _nag_exchange(output, NAG)
         if residual is not None:
             return denoiser_kernels.gated_linear(self.out_proj, output, residual, gate, segments)
         return self.out_proj(output)
 
-    def forward(self, x_list, rope=None, transformer_options=None, residual=None, gate=None, segments=None, input_again=None):
+    def forward(self, x_list, rope=None, transformer_options=None, residual=None, gate=None, segments=None, input_again=None, NAG=None):
         x = _take(x_list)
         vdn_input = x if hasattr(self, "vdn") else None
         seq_len = x.shape[0]
@@ -291,16 +320,19 @@ class Attention(nn.Module):
             x_list, x = [x], None
             attention = attention_kit.qkv_attention(x_list, self.q_proj, self.k_proj, self.v_proj, self.heads, self.head_dim,
                                                     lambda query, key, group: self._norm_rope_(query, key, rope, packed_rope, fused_rms))
-            return self._out_projection(attention, seq_len, residual, gate, segments)
+            return self._out_projection(attention, seq_len, residual, gate, segments, NAG)
         if split_qkv and hasattr(self, "vdn"):  # VDN projects q, k and v when it needs them: its linear branch reads them raw
             x_list, x, vdn_input = [x], None, None
-            return self.vdn(x_list, (self.q_proj, self.k_proj, self.v_proj), lambda query, key: self._norm_rope_(query, key, rope, packed_rope, False),
-                            self.out_proj, input_again)
+            output = self.vdn(x_list, (self.q_proj, self.k_proj, self.v_proj), lambda query, key: self._norm_rope_(query, key, rope, packed_rope, False),
+                              self.out_proj, input_again)
+            if NAG is not None:  # VDN projects its two branches itself: guided once, on their projected sum
+                _nag_exchange(output, NAG)
+            return output
         if split_qkv and use_sol and self.sol_attention.staged(x, (self.q_proj, self.k_proj, self.v_proj)):
             x_list, x = [x], None
             attention = self.sol_attention.attention(x_list, (self.q_proj, self.k_proj, self.v_proj), (self.q_norm, self.k_norm), rope,
                                                      self.q_norm.eps, self.heads, self.head_dim)
-            return self._out_projection(attention, seq_len, residual, gate, segments)
+            return self._out_projection(attention, seq_len, residual, gate, segments, NAG)
         if split_qkv:
             projections = (self.q_proj, self.k_proj, self.v_proj)
             if denoiser_kernels.DEEP_FUSIONS and all(denoiser_kernels.can_linear(layer, x) for layer in projections):
@@ -325,7 +357,10 @@ class Attention(nn.Module):
         if hasattr(self, "vdn"):  # fused q/k/v projection: k gets storage of its own, normalized in place
             x_handoff, qkv = [vdn_input], [query, key.contiguous(), value]
             vdn_input = query = key = value = None
-            return self.vdn(x_handoff, qkv, lambda query, key: self._norm_rope_(query, key, rope, packed_rope, False), self.out_proj)
+            output = self.vdn(x_handoff, qkv, lambda query, key: self._norm_rope_(query, key, rope, packed_rope, False), self.out_proj)
+            if NAG is not None:
+                _nag_exchange(output, NAG)
+            return output
         if use_sol:
             from shared.sol_attn import qk_rms_norm_rope_
             qk_rms_norm_rope_(query, key, self.q_norm.weight, self.k_norm.weight, rope, self.q_norm.eps)
@@ -338,7 +373,7 @@ class Attention(nn.Module):
         if rope is not None and not use_sol and not fused_rms:
             _rope_(qkv_list[:2], rope)
         attention = pay_attention(qkv_list, recycle_q=True) if self.sol_attention is None else self.sol_attention(qkv_list, use_sol)
-        return self._out_projection(attention, seq_len, residual, gate, segments)
+        return self._out_projection(attention, seq_len, residual, gate, segments, NAG)
 
 
 class RefinerBlock(nn.Module):
@@ -446,26 +481,26 @@ class DiTBlock(nn.Module):
             hidden.copy_(branch)
         return hidden, signature
 
-    def forward(self, x_list, temb, segments, rope, residual_signature_elements=0):
+    def forward(self, x_list, temb, segments, rope, residual_signature_elements=0, NAG=None):
         residual_list = [_take(x_list)]
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
         h_list = [_norm_modulate(self.norm1, residual_list[0], [shift_msa, scale_msa], segments)]
         if (not residual_signature_elements and not hasattr(self.attn, 'vdn')
                 and denoiser_kernels.can_linear(self.attn.out_proj, residual_list[0])
                 and denoiser_kernels.can_linear(self.mlp.fc2, residual_list[0])):
-            hidden = self.attn(h_list, rope=rope, residual=residual_list[0], gate=gate_msa, segments=segments)
+            hidden = self.attn(h_list, rope=rope, residual=residual_list[0], gate=gate_msa, segments=segments, NAG=NAG)
             h_list = [_norm_modulate(self.norm2, hidden, [shift_mlp, scale_mlp], segments)]
             return self.mlp(h_list, residual=hidden, gate=gate_mlp, segments=segments)
         if not residual_signature_elements:  # VDN computes its input again rather than keeping it (input_again)
             input_again = (lambda: _norm_modulate(self.norm1, residual_list[0], [shift_msa, scale_msa], segments)) if hasattr(self.attn, 'vdn') else None
-            residual_list = [_gated_residual(residual_list, [gate_msa], [self.attn(h_list, rope=rope, input_again=input_again)], segments)]
+            residual_list = [_gated_residual(residual_list, [gate_msa], [self.attn(h_list, rope=rope, input_again=input_again, NAG=NAG)], segments)]
             h_list = [_norm_modulate(self.norm2, residual_list[0], [shift_mlp, scale_mlp], segments)]
             return _gated_residual(residual_list, [gate_mlp], [self.mlp(h_list)], segments)
 
         hidden = _take(residual_list)
         signature_stride = max(1, math.ceil(hidden.numel() / residual_signature_elements))
         input_again = (lambda: _norm_modulate(self.norm1, hidden, [shift_msa, scale_msa], segments)) if hasattr(self.attn, 'vdn') else None
-        branch = self.attn(h_list, rope=rope, input_again=input_again)
+        branch = self.attn(h_list, rope=rope, input_again=input_again, NAG=NAG)
         hidden, signature = self._gated_branch(hidden, gate_msa.to(hidden.dtype), branch, segments, signature_stride)
         del branch
         h_list = [_norm_modulate(self.norm2, hidden, [shift_mlp, scale_mlp], segments)]
@@ -755,6 +790,34 @@ class MiniMaxH3Model(nn.Module):
             for start, stop in _chunk_rows(first, last):
                 hidden[start:stop].add_(after_proj(stream[start:stop]), alpha=scale)
 
+    def _layout_rope(self, layout, video_start, target_video_order, dtype, device):
+        positions = layout.position_ids.to(torch.float32)
+        frequencies = positions.unsqueeze(-1) * self.rope.inv_freq.detach().cpu().view(1, 1, -1)
+        rope = _rope_table(torch.cat(frequencies.unbind(dim=1), dim=-1), dtype).to(device)
+        if target_video_order is not None:
+            target_rope = rope[:, video_start:].index_select(1, target_video_order)
+            rope[:, video_start:].copy_(target_rope)
+        return rope
+
+    def _prepare_nag(self, NAG, payload, layout, rope, segments, text_row, video_start, latent_sizes, device, dtype):
+        """The negative pass of each block reads [negative caption | rows after the caption]. Its rotary table is the one of the
+        layout that caption gives as a prompt; its modulation segments are the block's own, the caption's part replaced and every
+        later row moved by the two captions' length difference."""
+        if NAG["context"].shape[-1] != self.hidden_size:
+            NAG["context"] = self.preprocess_text_embeds(NAG["context"])
+        caption_len, text_len = NAG["context"].shape[1], layout.text_indices.numel()
+        shift = caption_len - text_len
+        if shift and (NAG.get("rope_source") is not rope):
+            # Row positions start after the caption (components/packing.py), so a caption of another length has a layout of its own.
+            caption_tags = torch.full((caption_len,), MINIMAX_H3_TEXT_TAG, dtype=layout.token_tags.dtype)
+            caption_layout = self._layout(caption_tags, *latent_sizes, dict(payload, layout_signature=None))
+            NAG["rope"] = self._layout_rope(caption_layout, video_start + shift, payload.get("target_video_order"), dtype, device)
+            NAG["rope_source"] = rope
+        nag_segments = [(0, caption_len, text_row)]
+        nag_segments.extend((max(start, text_len) + shift, stop + shift, row) for start, stop, row in segments if stop > text_len)
+        return dict(NAG, hidden=NAG["context"][0].to(device=device, dtype=dtype, copy=True), caption_len=caption_len, text_len=text_len,
+                    shift=shift, rope=NAG["rope"] if shift else rope, segments=nag_segments)
+
     def _time_embedding(self, timesteps, table=None):
         if not self.use_adaln_curves:
             return self.time_embedder(timesteps)
@@ -878,21 +941,19 @@ class MiniMaxH3Model(nn.Module):
         ref2va_temb = self._time_embedding(timestep, self.ref2va_adaln_t_table) if self.hybrid_ref2va_blocks is not None else None
         rope = payload.get("rope")
         if rope is None:
-            positions = layout.position_ids.to(torch.float32)
-            frequencies = positions.unsqueeze(-1) * self.rope.inv_freq.detach().cpu().view(1, 1, -1)
-            rope = _rope_table(torch.cat(frequencies.unbind(dim=1), dim=-1), dtype).to(device)
-            if target_video_order is not None:
-                target_rope = rope[:, video_start:].index_select(1, target_video_order)
-                rope[:, video_start:].copy_(target_rope)
-                del target_rope
-            payload["rope"] = rope
-            del positions, frequencies
+            rope = payload["rope"] = self._layout_rope(layout, video_start, target_video_order, dtype, device)
         del adaln_indices, changes
         target_audio_rows = audio_t * 2
         audio_start = video_start - target_audio_rows
         self.sol_attention.begin_forward(layout, device, dtype, payload["attention_sparsity"], target_video_order is not None)
+        NAG = payload.get("NAG")
+        if NAG is not None:
+            NAG = self._prepare_nag(NAG, payload, layout, rope, segments, int(timestep_indices[0]) * 3 + MINIMAX_H3_TEXT_TAG, video_start,
+                                    (latent_t, latent_h, latent_w, audio_t), device, dtype)
         if not self.sol_attention.enabled and not hasattr(self.blocks[0].attn, "vdn"):
             rope = denoiser_kernels.prepare_rope(rope)
+            if NAG is not None:  # both passes of a block take the same kernels
+                NAG["rope"] = denoiser_kernels.prepare_rope(NAG["rope"])
         if vdn := getattr(self.blocks[0].attn, "vdn", None):
             for block in self.blocks:
                 block.attn.vdn.begin_forward(layout, latent_t, latent_h, latent_w, self.patch_size)
@@ -924,7 +985,21 @@ class MiniMaxH3Model(nn.Module):
             if control is not None:
                 control_list = [control(control_list, block_temb, segments, rope)]
                 self._check_interrupt()
-            output = block(h_list, block_temb, segments, rope, residual_signature_elements) if residual_signature_elements else block(h_list, block_temb, segments, rope)
+            if NAG is not None:
+                # The block itself over the negative caption: its attention is what the block's own pass is guided against,
+                # and its caption rows are the negative caption for the next block.
+                vdn = getattr(block.attn, "vdn", None) if NAG["shift"] else None
+                nag_list = [torch.cat((NAG.pop("hidden"), h_list[0][NAG["text_len"]:]))]
+                if vdn is not None:
+                    vdn.shift_caption(NAG["shift"])
+                try:
+                    negative = block(nag_list, block_temb, NAG["segments"], NAG["rope"], residual_signature_elements, NAG=NAG)
+                finally:
+                    if vdn is not None:
+                        vdn.shift_caption(-NAG["shift"])
+                NAG["hidden"] = (negative[0] if residual_signature_elements else negative)[:NAG["caption_len"]].clone()
+                del negative
+            output = block(h_list, block_temb, segments, rope, residual_signature_elements, NAG=NAG) if residual_signature_elements else block(h_list, block_temb, segments, rope, NAG=NAG)
             if control is not None:
                 self._add_control_skip(output[0] if residual_signature_elements else output, control_list[0], control.after_proj, control_row_ranges, control_scale)
                 if block_index == self.control_layers[-1]:

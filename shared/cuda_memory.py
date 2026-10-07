@@ -60,7 +60,8 @@ def apply_startup_settings(argv, config_filename):
             print("[RAM] MMGP RAM Allocator: the RAM of freed CPU tensors goes back to the system")
     if torch.version.hip is None and torch.cuda.is_available():
         _apply_cuda_settings(argv, config_filename, torch)
-    debug_mb = float(_argv_value(argv, "--ram-debug") or 0)
+    debug_value = _argv_value(argv, "--ram-debug")
+    debug_mb = float(debug_value) if debug_value and not debug_value.startswith("-") else 16 if "--ram-debug" in argv else 0
     if debug_mb > 0:
         from mmgp.allocator import ram_debug
         ram_debug.start(min_mb=debug_mb)
@@ -134,4 +135,4 @@ def write_ram_debug_report(output_dir, label, census_label="after generation"):
     path = os.path.join(output_dir, "ram_debug", f"{time.strftime('%Y-%m-%d-%Hh%Mm%Ss')}_{label or 'generation'}.json")
     ram_debug.report(path, label=label, snapshot_label=census_label)
     ram_debug.reset()
-    print(f"[RAM debug] Report: {path} (summary: {os.path.splitext(path)[0]}.md)")
+    print(f"[RAM debug] Report: {path} (summary: {os.path.splitext(path)[0]}.md); the latest report includes the RAM after each report since the start")

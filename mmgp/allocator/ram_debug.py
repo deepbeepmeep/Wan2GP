@@ -1318,6 +1318,7 @@ class _Recording:
         self.hook, self.hook_note, self.patched = None, None, []
         self.stop_event, self.sampler, self.last_light = threading.Event(), None, 0.0
         self.peak = {"private": 0, "resident": 0}
+        self.history = []  # what each census of a report keeps for the following reports: the trend of the whole recording
 
 
 def _new_phase(rec, name):
@@ -1404,6 +1405,7 @@ def start(min_mb=16, stacks=True, hooks=True, sample_ms=50, holders_budget_s=20,
         atexit.register(rec.hook.stop)  # no origin callback while Python shuts down
     mark("start")
     rec.baseline = census(min_mb, objects=True, holders=False, label="start of the recording", _hook=rec.hook)
+    rec.history.append(_trend_entry(None, rec.baseline))
     rec.sampler = threading.Thread(target=_sample, args=(rec,), name="mmgp_ram_debug", daemon=True)
     rec.sampler.start()
 
@@ -1462,6 +1464,15 @@ def reset():
     mark("start")
 
 
+def _trend_entry(label, snap):
+    """What a report keeps of its census for the following ones: memory by class, the largest objects and the hooked allocations alive."""
+    objects, hook = snap.get("objects") or {"top": []}, snap.get("hook") or {}
+    return {"label": f"{label}, {snap['label']}" if label else snap["label"], "census": snap["label"], "time_s": snap["time_s"],
+            "private_gb": snap["process"]["private_gb"], "resident_gb": snap["process"]["resident_gb"], "classes": {row["label"]: row["private_gb"] for row in snap["classes"]},
+            "objects": [{"mb": item["mb"], "what": item["what"], "memory": item["memory"], "held_by": item["holders"][0] if item["holders"] else ""} for item in objects["top"]],
+            "allocations": [{"mb": round(group["mb"], 1), "count": group["count"], "kind": group["kind"], "where": group["where"], "stack": group["stack"]} for group in hook.get("groups", [])]}
+
+
 def _phase_report(rec, phase, hook_phase):
     result = {"name": phase["name"], "first_s": phase["first_time"], "peak_private_gb": round(phase["peak_private"] / GB, 3),
               "peak_resident_gb": round(phase["peak_resident"] / GB, 3), "peak_time_s": phase["peak_time"],
@@ -1485,6 +1496,8 @@ def report(path=None, label=None, snapshot_label="report"):
         raise RuntimeError("No RAM debug recording in progress: ram_debug.start() first.")
     if snapshot_label:
         snapshot(snapshot_label)
+    if rec.snapshots:
+        rec.history.append(_trend_entry(label, rec.snapshots[-1]))
     hook_phases = {}
     if rec.hook is not None:
         for phase_id in rec.hook.phases():
@@ -1517,9 +1530,10 @@ def report(path=None, label=None, snapshot_label="report"):
     for snap in rec.snapshots:
         used |= {group["stack"] for key in ("groups", "unheld") for group in snap.get("hook", {}).get(key, [])}
     used |= {origin["stack"] for origin in origins[:200]}
+    used |= {group["stack"] for entry in rec.history[-2:] for group in entry["allocations"]}
     result = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "label": label, "platform": f"{sys.platform} {platform.machine()}", "threshold_mb": rec.min_mb,
               "hooks": "PyTorch CPU allocator and NumPy" if rec.hook is not None else rec.hook_note, "peak": _gb(peak), "baseline": rec.baseline, "phases": phases,
-              "snapshots": rec.snapshots, "origins": origins[:200],
+              "snapshots": rec.snapshots, "history": rec.history, "origins": origins[:200],
               "stacks": {str(stack_id): [_vram_debug._frame_text(code, line) for code, line in rec.stack_frames[stack_id][:40]] for stack_id in sorted(used) if stack_id >= 0}}
     if path:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -1641,6 +1655,8 @@ def summary(result):
     text = [f"# RAM debug report, {result['created']}{' (' + result['label'] + ')' if result.get('label') else ''}\n\n"
             f"Peak since the previous report: private {result['peak']['private_gb']:.2f} GiB, resident {result['peak']['resident_gb']:.2f} GiB. "
             f"Allocation hooks: {result['hooks']}; threshold {result['threshold_mb']} MB.\n\n"]
+    if len(result.get("history", [])) > 1:
+        text.append(_trend_summary(result["history"]))
     if result["phases"]:
         text.append("## Peaks by phase\n\n| phase | peak private GiB | resident at it | peak resident GiB | at (s) | largest memory near the peak |\n|---|---:|---:|---:|---:|---|\n")
         for phase in result["phases"]:
@@ -1670,6 +1686,43 @@ def summary(result):
                         f"{origin['module'] or '-'} | {origin['where'] or '-'} |\n")
         text.append("\n")
     text.append("Stacks (innermost frame first) are in the JSON report under `stacks`, by the `stack` id of each group.\n")
+    return "".join(text)
+
+
+def _trend_summary(history):
+    """Markdown: the RAM after each report since the start of the recording, and what is alive now that was not at the previous census of
+    the same kind (after a generation, after a model release): with the same generation repeated, what keeps appearing there is the leak."""
+    first, last = history[0], history[-1]
+    labels = list(dict.fromkeys(label for entry in history for label in entry["classes"]))
+    spans = {label: [entry["classes"].get(label, 0.0) for entry in history] for label in labels}
+    changing = sorted((label for label in labels if max(spans[label]) - min(spans[label]) >= 0.1), key=lambda label: -abs(spans[label][-1] - spans[label][0]))[:6]
+    text = ["## RAM after each report since the start of the recording (GiB)\n\n| census | time (s) | private | resident | " + " | ".join(changing) + " |\n|---|---:|---:|---:|" + "---:|" * len(changing) + "\n"]
+    for entry in history:
+        text.append(f"| {entry['label']} | {entry['time_s']:.0f} | {entry['private_gb']:.2f} | {entry['resident_gb']:.2f} | " + " | ".join(f"{entry['classes'].get(label, 0.0):.2f}" for label in changing) + " |\n")
+    text.append(f"\nChange since the start: private {last['private_gb'] - first['private_gb']:+.2f} GiB, resident {last['resident_gb'] - first['resident_gb']:+.2f} GiB.\n\n")
+    previous = next((entry for entry in reversed(history[:-1]) if entry["census"] == last["census"]), None)
+    if previous is None:
+        return "".join(text)
+    seen = {(item["what"], item["held_by"]) for item in previous["objects"]}
+    new_objects = [item for item in last["objects"] if (item["what"], item["held_by"]) not in seen]
+    def by_origin(entry):
+        totals = {}
+        for group in entry["allocations"]:
+            total = totals.setdefault((group["kind"], group["where"]), {"mb": 0.0, "count": 0, "stack": group["stack"]})
+            total["mb"] += group["mb"]
+            total["count"] += group["count"]
+        return totals
+    before, now = by_origin(previous), by_origin(last)
+    grown = sorted(((key, total, total["mb"] - before.get(key, {"mb": 0.0})["mb"], total["count"] - before.get(key, {"count": 0})["count"]) for key, total in now.items()), key=lambda row: -row[2])
+    grown = [row for row in grown if row[2] >= 1]
+    text.append(f"## Alive now and not at the previous census of this kind ({previous['label']})\n\n")
+    if not new_objects and not grown:
+        text.append("Nothing new among the largest objects and the hooked allocations.\n\n")
+    if new_objects:
+        text.append("| MB | new object | memory | held by |\n|---:|---|---|---|\n" + "".join(f"| {item['mb']:.0f} | {item['what']} | {item['memory']} | {item['held_by'] or '-'} |\n" for item in new_objects) + "\n")
+    if grown:
+        text.append("| MB now | change | allocations (change) | kind | allocated at | stack |\n|---:|---:|---:|---|---|---:|\n"
+                    + "".join(f"| {total['mb']:.0f} | {change:+.0f} | {total['count']} ({count_change:+d}) | {kind} | {where or '-'} | {total['stack']} |\n" for (kind, where), total, change, count_change in grown[:20]) + "\n")
     return "".join(text)
 
 

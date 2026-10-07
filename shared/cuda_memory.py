@@ -47,8 +47,6 @@ def requested_vram_allocator(argv, config_filename):
 
 def apply_startup_settings(argv, config_filename):
     import torch
-    if torch.version.hip is None and torch.cuda.is_available():
-        _apply_cuda_settings(argv, config_filename, torch)
     ram_allocator = _requested(argv, config_filename, "--ram-allocator", RAM_ALLOCATOR_KEY) or RAM_ALLOCATOR_DEFAULT
     if ram_allocator not in RAM_ALLOCATOR_CHOICES:
         raise ValueError(f"Unknown RAM allocator {ram_allocator!r}: expected one of {RAM_ALLOCATOR_CHOICES}")
@@ -60,6 +58,8 @@ def apply_startup_settings(argv, config_filename):
             print(f"[RAM] MMGP RAM Allocator not available ({error}): PyTorch's CPU allocator is used")
         else:
             print("[RAM] MMGP RAM Allocator: the RAM of freed CPU tensors goes back to the system")
+    if torch.version.hip is None and torch.cuda.is_available():
+        _apply_cuda_settings(argv, config_filename, torch)
     debug_mb = float(_argv_value(argv, "--ram-debug") or 0)
     if debug_mb > 0:
         from mmgp.allocator import ram_debug

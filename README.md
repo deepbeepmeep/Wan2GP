@@ -63,7 +63,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-## 6th of October 2026: WanGP v17.10 — With Great Speed Comes Even Less VRAM
+## 7th of October 2026: WanGP v17.17 — With Great Speed Comes Even Less VRAM
 
 I went to the future and brought back **MMGP v4** for you. 
 

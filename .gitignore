@@ -48,6 +48,8 @@ tmp/
 deepy_sessions/
 dlss5/
 /settings/
+/envs.json
+/workspaces/
 
 # Local engineering specifications and tests must never be committed.
 /specs/

@@ -103,7 +103,29 @@ The baseline schema lives in `models/_settings.json`. Model defaults in `default
 | `video_guide_outpainting_ratio` | string | Preset target ratio for guide outpainting, for example `16:9`; empty means manual expansion. |
 | `min_frames_if_references` | integer | Image-mode workaround for v2i-capable models: generate one or more frames to preserve reference identity. Values above `1000` mean always generate that many frames minus `1000`. |
 
+## Audio Export Configuration
+
+Choose audio formats in **Configuration > Outputs**. These are application configuration values, separate from per-generation settings:
+
+- `audio_stand_alone_output_codec`: WAV, MP3, FLAC, or Opus. Opus output uses `.opus` files with an Ogg container.
+- `audio_output_codec`: the audio track codec for video output. Opus works with MP4 and MKV; MOV does not support it and is rejected when saving configuration. Player support for Opus in MP4 varies; use AAC when broad MP4 playback compatibility is needed.
+
+Both selectors offer the same Opus presets:
+
+| Preset | Configuration value |
+| --- | --- |
+| Opus 64 kbps | `opus_64` |
+| Opus 96 kbps | `opus_96` |
+| Opus 128 kbps (High Quality, Recommended) | `opus_128` |
+| Opus 192 kbps (Very High Quality) | `opus_192` |
+
+Bitrates are VBR targets for the complete audio stream, not per channel. Opus is lossy at every tier. Encoding uses FFmpeg's `libopus` encoder and resamples to 48 kHz, including when the generating model produces 44.1 kHz audio. Existing default codecs remain unchanged.
+
+**Embed metadata in file** stores generation settings as JSON in the `WanGP` Ogg comment. JSON sidecar export and **None** work as for other formats. Deepy extraction and audio mixes follow the standalone format; an explicit `output_extension="opus"` uses the configured Opus bitrate when available, otherwise 128 kbps. Compatible Opus soundtracks are copied into MP4/MKV during remuxing; audio-only multitrack output still uses M4A.
+
 ## Audio Inputs
+
+Opus audio inputs may use the `.opus` extension or `.ogg` for an Ogg Opus container. They can be loaded in the audio gallery, used as audio references, or supplied for soundtrack processing. Embedded WanGP generation settings are read from the `WanGP` Ogg comment, including the creation date used by the gallery.
 
 | Setting | Type | Meaning |
 | --- | --- | --- |

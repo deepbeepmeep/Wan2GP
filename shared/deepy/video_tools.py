@@ -15,8 +15,8 @@ import ffmpeg
 from PIL import Image, ImageDraw, ImageFont
 
 from shared.ffmpeg_setup import download_ffmpeg
-from shared.utils.audio_video import get_video_audio_encode_args
-from shared.utils.video_codecs import get_video_container_extension, get_video_encode_args
+from shared.utils.audio_video import get_audio_codec_extension, get_standalone_audio_encode_args, get_video_audio_encode_args
+from shared.utils.video_codecs import CONTAINER_AUDIO_CODEC_KEYS, get_video_container_extension, get_video_encode_args, normalize_video_audio_codec
 from shared.utils.utils import get_video_frame, get_video_info
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi"}
 _THUMB_DATA_URL_CACHE: OrderedDict[str, str] = OrderedDict()
@@ -63,14 +63,17 @@ def get_audio_standalone_extension(codec_key: str | None) -> str:
     codec_key = str(codec_key or "wav").strip().lower() or "wav"
     if codec_key == "mp3":
         codec_key = "mp3_192"
-    if codec_key == "flac":
-        return ".flac"
     if codec_key in {"m4a", "alac"}:
         return ".m4a"
-    return ".wav" if codec_key == "wav" else ".mp3"
+    return "." + get_audio_codec_extension(codec_key)
 
 
-def _get_mp4_audio_encode_args(codec_key: str | None) -> list[str]:
+def _get_mp4_audio_encode_args(codec_key: str | None, *, container: str | None = None) -> list[str]:
+    if container is not None:
+        codec_key = normalize_video_audio_codec(codec_key)
+        allowed_codecs = CONTAINER_AUDIO_CODEC_KEYS.get(container)
+        if allowed_codecs is not None and codec_key not in allowed_codecs:
+            raise ValueError(f"{container.upper()} output does not support audio codec setting '{codec_key}'.")
     return get_video_audio_encode_args(codec_key)
 
 
@@ -78,14 +81,17 @@ def _get_standalone_audio_encode_args(codec_key: str | None) -> list[str]:
     codec_key = str(codec_key or "wav").strip().lower() or "wav"
     if codec_key == "mp3":
         codec_key = "mp3_192"
-    if codec_key == "wav":
-        return ["-c:a", "pcm_s16le"]
-    if codec_key == "flac":
-        return ["-c:a", "flac", "-sample_fmt", "s16"]
     if codec_key in {"m4a", "alac"}:
         return ["-c:a", "alac"]
-    bitrate = {"mp3_128": "128k", "mp3_192": "192k", "mp3_320": "320k"}.get(codec_key, "192k")
-    return ["-c:a", "libmp3lame", "-b:a", bitrate]
+    return get_standalone_audio_encode_args(codec_key)
+
+
+def _can_copy_audio_codec(codec: str, output_extension: str) -> bool:
+    return (
+        output_extension == ".mkv"
+        or (output_extension in {".mp4", ".mov"} and codec in {"aac", "alac"})
+        or (output_extension == ".mp4" and codec == "opus")
+    )
 
 
 def has_video_extension(path: str) -> bool:
@@ -594,11 +600,16 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
             audio_streams = [stream for stream in ffmpeg.probe(video_path).get("streams", []) if stream.get("codec_type") == "audio"]
             for index, stream in enumerate(audio_streams):
                 codec = str(stream.get("codec_name", "")).lower()
-                if codec in {"aac", "alac"}:
+                if _can_copy_audio_codec(codec, output_extension):
                     command += [f"-c:a:{index}", "copy"]
                 else:
-                    encode_args = _get_mp4_audio_encode_args(audio_codec)
-                    command += [f"-c:a:{index}" if arg == "-c:a" else f"-b:a:{index}" if arg == "-b:a" else arg for arg in encode_args]
+                    encode_args = _get_mp4_audio_encode_args(audio_codec, container=output_extension.lstrip("."))
+                    stream_options = {"-c:a", "-b:a", "-ar", "-vbr", "-sample_fmt"}
+                    command += [
+                        f"{arg}:{index}" if arg in {"-c:a", "-b:a"}
+                        else f"{arg}:a:{index}" if arg in stream_options else arg
+                        for arg in encode_args
+                    ]
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         _run_ffmpeg([*command, output_path])
         return output_path
@@ -607,8 +618,8 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
             raise ValueError("replace requires a video and exactly one audio file, without mixing options.")
         audio_stream = next(stream for stream in ffmpeg.probe(audio_paths[0]).get("streams", []) if stream.get("codec_type") == "audio")
         source_codec = str(audio_stream.get("codec_name", "")).lower()
-        copy_audio = output_extension == ".mkv" or (output_extension in {".mp4", ".mov"} and source_codec in {"aac", "alac"})
-        command = ["-i", video_path, "-i", audio_paths[0], *subtitle_inputs, "-map", "0:v:0", "-map", "1:a:0", *subtitle_args, "-c:v", "copy", *(["-c:a", "copy"] if copy_audio else _get_mp4_audio_encode_args(audio_codec))]
+        copy_audio = _can_copy_audio_codec(source_codec, output_extension)
+        command = ["-i", video_path, "-i", audio_paths[0], *subtitle_inputs, "-map", "0:v:0", "-map", "1:a:0", *subtitle_args, "-c:v", "copy", *(["-c:a", "copy"] if copy_audio else _get_mp4_audio_encode_args(audio_codec, container=output_extension.lstrip(".")))]
         video_duration = get_media_duration(video_path)
         if video_duration is not None and video_duration > 0:
             command += ["-t", f"{video_duration:.6f}"]
@@ -660,7 +671,7 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
             filters.append(f"[{source}]volume={gain:g}dB[{label}]")
             labels.append(f"[{label}]")
         filters.append(f"{''.join(labels)}amix=inputs={len(sources)}:duration=longest:dropout_transition=0:normalize=1{',apad' if video_path else ''}[mixed]")
-        command = [*inputs, "-filter_complex", ";".join(filters), *maps, "-map", "[mixed]", *subtitle_args, *(_get_mp4_audio_encode_args(audio_codec) if video_path else _get_standalone_audio_encode_args(standalone_audio_codec))]
+        command = [*inputs, "-filter_complex", ";".join(filters), *maps, "-map", "[mixed]", *subtitle_args, *(_get_mp4_audio_encode_args(audio_codec, container=output_extension.lstrip(".")) if video_path else _get_standalone_audio_encode_args(standalone_audio_codec))]
         video_duration = get_media_duration(video_path) if video_path else None
         if video_duration is not None and video_duration > 0:
             command += ["-t", f"{video_duration:.6f}"]

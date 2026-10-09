@@ -1,0 +1,17 @@
+{
+    "model": {
+        "name": "Kandinsky 6 Pro Distilled 30B",
+        "architecture": "k6_pro_distill",
+        "description": "Kandinsky 6.0 Video Pro generates 5-second videos with a synchronized soundtrack (speech with lip-sync, music, sound effects) from a text prompt or a start image, distilled for 10 steps.",
+        "group": "kandinsky6",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Kandinsky6/resolve/main/kandinsky6_pro_distill_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Kandinsky6/resolve/main/kandinsky6_pro_distill_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "A medium shot of a small bakery counter at dawn, wooden shelves of bread behind it. The camera is static. A young baker with curly red hair, a white apron dusted with flour and rolled-up sleeves slides a metal tray of golden croissants onto the counter, wipes her hands on the apron, looks up at the camera and says: <S>Fresh out of the oven!<E> She smiles and steps back as thin steam rises from the pastries toward the window. Warm golden morning light enters from the left, realistic documentary footage with soft shadows. <AUDCAP>Loudly, a cheerful female voice; quietly, a metal tray scraping on wood and the low hum of an oven.<ENDAUDCAP>",
+    "num_inference_steps": 10,
+    "guidance_scale": 1.0,
+    "video_length": 121,
+    "resolution": "832x480"
+}

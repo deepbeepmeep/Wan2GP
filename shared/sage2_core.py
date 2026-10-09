@@ -1,3 +1,4 @@
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """
 Copyright (c) 2024 by SageAttention team.
 
@@ -21,6 +22,7 @@ if sys.platform == 'darwin' and hasattr(torch.backends, 'mps') and torch.backend
     raise ImportError("SageAttention is CUDA-only and is disabled on Apple Silicon MPS")
 
 import torch.nn.functional as F
+from mmgp import cuda_graphs
 
 from sageattention.triton.quant_per_block import per_block_int8 as per_block_int8_triton, quant_per_block_int8_kernel
 from sageattention.triton.quant_per_block_varlen import per_block_int8 as per_block_int8_varlen_triton
@@ -296,7 +298,7 @@ def sageattn(
         support_reason = sageattn_attention_mask_support_reason(qkv_list, attn_mask, tensor_layout=tensor_layout)
         if support_reason is not None:
             raise ValueError(f"Masked SageAttention is unsupported on CUDA architecture {arch}: {support_reason}")
-    if attn_mask is not None:
+    if attn_mask is not None or cuda_graphs.recording() and not cuda_kernels_capturable(qkv_list[0].device):
         return sageattn_qk_int8_pv_fp16_triton(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, attn_mask=attn_mask)
     if arch == "sm80":
         return sageattn_qk_int8_pv_fp16_cuda(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, pv_accum_dtype="fp32")
@@ -308,6 +310,34 @@ def sageattn(
         return sageattn_qk_int8_pv_fp8_cuda_sm90(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, pv_accum_dtype="fp32+fp32", recycle_q = recycle_q)
     else:
         raise ValueError(f"Unsupported CUDA architecture: {arch}")
+
+
+_capturable = None
+
+
+def cuda_kernels_capturable(device):
+    """True when this SageAttention build launches its CUDA kernels on PyTorch's current stream: a CUDA graph can then capture them.
+    Builds that launch them on the legacy default stream cannot be captured: blocks recorded for a CUDA graph use the Triton kernels."""
+    global _capturable
+    if _capturable is None:
+        with torch.inference_mode():
+            q = torch.zeros((1, 128, 1, 128), dtype=torch.float16, device=device)
+            q_int8 = torch.full(q.shape, 7, dtype=torch.int8, device=device)
+            q_scale, marker = torch.empty((1, 1, 4), dtype=torch.float32, device=device), torch.zeros(1, device=device)
+            graph, stream = torch.cuda.CUDAGraph(), torch.cuda.Stream(device)
+            torch.cuda.synchronize(device)
+            with torch.cuda.stream(stream):
+                graph.capture_begin(capture_error_mode="relaxed")
+                marker.fill_(1)
+                _fused.quant_per_warp_int8_cuda(q, q_int8, q_scale, 128, 32, 0)
+                graph.capture_end()
+            torch.cuda.synchronize(device)
+            _capturable = bool((q_int8 == 7).all())  # captured, not run: the kernel went to the capture stream
+            del graph
+        if not _capturable:
+            print("[Sage] This SageAttention build cannot run its CUDA kernels in CUDA graphs: its slower Triton kernels are used in CUDA Graph mode. "
+                  "SageAttention 2.2.0 post6 or later keeps the CUDA kernels (see docs/INSTALLATION.md).")
+    return _capturable
 
 
 def _fp8_pv_settings(arch):
@@ -329,11 +359,12 @@ _TRITON_MASK_ARGUMENT = "mask" in attn_qk_int8_per_block._attn_fwd.arg_names
 
 def staged_settings(device, masked=False):
     """sageattn's quantization settings for the staged_* functions on this device (with a mask: its masked Triton path, smaller
-    blocks where shared memory is short), None where sageattn uses other kernels."""
+    blocks where shared memory is short), None where sageattn uses other kernels. A block recorded for a CUDA graph gets the Triton path
+    when the CUDA kernels cannot be captured (cuda_kernels_capturable)."""
     if masked:
         return _LOW_SHARED_SETTINGS if _use_low_shared_masked_triton(device) else _PER_BLOCK_SETTINGS
     arch = _get_cuda_arch(device)
-    if arch == "sm86":
+    if arch == "sm86" or cuda_graphs.recording() and not cuda_kernels_capturable(device):
         return _PER_BLOCK_SETTINGS
     return _fp8_pv_settings(arch) if SM89_ENABLED and arch in ("sm89", "sm120") else None
 

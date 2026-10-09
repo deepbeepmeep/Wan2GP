@@ -1,0 +1,12 @@
+{
+    "shape": "hunyuan3d_21_shape",
+    "vae": {"in_channels": 3, "out_channels": 3, "down_block_types": ["DownEncoderBlock2D", "DownEncoderBlock2D", "DownEncoderBlock2D", "DownEncoderBlock2D"],
+            "up_block_types": ["UpDecoderBlock2D", "UpDecoderBlock2D", "UpDecoderBlock2D", "UpDecoderBlock2D"], "block_out_channels": [128, 256, 512, 512],
+            "layers_per_block": 2, "act_fn": "silu", "latent_channels": 4, "norm_num_groups": 32, "sample_size": 768, "scaling_factor": 0.18215},
+    "image_encoder": {"hidden_size": 1536, "num_hidden_layers": 40, "num_attention_heads": 24, "use_swiglu_ffn": true, "patch_size": 14, "image_size": 518, "layer_norm_eps": 1e-6},
+    "image_processor": {"do_resize": true, "size": {"shortest_edge": 256}, "resample": 3, "do_center_crop": true, "crop_size": {"height": 224, "width": 224},
+                        "do_rescale": true, "rescale_factor": 0.00392156862745098, "do_normalize": true, "image_mean": [0.485, 0.456, 0.406], "image_std": [0.229, 0.224, 0.225]},
+    "texture_steps": 15,
+    "reference_size": 512,
+    "default_faces": 40000
+}

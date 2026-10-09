@@ -1,3 +1,4 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import argparse
 import math
 import os
@@ -10,7 +11,7 @@ import imageio
 import torch
 from PIL import Image
 import numpy as np
-from rembg import remove, new_session
+from rembg import remove
 import random
 import ffmpeg
 import os
@@ -20,6 +21,7 @@ from functools import lru_cache
 from . import files_locator as fl
 from .video_decode import probe_video_stream_metadata, decode_video_frames_ffmpeg, get_video_summary_extras
 from .virtual_media import get_virtual_image, parse_virtual_media_path, strip_virtual_media_suffix
+from .gallery_sources import MESH_EXTENSIONS, MESH_IMPORT_EXTENSIONS
 
 
 from PIL import Image
@@ -47,6 +49,17 @@ def has_audio_file_extension(filename):
     filename = strip_virtual_media_suffix(filename)
     extension = os.path.splitext(filename)[-1].lower()
     return extension in [".wav", ".mp3", ".aac", ".flac"]
+
+
+def has_mesh_file_extension(filename):
+    return os.path.splitext(strip_virtual_media_suffix(filename))[-1].lower() in MESH_EXTENSIONS
+
+def get_media_kind(filename):
+    """"image", "video", "audio", "3d" or None, from the file extension."""
+    for kind, test in (("video", has_video_file_extension), ("image", has_image_file_extension), ("audio", has_audio_file_extension), ("3d", has_mesh_file_extension)):
+        if test(filename):
+            return kind
+    return None
 
 def resample(video_fps, video_frames_count, max_target_frames_count, target_fps, start_target_frame ):
     import math
@@ -376,12 +389,25 @@ def resolve_rembg_home():
         rembg_home = fl.get_smart_download_location(force_path="rembg")
     return os.path.abspath(rembg_home)
 
-def new_rembg_session(*args, **kwargs):
-    if kwargs.get("model_name", args[0] if args else "u2net") == "u2net":
+REMBG_ON_CPU = True  # CPU: ~1.3 s per image like a warm GPU (alpha matting runs on the CPU anyway), no 10-15 s CUDA provider start, no VRAM
+
+
+def new_rembg_session(model_name="u2net"):
+    if model_name == "u2net":
         from preprocessing.rembg.assets import ensure_assets
         ensure_assets()
     os.environ["U2NET_HOME"] = resolve_rembg_home()
-    return new_session(*args, **kwargs)
+    import onnxruntime as ort
+    from rembg.sessions import sessions_class
+    # rembg 2.0.65 hard-codes its providers, so the session is built here. On the GPU, onnxruntime's default exhaustive
+    # cuDNN search costs ~10 s on the first image; the heuristic choice gives the same masks.
+    session_class = next(cls for cls in sessions_class if cls.name() == model_name)
+    session = session_class.__new__(session_class)
+    session.model_name = model_name
+    cuda = not REMBG_ON_CPU and "CUDAExecutionProvider" in ort.get_available_providers()
+    providers = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"}), "CPUExecutionProvider"] if cuda else ["CPUExecutionProvider"]
+    session.inner_session = ort.InferenceSession(str(session_class.download_models()), sess_options=ort.SessionOptions(), providers=providers)
+    return session
 
 def remove_background(img, session=None):
     if session ==None:
@@ -666,7 +692,7 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
         image = image.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
     return image, new_height, new_width
 
-def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255], outpainting_quantize_margins = 0):
+def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255], outpainting_quantize_margins = 0, keep_alpha = False):
     if rm_background:
         session = new_rembg_session() 
 
@@ -684,7 +710,9 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
                 resized_image =img
         elif fit_into_canvas == 1:
             canvas_color = to_rgb_tensor(background_removal_color, device="cpu", dtype=torch.uint8).view(1, 1, 3).numpy()
-            canvas = np.broadcast_to(canvas_color, (budget_height, budget_width, 3)).copy()
+            if img.mode == "RGBA":  # references kept with their alpha (image_refs_keep_alpha) get a transparent canvas
+                canvas_color = np.concatenate([canvas_color, np.zeros_like(canvas_color[..., :1])], axis=-1)
+            canvas = np.broadcast_to(canvas_color, (budget_height, budget_width, canvas_color.shape[-1])).copy()
             scale = min(budget_height / height, budget_width / width)
             new_height = int(height * scale)
             new_width = int(width * scale)
@@ -700,7 +728,11 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
             resized_image= img.resize((new_width,new_height), resample=Image.Resampling.LANCZOS) 
         if rm_background  and not (any_background_ref and i==0 or any_background_ref == 2) :
             # resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1,alpha_matting_background_threshold = 70, alpha_foreground_background_threshold = 100, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
-            resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1, alpha_matting = True, bgcolor=background_removal_color + [0]).convert('RGB')
+            if keep_alpha:  # models reading the alpha channel get the transparent cut-out; an image already transparent is kept as is
+                if not (img.mode == "RGBA" and img.getextrema()[3][0] < 255):
+                    resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1, alpha_matting = True)
+            else:
+                resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1, alpha_matting = True, bgcolor=background_removal_color + [0]).convert('RGB')
         if return_tensor:
             output_list.append(convert_image_to_tensor(resized_image).unsqueeze(1)) 
         else:

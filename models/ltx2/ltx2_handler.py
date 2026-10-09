@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import os
 import shutil
 import sys
@@ -536,6 +537,7 @@ class family_handler:
         gemma_files = (_GEMMA4_FILENAME, _GEMMA4_INT8_FILENAME) if ltx25 else (_GEMMA_FILENAME, _GEMMA_QUANTO_FILENAME)
         extra_model_def = {
             "device_explicit": True,
+            "cuda_graphs": ["transformer", "transformer2"],
             "uint8_guides": ltx2_uint8_guides,
             "ltx2_22B_class": base_model_type in LTX2_22B_CLASS or ltx25,
             "ltx2_edit_anything": editanything_ref,

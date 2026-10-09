@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -297,7 +298,7 @@ def _guidance_row_visible(model_def: dict[str, Any]) -> bool:
 
 
 def _guidance_phases_row_visible(model_def: dict[str, Any]) -> bool:
-    return int(model_def.get("guidance_max_phases", 0) or 0) >= 2 and (int(model_def.get("visible_phases", 2) or 0) >= 2 or bool(model_def.get("switch_threshold")))
+    return int(model_def.get("guidance_max_phases", 0) or 0) >= 2 and (int(model_def.get("visible_phases", 2) or 0) >= 2 or bool(model_def.get("switch_threshold")) or bool(model_def.get("inference_steps2")))
 
 
 def _embedded_guidance_row_visible(model_def: dict[str, Any]) -> bool:
@@ -532,6 +533,7 @@ _add_setting("guidance_scale", "Guidance (CFG)", "number", min=1.0, max=20.0, st
 _add_setting("guidance2_scale", "Guidance2 (CFG)", "number", min=1.0, max=20.0, step=0.1, visible=_show_if_guidance_phase(2), containers=("guidance_row",))
 _add_setting("guidance3_scale", "Guidance3 (CFG)", "number", min=1.0, max=20.0, step=0.1, visible=_show_if_guidance_phase(3), containers=("guidance_row",))
 _add_setting("switch_threshold", _switch_threshold_label, _model_setting_type("switch_threshold", "integer"), min=_model_setting_bound("switch_threshold", "min", 0), max=_model_setting_bound("switch_threshold", "max", 1000), step=_model_setting_bound("switch_threshold", "step", 1), visible=_show_if_int_at_least("guidance_max_phases", 2), active_when=_active_if_guidance_phase(2), containers=("guidance_phases_row",))
+_add_setting("num_inference_steps2", "Phase 2 Steps", "integer", min=1, max=100, step=1, visible=_show_if(lambda model_def: model_def.get("inference_steps2", False) and model_def.get("guidance_max_phases", 0) >= 2), active_when=_active_if_guidance_phase(2), containers=("guidance_phases_row",))
 _add_setting("switch_threshold2", "Phase 2-3", "integer", min=0, max=1000, step=1, visible=_show_if_int_at_least("guidance_max_phases", 3), containers=("guidance_phases_row",))
 _add_setting("alt_guidance_scale", _model_label("alt_guidance", "Alternate Guidance"), "number", min=1.0, max=20.0, step=0.5, visible=_show_if_not_none("alt_guidance"), containers=("embedded_guidance_row",))
 _add_setting("alt_scale", _model_label("alt_scale", "Alt Scale"), "number", min=0.0, max=1.0, step=0.05, visible=_show_if_not_none("alt_scale"), containers=("embedded_guidance_row",))

@@ -543,7 +543,7 @@ overflow-wrap: anywhere;
 user-select: text;
 }
 .compact_text {padding: calc(1px * var(--wangp-ui-scale))}
-/* Keep the compact settings label beside the prompt without shrinking the drop target. */
+/* Compact file inputs (settings file, custom guide): the label stays beside the drop target instead of under its placeholder. */
 .wangp-settings-upload > button[aria-dropeffect] {
     padding-left: 50%;
 }

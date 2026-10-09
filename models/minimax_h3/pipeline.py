@@ -14,7 +14,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from mmgp import offload
-from shared.utils.loras_mutipliers import update_loras_slists
+from shared.utils.loras_mutipliers import extract_loras_side, update_loras_slists
 from shared.utils.text_encoder_cache import TextEncoderCache
 from shared.utils.phase_progress import control_video_encoding, generation_progress
 from shared.utils.utils import guide_mask_to_float, guide_to_float
@@ -43,18 +43,11 @@ H3_PHASE_2_TILE_OVERLAP_RATIO = 0.25
 H3_PHASE_2_TILE_ALIGNMENT = 32
 H3_PHASE_2_TILING_FLAG = "~"
 H3_TURBO_LORA_KEY = "minimax_h3_lora_turbo"
-H3_REQUIRED_TURBO_TOKENS = ("minimax_h3", "fl2v", "turbo", "4step", "v0.1")
-H3_ALLOW_PHASE_2_TURBO_OVERRIDE = False
 # Per-window control videos (Depth / In-Context Guide): True = aligned guide, packed as a keyframe clip on the target's own
 # RoPE time/space grid (guide frame i on output frame i) and not shown to the prompt encoder; False = reference video placed
 # on its own time span before the target and presented to the prompt encoder as <Video 1>
 H3_ALIGNED_CONTROL_VIDEO = False
 VDN_TURBO_LORA = "minimax_h3_vdn_turbo_8step_lora_bf16.safetensors"
-
-
-def _is_required_h3_turbo(name):
-    name = name.lower()
-    return "comfy" not in name and all(token in name for token in H3_REQUIRED_TURBO_TOKENS)
 
 
 def _return_none_on_interrupt(method):
@@ -388,6 +381,7 @@ class MiniMaxH3Pipeline:
             self.video_decoder._budget = 0
         self.audio_vae = audio_vae
         self.latent_upscaler = latent_upscaler
+        self._phase_2_loras = None
         self.reference_mode = bool(reference_mode)
         self.audio_only = bool(audio_only)
         self.dialogue_whisper = None
@@ -431,20 +425,22 @@ class MiniMaxH3Pipeline:
     def device(self):
         return torch.device("cuda" if torch.cuda.is_available() else next(self.transformer.parameters()).device)
 
-    def get_loras_transformer(self, _get_model_recursive_prop, model_type, model_def, guidance_phases, activated_loras, **_kwargs):
+    def get_loras_transformer(self, _get_model_recursive_prop, model_type, model_def, guidance_phases, activated_loras,
+                              loras_multipliers="", transformer_loras_filenames=(), **_kwargs):
+        self._phase_2_loras = None
+        if int(guidance_phases) > 1 and not model_def.get("pdd", False):
+            accelerator_loras, _ = extract_loras_side(activated_loras, loras_multipliers)
+            self._phase_2_loras = (len(transformer_loras_filenames), len(accelerator_loras))
         if model_def.get("vdn", False):
             selected_loras = {os.path.basename(str(lora).split("|", 1)[0]).lower() for lora in activated_loras}
-            if VDN_TURBO_LORA.lower() in selected_loras:
+            selected_vdn = VDN_TURBO_LORA.lower() in selected_loras
+            if selected_vdn and self._phase_2_loras is None:
                 print(f"Default system '{VDN_TURBO_LORA}' LoRA and corresponding multiplier will be ignored as the user has provided it")
                 return [], []
             preload_urls = _get_model_recursive_prop(model_type, "preload_URLs", return_list=True)
             turbo_lora = next(url.split("|", 1)[0] for url in preload_urls if os.path.basename(url.split("|", 1)[0]).lower() == VDN_TURBO_LORA.lower())
-            return [turbo_lora], [1.0]
-        if int(guidance_phases) <= 1 or model_def.get("pdd", False):
-            return [], []
-        selected_lora = next((lora for lora in activated_loras if _is_required_h3_turbo(os.path.basename(str(lora).split("|", 1)[0]))), None)
-        if selected_lora is not None and H3_ALLOW_PHASE_2_TURBO_OVERRIDE:
-            print(f"Automatic H3 Turbo LoRA copy is unnecessary because the user selected {os.path.basename(selected_lora)!r}; its phase-one multiplier is preserved and phase two is forced to 1.0")
+            return [turbo_lora], ["0;1" if selected_vdn else "1;1"]
+        if self._phase_2_loras is None:
             return [], []
         return [model_def[H3_TURBO_LORA_KEY]], ["0;1"]
 
@@ -752,7 +748,7 @@ class MiniMaxH3Pipeline:
                  input_masks=None, outpainting_dims=None, denoising_strength=1.0, masking_strength=1.0,
                  input_video=None, input_waveform=None, input_waveform_sample_rate=None,
                  video_guide=None, audio_guide=None, audio_guide2=None, audio_guide3=None, prefix_frames_count=0,
-                 frame_num=124, height=768, width=1344, shift=12.0, sampling_steps=30, seed=0,
+                 frame_num=124, height=768, width=1344, shift=12.0, sampling_steps=30, sampling_steps2=3, seed=0,
                  callback=None, VAE_tile_size=None, audio_prompt_type="", video_prompt_type="", fps=24,
                  sample_solver="euler", attention_sparsity=1.0,
                  guide_phases=1, switch_threshold=H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, loras_slists=None, loras_selected=None, set_progress_status=None,
@@ -889,24 +885,13 @@ class MiniMaxH3Pipeline:
                     loras_slists["phase2"][index] = 0.0
                     loras_slists["shared"][index] = False
                 return
-            required_turbo_found = False
-            for index, lora in enumerate(loras_selected or ()):
-                name = os.path.basename(str(lora).split("|", 1)[0])
-                lower_name = name.lower()
-                phase_2_multiplier = loras_slists["phase2"][index]
-                values = phase_2_multiplier if isinstance(phase_2_multiplier, list) else [phase_2_multiplier]
-                required_turbo = _is_required_h3_turbo(lower_name)
-                if required_turbo and (H3_ALLOW_PHASE_2_TURBO_OVERRIDE or not required_turbo_found):
-                    if any(float(value) != 1.0 for value in values):
-                        print(f"MiniMax H3 phase 2: forcing required Turbo LoRA '{name}' to multiplier 1.0")
-                    loras_slists["phase2"][index] = 1.0
-                    loras_slists["shared"][index] = False
-                    required_turbo_found = True
-                elif "turbo" in lower_name:
-                    if any(float(value) != 0.0 for value in values):
-                        print(f"MiniMax H3 phase 2: disabled Turbo LoRA '{name}' to avoid stacking it with the required LightX2V v0.1 Turbo LoRA")
-                    loras_slists["phase2"][index] = 0.0
-                    loras_slists["shared"][index] = False
+            if self._phase_2_loras is None:
+                return
+            default_index, accelerator_count = self._phase_2_loras
+            phase_2_multipliers = loras_slists["phase2"][default_index + 1:default_index + 1 + accelerator_count]
+            override = any(value != 0 for multiplier in phase_2_multipliers for value in (multiplier if isinstance(multiplier, list) else [multiplier]))
+            loras_slists["phase2"][default_index] = 0.0 if override else 1.0
+            loras_slists["shared"][default_index] = False
 
         activate_lora_phase(1, int(sampling_steps))
         if self.transformer.control_layers and two_phase:
@@ -1431,7 +1416,7 @@ class MiniMaxH3Pipeline:
             self._check_abort()
 
             apply_phase_2_lora_policy()
-            activate_lora_phase(2, len(H3_PHASE_2_SIGMAS) - 1)
+            activate_lora_phase(2, int(sampling_steps2))
             phase_2_reference_presentation, phase_2_reference_latents = [], []
             phase_2_refs = []
             if self.reference_mode:
@@ -1458,7 +1443,9 @@ class MiniMaxH3Pipeline:
             context, text_tags = self._encode_prompt(input_prompt, phase_2_presentation)
             self._check_abort()
             phase_2_generator = torch.Generator(device="cpu").manual_seed(int(seed))
-            phase_2_sigmas_video = torch.tensor((float(switch_threshold), *H3_PHASE_2_SIGMAS[1:]), dtype=torch.float32, device=self.device)
+            phase_2_sigmas_video = (torch.tensor((float(switch_threshold), *H3_PHASE_2_SIGMAS[1:]), dtype=torch.float32, device=self.device)
+                                   if int(sampling_steps2) == len(H3_PHASE_2_SIGMAS) - 1
+                                   else torch.linspace(float(switch_threshold), 0.0, int(sampling_steps2) + 1, dtype=torch.float32, device=self.device))
             target_audio_condition_latents = audio_t
             target_video_condition_frames = 0
 

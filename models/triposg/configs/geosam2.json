@@ -1,0 +1,4 @@
+{
+    "model": {"image_size": 1024, "backbone_stride": 16, "num_maskmem": 7, "hidden_dim": 256, "mem_dim": 64, "max_obj_ptrs_in_encoder": 16},
+    "low_res_size": [256, 256]
+}

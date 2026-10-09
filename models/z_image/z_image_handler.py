@@ -1,3 +1,4 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import torch
 from shared.utils.hf import build_hf_url
 
@@ -9,7 +10,9 @@ class family_handler:
         guidance_max_phases = 1 if z_image_base else 0
         extra_model_def = {
             "image_outputs": True,
+            "dtype": "bf16",  # in FP16 the activations overflow from the first refiner block: black or prompt-less images
             "device_explicit": base_model_type != "z_image_control",
+            "cuda_graphs": [] if base_model_type == "z_image_control" else ["transformer"],  # control blocks run control layers inside them
             "guidance_max_phases": guidance_max_phases,
             "fit_into_canvas_image_refs": 0,
             "profiles_dir": [],

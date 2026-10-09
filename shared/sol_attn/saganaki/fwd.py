@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Bundled from ComfyUI-sol-attn v0.6.2 (commit 930a4d6).
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Triton Sol-Attn reference."""
 
 import torch
@@ -30,15 +31,16 @@ def _lean_do_bench(fn, quantiles=None, **kwargs):
         driver.get_empty_cache_for_benchmark = original
 
 
-def _tuned(configs):
-    # cache_results / do_bench are not available on older Triton; probe once.
+def _tuned(configs, restore_value=None):
+    # cache_results / do_bench are not available on older Triton; probe once. restore_value: arguments a launch may overwrite and
+    # also read (an output written into its own input): saved and restored around each benchmark launch while tuning.
     extras = {}
     try:
         triton.autotune(configs=[], key=["_probe"], cache_results=True, do_bench=None)
         extras = {"cache_results": True, "do_bench": _lean_do_bench}
     except TypeError:
         pass
-    return triton.autotune(configs=configs, key=["T"], **extras)
+    return triton.autotune(configs=configs, key=["T"], restore_value=restore_value, **extras)
 
 
 _TMA_CONFIGS = [
@@ -553,7 +555,7 @@ def _forward_ptr(
     )
 
 
-@_tuned(_PTR_CONFIGS)
+@_tuned(_PTR_CONFIGS, restore_value=["q_ptr"])  # sol_attn_prepared writes its output into q
 @triton.jit
 def _forward_int8_ptr(
     q_ptr, v_ptr, kc_ptr, vc_ptr, qi_ptr, ki_ptr, q_scale, k_scale,

@@ -1,3 +1,4 @@
+/* Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt) */
 /* Gradio sets overflow:auto inline on HTML blocks. */
 .gradio-container .wangp-progress-with-action { position: relative; border: 0; background: transparent; }
 .gradio-container .wangp-progress-with-action:not(:has(.block.wangp-progress-container:not(.hidden) .prose:not(.hide) .wangp-progress)) { display: none; }

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import os
 
 import gradio as gr
@@ -32,6 +33,7 @@ class family_handler:
         result = {
             **({"accelerated": "native"} if base_model_type in (_TURBO_MODEL_TYPE, _TURBO_EDIT_MODEL_TYPE) else {}),
             "device_explicit": True,
+            "cuda_graphs": ["transformer"],
             "image_outputs": True,
             "system_configs": vae_configs(),
             "tiny_vae_architecture": "t2v",

@@ -1,0 +1,14 @@
+{
+    "canvas_size": 1024,
+    "crop_margin": 1.2,
+    "erode_radius": 1,
+    "octree_levels": 8,
+    "image_encoder": {"hidden_size": 1280, "num_heads": 20, "num_layers": 32, "patch_size": 16, "num_register_tokens": 4, "intermediate_size": 5120, "rope_theta": 100.0, "layer_norm_eps": 1e-5},
+    "vae_bn_eps": 1e-5,
+    "flow": {"q_token_length": 8192, "in_channels": 16, "cam_channels": 5, "out_channels": 16, "model_channels": 1024, "cond_channels": 1280, "cond2_channels": 128,
+             "num_refiner_blocks": 2, "num_blocks": 24, "num_heads": 16, "mlp_ratio": 4},
+    "octree": {"model_channels": 1024, "cond_channels": 16, "num_blocks": 4, "num_heads": 16, "mlp_ratio": 4},
+    "gaussians": {"in_channels": 3, "model_channels": 1024, "cond_channels": 16, "num_blocks": 16, "num_heads": 16, "mlp_ratio": 4,
+                  "num_gaussians": 32, "lr": {"_xyz": 1.0, "_features_dc": 1.0, "_opacity": 1.0, "_scaling": 1.0, "_rotation": 0.1},
+                  "perturbe_size": 1.5, "filter_kernel_size_3d": 0.0009, "scaling_bias": 0.004, "opacity_bias": 0.1}
+}

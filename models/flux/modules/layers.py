@@ -1,3 +1,6 @@
+# Adapted from FLUX (https://github.com/black-forest-labs/flux), Copyright (c) Black Forest Labs,
+# Apache License 2.0 (see docs/third_party_licenses/Apache-2.0.txt). Modified for WanGP.
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import math
 from dataclasses import dataclass
 
@@ -392,9 +395,6 @@ class SingleStreamBlock(nn.Module):
         x_mod.mul_(1 + mod.scale)
         x_mod.add_(mod.shift)
 
-        ##### More spagheti VRAM optimizations done by DeepBeepMeep !
-        # I am sure you are a nice person and as you copy this code, you will give me proper credits:
-        # Please link to https://github.com/deepbeepmeep/Wan2GP and @deepbeepmeep on twitter  
 
         # x_mod = (1 + mod.scale) * x + mod.shift
 

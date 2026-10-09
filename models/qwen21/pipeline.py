@@ -13,6 +13,7 @@ from shared.utils.phase_progress import check_abort, generation_progress, set_ph
 from shared.utils.utils import convert_tensor_to_image, get_outpainting_frame_location
 from .prompt import QwenImage21Pipeline
 from .transformer import QwenImage21KVCache
+from .schedulers import QwenImage21TurboScheduler
 from shared.utils.text_encoder_cache import TextEncoderCache
 
 
@@ -207,6 +208,8 @@ class Qwen21Pipeline(QwenImage21Pipeline):
     @generation_progress
     @torch.inference_mode()
     def generate(self, input_prompt, seed=1, n_prompt=None, sampling_steps=40, sample_solver="default", input_ref_images=None, input_frames=None, input_masks=None, width=1024, height=1024, guide_scale=4.0, batch_size=1, joint_pass=True, VAE_tile_size=None, denoising_strength=1.0, masking_strength=1.0, model_mode=0, loras_slists=None, NAG_scale=1.0, NAG_tau=3.5, NAG_alpha=0.5, callback=None, set_progress_status=None, outpainting_dims=None, custom_settings=None, **kwargs):
+        if sample_solver == "qwen21_turbo" and sampling_steps != len(QwenImage21TurboScheduler.sample_sigmas):
+            raise ValueError("Qwen Image 2.1 Turbo scheduler requires 8 inference steps.")
         device = torch.device("cuda")
         output_channels = 4 if (custom_settings or {}).get("rgba", "Disabled") == "Enabled" else 3
         use_kv_cache = (custom_settings or {}).get("qwen21_kv_cache", "Disabled") == "Enabled"
@@ -299,18 +302,22 @@ class Qwen21Pipeline(QwenImage21Pipeline):
                 update_loras_slists(self.transformer, loras_slists, sampling_steps)
             viggle = sample_solver == "viggle_v02"
             pruna = sample_solver == "pruna"
+            turbo = sample_solver == "qwen21_turbo"
             if viggle and sampling_steps not in VIGGLE_SIGMAS:
                 raise ValueError("Viggle Turbo scheduler supports 4, 5 or 6 inference steps.")
             if pruna and sampling_steps not in PRUNA_SIGMAS:
                 raise ValueError("Pruna scheduler supports 5 or 8 inference steps.")
             scheduler_overrides = ({"use_dynamic_shifting": False, "shift": 1.0, "shift_terminal": None} if pruna
                                    else {"shift_terminal": None} if sampling_steps == 1 or viggle else {})
-            scheduler = FlowMatchEulerDiscreteScheduler.from_config(
+            scheduler_class = QwenImage21TurboScheduler if turbo else FlowMatchEulerDiscreteScheduler
+            scheduler = scheduler_class.from_config(
                 self.scheduler_config, **scheduler_overrides)
             cfg = scheduler.config
             sigmas = (PRUNA_SIGMAS[sampling_steps] if pruna else VIGGLE_SIGMAS[sampling_steps] if viggle
                       else np.linspace(1, 1 / sampling_steps, sampling_steps))
-            if cfg.use_dynamic_shifting:
+            if turbo:
+                scheduler.set_timesteps(sampling_steps, device=device)
+            elif cfg.use_dynamic_shifting:
                 slope = (cfg.max_shift - cfg.base_shift) / (cfg.max_image_seq_len - cfg.base_image_seq_len)
                 mu = latents.shape[1] * slope + cfg.base_shift - slope * cfg.base_image_seq_len
                 scheduler.set_timesteps(sampling_steps, device=device, sigmas=sigmas, mu=mu)
@@ -320,11 +327,13 @@ class Qwen21Pipeline(QwenImage21Pipeline):
                 print(f"Viggle Turbo Scheduler - Raw Sigmas: {list(sigmas)}; Applied Sigmas: {[round(value, 6) for value in scheduler.sigmas.tolist()]}; Terminal Shift: {scheduler.config.shift_terminal}")
             elif pruna:
                 print(f"Pruna Scheduler - Sigmas: {[round(value, 6) for value in scheduler.sigmas.tolist()]}; Dynamic Shift: {cfg.use_dynamic_shifting}; Shift: {cfg.shift}; Terminal Shift: {cfg.shift_terminal}")
+            elif turbo:
+                print(f"Qwen Image 2.1 Turbo Scheduler - Sigmas: {[round(value, 6) for value in scheduler.sigmas.tolist()]}")
             first_step = 0
             lanpaint = None
             if latent_mask is not None:
                 if model_mode in (2, 3, 4, 5) and not instruction_outpainting:
-                    from shared.inpainting.lanpaint import LanPaint
+                    from shared.lanpaint import LanPaint
                     lanpaint = LanPaint(NSteps={2: 2, 3: 5, 4: 10, 5: 15}[model_mode])
                     denoising_strength = masking_strength = 1.0
                 first_step = min(int(sampling_steps * (1 - denoising_strength)), sampling_steps - 1)
@@ -357,7 +366,7 @@ class Qwen21Pipeline(QwenImage21Pipeline):
                 def combine(positive, negative, guidance, time):
                     return positive if negative is None else negative + guidance * (positive - negative)
                 if lanpaint is not None and i < len(timesteps) - 1:
-                    from shared.inpainting.lanpaint import _pack_latents, _unpack_latents
+                    from shared.lanpaint import _pack_latents, _unpack_latents
                     def pack(value):
                         return _pack_latents(value.transpose(1, 2).reshape(batch_size, 64, 1, height // 16, width // 16))
                     def unpack(value):

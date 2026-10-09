@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Test the full generation path for Wan2GP on MPS."""
 import os
 import sys

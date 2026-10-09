@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Selection metadata and relevance ordering for MCP v2 model discovery."""
 
 import copy

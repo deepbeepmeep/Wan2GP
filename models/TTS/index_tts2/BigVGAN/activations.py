@@ -1,5 +1,6 @@
 # Implementation adapted from https://github.com/EdwardDixon/snake under the MIT license.
 #   LICENSE is in incl_licenses directory.
+# Modified for WanGP.
 
 import torch
 from torch import nn, pow, sin

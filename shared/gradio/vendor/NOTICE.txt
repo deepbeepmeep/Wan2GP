@@ -1,0 +1,13 @@
+Third-party browser components vendored by WanGP
+
+model-viewer.min.js: @google/model-viewer 4.3.1 (https://github.com/google/model-viewer), unmodified dist/model-viewer.min.js.
+  License: Apache-2.0 (model-viewer.LICENSE.txt). The bundle includes three.js r183 (MIT, https://github.com/mrdoob/three.js)
+  and Lit (BSD-3-Clause, https://github.com/lit/lit); their license headers are kept in the file.
+
+spark/: Gaussian splat viewer, loaded only when a splat asset is viewed.
+  spark.module.min.js: @sparkjsdev/spark 2.2.0 (https://github.com/sparkjsdev/spark), dist/spark.module.min.js.
+    License: MIT (spark/LICENSE-spark.txt). The bundle includes fflate (MIT, https://github.com/101arrowz/fflate).
+  three.module.js, three.core.js: three 0.186.0 build files, unmodified. OrbitControls.js, Pass.js: three 0.186.0 examples/jsm add-ons.
+    License: MIT (spark/LICENSE-three.txt).
+  Modification: the bare module specifiers ("three", "three/addons/...") of spark.module.min.js, OrbitControls.js and Pass.js are
+  rewritten to the relative files of this folder (no import map is needed), and their sourceMappingURL comments are removed.

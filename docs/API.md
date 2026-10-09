@@ -383,19 +383,114 @@ Create the destination directory before writing. Companion names follow the fina
 
 See [MCP Authentication and HTTPS](AUTHENTICATION.md#mcp-authentication-and-https) for OAuth setup, passphrases, client approval, token lifetimes, certificates, and reverse proxy hosting. MCP authorization is separate from the Gradio/Deepy browser login.
 
+### MCP server inside the web UI
+
+`--mcp` starts a separate, headless WanGP: it loads its own copy of the models and keeps its own queue and gallery, so nothing it does appears in a web UI you already have open. To let agents work in the WanGP you are using, add `--mcp-webui` to a normal web UI launch:
+
+```bash
+python wgp.py --mcp-webui
+python wgp.py --mcp-webui --mcp-port 7866 --mcp-allow-read-file-system
+```
+
+WanGP prints the MCP address at startup, `http://127.0.0.1:8000/mcp` by default. It serves the current API (v2.1) over Streamable HTTP; `--mcp-transport sse` selects SSE. stdio is unavailable in this mode because the agent does not start the WanGP process. `--mcp-host`, `--mcp-port`, `--mcp-api-version`, `--mcp-allow-read-file-system` and the [MCP OAuth options](AUTHENTICATION.md#mcp-authentication-and-https) work as they do with `--mcp`.
+
+Agents and the people using the web UI then share one WanGP:
+
+- An agent's generation joins the main queue like **Add New Prompt To Queue**: it runs after the tasks already waiting, in submission order. Every open page shows it in the queue, progress bar, live preview and gallery. Deepy's own generations still run next, ahead of waiting tasks.
+- Agents can queue several jobs. Asynchronous calls are always available in this mode: `wangp_generate(settings={...}, wait=false)` returns a `job_id` at once. Follow a job with `wangp_session(action="get_job", arguments={"job_id": ...})` and stop it with `cancel_job`. `list_queue` shows the whole queue, including tasks started from the browser, and `cancel_queue_task` removes a single task.
+- An agent waiting for its result does not delay other agents' calls.
+- **Abort** in the web UI stops an agent's running job, and the agent receives it as cancelled.
+- `wangp_list_gallery` lists the gallery shown in the browser, so agents can reuse your images and videos as inputs, and media they create appears in your gallery.
+- Models are loaded once for both, instead of a second copy in VRAM and RAM.
+
+Every connected agent can read and cancel any queued task, including yours, and all agents share one job list. Keep the MCP address on localhost or a trusted network, or enable MCP OAuth. Web `--auth` protects only the browser pages.
+
+### MCP API v2.1 additions
+
+**API v2.1 is the default**, including for Deepy Prime. Select `--mcp-api-version 2` or `1` for an earlier contract. The version selects WanGP's tools, not the MCP transport protocol. V2.1 uses the existing v2 generation, queue and post-processing calls described below.
+
+External agents now use `wangp_toolbox(action="remux_media", arguments={...})` in place of `replace_audio`. This is a deliberate change in v2.1: use `audio_ids` (an array), optionally `video_id`, `mode`, `gains_db`, and `subtitle_tracks`. One audio file plus a video replaces its soundtrack; multiple audio files mix by default. `mode="multitrack"` keeps separate selectable streams. Subtitle tracks accept authorized SRT/VTT/ASS/SSA paths. Read the action contract for supported formats and options.
+
+External `inspect_media` and `inspect_video` return **native MCP image content**, together with structured metadata identifying each image, crop and sampled frame. The calling agent answers the requested question using those images. WanGP does not load a vision model for these external calls. Video inspection samples the requested interval; it does not inspect every frame. 3D inputs render a preview or the requested view and animation frame. Deepy Prime retains its configured visual inspector.
+
+Each external server has a writable `@workspace` under its configured output directory. Use `wangp_io` to create/edit prompt files, captions and scores, search documents, or make ZIP packages. Workspace files remain on disk after the server stops; a new server starts a new workspace. Clients attached to the same server share that workspace. Output directories are readable, while writes and deletion are confined to the workspace. `--mcp-allow-read-file-system` permits additional filesystem reads; it does not grant arbitrary writes. Plugin filesystem access still requires the explicit read option.
+
+General file delivery is available through `wangp_session`:
+
+- `create_file_upload`, with `filename`, returns a resumable token and, on HTTP servers, a `PUT` URL. Upload the file bytes to that URL; the response gives its authorized workspace `path`. This accepts documents and scores as well as media and does not automatically add them to Gallery. Use `create_gallery_upload` when the upload should appear in Gallery instead. General uploads support every transport; HTTP servers also provide a PUT URL.
+- `create_file_download`, with `source` set to an authorized path or Gallery ID, returns file metadata and, on HTTP transports, a `download_url`. `wangp_io(action="download", arguments={"source": ...})` performs the same operation externally. Resolve relative HTTP URLs against the MCP server's origin. V2.1 links expire after 24 hours, support repeated/ranged reads and survive server restarts.
+- Every transport, including stdio, also receives a binary `resource_uri`. Read it through MCP `resources/read`; large files can be fetched as successive `wangp://files/<token>/<offset>/<length>` resources, with at most 8 MiB per read. Offset and length count decoded bytes. The response includes `size_bytes` and continuation instructions; reassemble byte ranges in order. Resource reads can be repeated until expiry. For text, use IO `write_text` or `append_text`; binary uploads also work over stdio through the resumable upload actions below.
+
+V2.1 generation results include companion files under each artifact's `side_files`: filename, authorized path, MIME type and byte count. Download those paths with the same file-delivery actions. The main generated media stays in Gallery.
+
+`mcp_resource` is now available to external agents as well as Prime. Call with `query` alone to search the documentation index; with `uri` and `query` to search passages; with `query="*"` to list headings; or with `uri` and `section` to read matching sections. Omit query/section to read the whole resource. Follow `next_call` until complete. Standard MCP resources remain available.
+
+```python
+mcp_resource(uri="wangp://docs/settings", query="video_length")
+wangp_io(action="write_text", arguments={"path": "@workspace/captions.srt", "text": captions})
+wangp_toolbox(action="remux_media", arguments={"video_id": video_id, "subtitle_tracks": [{"path": "@workspace/captions.srt", "language": "eng"}]})
+wangp_session(action="create_file_download", arguments={"source": "@workspace/captions.srt"})
+wangp_list_gallery(media_type="3d", selected_only=True)
+```
+
+Gallery discovery includes 3D assets in `all`, supports `media_type="3d"`, and preserves 3D selections in MCP v2/v2.1 and Prime. Deepy Zero's Get Selected Media and Resolve Media also support `3d`; selecting `all` includes the 3D gallery. Directory listings can likewise filter by `3d`.
+
+#### Preflight and safe retries
+
+Call `wangp_validate(settings={...})` or pass a list for a batch before generation. It uses the submission resolver for prompts, media, standing defaults and model declarations. The response includes expanded settings and their origins, active input modes, input file metadata, declared limits, inactive settings, checkpoint/LoRA availability, current runtime configuration and queue state. `valid=false` includes diagnostics; nothing is submitted. For processing, use `wangp_validate(media=media_id, process=process_id, parameters={...})` with the processor's discovered parameters.
+
+Preflight performs no downloads, model loads or inference. It is a snapshot, and submission checks again. Checkpoint availability does not establish that all optional/ancillary assets are installed; the response lists checks it cannot complete. Queue state covers the connected instance only. It does not reserve the GPU or predict VRAM requirements. Settings copied from profiles/templates count as explicit inputs because their original source is not carried in a plain settings object.
+
+`wangp_generate` accepts an optional `request_id`; post-processing accepts it inside `arguments`. Reusing the ID with the same submission payload returns the original job, with `reused=true`. A different payload with that ID fails. Waiting options are independent of the payload. Keep the same ID after a lost response, and use a new ID only for a deliberately new submission.
+
+Small durable receipts retain job/client IDs and outcomes. After restart, completed receipts remain readable through `get_job`. Incomplete receipts are matched against surviving queue tasks and Gallery metadata; `unknown_after_restart` means completion could not be established. Such requests are never automatically resubmitted. Matching surviving tasks can be cancelled through `cancel_job`; recovered outputs do not by themselves prove an entire batch completed.
+
+```python
+wangp_validate(settings=settings)
+wangp_generate(settings=settings, request_id="scene-04-take-1")
+# Retry the identical submission after a lost response:
+wangp_generate(settings=settings, request_id="scene-04-take-1")
+```
+
+#### Audio inspection
+
+External MCP and Deepy Prime expose `wangp_toolbox(action="inspect_audio", arguments={...})`. Pass `media_id`, optionally a 1-based `audio_track_no`, `start_time` and `duration`. Measurements use CPU FFmpeg and streaming samples: sample rate/channels, per-channel peak and RMS, full-scale sample counts, EBU R128 integrated loudness/true peak and silence intervals. Coverage and thresholds are returned; at most 200 silence intervals are listed while aggregate counts/duration cover the whole analyzed range.
+
+Use `preview=true` and optional `preview_seconds` (default 10, maximum 30) to create a playable Gallery excerpt starting at `start_time`. The preview is stereo 24 kHz WAV; measurements retain the source channels/rate. External clients can download the excerpt using its returned Gallery ID. Prime can present it to the user. Metrics and playback do not provide semantic listening for a text-only model; transcription remains a separate tool.
+
+#### Resumable file delivery
+
+V2.1 download descriptors last 24 hours and survive server restarts while the source file and transfer permissions remain valid. HTTP downloads accept `Range: bytes=<offset>-<last-byte>`; stdio uses the returned binary resource URI with decoded-byte offsets. No second copy of the media or per-client progress journal is kept. A changed or vanished source invalidates the descriptor. `create_file_download` accepts `include_sha256=true` when the client needs a full-file integrity check; computing it reads the file once on CPU.
+
+Create a binary upload on either transport:
+
+```python
+wangp_session(action="create_file_upload", arguments={"filename": "reference.wav", "size_bytes": byte_count, "sha256": digest})
+wangp_session(action="upload_chunk", arguments={"token": token, "offset": 0, "data_base64": encoded_chunk})
+wangp_session(action="get_upload", arguments={"token": token})
+wangp_session(action="finish_upload", arguments={"token": token})
+```
+
+`size_bytes` and `sha256` are optional, but supply them to verify the expected file before publication. Chunks are limited to 8 MiB of decoded bytes, and the total upload limit is 8 GiB. Upload sequentially at the returned offset. Identical chunk retries are safe; conflicting bytes or offsets fail. Acknowledged bytes are flushed to disk. After a lost connection or restart, call `get_upload` and continue from its offset. A disconnect may have written additional bytes beyond the last acknowledged offset.
+
+HTTP clients may PUT a whole file without `Upload-Offset`, or send sequential chunks with that header. A complete declared-size HTTP upload finalizes automatically; chunked uploads without a declared size need `finish_upload`. Repeating finalization returns the completed path. One managed `.part` file becomes the final file through rename after size/checksum verification; no duplicate full media copy is retained. The original destination survives a new server workspace. Upload descriptors also expire after 24 hours; expired/incomplete partial files remain on disk for operator cleanup and cannot be resumed using an expired token.
+
+The server keeps its signing key and small request receipts under the user's `WanGP/mcp` application-data directory (Windows: `%LOCALAPPDATA%`; otherwise `~/.cache`), scoped to the project. These are required for restart recovery. Tokens are signed bearer capabilities, not encrypted filenames; treat them like download links and retain them with the client's transfer offset.
+
 ### MCP API v2 and migration
 
-WanGP now serves **API v2 by default**. The version is fixed at server startup; it versions WanGP tool contracts, not the MCP protocol. Pin existing integrations to v1 before upgrading:
+WanGP serves **API v2.1 by default**. The v2 call conventions below also apply to v2.1, except where the additions above specify a change. The version is fixed at server startup; it versions WanGP tool contracts, not the MCP protocol. Pin existing integrations to v1 or v2 when needed:
 
 ```bash
 python wgp.py --mcp --mcp-api-version 1
 python wgp.py --mcp --mcp-api-version 2
-python -m shared.mcp_server --mcp-api-version 1
+python wgp.py --mcp --mcp-api-version 2.1
+python -m shared.mcp --mcp-api-version 1
 ```
 
-V1 preserves historical names, schemas, defaults, results, errors and execution behavior. V2 uses compact toolbox definitions and deferred action contracts. Underlying operations are shared; aliases are normalized internally rather than advertising both syntaxes. Deepy Prime pins v2 independently of this external-server setting; Deepy Zero keeps its historical internal API.
+V1 preserves historical names, schemas, defaults, results, errors and execution behavior. V2 uses compact toolbox definitions and deferred action contracts. Underlying operations are shared; aliases are normalized internally rather than advertising both syntaxes. Deepy Prime pins v2.1 independently of this external-server setting; Deepy Zero keeps its historical internal API.
 
-V2 toolboxes use progressive discovery for advanced operations: omit `action` and `arguments` to list actions; supply `action` with absent/null `arguments` to read its contract; supply an `arguments` object to execute. `{}` executes an action with defaults. Arguments without an action are rejected. Declared shortcuts and known contracts execute directly without repeated discovery. `wangp_model` additionally requires `model_type`; `wangp_postprocess` requires `media` (image/video/audio or a concrete Gallery ID/authorized path). Post-processing execution requires concrete media. Deepy Prime's V2 media toolbox exposes `remux_media` in place of `replace_audio`: pass `audio_ids` and optionally `video_id`. One audio input plus a video replaces its soundtrack; multiple inputs mix by default. `mode="multitrack"` retains separate selectable streams. To add selectable subtitles, pass `video_id` and `subtitle_tracks`, each with an authorized SRT/VTT/ASS/SSA file `path` and optional ISO 639 `language`, `title`, and `default`. With no `audio_ids`, existing audio streams are copied when compatible with the output container; incompatible streams use the configured video audio codec. Existing video subtitles are retained by default; `include_video_subtitles=false` removes them. MP4/MOV use `mov_text`; MKV copies compatible subtitle streams or converts unsupported ones. Audio-only mixes use the configured standalone WAV or MP3 format by default. When requested, `output_extension` can select WAV, MP3, FLAC or M4A for a mix, or MP4, MOV or MKV for a video output. Audio-only multitrack files use M4A because WAV and MP3 cannot hold separate streams. M4A copies AAC/ALAC streams and converts other streams to lossless ALAC; multitrack video uses MKV and copies audio streams. Video soundtrack replacement copies compatible audio streams and otherwise uses the configured video audio codec. Mixing re-encodes the combined result. External MCP V1 and V2 retain `replace_audio`.
+V2 toolboxes use progressive discovery for advanced operations: omit `action` and `arguments` to list actions; supply `action` with absent/null `arguments` to read its contract; supply an `arguments` object to execute. `{}` executes an action with defaults. Arguments without an action are rejected. Declared shortcuts and known contracts execute directly without repeated discovery. `wangp_model` additionally requires `model_type`; `wangp_postprocess` requires `media` (image/video/audio or a concrete Gallery ID/authorized path). Post-processing execution requires concrete media. Deepy Prime and external v2.1 expose `remux_media` in place of `replace_audio`: pass `audio_ids` and optionally `video_id`. One audio input plus a video replaces its soundtrack; multiple inputs mix by default. `mode="multitrack"` retains separate selectable streams. To add selectable subtitles, pass `video_id` and `subtitle_tracks`, each with an authorized SRT/VTT/ASS/SSA file `path` and optional ISO 639 `language`, `title`, and `default`. With no `audio_ids`, existing audio streams are copied when compatible with the output container; incompatible streams use the configured video audio codec. Existing video subtitles are retained by default; `include_video_subtitles=false` removes them. MP4/MOV use `mov_text`; MKV copies compatible subtitle streams or converts unsupported ones. Audio-only mixes use the configured standalone WAV or MP3 format by default. When requested, `output_extension` can select WAV, MP3, FLAC or M4A for a mix, or MP4, MOV or MKV for a video output. Audio-only multitrack files use M4A because WAV and MP3 cannot hold separate streams. M4A copies AAC/ALAC streams and converts other streams to lossless ALAC; multitrack video uses MKV and copies audio streams. Video soundtrack replacement copies compatible audio streams and otherwise uses the configured video audio codec. Mixing re-encodes the combined result. External MCP V1 and V2 retain `replace_audio`.
 
 For a named model, use `wangp_models(query="SenseNova")` directly. The case-insensitive substring search covers name, ID, family and description; it needs no wildcard. Omit all arguments for discovery. For advanced filters, use `action="search", arguments={"query":"SenseNova","filters":{"main_output":"image"}}`; do not combine the shortcut with action/arguments. String filters match whole values, with optional `*` and `?` globs. An incomplete shortcut result includes a `next_call` recipe for continuation.
 
@@ -423,7 +518,7 @@ Deepy templates and the Gallery need no discovery. `wangp_deepy_templates(tool_i
 | Media utilities / previous generation settings | `wangp_toolbox` / discovered action or `media_settings` |
 | File navigation, search, text edits, archives | `wangp_io` / `list`, `rg`, `read_text`, `info`, `edit`, `append_text`, `write_text`, etc. |
 | Jobs, notifications, HTTP Gallery transfers | `wangp_session` / `get_job`, `cancel_job`, `list_queue`, `cancel_queue_task`, `notify`, `create_gallery_upload`, `create_gallery_download` (`list_queue` and `cancel_queue_task` are external-only) |
-| Documentation | Standard MCP resources; Prime exposes `mcp_resource` |
+| Documentation | Standard MCP resources; Prime and external v2.1 expose `mcp_resource` |
 
 Example v2 calls:
 
@@ -460,11 +555,11 @@ IO `rg` adds this pagination around ripgrep; it is not a native rg option. Names
 
 When the folder is named, list it directly, for example `wangp_io(action="list", arguments={"path":"@outputs/selection"})`. Avoid paging through its parent first. For a recursive filename search inside such folders, use `command="--files -g '**/selection/**' -- @outputs"`; `-g '*selection*'` matches basenames, not every descendant of the folder. `-i` changes text matching, not glob casing.
 
-Read `wangp://guides/workflows` for templates, model limits, media inputs, long video, prompt files and editing workflows. Detailed procedural guidance is loaded on demand. External MCP filesystem scope is unchanged: the v2 default does not grant the Prime workspace/output permissions to external clients or third-party plugins.
+Read `wangp://guides/workflows` for templates, model limits, media inputs, long video, prompt files and editing workflows. Detailed procedural guidance is loaded on demand. Explicit external v1/v2 selection retains its previous filesystem scope. External v2.1 adds the workspace and readable output directories described above; plugin filesystem access remains tied to explicit read permission.
 
 In Prime, prefer the session workspace for experiments and editable drafts. Filesystem tools manage that workspace freely. With write access they can create new files in configured output folders and their subfolders, but cannot change, overwrite, delete, rename or move existing output files. Other authorized folders retain their R/RW permissions; deleting or moving an external source removes its vanished-path Gallery entry. This policy does not change generation, post-processing, MCP v1 or Zero contracts.
 
-All product manuals under `docs/` are available as complete MCP resources, including installation, configuration, troubleshooting, model selection, plugins and API integration. Each document ends with a compact `Applies to` note describing its scope for readers. The current server uses that footer as its resource description; Prime also includes it as `applicability` metadata with document reads, section reads and search results, including continuation pages. The scope is therefore available from the first response without reading to the end. Section indexing excludes the footer so its keywords are not attributed to the final section; full-document reads retain it. Interface-specific examples are labelled within mixed documents. This documentation policy does not change filesystem permissions or Deepy Zero's routing.
+All product manuals under `docs/` are available as complete MCP resources, including installation, configuration, troubleshooting, model selection, plugins and API integration. Each document ends with a compact `Applies to` note describing its scope for readers. The current server uses that footer as its resource description; Prime and external v2.1 also include it as `applicability` metadata with document reads, section reads and search results, including continuation pages. The scope is therefore available from the first response without reading to the end. Section indexing excludes the footer so its keywords are not attributed to the final section; full-document reads retain it. Interface-specific examples are labelled within mixed documents. This documentation policy does not change filesystem permissions or Deepy Zero's routing.
 
 The current workflow resource uses `wangp://guides/workflows`, without a version label in normal discovery or agent instructions. Its previous version-labelled URI is retained as an unlisted read alias. New documents are published automatically and must include an `Applies to` footer describing their subject, audience and relevant platform or interface limits; review tool examples, links and setting semantics before adding them. Product-help documents explain the UI and configuration; current callable contracts govern Deepy's actual tool execution.
 
@@ -491,9 +586,11 @@ For Streamable HTTP, connect MCP clients to `http://<host>:<port>/mcp`. Use `--m
 The lower-level adapter can still be launched directly:
 
 ```bash
-python -m shared.mcp_server --mcp-api-version 1 --root <WanGP repo> --output-dir <output dir> --job-event-limit 20
-python -m shared.mcp_server --mcp-api-version 1 --root <WanGP repo> --transport streamable-http --allow-read-file-system
+python -m shared.mcp --mcp-api-version 1 --root <WanGP repo> --output-dir <output dir> --job-event-limit 20
+python -m shared.mcp --mcp-api-version 1 --root <WanGP repo> --transport streamable-http --allow-read-file-system
 ```
+
+The previous `python -m shared.mcp_server` entry point remains supported for existing client configurations.
 
 Set `--job-event-limit 0` when the MCP client only needs terminal job state/results. Deepy opens its in-process WanGP MCP session in this mode because WanGP's UI already displays live generation progress.
 
@@ -890,7 +987,7 @@ MCP lists use the standard `limit` / `cursor` pagination. `count` is the number 
 
 These two MCP actions are **not exposed to Deepy** or MCP v1. Existing `get_job` / `cancel_job` continue to operate on a submitted MCP job, which can contain multiple queue tasks; `cancel_queue_task` targets just one of those tasks.
 
-Queue access is scoped to the connected session, not every WanGP process on the machine. A standalone MCP server owns its headless session and does not inspect a separately running WebUI. A WebUI-bound Python API reads that UI's admitted generation queue; submissions still waiting for UI admission are not yet queue entries. HTTP MCP clients call these tools through `/mcp`; there is no separate REST queue route.
+Queue access is scoped to the connected session, not every WanGP process on the machine. A standalone MCP server owns its headless session and does not inspect a separately running WebUI; an MCP server started with `--mcp-webui` reads and edits that web UI's queue. A WebUI-bound Python API reads that UI's admitted generation queue; submissions still waiting for UI admission are not yet queue entries. HTTP MCP clients call these tools through `/mcp`; there is no separate REST queue route.
 
 ## Streaming Events
 

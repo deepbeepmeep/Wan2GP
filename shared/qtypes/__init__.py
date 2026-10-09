@@ -1,1 +1,2 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Shared qtypes registry for custom quantization handlers."""

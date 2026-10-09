@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Windows power throttling opt-out for the WanGP process.
 
 Windows may run the processes of a minimized or background application at a reduced CPU speed (EcoQoS power throttling).

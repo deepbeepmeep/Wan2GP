@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Cooperative cancellation scoped to one worker, including its loading and decode calls."""
 
 from contextlib import contextmanager

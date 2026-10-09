@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import html
 import itertools
 import re
@@ -288,7 +289,7 @@ def get_javascript():
             buttons.forEach((button) => {
                 const popupId = button.getAttribute("data-wangp-model-info-open");
                 if (!popupId) return;
-                const popups = Array.from(document.querySelectorAll("[id]")).filter((popup) => popup.id === popupId);
+                const popups = Array.from(document.querySelectorAll("#" + CSS.escape(popupId)));
                 const popup = popups.find((candidate) => sourceRoot?.contains(candidate)) || popups[popups.length - 1];
                 popups.forEach((candidate) => {
                     if (candidate !== popup) candidate.remove();

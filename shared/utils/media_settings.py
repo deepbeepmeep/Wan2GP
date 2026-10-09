@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Gallery metadata loaded on access, without changing existing list consumers."""
 from copy import deepcopy
 from functools import lru_cache

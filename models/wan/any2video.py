@@ -1,4 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import gc
 import logging
 import math
@@ -642,6 +643,7 @@ class WanAny2V:
         scail = model_type in ["scail"] 
         scail2 = model_def.get("scail2", False) or model_type in ["scail2_14B", "scail2_1.3B"]
         vista4d = model_type in ["vista4d"]
+        fun_camera, uni3c = model_def.get("fun_camera", False), model_def.get("uni3c", False)
         svi_pro = model_def.get("svi2pro", False)
         svi_mode = 2 if svi_pro  else 0 
         svi_ref_pad_num = 0
@@ -661,7 +663,7 @@ class WanAny2V:
         extended_input_dim = 0
         ref_images_before = False            
         # image2video 
-        if model_def.get("i2v_class", False) and not (animate or animate2 or scail or scail2):
+        if model_def.get("i2v_class", False) and not (animate or animate2 or scail or scail2 or fun_camera):
             any_end_frame = False
             if infinitetalk:
                 new_shot = "0" in video_prompt_type
@@ -961,6 +963,19 @@ class WanAny2V:
             ref_images_count = 0
             lat_frames = scail2_conditioning["lat_frames"]
 
+        # Wan Fun Control-Camera: start image latent in the first latent frame (no i2v mask) and the camera path adapter features
+        if fun_camera:
+            from .camera_control.fun_camera import prepare_fun_camera
+            lat_h, lat_w = height // self.vae_stride[1], width // self.vae_stride[2]
+            y = torch.zeros(self.vae.model.z_dim, lat_frames, lat_h, lat_w, device=self.device)
+            if input_video is not None:
+                clip_image_start = input_video[:, -1].to(self.device)
+                y[:, :1] = self.vae.encode([clip_image_start.unsqueeze(1).to(self.VAE_dtype)], VAE_tile_size)[0]
+            else:
+                kwargs["clip_fea"] = torch.zeros(1, 257, 1280, device=self.device)  # upstream zeroes the image features without start image
+            kwargs.update({"y": y, "camera_adapter_features": prepare_fun_camera(self, model_mode, input_custom, custom_settings, lat_frames, height, width)})
+            y = None
+
         # Clip image
         if hasattr(self, "clip") and clip_image_start is not None:                                   
             clip_image_size = self.clip.model.image_size
@@ -1002,6 +1017,11 @@ class WanAny2V:
             from .vista4d.preprocess import prepare_vista4d_condition
             kwargs.update(prepare_vista4d_condition(self, input_frames, input_custom, frame_num, height, width, VAE_tile_size, fps=bbargs.get("fps", model_def.get("fps", 16)), custom_settings=custom_settings, model_mode=model_mode))
             freqs = get_vista4d_rotary_pos_embed((lat_frames, height // self.vae_stride[1], width // self.vae_stride[2]), self.device)
+
+        if uni3c: # the start image lifted to a point cloud and rendered along the camera path
+            from .camera_control.uni3c import prepare_uni3c
+            kwargs["uni3c_condition"] = prepare_uni3c(self, input_video[:, -1], model_mode, input_custom, custom_settings, lat_frames, height, width, VAE_tile_size)
+            if kwargs["uni3c_condition"] is None: return None
 
         bernini_sources_by_key = {"": []}
         if bernini:

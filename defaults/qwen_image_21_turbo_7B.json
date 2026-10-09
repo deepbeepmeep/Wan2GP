@@ -1,0 +1,25 @@
+{
+    "model": {
+        "name": "Qwen Image 2.1 TextImage2Image Turbo 7B",
+        "architecture": "qwen_image_21_7B",
+        "group": "qwen_image_2",
+        "qwen21_variant": "turbo",
+        "accelerated": "native",
+        "description": "Qwen's full eight-step distilled checkpoint for image generation and reference editing. Uses the Qwen Image 2.1 Turbo scheduler at guidance 1, without an acceleration LoRA. Shares the Qwen Image 2.1 text encoder and VAE. Vanilla sampling schedules are experimental for this checkpoint.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image_2/resolve/main/qwen_image_21_turbo_7B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Qwen_image_2/resolve/main/qwen_image_21_turbo_7B_int8_convrot.safetensors"
+        ]
+    },
+    "image_mode": 1,
+    "resolution": "1024x1024",
+    "custom_settings": {"qwen21_kv_cache": "Disabled", "rgba": "Disabled"},
+    "prompt": "A red ceramic teapot on a wooden table, soft window light, detailed product photograph.",
+    "negative_prompt": " ",
+    "num_inference_steps": 8,
+    "sample_solver": "qwen21_turbo",
+    "guidance_scale": 1.0,
+    "batch_size": 1,
+    "remove_background_images_ref": 0,
+    "prompt_enhancer": ""
+}

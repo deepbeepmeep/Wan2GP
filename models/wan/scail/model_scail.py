@@ -1,5 +1,6 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 # SCAIL model integration for WanGP
+# Modified for WanGP.
 
 import torch
 from typing import Optional

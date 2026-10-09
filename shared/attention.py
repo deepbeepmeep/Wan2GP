@@ -1,10 +1,11 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import sys
 from contextlib import contextmanager
 
 import torch
 from importlib.metadata import version
-from mmgp import offload
+from mmgp import cuda_graphs, offload
 import torch.nn.functional as F
 import warnings
 from importlib.metadata import version
@@ -54,6 +55,7 @@ except ModuleNotFoundError:
 
 try:
     from sageattention import sageattn_varlen
+    from . import sage1_core
     def sageattn_varlen_wrapper(
             q,
             k,
@@ -78,7 +80,7 @@ try:
         )
     
 except ImportError:
-    sageattn_varlen_wrapper = None
+    sageattn_varlen_wrapper = sage1_core = None
 
 try:
     from spas_sage_attn import block_sparse_sage2_attn_cuda
@@ -92,10 +94,11 @@ except ImportError:
             pass
 
 try:
-    from .sage2_core import sageattn as sageattn2, is_sage2_supported, sageattn_attention_mask_support_reason, staged_settings as _sage2_staged_settings
+    from .sage2_core import sageattn as sageattn2, is_sage2_supported, sageattn_attention_mask_support_reason
+    from . import sage2_core
     sage2_supported =  is_sage2_supported()
 except ImportError:
-    sageattn2 = None
+    sageattn2 = sage2_core = None
     sage2_supported = False
     sageattn_attention_mask_support_reason = lambda *args, **kwargs: "SageAttention 2 is unavailable"
     if not triton_installed: 
@@ -347,14 +350,18 @@ def attention_config_shared_state(attention_mode=None, resolver=resolve_attentio
         else:
             offload.shared_state["_attention"] = previous
 
-def sage2_staged_settings(device, force_attention=None, masked=False):
-    """Settings of shared.sage2_core's staged_* functions (q, k and v quantized as soon as each is computed) when pay_attention would run
-    SageAttention 2 without sequence lengths on this device (with this force_attention, and a mask when masked); None otherwise."""
+def sage_staged(device, head_dim, force_attention=None, masked=False):
+    """(core, settings) of the staged_* functions (q, k and v quantized as soon as each is computed) of the SageAttention that
+    pay_attention would run without sequence lengths on this device (with this force_attention, and a mask when masked):
+    shared.sage2_core for SageAttention 2, shared.sage1_core for SageAttention without a mask; None otherwise."""
     attn = force_attention or offload.shared_state["_attention"]
     attn = get_default_attention_mode() if attn in ("sol", "vdn") else attn
+    if attn == "sage":
+        return None if masked or sage1_core is None or head_dim not in sage1_core.HEAD_DIMS else (sage1_core, sage1_core.SETTINGS)
     if attn not in ("sage2", "radial") or sageattn2 is None or masked and sageattn_attention_mask_support_reason(device=device) is not None:
         return None
-    return _sage2_staged_settings(device, masked)
+    settings = sage2_core.staged_settings(device, masked)
+    return None if settings is None else (sage2_core, settings)
 
 __all__ = [
     'ATTENTION_MODE_AVAILABILITY',
@@ -365,7 +372,7 @@ __all__ = [
     'get_supported_override_attention_modes',
     'resolve_attention_mode',
     'pay_attention',
-    'sage2_staged_settings',
+    'sage_staged',
     'sage_attention_mask',
     'attention',
 ]
@@ -447,6 +454,8 @@ def pay_attention(
         from src.chipmunk.modules import SparseDiffMlp, SparseDiffAttn
         from src.chipmunk.util import LayerCounter, GLOBAL_CONFIG
     if attn == "radial": attn ="sage2"
+    # a block recorded for a CUDA graph: Sage 3 kernels, which are not known to run on PyTorch's current stream, give way to Sage 2
+    if attn == "sage3" and sageattn2 is not None and cuda_graphs.recording(): attn = "sage2"
 
     if b > 1 and k_lens != None and attn in ("sage2", "sage3", "sdpa"):
         assert attention_mask == None
@@ -495,12 +504,14 @@ def pay_attention(
             'Flash attention 3 is not available, use flash attention 2 instead.'
         )
 
-    if attn=="sage" or attn=="flash":
+    # SageAttention on every batch item with all its tokens: its kernels without its device sync (CUDA graphs can record them)
+    sage_rows = attn == "sage" and q_lens == None and k_lens == None and not causal and softmax_scale is None and q.shape[-1] in sage1_core.HEAD_DIMS
+    if attn=="sage" and not sage_rows or attn=="flash":
         if b != 1 :
             if k_lens == None:
-                k_lens = torch.tensor( [lk] * b, dtype=torch.int32).to(device=q.device, non_blocking=True)
+                k_lens = torch.full((b,), lk, dtype=torch.int32, device=q.device)  # made on the GPU: no host copy (not allowed in CUDA graphs)
             if q_lens == None:
-                q_lens = torch.tensor([lq] * b, dtype=torch.int32).to(device=q.device, non_blocking=True)
+                q_lens = torch.full((b,), lq, dtype=torch.int32, device=q.device)
             k = k.reshape(-1, *k.shape[-2:])
             v = v.reshape(-1, *v.shape[-2:])
             q = q.reshape(-1, *q.shape[-2:])
@@ -513,15 +524,19 @@ def pay_attention(
                 cu_seqlens_q = torch.tensor([0, szq, lq], dtype=torch.int32, device=q.device)
                 cu_seqlens_k = torch.tensor([0, szk, lk], dtype=torch.int32, device=q.device)
             else:
-                cu_seqlens_q = torch.tensor([0, lq], dtype=torch.int32, device=q.device)
-                cu_seqlens_k = torch.tensor([0, lk], dtype=torch.int32, device=q.device)
+                cu_seqlens_q = torch.arange(0, 2 * lq, lq, dtype=torch.int32, device=q.device)  # [0, lq] made on the GPU: no host copy (not allowed in CUDA graphs)
+                cu_seqlens_k = torch.arange(0, 2 * lk, lk, dtype=torch.int32, device=q.device)
             q = q.squeeze(0)
             k = k.squeeze(0)
             v = v.squeeze(0)
 
 
     # apply attention
-    if attn=="sage":
+    if sage_rows:
+        qkv_list = [t.reshape(-1, *t.shape[2:]).view(t.shape) for t in (q, k, v)]  # batch items one after another (copies only otherwise)
+        del q, k, v
+        x = sage1_core.attention(qkv_list, recycle_q)
+    elif attn=="sage":
         x = sageattn_varlen_wrapper(
             q=q,
             k=k,

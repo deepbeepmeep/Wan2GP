@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Bundled from ComfyUI-sol-attn v0.6.2 (commit 930a4d6).
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """INT8 quantization for the optional SageAttention-style q/k path.
 
 k is quantized per token after centering by its 64-token block mean, so only

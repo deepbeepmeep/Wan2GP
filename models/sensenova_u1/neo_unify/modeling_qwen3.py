@@ -25,6 +25,7 @@ from transformers.utils import TransformersKwargs, can_return_tuple
 from transformers.utils.deprecation import deprecate_kwarg
 from transformers import Qwen3Config
 
+from mmgp import cuda_graphs
 from shared import attention_kit
 from shared.attention import pay_attention
 
@@ -178,6 +179,12 @@ def _apply_rotary_inplace(x, cos, sin, scratch, unsqueeze_dim):
     x1.mul_(cos).addcmul_(x2, sin, value=-1)
     x2.mul_(cos).addcmul_(scratch, sin)
     return x
+
+
+def _cached_prefix(past_key_values, layer_idx):
+    """The cached prompt/reference keys and values of a layer, (batch, tokens, kv heads, head_dim) views, or None."""
+    layer = None if past_key_values is None else past_key_values.layers[layer_idx]
+    return None if layer is None or layer.keys is None else (layer.keys.transpose(1, 2), layer.values.transpose(1, 2))
 
 
 def _norm_rope_rows(x, norm_t, norm_hw, cos, sin, partner):
@@ -568,15 +575,11 @@ class Qwen3Attention(nn.Module):
             if tensor is not None:
                 attention_kit.rows_(tensor, lambda part, first, last: _norm_rope_rows(part, norm_t, norm_hw, cos[:, first:last], sin[:, first:last], partner))
 
-    def _forward_gen_kit(self, hidden_states_list, indexes, past_key_values, rope):
-        """forward_gen without mask: the current tokens attend to the cached prefix and themselves through attention_kit; rope: the
-        step's gen_rope_tables, computed here when not given."""
+    def _forward_gen_kit(self, hidden_states_list, indexes, kv_prefix, rope):
+        """forward_gen without mask: the current tokens attend to the cached prefix kv_prefix and themselves through attention_kit;
+        rope: the step's gen_rope_tables, computed here when not given."""
         if rope is None:
             rope = self.gen_rope_tables(hidden_states_list[0], indexes)
-        kv_prefix = None
-        if past_key_values is not None and past_key_values.layers[self.layer_idx].keys is not None:  # cached prefix (batch, kv heads, tokens, head_dim)
-            layer = past_key_values.layers[self.layer_idx]
-            kv_prefix = (layer.keys.transpose(1, 2), layer.values.transpose(1, 2))
         attn_output = attention_kit.qkv_attention(hidden_states_list, self.q_proj_mot_gen, self.k_proj_mot_gen, self.v_proj_mot_gen,
                                                   self.config.num_attention_heads, self.head_dim, lambda query, key, group: self._norm_rope_gen_(query, key, rope),
                                                   kv_heads=self.config.num_key_value_heads, kv_prefix=kv_prefix)
@@ -595,7 +598,8 @@ class Qwen3Attention(nn.Module):
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         update_cache = kwargs.get("update_cache", True)
         if attention_mask is None and (past_key_values is None or not update_cache):
-            return self._forward_gen_kit(hidden_states_list, indexes, past_key_values, kwargs.get("rope")), None
+            kv_prefix = kwargs["kv_prefix"] if "kv_prefix" in kwargs else _cached_prefix(past_key_values, self.layer_idx)
+            return self._forward_gen_kit(hidden_states_list, indexes, kv_prefix, kwargs.get("rope")), None
         hidden_states = _take_tensor(hidden_states_list)
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -950,6 +954,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
                 use_cache=True,
                 update_cache=False,
                 rope=branch["rope"],
+                kv_prefix=branch["kv_prefix"],
             ))
         return outputs
 
@@ -1191,10 +1196,15 @@ class Qwen3Model(Qwen3PreTrainedModel):
         hidden_states = [input_embeds]
         hidden_states.extend(input_embeds.clone() for _ in branches[1:])
         del input_embeds
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
-            hidden_states = decoder_layer(hidden_states, image_gen_indicators=None, exist_non_image_gen_tokens=False, exist_image_gen_tokens=True, branches=branches)
-            if getattr(self, "_interrupt", False):
-                raise InterruptedError("SenseNova-U1 generation aborted")
+        # without masks, each layer gets its cached prefix as tensors, not the cache: its calls can then replay CUDA graphs
+        unmasked = all(mask is None for branch in branches for mask in branch["attention_mask"].values())
+        with cuda_graphs.scope(unmasked):
+            for index, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
+                layer_branches = [dict(branch, past_key_values=None, kv_prefix=_cached_prefix(branch["past_key_values"], index)) if unmasked else dict(branch, kv_prefix=None)
+                                  for branch in branches]
+                hidden_states = decoder_layer(hidden_states, image_gen_indicators=None, exist_non_image_gen_tokens=False, exist_image_gen_tokens=True, branches=layer_branches)
+                if getattr(self, "_interrupt", False):
+                    raise InterruptedError("SenseNova-U1 generation aborted")
         outputs = []
         while hidden_states:
             hidden_states_list = [hidden_states.pop(0)]

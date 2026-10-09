@@ -617,7 +617,7 @@ def denoise(
                         img_cond_seq = img_cond_seq[:, base_len:]
                         if img_cond_seq_ids is not None:
                             img_cond_seq_ids = img_cond_seq_ids[:, base_len:]
-            from shared.inpainting.lanpaint import LanPaint
+            from shared.lanpaint import LanPaint
             lanpaint_steps = {2: 2, 3: 5, 4: 10, 5: 15}.get(model_mode_int, 5)
             lanpaint_proc = LanPaint(NSteps=lanpaint_steps)
             denoising_strength = 1.0

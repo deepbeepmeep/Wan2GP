@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
@@ -21,12 +22,14 @@ from diffusers.utils import logging
 from shared import attention_kit
 from shared.attention import pay_attention
 from shared.utils.phase_progress import check_abort
+from mmgp import cuda_graphs
 
 
 def dispatch_attention_fn(qkv_list, attn_mask=None, recycle_q=False):
     # The highest owning caller clears its Q/K/V names before this handoff.
     return pay_attention(qkv_list, attention_mask=None if attn_mask is None else attn_mask.transpose(1, 2), recycle_q=recycle_q)
 
+import dataclasses
 import math
 from typing import Any
 import torch
@@ -35,11 +38,10 @@ import torch.nn.functional as F
 logger = logging.get_logger(__name__)
 _IMG_TOKENS_PER_SLOT = 4
 _FLEX_BLOCK_SIZE = 128
-class QwenImage21KVLayerCache:
-
-    def __init__(self):
-        self.k: torch.Tensor | None = None
-        self.v: torch.Tensor | None = None
+@dataclasses.dataclass
+class QwenImage21KVLayerCache:  # a dataclass: CUDA graphs take its tensors as arguments
+    k: torch.Tensor | None = None
+    v: torch.Tensor | None = None
 
     def store(self, k: torch.Tensor, v: torch.Tensor):
         self.k = k
@@ -569,25 +571,27 @@ class QwenImage21Transformer2DModel(ModelMixin, ConfigMixin):
                     negative_state['key_valid'] = negative_state['key_valid'][:, :prefix]
             inputs = [positive]
         prepared = [self._prepare(**item) for item in inputs]
-        for index, block in enumerate(self.transformer_blocks):
-            if negative_state is not None:
-                check_abort()
-                negative_args = {key: value for key, value in negative_state.items() if key != 'kv_cache'}
-                negative_args['layer_cache'] = negative_cache.get_layer(index)
-                negative_state['hidden_states'] = block(**negative_args)
-                del negative_args
-            for state, temb in prepared:
-                check_abort()
-                cache = state['kv_cache']
-                block_args = {key: value for key, value in state.items() if key != 'kv_cache'}
-                block_args['layer_cache'] = cache.get_layer(index) if cache is not None else None
-                if negative_cache is not None:
-                    block_args.update(nag_cache=negative_cache.get_layer(index), nag_parameters=nag_parameters, nag_target_tokens=math.prod(inputs[0]['img_shapes'][0][-1]))
-                state['hidden_states'] = block(**block_args)
-                del block_args
-            if temporary_negative_cache:
-                negative_cache.get_layer(index).k = None
-                negative_cache.get_layer(index).v = None
+        # the blocks that store K/V in a cache run eagerly: a capture would store tensors of its own memory
+        with cuda_graphs.scope(negative_state is None and all(item['kv_cache_mode'] != 'extract' for item in inputs)):
+            for index, block in enumerate(self.transformer_blocks):
+                if negative_state is not None:
+                    check_abort()
+                    negative_args = {key: value for key, value in negative_state.items() if key != 'kv_cache'}
+                    negative_args['layer_cache'] = negative_cache.get_layer(index)
+                    negative_state['hidden_states'] = block(**negative_args)
+                    del negative_args
+                for state, temb in prepared:
+                    check_abort()
+                    cache = state['kv_cache']
+                    block_args = {key: value for key, value in state.items() if key != 'kv_cache'}
+                    block_args['layer_cache'] = cache.get_layer(index) if cache is not None else None
+                    if negative_cache is not None:
+                        block_args.update(nag_cache=negative_cache.get_layer(index), nag_parameters=nag_parameters, nag_target_tokens=math.prod(inputs[0]['img_shapes'][0][-1]))
+                    state['hidden_states'] = block(**block_args)
+                    del block_args
+                if temporary_negative_cache:
+                    negative_cache.get_layer(index).k = None
+                    negative_cache.get_layer(index).v = None
         outputs = []
         for state, temb in prepared:
             # Drop state ownership before the disposable normalization call.

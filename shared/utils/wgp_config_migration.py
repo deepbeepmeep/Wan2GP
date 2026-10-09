@@ -1,9 +1,10 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from shared.utils.config_store import write_config
 from decimal import Decimal, InvalidOperation
 
 from postprocessing.mmaudio import MMAUDIO_DEFAULT_MODE
 from postprocessing.mmaudio.audio_processor import MMAudioProcessor
-from postprocessing.seedvc.audio_processor import SeedVCProcessor
+from postprocessing.seedvc_processor.audio_processor import SeedVCProcessor
 from shared.deepy.config import DEEPY_ENABLED_KEY, DEEPY_TEMPLATE_CONFIG_MIGRATIONS
 
 

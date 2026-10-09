@@ -1,9 +1,10 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """VRAM savings shared by model attentions: a model calls qkv_attention() (joint_qkv_attention() for several token streams) instead of
 projecting q/k/v and calling pay_attention.
 
-- SageAttention 2 (sm86/sm89/sm120, and its masked Triton path on every architecture): v, k and q are quantized as soon as each is
-  projected (shared.sage2_core staged functions), so at most one of them exists in 16 bits (with the Triton kernels v stays in fp16);
-  same results as pay_attention.
+- SageAttention 2 (sm86/sm89/sm120, and its masked Triton path on every architecture) and SageAttention (1, without a mask): v, k and q
+  are quantized as soon as each is projected (staged functions of shared.sage2_core / shared.sage1_core), so at most one of them exists
+  in 16 bits (with the Triton kernels v stays in fp16); same results as pay_attention.
 - The three projections share one input prepared by mmgp (offload.prepare_linear_input) when their weight format supports it: the
   input is quantized once instead of once per projection, and the 16-bit input is released before the projections.
 - Attention Head Split (Performance tab, off by default): long sequences (all batch items together) are attended one group of heads
@@ -17,7 +18,7 @@ from collections import namedtuple
 import torch
 from mmgp import offload
 
-from shared.attention import pay_attention, sage2_staged_settings, sage_attention_mask
+from shared.attention import pay_attention, sage_staged, sage_attention_mask
 
 HEAD_SPLIT_CHOICES = [("Off", 0), ("Low: saves some VRAM", 1), ("Medium (good balance): saves more VRAM", 2), ("High: saves the most VRAM", 3)]
 _TARGET_GROUPS = (1, 4, 8, 16)
@@ -39,16 +40,17 @@ def configure(level):
 @torch.compiler.disable()
 def kv_first_attention(qkv_list, force_attention=None):
     """pay_attention(qkv_list, force_attention=force_attention, recycle_q=True) when nothing else holds k and v: with SageAttention 2
-    (sm86/sm89/sm120), k is quantized and released before v is copied for its quantization, a peak lower by half of k; same results."""
-    settings = sage2_staged_settings(qkv_list[0].device, force_attention)
-    if settings is None:
+    (sm86/sm89/sm120) or SageAttention, k is quantized and released before v is copied for its quantization, a peak lower by half of k;
+    same results."""
+    staged = sage_staged(qkv_list[0].device, qkv_list[0].shape[-1], force_attention)
+    if staged is None:
         return pay_attention(qkv_list, force_attention=force_attention, recycle_q=True)
-    from shared import sage2_core
+    core, settings = staged
     query, key_list, value_list = qkv_list[0], qkv_list[1:2], qkv_list[2:3]
     qkv_list.clear()
-    quantized = [None, sage2_core.staged_quantize_k(key_list, settings), sage2_core.staged_quantize_v(value_list, settings)]
-    quantized[0] = sage2_core.staged_quantize_q(query, settings)
-    return sage2_core.staged_attention(query, quantized, settings)
+    quantized = [None, core.staged_quantize_k(key_list, settings), core.staged_quantize_v(value_list, settings)]
+    quantized[0] = core.staged_quantize_q(query, settings)
+    return core.staged_attention(query, quantized, settings)
 
 
 def head_groups(kv_heads, tokens, level=None):
@@ -85,7 +87,7 @@ def qkv_attention(x_list, q_proj, k_proj, v_proj, heads, head_dim, norm_rope, **
 
 @torch.compiler.disable()
 def joint_qkv_attention(streams, heads, head_dim, norm_rope, kv_heads=None, norm_spans_heads=False, split_heads=True, kv_prefix=None,
-                        attention_mask=None, force_attention=None):
+                        attention_mask=None, force_attention=None, attention_fn=None):
     """Attention of the q/k/v projections of several streams joined along the tokens in their order: streams is a list of
     (x_list, (q_proj, k_proj, v_proj)), each x handed off in its list, of shape (batch, tokens, features) or (tokens, features).
     Returns (batch, all tokens, heads, head_dim).
@@ -93,6 +95,8 @@ def joint_qkv_attention(streams, heads, head_dim, norm_rope, kv_heads=None, norm
     norm_rope(query, key, group) normalizes and rotates in place query and/or key, the other one may be None: the joined projections,
     (batch, all tokens, heads of the group, head_dim), for the head ranges group.q and group.kv. With norm_spans_heads, a split group
     gets group.mean_squares to scale its rows; otherwise the tensors hold all heads. split_heads=False keeps all heads together.
+    attention_fn: optional model-specific sparse attention accepting the disposable qkv_list and HeadGroup. It owns attention
+    computation; projection preparation, head splitting and normalization still use this kit. Staged Sage quantization is disabled.
     kv_prefix: (key, value) of shape (batch, prefix tokens, kv_heads, head_dim), already normalized and rotated, put before the
     projected keys and values. attention_mask: pay_attention's mask. kv_heads < heads: grouped query attention."""
     global _unsplit_notice
@@ -107,7 +111,7 @@ def joint_qkv_attention(streams, heads, head_dim, norm_rope, kv_heads=None, norm
     tokens = sum(lengths)
     kv_heads = kv_heads or heads
     groups = head_groups(kv_heads, batch * tokens) if split_heads else 1
-    settings = sage2_staged_settings(inputs[0].device, force_attention, attention_mask is not None)
+    staged = None if attention_fn is not None else sage_staged(inputs[0].device, head_dim, force_attention, attention_mask is not None)
     linear_inputs = [None] * len(inputs)
     for index, modules in enumerate(projections):
         if offload.linear_rows_supported(modules, inputs[index]):
@@ -167,8 +171,8 @@ def joint_qkv_attention(streams, heads, head_dim, norm_rope, kv_heads=None, norm
             mean_squares.append(squares.div_(total * head_dim).unsqueeze(-1))
         mean_squares = tuple(mean_squares)
 
-    if settings is not None:
-        from shared import sage2_core
+    if staged is not None:
+        core, settings = staged
         if attention_mask is not None:  # in SageAttention's layout (batch, heads, q, k)
             attention_mask = sage_attention_mask(attention_mask, dtype)
     q_heads, kv_group_heads = heads // groups, kv_heads // groups
@@ -176,7 +180,7 @@ def joint_qkv_attention(streams, heads, head_dim, norm_rope, kv_heads=None, norm
     for index in range(groups):
         group = HeadGroup(range(index * q_heads, (index + 1) * q_heads), range(index * kv_group_heads, (index + 1) * kv_group_heads), mean_squares)
         last = index == groups - 1
-        if settings is None:
+        if staged is None:
             qkv_list = [project(0, group.q), project(1, group.kv), project(2, group.kv)]
             if last:
                 release()
@@ -184,7 +188,7 @@ def joint_qkv_attention(streams, heads, head_dim, norm_rope, kv_heads=None, norm
             qkv_list[1:] = [with_prefix(qkv_list[which], which, group.kv) for which in (1, 2)]
             if q_heads != kv_group_heads:  # pay_attention's backends do not all take fewer key/value heads
                 qkv_list[1:] = [tensor.repeat_interleave(q_heads // kv_group_heads, dim=2) for tensor in qkv_list[1:]]
-            attention = pay_attention(qkv_list, attention_mask=_head_slice(attention_mask, 2, group.q), force_attention=force_attention, recycle_q=True)
+            attention = attention_fn(qkv_list, group) if attention_fn is not None else pay_attention(qkv_list, attention_mask=_head_slice(attention_mask, 2, group.q), force_attention=force_attention, recycle_q=True)
             if groups == 1:
                 return attention
             if output is None:
@@ -192,26 +196,26 @@ def joint_qkv_attention(streams, heads, head_dim, norm_rope, kv_heads=None, norm
             output[..., group.q.start:group.q.stop, :].copy_(attention)
             del attention
             continue
-        quantized = [None, None, sage2_core.staged_quantize_v([with_prefix(project(2, group.kv), 2, group.kv)], settings)]
+        quantized = [None, None, core.staged_quantize_v([with_prefix(project(2, group.kv), 2, group.kv)], settings)]
         if groups == 1:  # all heads: k is quantized and released before q is projected
             key = project(1, group.kv)
             norm_rope(None, key, group)
-            quantized[1] = sage2_core.staged_quantize_k([with_prefix(key, 1, group.kv)], settings)
+            quantized[1] = core.staged_quantize_k([with_prefix(key, 1, group.kv)], settings)
             del key
             query = project(0, group.q)
             release()
             norm_rope(query, None, group)
-            quantized[0] = sage2_core.staged_quantize_q(query, settings)
-            return sage2_core.staged_attention(query, quantized, settings, attention_mask)
+            quantized[0] = core.staged_quantize_q(query, settings)
+            return core.staged_attention(query, quantized, settings, attention_mask)
         query, key = project(0, group.q), project(1, group.kv)
         if last:
             release()
         norm_rope(query, key, group)
-        quantized[1] = sage2_core.staged_quantize_k([with_prefix(key, 1, group.kv)], settings)
+        quantized[1] = core.staged_quantize_k([with_prefix(key, 1, group.kv)], settings)
         del key
-        quantized[0] = sage2_core.staged_quantize_q(query, settings)
+        quantized[0] = core.staged_quantize_q(query, settings)
         if output is None:
             output = query.new_empty((batch, tokens, heads, head_dim))
-        sage2_core.staged_attention(output[..., group.q.start:group.q.stop, :], quantized, settings, _head_slice(attention_mask, 1, group.q))
+        core.staged_attention(output[..., group.q.start:group.q.stop, :], quantized, settings, _head_slice(attention_mask, 1, group.q))
         del query
     return output

@@ -1,0 +1,21 @@
+{
+    "model": {
+        "name": "WorldMirror 2.0 1.2B",
+        "architecture": "worldmirror_2",
+        "description": "Tencent HY-World 2.0 WorldMirror: reconstructs a static scene in 3D from several photos or a video in one pass, as Gaussian splats or a point cloud with the estimated cameras, depth and normals.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/worldmirror_2.safetensors",
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/worldmirror_2_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "garden statue",
+    "image_mode": 1,
+    "video_prompt_type": "I",
+    "model_mode": "gaussians",
+    "batch_size": 1,
+    "custom_settings": {
+        "max_views": 24,
+        "max_resolution": 952,
+        "filtering": "sky_edges"
+    }
+}

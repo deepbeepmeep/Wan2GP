@@ -17,6 +17,7 @@
 # For more information about the Wan VAE, please refer to:
 # - GitHub: https://github.com/Wan-Video/Wan2.1
 # - arXiv: https://arxiv.org/abs/2503.20314
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 
 from shared.utils.phase_progress import vae_decoding_progress, set_phase_status
 import functools

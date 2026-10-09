@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import json
@@ -112,7 +113,7 @@ class DeepyDeps:
     clear_gpu_resident: Callable[[Any], None]
     get_new_refresh_id: Callable[[], Any]
     get_gen_info: Callable[[Any], dict[str, Any]]
-    get_processed_queue: Callable[[dict[str, Any]], tuple[list[Any], list[Any], list[Any], list[Any]]]
+    get_processed_queue: Callable[[dict[str, Any]], dict[str, tuple[list[Any], list[Any]]]]
     get_output_filepath: Callable[[str, bool, bool], str]
     record_file_metadata: Callable[..., Any]
     exec_prompt_enhancer_engine: Callable[..., Any]

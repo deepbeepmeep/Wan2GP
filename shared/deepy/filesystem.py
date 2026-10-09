@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import hashlib
@@ -271,7 +272,7 @@ def build_file_access_policy(server_config: dict[str, Any] | None, *, unrestrict
     config = dict(server_config or {})
     mode = DEEPY_FILE_SYSTEM_ACCESS_READ if unrestricted_read else normalize_deepy_file_system_access(config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, False))
     video_output = config.get("save_path", "outputs") or "outputs"
-    output_roots = _unique_paths([video_output, config.get("image_save_path", video_output) or video_output, config.get("audio_save_path", video_output) or video_output])
+    output_roots = _unique_paths([video_output, config.get("image_save_path", video_output) or video_output, config.get("audio_save_path", video_output) or video_output, config.get("mesh_save_path", video_output) or video_output])
     configured_roots = parse_deepy_file_system_paths(config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT)) if mode != DEEPY_FILE_SYSTEM_ACCESS_DISABLED else []
     seen_paths = {os.path.normcase(str(path)) for path in output_roots}
     selected = []
@@ -302,8 +303,8 @@ def list_entries(policy: FileAccessPolicy, path: str = "", pattern: str = "*", r
     limit = max(1, min(int(limit), 1000))
     offset = max(0, int(offset))
     media_type = str(media_type or "all").strip().lower()
-    if media_type not in {"all", "image", "video", "audio", "txt", "other"}:
-        raise ValueError("media_type must be all, image, video, audio, txt, or other")
+    if media_type not in {"all", "image", "video", "audio", "3d", "txt", "other"}:
+        raise ValueError("media_type must be all, image, video, audio, 3d, txt, or other")
     candidates = directory.rglob(pattern) if recursive else iter(sorted(directory.glob(pattern), key=lambda entry: str(entry).casefold()))
     entries = []
     for item in candidates:
@@ -394,7 +395,11 @@ def file_info(path: str, policy: FileAccessPolicy | None = None) -> dict[str, An
         return {"status": "done", "path": str(target), "filename": target.name, "file_type": "directory", "size_bytes": None, "modified": stat.st_mtime, "error": ""}
     try:
         media_type = detect_media_type(str(target))
-        result = _query_image(target) if media_type == "image" else _probe_media(target, media_type) if media_type in {"video", "audio"} else {"status": "done", "path": str(target), "filename": target.name, "size_bytes": target.stat().st_size, "file_type": "file", "mime_type": mimetypes.guess_type(target.name)[0] or "application/octet-stream", "error": ""}
+        if media_type == "3d":
+            from shared.utils.mesh_outputs import asset_summary
+            result = {"status": "done", "path": str(target), "filename": target.name, "size_bytes": target.stat().st_size, "file_type": "3d", **asset_summary(str(target)), "error": ""}
+        else:
+            result = _query_image(target) if media_type == "image" else _probe_media(target, media_type) if media_type in {"video", "audio"} else {"status": "done", "path": str(target), "filename": target.name, "size_bytes": target.stat().st_size, "file_type": "file", "mime_type": mimetypes.guess_type(target.name)[0] or "application/octet-stream", "error": ""}
         result["modified"] = target.stat().st_mtime
         return result
     except (OSError, ValueError, ffmpeg.Error) as exc:

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Streaming INT8 ConvRot checkpoint conversion used by ``--save-quantized --convrot``."""
 
 import json
@@ -9,7 +10,7 @@ from collections import OrderedDict
 import torch
 from safetensors import safe_open
 
-from shared.qtypes.int8_convrot import _regular_hadamard
+from shared.qtypes.int8_convrot import _regular_hadamard, convrot_group_size as _group_size
 
 
 _SAFETENSORS_DTYPES = {
@@ -17,10 +18,6 @@ _SAFETENSORS_DTYPES = {
     torch.int8: "I8", torch.int16: "I16", torch.int32: "I32", torch.int64: "I64",
     torch.uint8: "U8", torch.uint16: "U16", torch.uint32: "U32", torch.uint64: "U64", torch.bool: "BOOL",
 }
-
-
-def _group_size(in_features):
-    return next((size for size in (256, 64, 16) if in_features % size == 0), 0)
 
 
 def _module_matches(name, prefixes):
@@ -59,7 +56,10 @@ def save_convrot_model(model, source_file, output_file, layout=None, verboseLeve
     tower_prefixes = tuple(f"{name}." for name, module in model.named_modules() if isinstance(module, torch.nn.ModuleList) and len(module) >= 5)
     if not tower_prefixes:
         raise RuntimeError("ConvRot save requires a model with a repeated block tower")
-    locked_modules = tuple(name for name, module in model.named_modules() if getattr(module, "_lock_dtype", None) is not None)
+    # Embedding lookups do not apply the inverse activation rotation used by
+    # ConvRot Linear layers. Preserve their original weights, including relative
+    # attention biases inside otherwise quantized transformer blocks.
+    locked_modules = tuple(name for name, module in model.named_modules() if isinstance(module, torch.nn.Embedding) or getattr(module, "_lock_dtype", None) is not None)
     if layout is None:
         layout = {}
     source_file, output_file = os.path.abspath(source_file), os.path.abspath(output_file)

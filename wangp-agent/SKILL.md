@@ -23,7 +23,7 @@ MCP server command for local clients:
 python wgp.py --mcp --config <config dir> --output-dir <output dir>
 ```
 
-Use `python -m shared.mcp_server --root <WanGP repo> --output-dir <output dir>` only when a client needs the lower-level adapter entrypoint. `wgp.py --mcp` is preferred because it preserves normal WanGP CLI/config behavior.
+Use `python -m shared.mcp --root <WanGP repo> --output-dir <output dir>` only when a client needs the lower-level adapter entrypoint. `wgp.py --mcp` is preferred because it preserves normal WanGP CLI/config behavior.
 
 ## Discovery Workflow
 

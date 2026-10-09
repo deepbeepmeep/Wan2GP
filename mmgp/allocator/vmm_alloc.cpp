@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -262,11 +263,19 @@ struct Spilled {  // spill mode: a tensor VRAM had no room for, in pinned system
     Event freed;  // once freed: kept mapped for the next spill of the same size
     bool driver = false;  // allocated by the driver as PyTorch's allocator does (alloc_driver): given back to the driver once freed
 };
-struct Pool {  // private memory of CUDA graphs, kept while a graph may replay
+struct PoolBlock {  // a part of a segment of a graph pool
+    size_t size;
+    CUdeviceptr segment;
+    bool small, free;
+};
+using PoolFree = std::set<std::pair<size_t, CUdeviceptr>>;  // free blocks by size, then address
+struct Pool {  // private memory of CUDA graphs, kept while a graph may replay: driver segments split into blocks, the best fitting free block
+               // taken (and split), the free neighbours of a segment merged, so that captures reuse what the previous ones freed
     int use_count = 0;
     size_t live = 0;
-    std::unordered_map<CUdeviceptr, size_t> blocks;  // every allocation of the pool
-    std::multimap<size_t, CUdeviceptr> free_blocks;  // the free ones, by size
+    std::map<CUdeviceptr, size_t> segments;   // every allocation of the pool
+    std::map<CUdeviceptr, PoolBlock> blocks;  // by address
+    PoolFree free_small, free_large;          // small blocks (under 1 MB) come from small segments, so as not to split the large ones
 };
 struct Capture {  // between PyTorch's begin and end of allocation to a pool
     MempoolId id;
@@ -841,37 +850,71 @@ void* alloc_small(Device& d, size_t size, CUstream stream) {
     return reinterpret_cast<void*>(dptr);
 }
 
+// Segments of the graph pools, as PyTorch's caching allocator: 2 MB for the blocks under 1 MB, 20 MB up to 10 MB, the size rounded to 2 MB above
+constexpr size_t POOL_SMALL = 1ull << 20, POOL_SMALL_SEGMENT = 2ull << 20, POOL_MID = 10ull << 20, POOL_MID_SEGMENT = 20ull << 20, POOL_ROUND = 2ull << 20;
+
 void* alloc_pool(Device& d, const MempoolId& id, size_t size) {
     Pool& pool = d.pools[id];
     size = (size + 511) & ~size_t(511);
+    bool small = size < POOL_SMALL;
+    PoolFree& free_set = small ? pool.free_small : pool.free_large;
     CUdeviceptr dptr = 0;
-    auto fit = pool.free_blocks.lower_bound(size);
-    if (fit != pool.free_blocks.end() && fit->first <= size + size / 4 + (1ull << 20)) {  // a free block of the pool that fits without much waste
+    auto fit = free_set.lower_bound({size, 0});
+    if (fit != free_set.end()) {
         dptr = fit->second;
-        pool.free_blocks.erase(fit);
+        free_set.erase(fit);
     } else {
-        if (cu.MemAlloc(&dptr, size) != CUDA_SUCCESS) return nullptr;
-        pool.blocks[dptr] = size;
-        d.pools_bytes += static_cast<int64_t>(size);
+        size_t segment = small ? POOL_SMALL_SEGMENT : size < POOL_MID ? POOL_MID_SEGMENT : (size + POOL_ROUND - 1) & ~(POOL_ROUND - 1);
+        if (cu.MemAlloc(&dptr, segment) != CUDA_SUCCESS) return nullptr;
+        pool.segments[dptr] = segment;
+        pool.blocks[dptr] = {segment, dptr, small, true};
+        d.pools_bytes += static_cast<int64_t>(segment);
         d.peak_reserved = std::max(d.peak_reserved, reserved_now(d));
     }
+    PoolBlock& block = pool.blocks[dptr];
+    if (block.size - size >= (small ? 512 : POOL_SMALL)) {  // the rest of the block stays free
+        CUdeviceptr rest = dptr + size;
+        pool.blocks[rest] = {block.size - size, block.segment, small, true};
+        free_set.insert({block.size - size, rest});
+        block.size = size;
+    }
+    block.free = false;
     ++pool.live;
     d.pool_of[dptr] = id;
     return reinterpret_cast<void*>(dptr);
 }
 
 void release_pool_memory(Device& d, std::map<MempoolId, Pool>::iterator pool) {  // no graph uses the pool and none of its memory is live
-    for (auto& block : pool->second.blocks) {
-        cu.MemFree(block.first);
-        d.pools_bytes -= static_cast<int64_t>(block.second);
+    for (auto& segment : pool->second.segments) {
+        cu.MemFree(segment.first);
+        d.pools_bytes -= static_cast<int64_t>(segment.second);
     }
     d.pools.erase(pool);
 }
 
 void free_pool(Device& d, CUdeviceptr dptr, const MempoolId& id) {
     auto pool = d.pools.find(id);
-    pool->second.free_blocks.emplace(pool->second.blocks[dptr], dptr);
-    if (--pool->second.live == 0 && pool->second.use_count == 0) release_pool_memory(d, pool);
+    Pool& p = pool->second;
+    auto block = p.blocks.find(dptr);
+    PoolFree& free_set = block->second.small ? p.free_small : p.free_large;
+    block->second.free = true;
+    auto next = std::next(block);
+    if (next != p.blocks.end() && next->second.free && next->second.segment == block->second.segment) {  // merged with its free neighbours
+        free_set.erase({next->second.size, next->first});
+        block->second.size += next->second.size;
+        p.blocks.erase(next);
+    }
+    if (block != p.blocks.begin()) {
+        auto previous = std::prev(block);
+        if (previous->second.free && previous->second.segment == block->second.segment) {
+            free_set.erase({previous->second.size, previous->first});
+            previous->second.size += block->second.size;
+            p.blocks.erase(block);
+            block = previous;
+        }
+    }
+    free_set.insert({block->second.size, block->first});
+    if (--p.live == 0 && p.use_count == 0) release_pool_memory(d, pool);
 }
 
 void release(Device& d, CUdeviceptr dptr) {

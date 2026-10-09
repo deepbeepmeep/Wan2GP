@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Audio post-processor plugin API.
 
 Audio processors are interchangeable handlers for post-generation audio work.
@@ -68,7 +69,7 @@ audio_processor_handlers = [
     "postprocessing.custom_soundtrack.audio_processor.CustomSoundtrackProcessor",
     "postprocessing.mmaudio.audio_processor.MMAudioProcessor",
     "postprocessing.prismaudio.audio_processor.PrismAudioProcessor",
-    "postprocessing.seedvc.audio_processor.SeedVCProcessor",
+    "postprocessing.seedvc_processor.audio_processor.SeedVCProcessor",
     "postprocessing.audio_background_removal.audio_processor.BackgroundRemovalProcessor",
 ]
 _audio_processor_handlers: list[Any] = []

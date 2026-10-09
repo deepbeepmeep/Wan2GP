@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Persistent gallery collections. Media stay at their original locations."""
 import os
 import threading
@@ -6,6 +7,7 @@ import uuid
 from pathlib import Path
 
 from shared.utils.config_store import read_config, write_config
+from shared.utils.gallery_sources import GALLERY_SOURCES, SOURCES
 from shared.utils.media_settings import MediaSettings
 
 
@@ -105,7 +107,7 @@ class WorkspaceStore:
         with self.lock:
             record = self.get(workspace_id)
             if record['gallery'] != gallery:
-                changed = any(record['gallery'].get(key, []) != gallery.get(key, []) for key in ('file_list', 'audio_file_list'))
+                changed = any(record['gallery'].get(source.files_key, []) != gallery.get(source.files_key, []) for source in GALLERY_SOURCES)
                 self._write({**record, 'gallery': gallery, 'last_activity': time.time() if changed else record['last_activity']})
                 return changed
 
@@ -138,15 +140,19 @@ class WorkspaceStore:
 
 
 def capture_gallery(gen):
-    return {key: [os.path.abspath(path) for path in gen[key]] for key in ('file_list', 'audio_file_list')} | {key: gen[key] for key in ('selected', 'audio_selected', 'last_selected', 'audio_last_selected', 'current_gallery_source', 'selected_video_time')}
+    gallery = {key: gen[key] for key in ('current_gallery_source', 'selected_video_time')}
+    for source in GALLERY_SOURCES:
+        gallery.update({source.files_key: [os.path.abspath(path) for path in gen[source.files_key]], source.selected_key: gen[source.selected_key], source.last_selected_key: gen[source.last_selected_key]})
+    return gallery
 
 
 def load_gallery(record, read_settings):
     saved = record['gallery']
     result = {'current_gallery_source': saved.get('current_gallery_source', 'video'), 'selected_video_time': saved.get('selected_video_time')}
-    if result['current_gallery_source'] not in ('video', 'audio'):
+    if result['current_gallery_source'] not in SOURCES:
         raise ValueError('Invalid workspace gallery tab.')
-    for prefix in ('', 'audio_'):
+    # A workspace saved before a gallery existed has no entry for it.
+    for prefix in (source.prefix for source in GALLERY_SOURCES):
         paths = saved.get(prefix + 'file_list', [])
         if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
             raise ValueError('Invalid workspace media paths.')

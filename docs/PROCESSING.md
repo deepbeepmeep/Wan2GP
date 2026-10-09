@@ -170,6 +170,8 @@ Common postprocessing jobs:
 - Cropping, resizing, or importing existing media for a later workflow.
 - Applying a system postprocessing model through MediaFlow.
 
+SeedVC voice replacement, also used by Scenema Audio for reference voices, is distributed separately under the GPL-3.0 license. WanGP downloads it automatically from https://github.com/deepbeepmeep/WanGP-SeedVC the first time you use it, so that first use needs internet access.
+
 Late postprocessing is useful when you want to improve existing media without regenerating the original scene.
 
 ### Detail Refinement Up To 8K

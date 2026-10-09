@@ -1,3 +1,5 @@
+# Camera pose helpers adapted from ReCamMaster (https://github.com/KwaiVGI/ReCamMaster),
+# Copyright (c) 2025 Kuaishou Visual Generation and Interaction Center, MIT License (see docs/third_party_licenses/MIT.txt). Modified for WanGP.
 import torch
 from einops import rearrange
 import numpy as np

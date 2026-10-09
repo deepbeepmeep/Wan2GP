@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """WanGP family handler for MiniMax H3."""
 
 import os
@@ -248,11 +249,11 @@ Enable **Advanced Mode**, open **General**, and choose an option under **Phases*
 - **Two Phases:** use it for faster high-resolution generation and improved fine detail. Most of the work is performed at a lower resolution before H3 enhances the result at the selected output resolution. This mode does not reduce the peak VRAM required by the final enhancement.
 - **Two Phases with Tiling:** use it when regular two-phase generation runs out of VRAM. It processes the final enhancement as four overlapping areas, reducing peak VRAM at the cost of extra processing time and a possible risk of visible seams or local inconsistencies.
 
-Start with the default **Phase 2 Noise Level Start**. Lower it to keep the result closer to the first phase and favor smoother tile blending; raise it to encourage stronger new details, with a greater risk of seams or changes between tiles.
+**Phase 2 Steps** controls the final enhancement independently of the first phase; the default is 3. Other counts use evenly spaced noise levels from **Phase 2 Noise Level Start** to zero. Start with the default noise level; lower it to keep the result closer to the first phase and favor smoother tile blending, or raise it to encourage stronger new details, with a greater risk of seams or changes between tiles. More steps are not necessarily better with a few-step accelerator.
 """
 
 H3_PHASE_TURBO_INFOS = """
-WanGP manages the required phase-two Turbo LoRA automatically. Other selected Turbo LoRAs are disabled during phase two to avoid conflicts, while non-Turbo LoRAs retain their selected phase-two multiplier.
+Phase 2 uses the automatic Turbo LoRA unless an accelerator before `|` in **LoRAs Multipliers** has a nonzero phase-2 multiplier. In that case, all selected accelerators keep their phase-2 multipliers and replace the automatic Turbo. For example, `1;0` keeps an accelerator in phase 1 only and uses the automatic Turbo in phase 2; `1;0.6` uses that accelerator at 0.6 in phase 2; `1` applies to both phases. Multiple accelerators and per-step multiplier sequences are supported. LoRAs after `|` retain their own multipliers.
 """
 
 H3_SPEED_INFOS = """
@@ -508,7 +509,7 @@ class family_handler:
                 "extract_guide_from_window_start": True, "control_video_trim_disabled": False, "control_video_trim": False,
                 "image_prompt_types_allowed": "T", "end_frames_always_enabled": False, "image_end_frame_position": False,
                 "guidance_max_phases": 1, "lock_guidance_phases": True, "lora_multiplier_phases": 1,
-                "phase_2_spatial_tiling": False, "custom_settings": [], "sample_solvers": [("Euler", "euler")],
+                "phase_2_spatial_tiling": False, "inference_steps2": False, "custom_settings": [], "sample_solvers": [("Euler", "euler")],
                 "spectrum_cache": False, "first_block_cache": False,
                 "one_image_ref_needed": True, "no_background_removal": True, "any_image_refs_relative_size": False, "fit_into_canvas_image_refs": 1,
                 "image_ref_choices": {"choices": [("Use Edited Reference Frame", "I")], "letters_filter": "I", "default": "I", "label": "Edited Reference Frame"},
@@ -538,7 +539,7 @@ class family_handler:
                 "deepy_infos": CONTROL_DEEPY_INFOS,
                 "prompt_infos": FL2VA_PROMPT_INFOS, "deepy_prompt_infos": FL2VA_DEEPY_PROMPT_INFOS,
                 "v2i_switch_supported": False, "image_outputs": False,
-                "guidance_max_phases": 1, "lock_guidance_phases": True, "lora_multiplier_phases": 1, "phase_2_spatial_tiling": False,
+                "guidance_max_phases": 1, "lock_guidance_phases": True, "lora_multiplier_phases": 1, "phase_2_spatial_tiling": False, "inference_steps2": False,
                 "custom_settings": [setting for setting in result["custom_settings"] if setting["id"] == H3_AUDIO_REFINEMENT_SETTING],
                 "sliding_window_defaults": {**result["sliding_window_defaults"], "window_max": 362,
                                             **({"overlap_min": 5, "overlap_max": 107, "overlap_offset": 5, "overlap_default": 22} if H3_CONTROL_LATENT_CONTINUATION else {})},
@@ -564,6 +565,7 @@ class family_handler:
         result = {
             "dtype": "bf16",
             "device_explicit": True,
+            "cuda_graphs": ["transformer"],
             "uint8_guides": _uint8_guides,
             "tiny_vae_architecture": REF2VA_ARCHITECTURE,
             "size": "lighter" if pruned else "large",
@@ -614,6 +616,7 @@ class family_handler:
                 "step": 0.0001,
             },
             "inference_steps": True,
+            "inference_steps2": not pdd,
             "lock_inference_steps": pdd,
             "flow_shift": True,
             "spectrum_cache": True,
@@ -824,6 +827,8 @@ class family_handler:
             })
         if pdd:
             result["deepy_infos"] += " PDD requires exactly 8 inference steps and the Euler sampler."
+        else:
+            result["deepy_infos"] += " Two-phase generation uses `num_inference_steps2` (default 3) for final enhancement and `switch_threshold` for its starting noise. Accelerator LoRAs before `|` with any nonzero phase-2 multiplier replace the automatic Turbo together, at their specified multipliers; if all are zero, the automatic Turbo is used. `1;0` means phase 1 only, `1;0.6` sets phase 2 to 0.6, and `1` applies to both phases. LoRAs after `|` keep their multipliers."
         if vdn:
             result["deepy_infos"] += " VDN loads its acceleration LoRA automatically and defaults to 8 steps."
         still_infos = "\n\n**Text to Image:** generate one still image without audio. Video duration, extra frames and Audio Refinement do not apply in this mode."
@@ -1214,6 +1219,7 @@ class family_handler:
             "sliding_window_overlap": 18,
             "num_inference_steps": 20,
             "guidance_phases": 1,
+            "num_inference_steps2": 3,
             "switch_threshold": H3_PHASE_2_NOISE_LEVEL_START_DEFAULT,
             "guidance_scale": 1.0,
             "flow_shift": 12.0,

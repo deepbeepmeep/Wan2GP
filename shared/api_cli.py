@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import contextlib
 import inspect
 import sys
@@ -13,8 +14,7 @@ def run_cli_job(session, job: SessionJob, tasks: list[dict[str, Any]]) -> None:
     stream = AsyncStream()
     gen = session._state["gen"]
     worker_done = threading.Event()
-    base_file_count = len(gen["file_list"])
-    base_audio_count = len(gen["audio_file_list"])
+    base_counts = session._gallery_counts()
     total_tasks = len(tasks)
     runtime = None
     task_summary: dict[str, Any] = {
@@ -75,7 +75,7 @@ def run_cli_job(session, job: SessionJob, tasks: list[dict[str, Any]]) -> None:
                 _handle_command(session, job, runtime.module, tasks, command, data)
 
             worker_thread.join(timeout=0.1)
-            outputs = session._collect_outputs(base_file_count, base_audio_count)
+            outputs = session._collect_outputs(base_counts)
             artifacts = session._consume_output_artifacts(tasks)
             if job.cancel_requested and not task_summary["errors"]:
                 task_summary["errors"].append(GenerationError(message="Generation was cancelled", stage="cancelled"))

@@ -1,4 +1,5 @@
 # Adapted from https://github.com/junjun3518/alias-free-torch under the Apache License 2.0
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 
 import torch.nn as nn
 from torch.nn import functional as F

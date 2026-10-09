@@ -1,3 +1,6 @@
+# Image preprocessing of Florence-2 (https://huggingface.co/microsoft/Florence-2-large), Copyright (c) Microsoft Corporation,
+# MIT License (see docs/third_party_licenses/MIT.txt), reimplemented for WanGP.
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import json

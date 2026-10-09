@@ -1,3 +1,4 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import torch
 import gradio as gr
 from PIL import Image
@@ -84,6 +85,7 @@ class family_handler():
             "flux-model": flux_model,
             "flux2": flux2,
             "device_explicit": base_model_type in ("flux", "flux_schnell", "flux2_klein_4b", "flux2_klein_9b", "flux2_dev", "flux_chroma_radiance", "flux_dev_uso", "pi_flux2"),
+            "cuda_graphs": ["transformer"],
         }
         if flux_chroma or flux_chroma_radiance:
             extra_model_def["guidance_max_phases"] = 1

@@ -1,3 +1,4 @@
+/* Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt) */
 /* Default WanGP visual styling. Loaded by shared/gradio/ui_studio.py.
    Keep the existing rows, columns, navigation and media rendering. */
 footer .built-with > img {

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Avoid propagating Gradio layout updates into unaffected Svelte branches."""
 from functools import lru_cache, wraps
 from hashlib import sha256
@@ -91,6 +92,29 @@ for (let node = f; node; node = node.parent) wangpDirty.add(node);
 }
 }
 for (const node of wangpDirty) node.__wangp_revision = (node.__wangp_revision || 0) + 1;
+"""
+# These two upstream frame callbacks flush component props and dispatch events;
+# neither paints. A posted task preserves the Svelte microtask checkpoint before
+# them without waiting for Chrome's (possibly occluded) rendering clock. Using a
+# microtask here would clear value_is_output before the value reaches a component,
+# incorrectly turning server updates into user input events. Keep each callback
+# in its own task, and keep the user's background-processing preference.
+_UPDATE_SCHEDULER = """
+let wangpUpdateChannel;
+const wangpUpdateJobs = [];
+export function wangpScheduleUpdate(callback) {
+    const focus = window.__gradioFocusQueuePatch;
+    if (focus && !focus.enableBackgroundScheduler && focus.isBackground()) {
+        requestAnimationFrame(callback);
+        return;
+    }
+    if (!wangpUpdateChannel) {
+        wangpUpdateChannel = new MessageChannel();
+        wangpUpdateChannel.port1.onmessage = () => wangpUpdateJobs.shift()(performance.now());
+    }
+    wangpUpdateJobs.push(callback);
+    wangpUpdateChannel.port2.postMessage(0);
+}
 """
 # Gradio's status store replaces an entry on each actual status/progress change.
 # Mn also runs after data messages and visits previously completed outputs. Do
@@ -219,6 +243,16 @@ function wangpGalleryVideoSource(video, src) {
 """
 
 _PATCHES = {
+    'index-Dk7BRz4q.js': [
+        # Hidden progress still mounted the animated Gradio logo and started
+        # its elapsed-time loop on every timer request. Keep both dormant.
+        ('function u(f,_){return f[4]==="pending"?0:f[4]==="error"?1:-1}', 'function u(f,_){return f[6]==="hidden"?-1:f[4]==="pending"?0:f[4]==="error"?1:-1}'),
+        ('i.$$.dirty[0]&16&&(a==="pending"?Re():_e())', 'i.$$.dirty[0]&80&&(a==="pending"&&k!=="hidden"?Re():_e())'),
+        # A removed logo's awaited spring sequence kept running on detached
+        # nodes. Stop its springs and do not start the next animation phase.
+        ('async function f(){await Promise.all([n.set([125,140]),r.set([-125,-140])]),await Promise.all([n.set([-125,140]),r.set([125,-140])]),await Promise.all([n.set([-125,0]),r.set([125,-0])]),await Promise.all([n.set([125,0]),r.set([-125,0])])}', 'async function f(){for(const [left,right] of [[[125,140],[-125,-140]],[[-125,140],[125,-140]],[[-125,0],[125,0]],[[125,0],[-125,0]]]){if(u)return;await Promise.all([n.set(left),r.set(right)])}}'),
+        ('return rt(()=>(a(),()=>u=!0))', 'return rt(()=>(a(),()=>{u=!0;n.set([0,0],{hard:!0});r.set([0,0],{hard:!0})}))'),
+    ],
     'AudioPlayer-DG1QBBp6.js': [
         # Svelte invalidates timeRef after this DOM write, re-running the
         # reactive waveform.on() statement and leaking a listener each tick.
@@ -304,6 +338,7 @@ _PATCHES = {
         ('this._tickerAdded || !this.domElement ||', 'this._pauseUpdate || this._tickerAdded || !this.domElement ||'),
     ],
     'Blocks-BMC4HgbM.js': [
+        ('requestAnimationFrame(()=>{Jt(he,pe,oe)})', 'wangpScheduleUpdate(()=>{Jt(he,pe,oe)})'),
         ('async function No(S,J,K){', 'const wangpMetadataPending=new Map(),wangpMetadataSent=new Map();async function No(S,J,K){'),
         ('const R=pe;if(dn.length>0)', 'const R=pe;' + metadata_events.PREPARE_JS + 'if(dn.length>0)'),
         ('R.inputs.map(W=>No(W,J,K))', 'R.inputs.map((W,index)=>wangpMetadata&&index===1?wangpMetadata:No(W,J,K))'),
@@ -342,6 +377,8 @@ _PATCHES = {
         ('return l.$$set=w=>{' + _NODE_INPUTS, 'return l.$$set=w=>{' + _NODE_SKIP + _NODE_INPUTS),
     ],
     'index-Do3LSwBC.js': [
+        ('function Qo(e,o,t,r){', _UPDATE_SCHEDULER + 'function Qo(e,o,t,r){'),
+        ('uv(q)', 'wangpScheduleUpdate(q)'),
         ('function lf(e,o={}){', 'function lf(e,o={}){' + _NATIVE_EVENT_STREAM),
         # Inspect only the actual gallery-view output, never unrelated text.
         # Its whole response must be discarded before an old index can paint.
@@ -380,6 +417,8 @@ def _asset(path):
         if source.count(old) != expected:
             raise RuntimeError('Gradio frontend patches require the pinned Gradio 5.29 and WanGP editor assets')
         source = source.replace(old, new)
+    if name == 'Blocks-BMC4HgbM.js':
+        source = 'import {wangpScheduleUpdate} from "./index-Do3LSwBC.js";\n' + source
     return source
 
 

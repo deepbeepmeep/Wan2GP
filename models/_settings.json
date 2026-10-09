@@ -28,6 +28,7 @@
 	"pause_seconds": 0,
 	"force_fps": "",
 	"num_inference_steps": 30,
+	"num_inference_steps2": 3,
 	"seed": -1,
 	"guidance_phases": 1,
 	"model_switch_phase": 1,

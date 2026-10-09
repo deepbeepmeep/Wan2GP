@@ -1,6 +1,8 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import html
 import json
 import re
+from functools import lru_cache
 
 import markdown as markdown_module
 from markdown.extensions import Extension
@@ -33,6 +35,13 @@ def _render_markdown(markdown: str) -> str:
     source = str(markdown or "").strip()
     if not source:
         return ""
+    return _render_markdown_source(source)
+
+
+@lru_cache(maxsize=128)
+def _render_markdown_source(source: str) -> str:
+    # Cache only rendered help text, never popup IDs, component or session state.
+    # Model/plugin edits produce a different source and render immediately.
     return markdown_module.markdown(
         source,
         extensions=["tables", "fenced_code", "sane_lists", EscapeHtmlExtension(), _SafeHelpLinksExtension()],

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
@@ -26,19 +27,24 @@ from diffusers.models.attention_processor import Attention
 from diffusers.models.normalization import AdaGroupNorm
 from diffusers.models.normalization import RMSNorm
 
+from shared.kernels import kernel_policy
+
+try:
+    from . import triton_kernels as _fused
+except (ImportError, OSError, RuntimeError):
+    _fused = None
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+# Sub-pixel form of a nearest x2 upsample followed by a 3-tap replicate-padded convolution: output parity p reads 2 low-resolution taps
+# (m - 1, m) for p = 0 and (m, m + 1) for p = 1, which combine the 3 high-resolution taps as below (also in time: (k - 1, k) for both parities).
+_SUBPIXEL_TAPS = ((1.0, 0.0, 0.0), (0.0, 1.0, 1.0)), ((1.0, 1.0, 0.0), (0.0, 0.0, 1.0))
 
-def prepare_causal_attention_mask(n_frame: int, n_hw: int, dtype, device, batch_size: int = None):
-    seq_len = n_frame * n_hw
-    mask = torch.full((seq_len, seq_len), float("-inf"), dtype=dtype, device=device)
-    for i in range(seq_len):
-        i_frame = i // n_hw
-        mask[i, : (i_frame + 1) * n_hw] = 0
-    if batch_size is not None:
-        mask = mask.unsqueeze(0).expand(batch_size, -1, -1)
-    return mask
+
+def fused_norm_silu(x):
+    """Triton GroupNorm + SiLU + padding kernels for the convolution inputs ("fast" kernel precision, CUDA GPUs with Triton)."""
+    return _fused is not None and x.is_cuda and kernel_policy.allow_approximate() and _fused.supported(x.device)
 
 
 class CausalConv3d(nn.Module):
@@ -67,7 +73,34 @@ class CausalConv3d(nn.Module):
     def forward(self, x):
         x = F.pad(x, self.time_causal_padding, mode=self.pad_mode)
         return self.conv(x)
-    
+
+    def norm_silu_forward(self, x, norm):
+        """self(silu(norm(x))) with the norm, the SiLU and the replicate padding in one pass (when fused_norm_silu(x))."""
+        return self.conv(_fused.group_norm_silu_pad(x, norm, self.time_causal_padding))
+
+    def stream_norm_silu(self, x, norm, state):
+        """norm_silu_forward of one chunk of frames of a streamed decode: the norm uses the running statistics of its input over the chunks
+        so far (or, for the norms in state["frozen"], the statistics given in state), and the previous chunk's last input frames replace the
+        replicate padding of the first frame."""
+        left, right, top, bottom, front, _ = self.time_causal_padding
+        shared = state.get("shared", False)
+        running = state.get(norm)
+        if running is None:
+            running = state[norm] = x.new_zeros((1 if shared else x.shape[0]) * norm.num_groups, 3, dtype=torch.float64)
+        frozen = norm in state["frozen"]
+        cache = state.get(self)
+        if cache is None:
+            padded = _fused.group_norm_silu_pad(x, norm, self.time_causal_padding, running=running, frozen=frozen, shared=shared)
+            state[self] = padded[:, :, -front:].clone()
+        else:
+            batch, channels, frames, height, width = x.shape
+            padded = x.new_empty(batch, channels, front + frames, top + height + bottom, left + width + right)
+            padded[:, :, :front] = cache
+            _fused.group_norm_silu_pad(x, norm, (left, right, top, bottom, 0, 0), running=running, frozen=frozen, shared=shared, out=padded,
+                                       out_frame=front)
+            cache.copy_(padded[:, :, -front:])
+        return self.conv(padded)
+
 class CausalAvgPool3d(nn.Module):
     def __init__(
         self,
@@ -168,7 +201,10 @@ class UpsampleCausal3D(nn.Module):
         hidden_states: torch.FloatTensor,
         output_size: Optional[int] = None,
         scale: float = 1.0,
+        state=None,
     ) -> torch.FloatTensor:
+        if state is not None:  # one chunk of a streamed decode, through forward so that the offload hooks load the weights first
+            return self.stream(hidden_states, state)
         assert hidden_states.shape[1] == self.channels
 
         if self.norm is not None:
@@ -177,6 +213,9 @@ class UpsampleCausal3D(nn.Module):
 
         if self.use_conv_transpose:
             return self.conv(hidden_states)
+
+        if self.use_conv and not self.disable_causal and output_size is None and kernel_policy.allow_approximate():
+            return self._subpixel_forward(hidden_states)
 
         # Cast to float32 to as 'upsample_nearest2d_out_frame' op does not support bfloat16
         # https://github.com/pytorch/pytorch/issues/86679
@@ -222,6 +261,59 @@ class UpsampleCausal3D(nn.Module):
                 hidden_states = self.Conv2d_0(hidden_states)
 
         return hidden_states
+
+    def _subpixel_weights(self):
+        """Kernels of the 3x3x3 convolution of the nearest-upsampled tensor rewritten as one convolution of the replicate-padded
+        low-resolution input, whose 2x2(x2) kernels hold every output parity: exact in real arithmetic (the summed kernel taps are rounded to
+        the weight dtype once), up to 3.4x fewer operations."""
+        conv = self.conv.conv
+        taps = torch.tensor(_SUBPIXEL_TAPS, dtype=torch.float32, device=conv.weight.device)
+        if self.upsample_factor[0] == 2:
+            weight = torch.einsum("oityx,pat,qby,rcx->pqroiabc", conv.weight.float(), taps, taps, taps).flatten(0, 3)
+        else:
+            weight = torch.einsum("oityx,qby,rcx->qroitbc", conv.weight.float(), taps, taps).flatten(0, 2)
+        return weight.to(conv.weight.dtype), conv.bias.repeat(weight.shape[0] // conv.out_channels)
+
+    def _subpixel_conv(self, padded, weights):
+        """(batch, time parity, row parity, column parity, channels, windows, height + 1, width + 1) from _subpixel_weights."""
+        return F.conv3d(padded, *weights).unflatten(1, (-1, 2, 2, self.conv.conv.out_channels))
+
+    @staticmethod
+    def _interleave(y, height, width, first):
+        """Output frames of the parity windows: time x2 gives even frame 2k from window k and odd frame 2k - 1 from window k >= 1 (a later
+        chunk of a stream starts with its first window's odd frame); without time upsampling, frame k from window k."""
+        batch, time_parities, _, _, channels, windows = y.shape[:6]
+        frames = windows if time_parities == 1 else 2 * windows - first
+        out = y.new_empty(batch, channels, frames, 2 * height, 2 * width)
+        for pt in range(time_parities):
+            frames_out = slice(None) if time_parities == 1 else slice(pt, None, 2) if first else slice(1 - pt, None, 2)
+            windows_in = slice(pt, None) if first else slice(None)
+            for py in range(2):
+                for px in range(2):
+                    out[:, :, frames_out, py::2, px::2] = y[:, pt, py, px, :, windows_in, py:py + height, px:px + width]
+        return out
+
+    def _subpixel_forward(self, x):
+        """Same upsampling as forward, through _subpixel_conv (no upsampled copy). Replicate padding of the low-resolution input equals
+        replicate padding of the upsampled tensor; causal frames: windows (k - 1, k), or 3 taps without time upsampling."""
+        padded = F.pad(x, (1, 1, 1, 1, 1 if self.upsample_factor[0] == 2 else 2, 0), mode="replicate")
+        return self._interleave(self._subpixel_conv(padded, self._subpixel_weights()), x.shape[3], x.shape[4], True)
+
+    def stream(self, x, state):
+        """_subpixel_forward of one chunk of frames of a streamed decode: the previous chunk's last frames replace the replicate padding;
+        state["weights"] keeps the kernels for the whole decode."""
+        weights = state["weights"].get(self)
+        if weights is None:
+            weights = state["weights"][self] = self._subpixel_weights()
+        context = 1 if self.upsample_factor[0] == 2 else 2
+        cache = state.get(self)
+        padded = F.pad(x, (1, 1, 1, 1, context if cache is None else 0, 0), mode="replicate")
+        if cache is None:
+            state[self] = padded[:, :, -context:].clone()
+        else:
+            padded = torch.cat([cache, padded], 2)
+            cache.copy_(padded[:, :, -context:])
+        return self._interleave(self._subpixel_conv(padded, weights), x.shape[3], x.shape[4], cache is None)
 
 class DownsampleCausal3D(nn.Module):
     """A 3D downsampling layer with an optional convolution.
@@ -423,12 +515,54 @@ class ResnetBlockCausal3D(nn.Module):
                 bias=conv_shortcut_bias,
             )
 
+    def _residual(self, hidden_states, input_tensor):
+        if self.conv_shortcut is not None:
+            input_tensor = self.conv_shortcut.conv(input_tensor)  # 1x1x1: no padding
+        hidden_states.add_(input_tensor)
+        return hidden_states if self.output_scale_factor == 1 else hidden_states.div_(self.output_scale_factor)
+
+    def stream(self, x, state):
+        """forward of one chunk of frames of a streamed decode (see CausalConv3d.stream_norm_silu)."""
+        return self._residual(self.conv2.stream_norm_silu(self.conv1.stream_norm_silu(x, self.norm1, state), self.norm2, state), x)
+
+    def _whole_clip(self, x, chunk_frames):
+        """forward of the whole clip by chunks of frames: each GroupNorm's statistics over its whole input first, then norm + SiLU +
+        convolution chunk by chunk with causal caches (stream_norm_silu with frozen statistics), the residual written in place. The module's
+        values without its whole padded copies, both convolution outputs alive at once and the workspace of whole-clip convolutions."""
+        def frozen(norm, tensor):
+            stats = tensor.new_zeros(tensor.shape[0] * norm.num_groups, 3, dtype=torch.float64)
+            _fused.group_norm_silu_pad(tensor, norm, running=stats, apply=False)
+            return {norm: stats, "frozen": {norm}}
+
+        frames = x.shape[2]
+        state = frozen(self.norm1, x)
+        hidden = x.new_empty(x.shape[0], self.conv1.conv.out_channels, *x.shape[2:])
+        for start in range(0, frames, chunk_frames):
+            hidden[:, :, start:start + chunk_frames] = self.conv1.stream_norm_silu(x[:, :, start:start + chunk_frames], self.norm1, state)
+        state = frozen(self.norm2, hidden)
+        out = x if self.conv_shortcut is None else x.new_empty(x.shape[0], self.conv2.conv.out_channels, *x.shape[2:])
+        for start in range(0, frames, chunk_frames):
+            chunk = slice(start, start + chunk_frames)
+            out[:, :, chunk] = self._residual(self.conv2.stream_norm_silu(hidden[:, :, chunk], self.norm2, state), x[:, :, chunk])
+        return out
+
     def forward(
         self,
         input_tensor: torch.FloatTensor,
-        temb: torch.FloatTensor,
+        temb: Optional[torch.FloatTensor] = None,
         scale: float = 1.0,
+        state=None,
+        chunk_frames=None,
     ) -> torch.FloatTensor:
+        # parts of a streamed decode, through forward so that the offload hooks load the weights first
+        if state is not None:
+            return self.stream(input_tensor, state)
+        if chunk_frames is not None:
+            return self._whole_clip(input_tensor, chunk_frames)
+        if temb is None and self.upsample is None and self.downsample is None and fused_norm_silu(input_tensor):
+            hidden_states = self.conv2.norm_silu_forward(self.conv1.norm_silu_forward(input_tensor, self.norm1), self.norm2)
+            return self._residual(hidden_states, input_tensor)
+
         hidden_states = input_tensor
 
         if self.time_embedding_norm == "ada_group" or self.time_embedding_norm == "spatial":
@@ -724,17 +858,32 @@ class UNetMidBlockCausal3D(nn.Module):
         self.attentions = nn.ModuleList(attentions)
         self.resnets = nn.ModuleList(resnets)
 
+    @staticmethod
+    def _frame_causal_attention(attn, hidden_states):
+        """attn (group norm, projections, SDPA, output projection, residual) with upstream's frame-causal mask, without building the
+        tokens x tokens mask: the queries of each frame attend to the keys of that frame and the earlier ones."""
+        frames, height, width = hidden_states.shape[2:]
+        tokens = height * width
+        residual = hidden_states.flatten(2).transpose(1, 2)
+        normed = attn.group_norm(residual.transpose(1, 2)).transpose(1, 2)
+        query, key, value = (projection(normed).unflatten(2, (attn.heads, -1)).transpose(1, 2) for projection in (attn.to_q, attn.to_k, attn.to_v))
+        del normed
+        out = torch.empty_like(query)
+        for stop in range(tokens, frames * tokens + 1, tokens):
+            out[:, :, stop - tokens:stop] = F.scaled_dot_product_attention(query[:, :, stop - tokens:stop], key[:, :, :stop], value[:, :, :stop])
+        del query, key, value
+        out = attn.to_out[0](out.transpose(1, 2).flatten(2))
+        return ((out + residual) / attn.rescale_output_factor).transpose(1, 2).unflatten(2, (frames, height, width))
+
     def forward(self, hidden_states: torch.FloatTensor, temb: Optional[torch.FloatTensor] = None) -> torch.FloatTensor:
         hidden_states = self.resnets[0](hidden_states, temb)
         for attn, resnet in zip(self.attentions, self.resnets[1:]):
-            if attn is not None:
+            if attn is not None and self.causal_attention:
+                hidden_states = self._frame_causal_attention(attn, hidden_states)
+            elif attn is not None:
                 B, C, T, H, W = hidden_states.shape
                 hidden_states = rearrange(hidden_states, "b c f h w -> b (f h w) c")
-                if self.causal_attention:
-                    attention_mask = prepare_causal_attention_mask(T, H * W, hidden_states.dtype, hidden_states.device, batch_size=B)
-                else:
-                    attention_mask = None
-                hidden_states = attn(hidden_states, temb=temb, attention_mask=attention_mask)
+                hidden_states = attn(hidden_states, temb=temb)
                 hidden_states = rearrange(hidden_states, "b (f h w) c -> b c f h w", f=T, h=H, w=W)
             hidden_states = resnet(hidden_states, temb)
 

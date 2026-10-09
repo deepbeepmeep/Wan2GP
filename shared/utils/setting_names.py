@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Setting-name validation shared by every generation entry point.
 
 Accepted names are the shared catalog in models/_settings.json, the non-setting keys that travel with

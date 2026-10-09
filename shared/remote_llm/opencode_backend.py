@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import os
@@ -19,7 +20,7 @@ from shared.llm_io import llm_io_enabled, log_llm_io, media_descriptor
 
 from .base import BackendEvent, EventCallback, StopCallback, ToolCallback
 from .usage import opencode_usage_data
-from .mcp_bridge import MCPHttpBridge, build_tool_proxy
+from shared.mcp.bridge import MCPHttpBridge, build_tool_proxy
 
 
 OPENCODE_PROGRESS_INSTRUCTIONS = """For work with multiple meaningful steps, send concise user-facing progress updates as short text messages before and between tool calls. Keep progress updates separate from the final answer, and do not reveal hidden reasoning."""

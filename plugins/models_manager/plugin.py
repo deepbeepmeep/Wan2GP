@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import gradio as gr
 import os
 import json
@@ -561,7 +562,7 @@ class modelsManagerPlugin(WAN2GPPlugin):
                 return;
             }
             const tabObserver = new MutationObserver(handleTabChange);
-            tabObserver.observe(root, { attributes: true, subtree: true, attributeFilter: ['aria-selected', 'class'] });
+            tabObserver.observe(root, { attributes: true, subtree: true, attributeFilter: ['aria-selected'] });
             handleTabChange();
         }
 

@@ -11,12 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 
 
 import math
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
+from mmgp import cuda_graphs
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -767,21 +769,22 @@ class QwenImageTransformer2DModel(nn.Module):
 
         hidden_states = None
 
-        for index_block, block in enumerate(self.transformer_blocks):
-            if callback != None:
-                callback(-1, None, False, True)
-            if pipeline._interrupt:
-                return [None] * len(hidden_states_list)
-            for hidden_states, encoder_hidden_states, encoder_hidden_states_mask, image_rotary_emb in zip(hidden_states_list, encoder_hidden_states_list, encoder_hidden_states_mask_list, image_rotary_emb_list):
-                encoder_hidden_states[...], hidden_states[...] = block(
-                    hidden_states=hidden_states,
-                    encoder_hidden_states=encoder_hidden_states,
-                    encoder_hidden_states_mask=encoder_hidden_states_mask,
-                    temb=temb,
-                    image_rotary_emb=image_rotary_emb,
-                    joint_attention_kwargs=attention_kwargs,
-                    modulate_index=modulate_index,
-                )
+        with cuda_graphs.scope():
+            for index_block, block in enumerate(self.transformer_blocks):
+                if callback != None:
+                    callback(-1, None, False, True)
+                if pipeline._interrupt:
+                    return [None] * len(hidden_states_list)
+                for hidden_states, encoder_hidden_states, encoder_hidden_states_mask, image_rotary_emb in zip(hidden_states_list, encoder_hidden_states_list, encoder_hidden_states_mask_list, image_rotary_emb_list):
+                    encoder_hidden_states[...], hidden_states[...] = block(
+                        hidden_states=hidden_states,
+                        encoder_hidden_states=encoder_hidden_states,
+                        encoder_hidden_states_mask=encoder_hidden_states_mask,
+                        temb=temb,
+                        image_rotary_emb=image_rotary_emb,
+                        joint_attention_kwargs=attention_kwargs,
+                        modulate_index=modulate_index,
+                    )
 
         # Use only the image part (hidden_states) from the dual-stream blocks
         temb_out = temb

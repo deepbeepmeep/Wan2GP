@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import html
@@ -1091,6 +1092,14 @@ def build_tool_call_label(
         legends = arguments.get("legends")
         legend_label = " with Legends" if isinstance(legends, list) and any(str(legend or "").strip() for legend in legends) else ""
         return _finish_tool_call_label(f"{label}{layout_label}{legend_label}")
+    if normalized_name == "render_3d_views":
+        count = sum(len(value) for value in (arguments.get("views"), arguments.get("angles")) if isinstance(value, list))
+        frame = arguments.get("frame_no")
+        label = "Render 3D View" if count <= 1 else f"Render {count} 3D Views"
+        return _finish_tool_call_label(label if frame is None else f"{label} at Frame {frame}")
+    if normalized_name == "draw_svg":
+        name = _humanize_tool_value(arguments.get("name"))
+        return _finish_tool_call_label(f"Draw {name}" if name else "Draw SVG Image")
     if normalized_name == "add_to_gallery":
         paths = arguments.get("paths")
         sources = paths if isinstance(paths, list) else [arguments.get("path")] if arguments.get("path") else []

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 
 import torch
 from PIL import Image
@@ -75,6 +76,7 @@ class family_handler:
         return {
             "image_outputs": True,
             "device_explicit": True,
+            "cuda_graphs": ["transformer"],
             "dtype": "bf16",
             "no_negative_prompt": True,
             "no_background_removal": True,

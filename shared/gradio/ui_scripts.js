@@ -1,4 +1,4 @@
-function() {
+/* Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt) */ function() {
     console.log("[WanGP] main JS initialized");
     let generationLayoutFrame = 0;
     function scheduleGenerationReferences() {
@@ -43,7 +43,7 @@ function() {
             }
             const rect = bar.getBoundingClientRect();
             if (!rect.width || !rect.height) {
-                bar.classList.remove('is-floating');
+                bar.classList.toggle('is-floating', false);
                 continue;
             }
             // The previous visible sibling stays in normal flow while the bar

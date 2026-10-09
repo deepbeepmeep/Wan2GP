@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Shared adapter format helpers for LoRA and linear LoKr checkpoints.
 
 ``convert_lora_keys`` changes names only by default. Linear model loaders can

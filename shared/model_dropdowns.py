@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import os
 import time
 from collections import defaultdict
@@ -19,7 +20,8 @@ MODEL_OUTPUT_FILTER_ALL = "all"
 MODEL_OUTPUT_FILTER_VIDEO = "video"
 MODEL_OUTPUT_FILTER_IMAGE = "image"
 MODEL_OUTPUT_FILTER_AUDIO = "audio"
-MODEL_OUTPUT_FILTERS = {MODEL_OUTPUT_FILTER_ALL, MODEL_OUTPUT_FILTER_VIDEO, MODEL_OUTPUT_FILTER_IMAGE, MODEL_OUTPUT_FILTER_AUDIO}
+MODEL_OUTPUT_FILTER_3D = "3d"
+MODEL_OUTPUT_FILTERS = {MODEL_OUTPUT_FILTER_ALL, MODEL_OUTPUT_FILTER_VIDEO, MODEL_OUTPUT_FILTER_IMAGE, MODEL_OUTPUT_FILTER_AUDIO, MODEL_OUTPUT_FILTER_3D}
 LAST_MODEL_PER_OUTPUT_FILTER_CONFIG_KEY = "last_model_per_output_filter"
 MODEL_SELECTOR_DEBUG = False
 _model_selector_debug_seq = 0
@@ -182,6 +184,14 @@ def _get_model_types_for_output_filter(deps, model_filter, dropdown_types=None):
     return {model_type for model_type in dropdown_types if deps.get_model_family(model_type, for_ui=True) in allowed_families}
 
 
+def available_output_filters(deps):
+    """Output filters offered in the model selector: the 3D filter only once a 3D model is available."""
+    filters = [MODEL_OUTPUT_FILTER_ALL, MODEL_OUTPUT_FILTER_VIDEO, MODEL_OUTPUT_FILTER_IMAGE, MODEL_OUTPUT_FILTER_AUDIO]
+    if any(_record_main_outputs(record) == [MODEL_OUTPUT_FILTER_3D] for record in _get_model_defs_by_type(deps, get_dropdown_model_types(deps)).values()):
+        filters.append(MODEL_OUTPUT_FILTER_3D)
+    return filters
+
+
 def model_type_matches_output_filter(deps, model_type, model_filter):
     allowed_model_types = _get_model_types_for_output_filter(deps, model_filter)
     return allowed_model_types is None or model_type in allowed_model_types
@@ -205,6 +215,8 @@ def _model_output_filter_from_outputs(outputs):
         return MODEL_OUTPUT_FILTER_VIDEO
     if outputs == [MODEL_OUTPUT_FILTER_AUDIO]:
         return MODEL_OUTPUT_FILTER_AUDIO
+    if outputs == [MODEL_OUTPUT_FILTER_3D]:
+        return MODEL_OUTPUT_FILTER_3D
     if MODEL_OUTPUT_FILTER_IMAGE in outputs:
         return MODEL_OUTPUT_FILTER_IMAGE
     if MODEL_OUTPUT_FILTER_AUDIO in outputs:

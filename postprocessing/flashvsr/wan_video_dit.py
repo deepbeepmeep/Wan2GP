@@ -1,6 +1,6 @@
-##### Enjoy this spagheti VRAM optimizations done by DeepBeepMeep !
-# I am sure you are a nice person and as you copy this code, you will give me officially proper credits:
-# Please link to https://github.com/deepbeepmeep/Wan2GP and @deepbeepmeep on twitter  
+# Adapted from FlashVSR (https://github.com/OpenImagingLab/FlashVSR), itself built on DiffSynth-Studio
+# (https://github.com/modelscope/DiffSynth-Studio), Copyright (c) their authors, Apache License 2.0 (see docs/third_party_licenses/Apache-2.0.txt). Modified for WanGP.
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import torch
 import torch.nn as nn
 import math

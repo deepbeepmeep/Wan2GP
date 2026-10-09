@@ -2,6 +2,7 @@ import math
 from dataclasses import dataclass
 
 import torch
+from mmgp import cuda_graphs
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
@@ -606,11 +607,12 @@ class SingleStreamDiT(nn.Module):
         img = self.first(img)
         combined, txtlen, imglen, freqs, mask = self._build_stream(img, context, pos, mask)
         del img, context, pos
-        for block in self.blocks:
-            combined = block(combined, tvec, freqs, mask, txt_len=txtlen, NAG=NAG, neg_context=neg_context, neg_mask=neg_mask)
-            if getattr(self, "_interrupt", False):
-                return None
-            self.txtfusion._interrupt = getattr(self, "_interrupt", False)
+        with cuda_graphs.scope():
+            for block in self.blocks:
+                combined = block(combined, tvec, freqs, mask, txt_len=txtlen, NAG=NAG, neg_context=neg_context, neg_mask=neg_mask)
+                if getattr(self, "_interrupt", False):
+                    return None
+                self.txtfusion._interrupt = getattr(self, "_interrupt", False)
         target_len = imglen if target_len is None else target_len
         return self.last([combined[:, txtlen + imglen - target_len : txtlen + imglen]], t)
 
@@ -620,12 +622,13 @@ class SingleStreamDiT(nn.Module):
         combined, txtlen, imglen, freqs, mask = self._build_stream(img, context, pos, mask)
         uncond_combined, uncond_txtlen, uncond_imglen, uncond_freqs, uncond_mask = self._build_stream(img, uncond_context, uncond_pos, uncond_mask, freqs=freqs if share_freqs else None)
         del img, context, uncond_context, pos, uncond_pos
-        for block in self.blocks:
-            combined = block(combined, tvec, freqs, mask)
-            if getattr(self, "_interrupt", False):
-                return None, None
-            uncond_combined = block(uncond_combined, tvec, uncond_freqs, uncond_mask)
-            if getattr(self, "_interrupt", False):
-                return None, None
+        with cuda_graphs.scope():
+            for block in self.blocks:
+                combined = block(combined, tvec, freqs, mask)
+                if getattr(self, "_interrupt", False):
+                    return None, None
+                uncond_combined = block(uncond_combined, tvec, uncond_freqs, uncond_mask)
+                if getattr(self, "_interrupt", False):
+                    return None, None
         target_len = imglen if target_len is None else target_len
         return self.last([combined[:, txtlen + imglen - target_len : txtlen + imglen]], t), self.last([uncond_combined[:, uncond_txtlen + uncond_imglen - target_len : uncond_txtlen + uncond_imglen]], t)

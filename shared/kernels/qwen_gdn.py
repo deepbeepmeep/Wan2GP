@@ -1,3 +1,6 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+# Portions adapted from flash-linear-attention (https://github.com/fla-org/flash-linear-attention),
+# Copyright (c) 2023-2026 Songlin Yang, Yu Zhang, Zhiyuan Li, MIT License (see docs/third_party_licenses/MIT.txt).
 """Qwen GDN decode fusions, with numerical probes on other NVIDIA targets."""
 import torch
 import triton

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import atexit
@@ -21,6 +22,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from shared.utils.gallery_media import disambiguate_gallery_media_ids, gallery_media_ids
+from shared.utils.gallery_sources import MESH_EXTENSIONS
 
 
 SESSION_SCHEMA_VERSION = 1
@@ -689,6 +691,7 @@ def _capture_snapshot(session) -> dict[str, Any] | None:
                 "generated_client_ids": list(session.generated_client_ids),
                 "selected_visual_signature": str(session.selected_visual_runtime_signature or ""),
                 "selected_audio_signature": str(session.selected_audio_runtime_signature or ""),
+                "selected_mesh_signature": str(session.selected_mesh_runtime_signature or ""),
                 "pending_action": pending_action,
             },
             "environment": copy.deepcopy(session.session_environment),
@@ -1061,6 +1064,7 @@ def load_session(session, storage_id: str, deepy_type: str) -> dict[str, Any]:
     session.generated_client_ids = list(runtime.get("generated_client_ids", []) or [])
     session.selected_visual_runtime_signature = str(runtime.get("selected_visual_signature", "") or "")
     session.selected_audio_runtime_signature = str(runtime.get("selected_audio_signature", "") or "")
+    session.selected_mesh_runtime_signature = str(runtime.get("selected_mesh_signature", "") or "")
     session.rendered_token_ids = []
     session.rendered_messages_len = 0
     session.runtime_snapshot = None
@@ -1082,15 +1086,15 @@ def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
     from shared.deepy import media_registry
     from shared.utils.media_settings import peek_settings
 
-    visual_paths = gen.setdefault("file_list", [])
-    visual_settings = gen.setdefault("file_settings_list", [])
-    audio_paths = gen.setdefault("audio_file_list", [])
-    audio_settings = gen.setdefault("audio_file_settings_list", [])
+    from shared.utils.gallery_sources import GALLERY_SOURCES, source_for_kind
+
+    galleries = {source.id: (gen.setdefault(source.files_key, []), gen.setdefault(source.settings_key, [])) for source in GALLERY_SOURCES}
+    visual_paths, _visual_settings = galleries["video"]
     canonical_paths = {}
     settings_locations = {}
     client_keys = {}
     fingerprints = {}
-    for paths, settings_list in ((visual_paths, visual_settings), (audio_paths, audio_settings)):
+    for paths, settings_list in galleries.values():
         for index, path in enumerate(paths):
             settings = peek_settings(settings_list, index) or {}
             entry = (str(path), settings)
@@ -1122,7 +1126,8 @@ def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
         fingerprint = str(record.get("fingerprint", "") or "")
         settings = dict(media_registry._resolve_settings(str(path), record.get("settings")))
         settings.update({"deepy_session_id": session.storage_session_id, "deepy_media_id": record.get("media_id", ""), "deepy_media_fingerprint": fingerprint})
-        gallery = "audio" if media_type == "audio" else "visual"
+        target = source_for_kind(media_type)
+        gallery = target.media_ids
         settings["gallery_media_ids"] = gallery_media_ids(str(path), gallery, settings)
         existing = canonical_paths.get(canonical)
         candidate = client_keys.get((media_type, client_id)) or fingerprints.get(fingerprint)
@@ -1149,27 +1154,24 @@ def inject_session_media(session, gen: dict[str, Any]) -> dict[str, Any]:
         if client_id:
             settings["client_id"] = client_id
         record["settings"] = settings.copy()
-        if media_type == "audio":
-            audio_paths.append(str(path))
-            audio_settings.append(settings)
-        else:
-            visual_paths.append(str(path))
-            visual_settings.append(settings)
+        target_paths, target_settings = galleries[target.id]
+        target_paths.append(str(path))
+        target_settings.append(settings)
         entry = (str(path), settings)
         canonical_paths[canonical] = entry
-        settings_locations[canonical] = (audio_settings, len(audio_settings) - 1) if media_type == "audio" else (visual_settings, len(visual_settings) - 1)
+        settings_locations[canonical] = (target_settings, len(target_settings) - 1)
         if client_id:
             client_keys[(media_type, client_id)] = entry
         if fingerprint:
             fingerprints[fingerprint] = entry
         injected += 1
-    gen["selected"] = len(visual_paths) - 1
-    gen["audio_selected"] = len(audio_paths) - 1
-    gen["last_selected"] = gen["audio_last_selected"] = True
+    for source in GALLERY_SOURCES:
+        gen[source.selected_key] = len(galleries[source.id][0]) - 1
+        gen[source.last_selected_key] = True
     gen["selected_video_time"] = 0.0 if visual_paths and _detect_media_type(Path(visual_paths[-1])) == "video" else None
     media_registry.sync_tool_call_gallery_media(session, gen)
-    session.seen_video_gallery_paths = [str(path) for path in visual_paths]
-    session.seen_audio_gallery_paths = [str(path) for path in audio_paths]
+    for source, (paths, _settings) in galleries.items():
+        setattr(session, f"seen_{source}_gallery_paths", [str(path) for path in paths])
     return {"injected": injected, "missing": missing}
 
 
@@ -1451,6 +1453,8 @@ def _detect_media_type(path: Path) -> str:
         return "audio"
     if suffix in {".mkv", ".mov", ".mp4", ".m4v", ".webm", ".avi"}:
         return "video"
+    if suffix in MESH_EXTENSIONS:
+        return "3d"
     return "image"
 
 

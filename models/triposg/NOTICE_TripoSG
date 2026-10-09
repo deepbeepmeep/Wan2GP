@@ -1,0 +1,15 @@
+TripoSG
+Copyright (c) 2025 VAST-AI-Research and contributors
+
+This project includes code from the following open source projects:
+
+RMBG
+Copyright (c) BRIA AI
+License: bria-rmbg-1.4
+Source: https://huggingface.co/briaai/RMBG-1.4
+
+This software contains code derived from 🤗 Diffusers (https://github.com/huggingface/diffusers), available under the Apache License 2.0.
+
+This software contains code derived from HunyuanDiT (https://github.com/Tencent/HunyuanDiT). Notice: Tencent Hunyuan is licensed under the Tencent Hunyuan Community License Agreement, Copyright © 2024 Tencent. All Rights Reserved. The trademark rights of “Tencent Hunyuan” are owned by Tencent or its affiliate.
+
+This software contains code derived from FlashVDM (https://github.com/Tencent/FlashVDM). Notice: Tencent Hunyuan FlashVDM is licensed under the Tencent Hunyuan FlashVDM  Community License Agreement, Copyright © 2025 Tencent. All Rights Reserved. The trademark rights of “Tencent Hunyuan” are owned by Tencent or its affiliate.

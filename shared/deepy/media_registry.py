@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import os
@@ -9,18 +10,20 @@ from typing import Any
 
 from shared.utils.audio_video import read_image_metadata
 from shared.utils.gallery_media import gallery_media_ids
+from shared.utils.gallery_sources import GALLERY_SOURCES, MESH_EXTENSIONS, source_for_kind
 from shared.utils.media_settings import peek_settings
 
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
 _VIDEO_EXTENSIONS = {".mkv", ".mov", ".mp4", ".m4v", ".webm", ".avi"}
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus", ".wma"}
-_MEDIA_TYPES = {"image", "video", "audio", "any", "all"}
+_MEDIA_TYPES = {"image", "video", "audio", "3d", "any", "all"}
 PROMPT_SUMMARY_MAX_CHARS = 128
 _TYPE_HINTS = {
     "image": ("image", "images", "picture", "photo", "photos", "pic", "pics"),
     "video": ("video", "videos", "clip", "movie", "footage"),
     "audio": ("audio", "sound", "song", "music", "track", "voice"),
+    "3d": ("3d", "mesh", "glb", "splat", "splats", "gaussians"),
 }
 _ALIAS_PREVIOUS_RE = re.compile(r"\b(previous|prior|before\s+last|second\s+last|penultimate)\b", flags=re.IGNORECASE)
 _ALIAS_LAST_RE = re.compile(r"\b(last|latest|most\s+recent)\b", flags=re.IGNORECASE)
@@ -56,8 +59,8 @@ _REFERENCE_STOPWORDS = {
     "video",
 }
 _SEARCH_LIMIT = 5
-_GALLERY_MEDIA_ID_RE = re.compile(r"(?:visual|audio):[a-f0-9]{12}", re.IGNORECASE)
-_VIRTUAL_MEDIA_PATH_RE = re.compile(r"@[A-Za-z0-9_-]+/[^\r\n<>]*?\.(?:png|jpe?g|webp|bmp|gif|tiff?|jfif|pjpeg|mkv|mov|mp4|m4v|webm|avi|wav|mp3|aac|m4a|flac|ogg|opus|wma)(?=$|[\s\]\[(){}\"'`,.;:!?])", re.IGNORECASE)
+_GALLERY_MEDIA_ID_RE = re.compile(r"(?:visual|audio|3d):[a-f0-9]{12}", re.IGNORECASE)
+_VIRTUAL_MEDIA_PATH_RE = re.compile(r"@[A-Za-z0-9_-]+/[^\r\n<>]*?\.(?:png|jpe?g|webp|bmp|gif|tiff?|jfif|pjpeg|mkv|mov|mp4|m4v|webm|avi|wav|mp3|aac|m4a|flac|ogg|opus|wma|glb|ply)(?=$|[\s\]\[(){}\"'`,.;:!?])", re.IGNORECASE)
 
 
 def normalize_media_type(media_type: str | None, reference: str | None = None) -> str:
@@ -129,7 +132,7 @@ def register_media(
     else:
         session.media_registry.remove(existing)
         session.media_registry.insert(0, existing)
-    gallery = "audio" if detected_type == "audio" else "visual"
+    gallery = source_for_kind(detected_type).media_ids
     ids = gallery_media_ids(path, gallery, existing.get("settings"))
     if (resolved_settings or {}).get("gallery_media_ids"):
         ids = list(dict.fromkeys([*gallery_media_ids(path, gallery, resolved_settings), *ids]))
@@ -188,10 +191,7 @@ def record_media_access(
 
 def sync_tool_call_gallery_media(session, gen: dict[str, Any]) -> list[dict[str, Any]]:
     gallery_records = {}
-    gallery_defs = (
-        ("visual", gen.get("file_list", []), gen.get("file_settings_list", [])),
-        ("audio", gen.get("audio_file_list", []), gen.get("audio_file_settings_list", [])),
-    )
+    gallery_defs = [(source.media_ids, gen.get(source.files_key, []), gen.get(source.settings_key, [])) for source in GALLERY_SOURCES]
     for gallery, paths, settings_list in gallery_defs:
         for index, path in enumerate(paths):
             normalized_path = str(path or "").strip()
@@ -469,6 +469,8 @@ def _detect_media_type(path: str) -> str:
         return "video"
     if ext in _AUDIO_EXTENSIONS:
         return "audio"
+    if ext in MESH_EXTENSIONS:
+        return "3d"
     return "any"
 
 

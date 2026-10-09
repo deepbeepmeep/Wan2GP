@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 Lightricks. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for WanGP.
 """LTX-2.5 SDR-to-HDR IC-LoRA conversion.
 
 The SDR clip is moved to the ACEScct working space and appended as a frozen full-length reference. Every segment

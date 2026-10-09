@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Test the full Wan2GP generation path on MPS."""
 import os, sys
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))

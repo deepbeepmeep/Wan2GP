@@ -1,0 +1,22 @@
+{
+    "model": {
+        "name": "Wan2.1 Fun Control-Camera 1.3B",
+        "architecture": "fun_camera_1.3B",
+        "description": "Alibaba PAI's Wan2.1 Fun Control-Camera: animates a start image (or a text scene) while the camera follows a precise 3D path (preset moves or a custom camera path), using per-pixel camera rays (Plucker embeddings).",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_fun_control_camera_1.3B_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_fun_control_camera_1.3B_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "A quiet Italian river at noon: an old stone bridge lined with yellow houses, a rowing boat gliding on the green water, clouds drifting slowly, realistic photography, high detail.",
+    "image_prompt_type": "S",
+    "resolution": "832x480",
+    "video_length": 81,
+    "num_inference_steps": 50,
+    "guidance_scale": 6.0,
+    "flow_shift": 3.0,
+    "model_mode": "arc_left_45",
+    "custom_settings": {
+        "camera_strength": 100.0
+    }
+}

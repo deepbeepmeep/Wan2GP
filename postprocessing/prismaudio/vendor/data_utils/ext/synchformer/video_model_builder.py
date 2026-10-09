@@ -2,6 +2,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 # Copyright 2020 Ross Wightman
 # Modified Model definition
+# Modified for WanGP.
 
 from collections import OrderedDict
 from functools import partial

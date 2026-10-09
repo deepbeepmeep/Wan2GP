@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Fast, reusable LoRA module-name mapping without tensor transformations."""
 
 from collections.abc import Iterable, Mapping

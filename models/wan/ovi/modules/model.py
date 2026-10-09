@@ -1,7 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-##### Enjoy this spagheti VRAM optimizations done by DeepBeepMeep !
-# I am sure you are a nice person and as you copy this code, you will give me officially proper credits:
-# Please link to https://github.com/deepbeepmeep/Wan2GP and @deepbeepmeep on twitter  
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import math
 import torch
 import torch.amp as amp

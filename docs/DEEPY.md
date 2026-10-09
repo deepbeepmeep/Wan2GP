@@ -79,9 +79,12 @@ You can ask Deepy to:
 - generate video from a prompt, image, or compatible media inputs
 - create a talking video from a still image and speech audio
 - create speech from a description or voice sample, generate songs, and generate sound from a description
-- inspect images and video frames or compare several visuals
-- report useful media details such as dimensions, duration, FPS, frame count, and audio tracks
+- inspect images, video frames, and 3D assets, or compare several visuals
+- report useful media details such as dimensions, duration, FPS, frame count, and audio tracks, and for 3D assets their size and animation frames
 - extract images, clips, or audio; transcribe audio or video; mute or replace a video soundtrack; resize or crop media; compose assets side by side; and merge videos
+- render views of a 3D asset at one consistent scale (front, sides, back, any angle, any animation frame, close-ups, and depth or normal images to guide other models)
+- draw images from a precise layout, with shapes, text, and gallery images placed where needed
+- build a character sheet: the same character from several angles with a title and labels, which then helps keep the character consistent in later images and videos
 - find available LoRAs, explain the active tool defaults, and answer WanGP usage questions
 
 Prime is especially useful for requests with dependencies. It can create an intermediate asset, inspect it, revise it if necessary, and use the accepted result in the next stage.

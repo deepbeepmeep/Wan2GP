@@ -1,0 +1,8 @@
+{
+    "vae": {"enc_depth": 8, "dec_depth": 8, "dim": 256, "output_dim": 48, "latent_dim": 32, "T": 16, "num_traj": 512, "n_layers": 1},
+    "transformer": {"width": 512, "layers": 12, "heads": 8, "input_channels": 64, "output_channels": 64},
+    "normalization": {"f0_mean": 0.205227330327034, "f0_std": 9.064417839050293, "ft_mean": 0.95684415102005, "ft_std": 6.397393703460693},
+    "max_length": 4096,
+    "min_trajectories": 512,
+    "trajectory_ratio": 8
+}

@@ -14,6 +14,7 @@ from accelerate import init_empty_weights
 from safetensors.torch import load_file
 from shared.utils import files_locator as fl
 from shared.utils.phase_progress import generation_progress
+from shared.cuda_memory import mmgp_vram_allocator
 from shared.utils.hdr import VIDEO_PROMPT_HDR_OUTPUT_FLAG, hdr_linear_to_vae_range, sdr_to_vae_range
 
 from .ltx_core.conditioning import AudioConditionByLatent, AudioConditionByLatentPrefix, AudioConditionByReferenceLatent
@@ -396,6 +397,8 @@ class _LTX2VAEHelper:
         output_height: int | None = None,
         output_width: int | None = None,
     ) -> int | tuple[int, int]:
+        if mmgp_vram_allocator():  # no allocator fragmentation to guard against: Default and Low VRAM levels
+            return 256 if vae_config == 3 or device_mem_capacity < 8000 else 512
         if vae_config >= 4:
             vae_config = 0
 

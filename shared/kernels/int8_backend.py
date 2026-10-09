@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Optional INT8 backends shared by Quanto and ConvRot linear layers."""
 from __future__ import annotations
 
@@ -11,8 +12,8 @@ import torch
 from shared.kernels import quanto_int8_inject as triton
 
 
-CHOICES = [("Disabled (PyTorch)", "disabled"), ("Auto", "auto"),
-           ("Triton", "triton"), ("Comfy Kitchen Kernels", "kitchen")]
+CHOICES = [("Disabled: PyTorch (slowest, most precise)", "disabled"), ("Auto (fastest available, less precise)", "auto"),
+           ("Triton (fast, less precise)", "triton"), ("Comfy Kitchen Kernels (fastest, least precise)", "kitchen")]
 _backend = "pytorch"
 revision = 0
 _kitchen = None
@@ -28,6 +29,7 @@ _wide_convrot_triton = None
 _blockwise_triton = None
 _blockwise_required = False
 _kitchen_dlpack_export = None  # (Kitchen module, its own DLPack exporter) while the direct exporter replaces it
+_prepared_capture_streams = set()
 # Bump when changes to INT8 custom operators invalidate compiled graphs.
 _COMPILE_CACHE_VERSION = 3
 # Includes row quantization, a possible INT32 GEMM result, and a temporary output.
@@ -351,6 +353,32 @@ def _cutlass_linear_chunked(x, weight, scale, bias, convrot):
     return out
 
 
+def prepare_capture_stream(stream):
+    """Kitchen's stream-K GEMMs keep a workspace per stream that they allocate on first need and enlarge later: a CUDA graph capture
+    cannot allocate it, and an enlargement would free the workspace of the graphs captured before. The capture stream gets the largest
+    one once (a block per SM with the widest stream-K tile); a capture that would still need more fails instead of replaying stale memory."""
+    key = (stream.cuda_stream, revision)
+    if _backend != "kitchen" or _kitchen_hip or _kitchen._DISABLE_CUTLASS_INT8 or key in _prepared_capture_streams:
+        return
+    device = stream.device
+    if torch.cuda.get_device_capability(device) >= (8, 0):
+        sms = torch.cuda.get_device_properties(device).multi_processor_count
+        m, k = 128 * (2 * sms - 1), 512  # one wave plus all the SMs but one: the most stream-K tiles and blocks
+        wrap = _kitchen._wrap_for_dlpack
+        with torch.inference_mode():
+            a = torch.zeros((m, k), dtype=torch.int8, device=device)
+            xs = torch.ones((m, 1), dtype=torch.float32, device=device)
+            calls = [(config, torch.zeros((n, k), dtype=torch.int8, device=device), torch.ones(n, dtype=torch.float32, device=device),
+                      torch.empty((m, n), dtype=torch.bfloat16, device=device)) for config, n in ((12, 128), (13, 256))]  # stream-K tiles
+            stream.wait_stream(torch.cuda.current_stream(device))
+            for config, b, ws, out in calls:
+                if not _kitchen._C.cutlass_int8_dequant_config(wrap(a), wrap(b), wrap(xs), wrap(ws), wrap(out),
+                                                               _kitchen.DTYPE_TO_CODE[torch.bfloat16], config, stream.cuda_stream):
+                    raise RuntimeError(f"Comfy Kitchen could not prepare the stream-K workspace of tile config {config} for CUDA graphs")
+            torch.cuda.current_stream(device).wait_stream(stream)
+    _prepared_capture_streams.add(key)
+
+
 @torch.inference_mode()
 def _probe_direct_cutlass():
     """Check the actual output-buffer kernel at backend setup, never during capture."""
@@ -540,8 +568,9 @@ def configure(selection, verbose_level=0, *, resolved=None):
         _original_forward = qbytes.WeightQBytesLinearFunction.forward
         qbytes.WeightQBytesLinearFunction.forward = staticmethod(_quanto_forward)
     _backend = backend
-    from mmgp import offload
+    from mmgp import cuda_graphs, offload
     (offload.register_row_projection if backend == "kitchen" else offload.unregister_row_projection)(_KITCHEN_ROW_PROJECTION)
+    cuda_graphs.register_capture_setup(prepare_capture_stream)
     if backend != previous_backend:
         revision += 1
     label = {"kitchen": "Comfy Kitchen HIP" if _kitchen_hip else "Comfy Kitchen CUDA", "triton": "Triton", "pytorch": "PyTorch"}[backend]

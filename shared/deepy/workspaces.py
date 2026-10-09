@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Workspace lifecycle shared by native Gradio and standalone Web access."""
 import logging
 from contextlib import nullcontext

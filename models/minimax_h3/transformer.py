@@ -1,3 +1,4 @@
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from shared.utils.media_control import inference_checkpoint
 # Copyright 2025 The MiniMax Team and The HuggingFace Team. All rights reserved.
 #
@@ -31,6 +32,7 @@ from . import denoiser_kernels
 from shared.kernels import int8_backend
 from .pdd import MiniMaxH3ParallelHead
 from .sol_attention import MiniMaxH3SolAttention
+from mmgp import cuda_graphs
 from .components.packing import (
     MINIMAX_H3_AUDIO_TAG,
     MINIMAX_H3_KEYFRAME_NOISE_AUG,
@@ -931,26 +933,27 @@ class MiniMaxH3Model(nn.Module):
                     control_list = None
             return output
 
-        if first_block_cache is None:
-            for block_index in range(len(self.blocks)):
-                self._check_interrupt()
-                h_list = [hidden]
-                hidden = None
-                hidden = run_block(block_index, h_list)
-        else:
-            self._check_interrupt()
-            hidden, signature = run_block(0, [hidden], first_block_cache.MAX_SIGNATURE_ELEMENTS)
-            if first_block_cache.should_compute(signature):
-                head_output = first_block_cache.capture_head_output(hidden[audio_start:])
-                for block_index in range(1, len(self.blocks)):
+        with cuda_graphs.scope():
+            if first_block_cache is None:
+                for block_index in range(len(self.blocks)):
                     self._check_interrupt()
                     h_list = [hidden]
                     hidden = None
                     hidden = run_block(block_index, h_list)
-                first_block_cache.store_tail_residual(hidden[audio_start:], head_output)
             else:
-                first_block_cache.apply_tail_residual(hidden[audio_start:])
-            control_list = None
+                self._check_interrupt()
+                hidden, signature = run_block(0, [hidden], first_block_cache.MAX_SIGNATURE_ELEMENTS)
+                if first_block_cache.should_compute(signature):
+                    head_output = first_block_cache.capture_head_output(hidden[audio_start:])
+                    for block_index in range(1, len(self.blocks)):
+                        self._check_interrupt()
+                        h_list = [hidden]
+                        hidden = None
+                        hidden = run_block(block_index, h_list)
+                    first_block_cache.store_tail_residual(hidden[audio_start:], head_output)
+                else:
+                    first_block_cache.apply_tail_residual(hidden[audio_start:])
+                control_list = None
 
         audio_row = int(timestep_indices[audio_start + min(layout.num_target_condition_audio_latents,
                                                            max(audio_t - 1, 0))])

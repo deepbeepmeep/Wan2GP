@@ -1,0 +1,10 @@
+{
+    "_source": "facebook/map-anything-apache config.json (Apache-2.0), image-only inference subset",
+    "encoder": {"dim": 1536, "depth": 24, "heads": 24, "swiglu": true},
+    "info_sharing": {"depth": 16, "heads": 24, "indices": [7, 11]},
+    "dpt": {"layer_dims": [96, 192, 384, 768], "feature_dim": 256, "output_dim": 6},
+    "pose_head": {"num_resconv_block": 2},
+    "scale_head": {"hidden_dim": 196, "num_mlp_layers": 2},
+    "resolution_set": {"1.000": [518, 518], "1.321": [518, 392], "1.542": [518, 336], "1.762": [518, 294], "2.056": [518, 252], "3.083": [518, 168],
+                       "0.757": [392, 518], "0.649": [336, 518], "0.567": [294, 518], "0.486": [252, 518]}
+}

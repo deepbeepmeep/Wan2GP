@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Browser-independent state and generation execution shared by CLI and web."""
 from __future__ import annotations
 
@@ -6,6 +7,7 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from shared.utils.gallery_sources import gallery_state_defaults
 from shared.utils.thread_utils import AsyncStream, async_run_in
 
 
@@ -60,16 +62,7 @@ class GenerationRuntime:
                 "queue": [],
                 "queue_errors": {},
                 "in_progress": False,
-                "file_list": [],
-                "file_settings_list": [],
-                "audio_file_list": [],
-                "audio_file_settings_list": [],
-                "selected": -1,
-                "audio_selected": -1,
-                "last_selected": True,
-                "audio_last_selected": True,
-                "last_was_audio": False,
-                "current_gallery_source": "video",
+                **gallery_state_defaults(-1),
                 "selected_video_time": None,
                 "prompt_no": 0,
                 "prompts_max": 0,

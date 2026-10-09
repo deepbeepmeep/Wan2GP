@@ -1,3 +1,4 @@
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from shared.utils.phase_progress import check_abort, control_video_encoding
 # Copyright 2024-2026 The Alibaba Wan Team Authors. All rights reserved.
 # SCAIL-2 helpers for WanGP.

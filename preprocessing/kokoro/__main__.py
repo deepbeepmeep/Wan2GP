@@ -2,14 +2,9 @@
 Example usage:
 python3 -m kokoro --text "The sky above the port was the color of television, tuned to a dead channel." -o file.wav --debug
 
-echo "Bom dia mundo, como vão vocês" > text.txt
-python3 -m kokoro -i text.txt -l p --voice pm_alex > audio.wav
-
 Common issues:
 pip not installed: `uv pip install pip`
 (Temporary workaround while https://github.com/explosion/spaCy/issues/13747 is not fixed)
-
-espeak not installed: `apt-get install espeak-ng`
 """
 
 import argparse
@@ -23,11 +18,6 @@ from loguru import logger
 languages = [
     "a",  # American English
     "b",  # British English
-    "h",  # Hindi
-    "e",  # Spanish
-    "f",  # French
-    "i",  # Italian
-    "p",  # Brazilian Portuguese
     "j",  # Japanese
     "z",  # Mandarin Chinese
 ]

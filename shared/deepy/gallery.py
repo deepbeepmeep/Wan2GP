@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import os
@@ -5,11 +6,13 @@ from typing import Any
 
 from shared.deepy import media_registry
 from shared.deepy.engine import get_or_create_assistant_session
-from shared.utils.utils import get_video_info
+from shared.utils.gallery_sources import GALLERY_SOURCES, VIDEO, gallery_source, source_for_kind
+from shared.utils.utils import get_video_info, has_mesh_file_extension
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".jfif", ".pjpeg"}
 _VIDEO_EXTENSIONS = {".mkv", ".mov", ".mp4", ".webm"}
 _AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".flac", ".m4a", ".ogg", ".wma", ".opus"}
+_SCOPE_GROUPS = {"media": ("Media", VIDEO.id, None), "image": ("Images", VIDEO.id, "image"), "video": ("Videos", VIDEO.id, "video"), "audio": ("Audio", "audio", None), "3d": ("3D Assets", "mesh", None)}
 
 
 class Gallery:
@@ -30,32 +33,28 @@ class Gallery:
             return "video"
         if ext in _AUDIO_EXTENSIONS:
             return "audio"
+        if has_mesh_file_extension(path):
+            return "3d"
         return "any"
 
-    def _resolve_lists(self, audio_only: bool) -> tuple[list[Any], list[Any]]:
+    def _resolve_lists(self, source_id: str) -> tuple[list[Any], list[Any]]:
         gen = self._gen()
-        if audio_only:
-            return gen["audio_file_list"], gen["audio_file_settings_list"]
-        return gen["file_list"], gen["file_settings_list"]
+        source = gallery_source(source_id)
+        return gen[source.files_key], gen[source.settings_key]
 
-    def _select_index(self, index: int, audio_only: bool) -> None:
+    def _select_index(self, index: int, source_id: str) -> None:
         gen = self._gen()
-        file_list, _file_settings_list = self._resolve_lists(audio_only)
+        source = gallery_source(source_id)
+        file_list, _file_settings_list = self._resolve_lists(source_id)
         if len(file_list) == 0:
             index = -1
         else:
             index = max(0, min(int(index), len(file_list) - 1))
-        if audio_only:
-            gen["audio_selected"] = index
-            gen["audio_last_selected"] = (index + 1) >= len(file_list)
-            gen["current_gallery_source"] = "audio"
-            gen["selected_video_time"] = None
-        else:
-            gen["selected"] = index
-            gen["last_selected"] = (index + 1) >= len(file_list)
-            gen["current_gallery_source"] = "video"
-            selected_path = str(file_list[index] or "").strip() if 0 <= index < len(file_list) else ""
-            gen["selected_video_time"] = 0.0 if self._detect_media_type(selected_path) == "video" else None
+        gen[source.selected_key] = index
+        gen[source.last_selected_key] = (index + 1) >= len(file_list)
+        gen["current_gallery_source"] = source.id
+        selected_path = str(file_list[index] or "").strip() if source is VIDEO and 0 <= index < len(file_list) else ""
+        gen["selected_video_time"] = 0.0 if self._detect_media_type(selected_path) == "video" else None
 
     def _register(self, path: str, settings: dict[str, Any] | None = None) -> dict[str, Any] | None:
         settings = settings if isinstance(settings, dict) else None
@@ -69,41 +68,38 @@ class Gallery:
             raise FileNotFoundError(path)
         detected_type = self._detect_media_type(path)
         if detected_type == "any":
-            raise ValueError("Unsupported media type. Use an image, video, or audio file.")
+            raise ValueError("Unsupported media type. Use an image, video, audio or 3D (GLB) file.")
         preferred_type = str(preferred_type or "any").strip().lower() or "any"
         if preferred_type != "any" and detected_type != preferred_type:
             raise ValueError(f"Expected a {preferred_type} file, got a {detected_type} file.")
         configs, _any_image_or_video, any_audio = self._deps.get_settings_from_file(self._state, path, False, False, False)
-        audio_only = detected_type == "audio" or bool(any_audio)
-        file_list, file_settings_list = self._resolve_lists(audio_only)
+        source_id = "audio" if any_audio else source_for_kind(detected_type).id
+        file_list, file_settings_list = self._resolve_lists(source_id)
         normalized_path = os.path.normcase(path)
         for index, existing_path in enumerate(file_list):
             if os.path.normcase(str(existing_path or "")) != normalized_path:
                 continue
-            self._select_index(index, audio_only)
+            self._select_index(index, source_id)
             record = self._register(path, file_settings_list[index] if index < len(file_settings_list) else configs)
             return {"record": record, "added": False}
         file_list.append(path)
         file_settings_list.append(configs if isinstance(configs, dict) else None)
-        self._select_index(len(file_list) - 1, audio_only)
+        self._select_index(len(file_list) - 1, source_id)
         record = self._register(path, configs)
         return {"record": record, "added": True}
 
-    def counts(self) -> tuple[int, int]:
+    def counts(self) -> dict[str, int]:
         gen = self._gen()
-        return len(gen["file_list"]), len(gen["audio_file_list"])
+        return {source.id: len(gen[source.files_key]) for source in GALLERY_SOURCES}
 
-    def sync_latest_generated(self, before_counts: tuple[int, int]) -> None:
+    def sync_latest_generated(self, before_counts: dict[str, int]) -> None:
         gen = self._gen()
-        before_files, before_audio = before_counts
-        if len(gen["file_list"]) > before_files:
-            if gen["last_selected"]:
-                self._select_index(len(gen["file_list"]) - 1, False)
-            self._register(str(gen["file_list"][-1] or ""), gen["file_settings_list"][-1] if gen["file_settings_list"] else None)
-        if len(gen["audio_file_list"]) > before_audio:
-            if gen["audio_last_selected"]:
-                self._select_index(len(gen["audio_file_list"]) - 1, True)
-            self._register(str(gen["audio_file_list"][-1] or ""), gen["audio_file_settings_list"][-1] if gen["audio_file_settings_list"] else None)
+        for source in GALLERY_SOURCES:
+            file_list, file_settings_list = gen[source.files_key], gen[source.settings_key]
+            if len(file_list) > before_counts[source.id]:
+                if gen[source.last_selected_key]:
+                    self._select_index(len(file_list) - 1, source.id)
+                self._register(str(file_list[-1] or ""), file_settings_list[-1] if file_settings_list else None)
 
     def sync_refresh_path(self, payload: Any) -> None:
         if not isinstance(payload, dict):
@@ -112,26 +108,24 @@ class Gallery:
         if len(path) == 0:
             return
         detected_type = self._detect_media_type(path)
-        if detected_type == "audio":
-            file_list = self._gen()["audio_file_list"]
-            if path in file_list and self._gen()["audio_last_selected"]:
-                self._select_index(file_list.index(path), True)
-        elif detected_type in {"image", "video"}:
-            file_list = self._gen()["file_list"]
-            if path in file_list and self._gen()["last_selected"]:
-                self._select_index(file_list.index(path), False)
+        if detected_type == "any":
+            return
+        source = source_for_kind(detected_type)
+        file_list = self._gen()[source.files_key]
+        if path in file_list and self._gen()[source.last_selected_key]:
+            self._select_index(file_list.index(path), source.id)
 
-    def _iter_records(self, audio_only: bool | None = None) -> list[tuple[bool, int, dict[str, Any], str]]:
+    def _iter_records(self, source_id: str | None = None) -> list[tuple[str, int, dict[str, Any], str]]:
         gen = self._gen()
         groups = []
         # Rendering a large retained workspace must not re-register every media
         # (registry insertion/search is linear). Invalidate on metadata replacement
         # or session registry reset, while retaining the original registration path.
         registered = {id(record) for record in self._session.media_registry}
-        for audio in (False, True):
-            if audio_only is not None and audio != audio_only:
+        for source in GALLERY_SOURCES:
+            if source_id is not None and source.id != source_id:
                 continue
-            file_list, file_settings_list = self._resolve_lists(audio)
+            file_list, file_settings_list = self._resolve_lists(source.id)
             for index, path in enumerate(file_list):
                 settings = file_settings_list[index]
                 cached = self._record_views.get(path)
@@ -143,40 +137,29 @@ class Gallery:
                         self._record_views[path] = (settings, record)
                         registered.add(id(record))
                 if record is not None:
-                    groups.append((audio, index, record, path))
-        if audio_only is None:
-            active = set(gen['file_list']) | set(gen['audio_file_list'])
+                    groups.append((source.id, index, record, path))
+        if source_id is None:
+            active = {path for source in GALLERY_SOURCES for path in gen[source.files_key]}
             self._record_views = {path: value for path, value in self._record_views.items() if path in active}
         return groups
 
     def list_lines(self, media_scope: str = "all") -> list[str]:
         scope = str(media_scope or "all").strip().lower()
-        if scope not in {"all", "media", "image", "video", "audio"}:
+        if scope not in {"all", *_SCOPE_GROUPS}:
             scope = "all"
         gen = self._gen()
         lines = []
-        media_items = self._iter_records(False)
-        audio_items = self._iter_records(True)
         groups = []
-        if scope == "all":
-            groups.append(("Media", media_items))
-            groups.append(("Audio", audio_items))
-        elif scope == "media":
-            groups.append(("Media", media_items))
-        elif scope == "image":
-            groups.append(("Images", [item for item in media_items if item[2].get("media_type") == "image"]))
-        elif scope == "video":
-            groups.append(("Videos", [item for item in media_items if item[2].get("media_type") == "video"]))
-        elif scope == "audio":
-            groups.append(("Audio", audio_items))
+        for group_scope in (("media", "audio", "3d") if scope == "all" else (scope,)):
+            header, source_id, media_type = _SCOPE_GROUPS[group_scope]
+            items = self._iter_records(source_id)
+            groups.append((header, items if media_type is None else [item for item in items if item[2].get("media_type") == media_type]))
         for header, items in groups:
             if len(items) == 0:
                 continue
             lines.append(f"{header}:")
-            for audio_only, index, record, path in items:
-                is_selected = (audio_only and gen["current_gallery_source"] == "audio" and gen["audio_selected"] == index) or (
-                    (not audio_only) and gen["current_gallery_source"] == "video" and gen["selected"] == index
-                )
+            for source_id, index, record, path in items:
+                is_selected = gen["current_gallery_source"] == source_id and gen[gallery_source(source_id).selected_key] == index
                 selected_suffix = ""
                 if is_selected and record.get("media_type") == "video":
                     selected_suffix = f" @ {float(gen.get('selected_video_time', 0.0) or 0.0):.3f}s"
@@ -190,14 +173,14 @@ class Gallery:
             return ["No media available."]
         return lines
 
-    def _resolve_by_reference(self, reference: str, media_type: str = "any") -> tuple[bool, int] | None:
+    def _resolve_by_reference(self, reference: str, media_type: str = "any") -> tuple[str, int] | None:
         ref = str(reference or "").strip()
         if len(ref) == 0:
             return None
         normalized_media_type = media_registry.normalize_media_type(media_type)
         candidates = [
-            (audio_only, index, record, path)
-            for audio_only, index, record, path in self._iter_records()
+            (source_id, index, record, path)
+            for source_id, index, record, path in self._iter_records()
             if normalized_media_type == "any" or str(record.get("media_type", "")).strip() == normalized_media_type
         ]
         if ref.isdigit():
@@ -207,12 +190,12 @@ class Gallery:
             return None
         record = media_registry.get_media_record(self._session, ref)
         if record is not None and (normalized_media_type == "any" or str(record.get("media_type", "")).strip() == normalized_media_type):
-            for audio_only, index, candidate, _path in candidates:
+            for source_id, index, candidate, _path in candidates:
                 if candidate.get("media_id") == record.get("media_id"):
-                    return audio_only, index
+                    return source_id, index
         normalized_ref = ref.lower()
         matches = []
-        for audio_only, index, record, path in candidates:
+        for source_id, index, record, path in candidates:
             haystack = " ".join(
                 [
                     str(record.get("media_id", "") or ""),
@@ -222,7 +205,7 @@ class Gallery:
                 ]
             ).lower()
             if normalized_ref in haystack:
-                matches.append((audio_only, index))
+                matches.append((source_id, index))
         if len(matches) == 1:
             return matches[0]
         return None
@@ -231,17 +214,17 @@ class Gallery:
         resolved = self._resolve_by_reference(reference, media_type=media_type)
         if resolved is None:
             return None
-        audio_only, index = resolved
-        self._select_index(index, audio_only)
-        file_list, file_settings_list = self._resolve_lists(audio_only)
+        source_id, index = resolved
+        self._select_index(index, source_id)
+        file_list, file_settings_list = self._resolve_lists(source_id)
         settings = file_settings_list[index] if index < len(file_settings_list) else None
         return self._register(str(file_list[index] or ""), settings)
 
     def selected_summary(self) -> str:
         gen = self._gen()
-        audio_only = gen.get("current_gallery_source", "video") == "audio"
-        file_list, file_settings_list = self._resolve_lists(audio_only)
-        choice = gen["audio_selected"] if audio_only else gen["selected"]
+        source = gallery_source(gen.get("current_gallery_source", VIDEO.id))
+        file_list, file_settings_list = self._resolve_lists(source.id)
+        choice = gen[source.selected_key]
         if choice is None or choice < 0 or choice >= len(file_list):
             return "No media is currently selected."
         record = self._register(str(file_list[choice] or ""), file_settings_list[choice] if choice < len(file_settings_list) else None)
@@ -316,14 +299,12 @@ class Gallery:
 
     def clear_media(self) -> None:
         gen = self._gen()
-        gen["file_list"].clear()
-        gen["file_settings_list"].clear()
-        gen["audio_file_list"].clear()
-        gen["audio_file_settings_list"].clear()
-        gen["selected"] = -1
-        gen["audio_selected"] = -1
-        gen["last_selected"] = gen["audio_last_selected"] = True
-        gen["current_gallery_source"] = "video"
+        for source in GALLERY_SOURCES:
+            gen[source.files_key].clear()
+            gen[source.settings_key].clear()
+            gen[source.selected_key] = -1
+            gen[source.last_selected_key] = True
+        gen["current_gallery_source"] = VIDEO.id
         gen["selected_video_time"] = None
         self._session.media_registry.clear()
         with self._session.turn_lock:

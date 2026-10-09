@@ -47,7 +47,7 @@ In the configuration menu, **INT8 Math Kernels** selects the backend for INT8 qu
 - **Auto** (default): tries Comfy Kitchen CUDA on NVIDIA or HIP on AMD ROCm, then Triton, then PyTorch when neither backend is available.
 - **Triton**: selects WanGP's Triton INT8 kernels. See [Triton Installation](#triton-installation) below.
 - **Comfy Kitchen Kernels**: selects Kitchen's native CUDA or HIP kernels for the current PyTorch runtime.
-- **Disabled (PyTorch)**: uses the standard PyTorch/Quanto path.
+- **Disabled: PyTorch**: uses the standard PyTorch/Quanto path.
 
 Kitchen falls back to Triton when unavailable, and Triton falls back to PyTorch when unavailable, including explicit selections. Startup reports the backend actually selected. Finish the current generation before changing the selection. Weights stay loaded; autoregressive CUDA graphs and KV caches rebuild on the next request when the resolved backend changes. Existing `enable_int8_kernels` configurations migrate automatically: enabled becomes `int8_kernels: "auto"`, disabled becomes `int8_kernels: "disabled"`.
 
@@ -120,9 +120,11 @@ pip install sageattention==1.0.6
 ```
 
 #### Windows: Install SageAttention 2 for RTX 30XX-50XX
+For the recommended PyTorch 2.10 environment:
 ```
-pip install https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl
+pip install https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post6/sageattention-2.2.0+cu130torch2.10.0andhigher.post6-cp310-abi3-win_amd64.whl
 ```
+This version (or a later one) is needed for the **CUDA Graph** compilation mode to keep SageAttention's fastest kernels on RTX 40XX/50XX: with older versions, CUDA Graph mode switches the attention to slower SageAttention kernels.
 
 #### Linux: Install SageAttention 1 for RTX 20XX
 ```
@@ -130,10 +132,19 @@ pip install sageattention==1.0.6
 ```
 
 #### Linux: Install SageAttention 2 for RTX 30XX-50XX
+Prebuilt wheels come from the [WanGP SageAttention fork](https://github.com/deepbeepmeep/SageAttention), no compilation needed. They also keep SageAttention's fastest kernels in **CUDA Graph** mode.
+
+For the recommended Python 3.11 / PyTorch 2.10 / CUDA 13 environment:
 ```
-python -m pip install "setuptools<=75.8.2" --force-reinstall
-git clone https://github.com/thu-ml/SageAttention
-cd SageAttention 
+pip install https://github.com/deepbeepmeep/SageAttention/releases/download/v2.2.0-linux.cg1/sageattention-2.2.0+cu130torch2.10.0.cg1-cp311-cp311-linux_x86_64.whl
+```
+The `cp311` part of the file name (it appears twice) is the Python version (3.11) and must match your environment's Python: with Python 3.10 or 3.12, replace it with `cp310` or `cp312` (see the [release page](https://github.com/deepbeepmeep/SageAttention/releases/tag/v2.2.0-linux.cg1)). These wheels work only with PyTorch 2.10 and CUDA 13, and need a Linux distribution from 2018 or later (glibc 2.28). The 1 click installer picks the right wheel automatically.
+
+For another PyTorch version, compile the fork instead (this takes a while):
+```
+python -m pip install "setuptools<=75.8.2" ninja wheel --force-reinstall
+git clone https://github.com/deepbeepmeep/SageAttention
+cd SageAttention
 pip install --no-build-isolation -e .
 ```
 

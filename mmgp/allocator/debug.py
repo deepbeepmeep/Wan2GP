@@ -29,6 +29,8 @@ import time
 
 import torch
 
+from . import events as _events
+
 KINDS = ("chunk range", "small pool", "mid-size pool", "spilled", "graph pool", "driver spill")
 GB, MB = 2 ** 30, 2 ** 20
 
@@ -63,6 +65,7 @@ class _Recording:
         self.named_models = set()
         self.patched = []
         self.t0 = 0.0  # the library's recording clock starts with start()
+        self.event_cursor = self.release_cursor = 0  # the MMGP events (events.py) and releases already reported
 
 
 def _library():
@@ -192,6 +195,8 @@ def start(min_mb=16, stacks=True, max_stacks_per_s=0, watch_mmgp=True):
     rec = _Recording(min_mb, stacks, max_stacks_per_s)
     _use_module_hooks()
     torch.Tensor._allocator_tag = property(_tag_get, _tag_set)
+    _events.start()
+    rec.event_cursor, rec.release_cursor = len(_events.events), len(_events.releases)
     if watch_mmgp:
         _watch_mmgp(rec)
     _rec = rec
@@ -210,6 +215,7 @@ def stop():
     _release_module_hooks()
     for owner, attribute, original in rec.patched:
         setattr(owner, attribute, original)
+    _events.stop()
     del torch.Tensor._allocator_tag
 
 
@@ -381,7 +387,19 @@ def report(path=None):
     origins.sort(key=lambda origin: -origin["total_gb"])
     live = _groups(rec, live_entries, time.perf_counter() - rec.t0)
     used = {group["stack"] for phase in phases + ([oom] if oom else []) for group in phase["groups"]} | {group["stack"] for group in live} | {origin["stack"] for origin in origins[:200]}
-    result = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "threshold_mb": rec.min_mb, "phases": phases, "out_of_memory": oom, "live_now": live, "origins": origins[:200],
+    entries, rec.event_cursor = _events.since(rec.event_cursor)
+    releases = []  # the models released since the previous report, and the recorded VRAM their modules still hold
+    for release in _events.releases[rec.release_cursor:]:
+        models = set(release["models"])
+        held = [group for group in live if group["module"] and group["module"].split(".")[0] in models]
+        releases.append({"time_s": round(release["t"] - rec.t0, 2), "models": sorted(models), "alive": sorted(model_id for model_id, info in release["models"].items() if info["ref"]() is not None),
+                         "files": {model_id: info["files"] for model_id, info in release["models"].items() if info["files"]},
+                         "vram_still_held_gb": round(sum(group["mb"] for group in held) / 1024, 3), "groups": held})
+    rec.release_cursor = len(_events.releases)
+    from . import stats
+    allocator = {key: round(value / GB, 3) if key not in ("chunks", "live_large", "recoveries") else value for key, value in stats().items()}
+    result = {"created": time.strftime("%Y-%m-%d %H:%M:%S"), "threshold_mb": rec.min_mb, "allocator": allocator, "phases": phases, "out_of_memory": oom, "live_now": live, "origins": origins[:200],
+              "releases": releases, "events": _events.as_json(entries, rec.t0),
               "stacks": {str(stack_id): [_frame_text(code, line) for code, line in rec.stack_frames[stack_id][:40]] for stack_id in sorted(used) if stack_id >= 0}}
     if path:
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -416,6 +434,18 @@ def _phase_summary(phase, title):
 def summary(result):
     """Markdown summary of a report."""
     text = [f"# VRAM debug report, {result['created']}: allocations of {result['threshold_mb']} MB and more\n\n"]
+    allocator = result.get("allocator")
+    if allocator:
+        text.append(f"VRAM allocator now: in use {allocator['allocated']:.2f} GiB, reserved {allocator['reserved']:.2f} GiB (graph pools {allocator['graph_pools']:.2f}); "
+                    f"peaks since the last reset: in use {allocator['peak_allocated']:.2f}, reserved {allocator['peak_reserved']:.2f} GiB; spilled to RAM {allocator['spilled']:.2f} GiB "
+                    f"pinned, {allocator['driver_spilled']:.2f} GiB through the driver; {allocator['recoveries']} recoveries (VRAM short).\n\n")
+    for release in result.get("releases", []):
+        files = release.get("files", {})
+        names = ", ".join(model_id + (" (" + ", ".join(files[model_id]) + ")" if model_id in files else "") for model_id in release["models"])
+        text.append(f"Release of {names} at {release['time_s']:.1f} s: "
+                    + (f"**models still alive: {', '.join(release['alive'])}**; " if release["alive"] else "")
+                    + (f"**{release['vram_still_held_gb']:.2f} GiB of recorded VRAM still held by their modules**:\n\n{_table(release['groups'], 15)}\n\n" if release["groups"]
+                       else "no recorded VRAM left by their modules.\n\n"))
     for phase in result["phases"]:
         text.append(_phase_summary(phase, f"Peak of phase {phase['name']} ({phase['time_s']:.1f} s)"))
     if result["out_of_memory"]:
@@ -427,6 +457,8 @@ def summary(result):
         text.append(f"| {origin['count']} | {origin['total_gb']:.2f} | {origin['max_mb']:.0f} | {'-' if life is None else f'{life:.1f}'} | "
                     f"{origin['module'] or '-'} | {origin['where'] or '-'} | {origin['tag'] or '-'} |\n")
     text.append(f"\n## Recorded allocations alive when the report was written\n\n{_table(result['live_now'], 25)}\n\n")
+    if "events" in result:
+        text.append("## MMGP memory events since the previous report\n\n" + _events.timeline_json(result["events"]))
     text.append("Stacks (innermost frame first) are in the JSON report under `stacks`, by the `stack` id of each group.\n")
     return "".join(text)
 

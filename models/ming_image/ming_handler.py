@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """WanGP integration for inclusionAI Ming-Image-0.1-Design.
 
 The checkpoint URLs describe the prepared DeepBeepMeep layout.  The

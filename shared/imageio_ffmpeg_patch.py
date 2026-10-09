@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Keep imageio's Linux FFmpeg launches from copying CUDA-pinned host RAM."""
 import os
 import sys

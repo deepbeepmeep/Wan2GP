@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Spatial upsampler plugin API.
 
 Every spatial upsampler (built-in or extension) class is listed in

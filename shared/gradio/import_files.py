@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Gallery uploads retain their original names alongside Gradio's cache paths."""
 import gradio as gr
 

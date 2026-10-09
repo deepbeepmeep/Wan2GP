@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Modified for WanGP.
 """In-place Q/K RMSNorm + RoPE for strided fused-projection views."""
 
 from __future__ import annotations

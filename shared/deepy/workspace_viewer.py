@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Paged native workspace management, independent of Gradio component state."""
 import hashlib
 import json
@@ -8,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 
 from shared.utils.downloads import register_download, register_file_download, stream_writer
+from shared.utils.gallery_sources import GALLERY_SOURCES, SOURCES
 from shared.utils.gallery_view import gallery_offset
 from shared.utils.config_store import update_config
 from shared.utils.workspaces import ARCHIVE_AFTER_DAYS_KEY, ARCHIVE_PERIODS
@@ -60,9 +62,9 @@ class WorkspaceViewer:
             return {'archive_protected': protected}
 
     def _catalog(self, source):
-        if source not in ('video', 'audio'):
-            raise ValueError('Choose the image/video or audio gallery.')
-        prefix = 'audio_' if source == 'audio' else ''
+        if source not in SOURCES:
+            raise ValueError('Choose one of the workspace galleries.')
+        prefix = SOURCES[source].prefix
         gen = self.service._state['gen']
         paths = gen[prefix + 'file_list']
         signature = (self.service.workspace_id, tuple(paths), self.service._deps.get_server_config()['clear_file_list'])
@@ -101,11 +103,12 @@ class WorkspaceViewer:
                 exists = os.path.isfile(path)
                 download = register_file_download(path) if exists else None
                 item = {'key': entry['key'], 'index': entry['index'], 'name': Path(path).name, 'kind': kind, 'visible': entry['index'] >= offset, 'url': download['url'] if exists else None, 'size': download['size_bytes'] if exists else None}
-                if exists and kind in ('image', 'video'):
+                if exists and kind in ('image', 'video', '3d'):
                     item['thumbnail'] = 'deepy_api/workspace_viewer/thumbnail?' + urlencode({'workspace': workspace, 'source': source, 'key': entry['key'], 'v': os.stat(path).st_mtime_ns})
                 items.append(item)
             record = self.service.workspaces.get(workspace)
-            return {'workspace': workspace, 'name': record['name'], 'last_activity': record['last_activity'], 'archive_protected': record['archive_protected'], 'source': source, 'revision': catalog['revision'], 'page': page, 'pages': pages, 'total': count, 'visible': count - offset, 'items': items, 'selected': [key for key in selected if key in catalog['by_key']]}
+            sources = [{'id': gallery.id, 'label': gallery.label, 'accept': gallery.accept} for gallery in GALLERY_SOURCES]
+            return {'workspace': workspace, 'sources': sources, 'name': record['name'], 'last_activity': record['last_activity'], 'archive_protected': record['archive_protected'], 'source': source, 'revision': catalog['revision'], 'page': page, 'pages': pages, 'total': count, 'visible': count - offset, 'items': items, 'selected': [key for key in selected if key in catalog['by_key']]}
 
     def _entry(self, workspace, source, key):
         if workspace != self.service.workspace_id:
@@ -118,8 +121,7 @@ class WorkspaceViewer:
     def info(self, workspace, source, key):
         with self.service._mutation_lock:
             entry = self._entry(workspace, source, key)
-            prefix = 'audio_' if source == 'audio' else ''
-            settings = self.service._state['gen'][prefix + 'file_settings_list'][entry['index']]
+            settings = self.service._state['gen'][SOURCES[source].settings_key][entry['index']]
             return {'html': self.service._deps.callbacks.emit_first('format_media_info', entry['path'], settings)}
 
     def thumbnail_path(self, workspace, source, key):
@@ -188,14 +190,14 @@ class WorkspaceViewer:
                         removed.add(os.path.normcase(path))
                     except OSError as exc:
                         failures.append(f'{Path(path).name}: {exc.strerror}')
-                for group in ('', 'audio_'):
+                for group in (gallery.prefix for gallery in GALLERY_SOURCES):
                     retain_entries(gen, group, [i for i, path in enumerate(gen[group + 'file_list']) if os.path.normcase(os.path.abspath(path)) not in removed], inplace=True)
                 with service.workspaces.lock:
                     for target in service.workspaces.catalog():
                         if target['id'] == workspace:
                             continue
                         saved = dict(service.workspaces.get(target['id'])['gallery'])
-                        for group in ('', 'audio_'):
+                        for group in (gallery.prefix for gallery in GALLERY_SOURCES):
                             paths = saved.get(group + 'file_list', [])
                             indices = [i for i, path in enumerate(paths) if os.path.normcase(os.path.abspath(path)) not in removed]
                             if len(indices) != len(paths):

@@ -1,3 +1,4 @@
+/* Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt) */
 .wangp-workspaces {display:flex; align-items:center; gap:3px; margin-left:auto; padding:2px 0 2px 12px; min-width:0; flex-shrink:0;}
 .wangp-workspaces[hidden] {display:none;}
 .wangp-workspaces [data-workspace-action][hidden] {display:none;}

@@ -612,13 +612,14 @@ class OmniVoicePipeline:
         return segments or ([normalized.strip()] if normalized.strip() else [])
 
     def _parse_two_speaker_dialogue(self, text: str, auto_split_seconds: Optional[float], speaker_prompts: dict[int, Optional[VoiceClonePrompt]]) -> list[tuple[int, str]]:
+        speaker_count = len(speaker_prompts)
         speaker_matches = list(re.finditer(r"Speaker\s*(\d+)\s*:\s*", text, flags=re.IGNORECASE))
         if not speaker_matches:
-            raise ValueError("Two-speaker mode requires prompt lines using Speaker 1: and Speaker 2:.")
+            raise ValueError(f"{speaker_count}-speaker mode requires prompt lines using Speaker 1: to Speaker {speaker_count}:.")
         speaker_ids = sorted({int(match.group(1)) for match in speaker_matches})
-        if len(speaker_ids) != 2:
-            raise ValueError("Two-speaker mode requires exactly two speaker IDs. Use Speaker 1: and Speaker 2:.")
-        speaker_id_to_internal = {speaker_ids[0]: 0, speaker_ids[1]: 1}
+        if len(speaker_ids) != speaker_count:
+            raise ValueError(f"{speaker_count}-speaker mode requires exactly {speaker_count} speaker IDs. Use Speaker 1: to Speaker {speaker_count}:.")
+        speaker_id_to_internal = {speaker_id: index for index, speaker_id in enumerate(speaker_ids)}
         segments: list[tuple[int, str]] = []
         for index, match in enumerate(speaker_matches):
             start = match.end()
@@ -633,7 +634,7 @@ class OmniVoicePipeline:
         return segments
 
     @staticmethod
-    def _resolve_two_speaker_ref_texts(raw_ref_text: str) -> list[str]:
+    def _resolve_two_speaker_ref_texts(raw_ref_text: str, speaker_count: int) -> list[str]:
         normalized = str(raw_ref_text or "").replace("\r\n", "\n").replace("\r", "\n")
         matches = list(re.finditer(r"Speaker\s*(\d+)\s*:\s*", normalized, flags=re.IGNORECASE))
         if matches:
@@ -642,10 +643,9 @@ class OmniVoicePipeline:
                 start = match.end()
                 end = matches[index + 1].start() if index + 1 < len(matches) else len(normalized)
                 values[int(match.group(1))] = normalized[start:end].strip()
-            speaker_ids = sorted(values)
-            return [values.get(speaker_ids[0], ""), values.get(speaker_ids[1], "")] if len(speaker_ids) >= 2 else [values.get(speaker_ids[0], ""), ""]
+            return ([values[speaker_id] for speaker_id in sorted(values)] + [""] * speaker_count)[:speaker_count]
         lines = [line.strip() for line in normalized.split("\n") if line.strip()]
-        return [(lines[0] if len(lines) > 0 else ""), (lines[1] if len(lines) > 1 else "")]
+        return (lines + [""] * speaker_count)[:speaker_count]
 
     def _create_voice_clone_prompt(self, audio_source, ref_text: Optional[str], generation_config: OmniVoiceGenerationConfig) -> VoiceClonePrompt:
         return self.model.create_voice_clone_prompt(audio_source, ref_text=ref_text, preprocess_prompt=generation_config.preprocess_prompt)
@@ -867,6 +867,7 @@ class OmniVoicePipeline:
         seed: int = -1,
         callback=None,
         audio_guide2: Optional[str] = None,
+        audio_guide3: Optional[str] = None,
         audio_prompt_type: str = "",
         offloadobj=None,
         custom_settings=None,
@@ -917,12 +918,10 @@ class OmniVoicePipeline:
                 raise ValueError("Speaker 1 reference audio is required for OmniVoice two-speaker mode.")
             if not audio_guide2:
                 raise ValueError("Speaker 2 reference audio is required for OmniVoice two-speaker mode.")
-            speaker_ref_texts = [None, None] if voice_clone_instruct else [text.strip() or None for text in self._resolve_two_speaker_ref_texts(instruction_or_ref)]
+            reference_audios = [audio_guide, audio_guide2] + ([audio_guide3] if "D" in str(audio_prompt_type).upper() else [])
+            speaker_ref_texts = [None] * len(reference_audios) if voice_clone_instruct else [text.strip() or None for text in self._resolve_two_speaker_ref_texts(instruction_or_ref, len(reference_audios))]
             try:
-                speaker_prompts = {
-                    0: self._create_voice_clone_prompt(audio_guide, speaker_ref_texts[0], generation_config),
-                    1: self._create_voice_clone_prompt(audio_guide2, speaker_ref_texts[1], generation_config),
-                }
+                speaker_prompts = {index: self._create_voice_clone_prompt(audio, speaker_ref_texts[index], generation_config) for index, audio in enumerate(reference_audios)}
             finally:
                 self._release_whisper_model()
             segments = self._parse_two_speaker_dialogue(text, auto_split_seconds, speaker_prompts)

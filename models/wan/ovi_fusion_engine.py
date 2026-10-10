@@ -1,6 +1,7 @@
 import os
 
 import torch
+from shared.utils.phase_progress import generation_progress
 import logging
 from textwrap import indent
 import torch.nn as nn
@@ -126,6 +127,7 @@ class OviFusionEngine:
 
 
     @torch.no_grad()
+    @generation_progress
     def generate(self,
                     input_prompt, 
                     image_start=None,
@@ -146,6 +148,7 @@ class OviFusionEngine:
                     audio_negative_prompt="",
                     loras_slists = None,
                     callback = None,
+                    set_progress_status = None,
                     block_size = 0,                    
                     VAE_tile_size = 0,
                     joint_pass = False,
@@ -196,6 +199,8 @@ class OviFusionEngine:
 
         text_embeddings = self.text_encoder([input_prompt, n_prompt, audio_negative_prompt], device= self.device)
         text_embeddings = [emb.to(self.target_dtype).to(self.device) for emb in text_embeddings]
+        if set_progress_status is not None:
+            set_progress_status("Preparing Audio and Video Conditioning")
         # Split embeddings
         text_embeddings_audio_pos = text_embeddings[0]
         text_embeddings_video_pos = text_embeddings[0] 
@@ -223,9 +228,9 @@ class OviFusionEngine:
 		
         from .modules.posemb_layers import get_rotary_pos_embed, get_nd_rotary_pos_embed
 
-        video_freqs = get_nd_rotary_pos_embed((0, 0, 0 ), (video_latent_length, video_latent_h//2, video_latent_w//2 ))
+        video_freqs = get_nd_rotary_pos_embed((0, 0, 0 ), (video_latent_length, video_latent_h//2, video_latent_w//2 ), device=self.device)
         # audio_freqs = get_nd_rotary_pos_embed((0,), (audio_latent_length, ), interpolation_factor= self.model.audio_model.temporal_rope_scaling_factor, rope_dim_list= [44])	
-        audio_freqs = self.model.audio_model.get_audio_rope_params()		
+        audio_freqs = self.model.audio_model.get_audio_rope_params(self.device)		
         video_noise = torch.randn((self.video_latent_channel, video_latent_length, video_latent_h, video_latent_w), device=self.device, dtype=self.target_dtype, generator=torch.Generator(device=self.device).manual_seed(seed))  # c, f, h, w
         audio_noise = torch.randn((audio_latent_length, self.audio_latent_channel), device=self.device, dtype=self.target_dtype, generator=torch.Generator(device=self.device).manual_seed(seed))  # 1, l c -> l, c
         def ret():

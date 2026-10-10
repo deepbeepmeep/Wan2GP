@@ -532,6 +532,8 @@ class CLIPModel:
             clean='whitespace')
 
     def visual(self, videos,):
+        from shared.utils.phase_progress import set_phase_status
+        set_phase_status("Encoding Image Features")
         # preprocess
         size = (self.model.image_size,) * 2
         videos = torch.cat([

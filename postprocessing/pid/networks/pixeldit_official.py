@@ -1,3 +1,4 @@
+from shared.utils.media_control import inference_checkpoint
 # PixelDiT T2I — consolidated network architecture.
 # Verbatim copy from the original PixelDiT repo, merged into a single file.
 # Sources:
@@ -1509,6 +1510,7 @@ class PixDiT_T2I(nn.Module):
                     attn_mask_joint = torch.cat([pad_txt, pad_img], dim=1).view(B, 1, 1, Ltxt + L_img_curr)
 
                 for i in range(self.patch_depth):
+                    inference_checkpoint()
                     s_main, y_emb = self.patch_blocks[i](s_main, y_emb, condition, pos_b, pos_txt, attn_mask_joint)
                     if 0 < self.repa_encoder_index == (i + 1):
                         self.last_repa_tokens = s_main
@@ -1534,6 +1536,7 @@ class PixDiT_T2I(nn.Module):
                     attn_mask_joint = torch.cat([pad_txt, pad_img], dim=1).view(B, 1, 1, Ltxt + L_img_curr)
 
                 for i in range(self.patch_depth):
+                    inference_checkpoint()
                     s_main, y_emb = self.patch_blocks[i](s_main, y_emb, condition, pos, pos_txt, attn_mask_joint)
                     if 0 < self.repa_encoder_index == (i + 1):
                         self.last_repa_tokens = s_main
@@ -1558,6 +1561,7 @@ class PixDiT_T2I(nn.Module):
         x = None
         x_pixels = self.pixel_embedder(x_list, img_height=H, img_width=W, patch_size=self.patch_size)
         for blk in self.pixel_blocks:
+            inference_checkpoint()
             x_pixels = blk(x_pixels, s_cond, H, W, self.patch_size, mask)
 
         # Project back to image and fold

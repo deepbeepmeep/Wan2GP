@@ -1,6 +1,7 @@
 """Model construction and checkpoint loading for MiniMax H3."""
 
 import os
+import re
 from functools import partial
 
 import torch
@@ -11,20 +12,45 @@ from shared.utils import files_locator as fl
 
 from .audio_vae import MiniMaxH3AudioVAE
 from .convrot_layout import get_convrot_layout, restore_interleaved_h3_qkv
+from .latent_upscaler import MiniMaxH3LatentUpscaler
 from .pipeline import MiniMaxH3Pipeline
 from .text_encoder import MiniMaxH3TextEncoder, load_h3_qwen_config
 from .transformer import MiniMaxH3Model, get_linear_split_map
 from .video_vae import MiniMaxH3VideoVAE, get_video_vae_linear_split_map
+from .viggle import load_fixed_prompt
+from .vae_upsampler import X2_VAE_FILE, X2_VAE_INT8_FILE, X2_VAE_VALUE
 
 
 VIDEO_VAE_FILE = "MiniMax-H3-video_vae_fp16.safetensors"
 VIDEO_VAE_FP8MIX_FILE = "minimax_h3_video_vae_fp8mix.safetensors"
+VIDEO_VAE_INT8_FILE = "minimax_h3/minimax_h3_video_vae_int8_convrot.safetensors"
 AUDIO_VAE_FILE = "MiniMax-H3-audio_vae_fp32.safetensors"
+LATENT_UPSCALER_FOLDER = "minimax_h3"
+LATENT_UPSCALER_FILE = "minimax_h3_latent_upscaler_3d_bf16.safetensors"
 TEXT_ENCODER_FOLDER = "Qwen3-VL-32B-Instruct"
 ADALN_CURVE_DIM = 8
+NUM_TRANSFORMER_BLOCKS = 50
 
 
-def _strip_wrappers(state_dict, quantization_map=None, tied_weights_map=None, qkv_splitting=True):
+def _hybrid_ref2va_blocks(filename):
+    filenames = filename if isinstance(filename, (list, tuple)) else [filename]
+    ranges = set()
+    for path in filenames:
+        match = re.search(r"hybrid[_-]fl2va[_-]ref2va[_-]b(\d+)-(\d+)", os.path.basename(path), re.IGNORECASE)
+        if match:
+            ranges.add(tuple(map(int, match.groups())))
+    if not ranges:
+        return None
+    if len(ranges) != 1:
+        raise ValueError(f"MiniMax H3 checkpoint files specify conflicting hybrid block ranges: {sorted(ranges)}")
+    start, end = ranges.pop()
+    if not 0 <= start <= end < NUM_TRANSFORMER_BLOCKS:
+        raise ValueError(f"Invalid MiniMax H3 hybrid Ref2VA block range b{start}-{end}; expected blocks 0-{NUM_TRANSFORMER_BLOCKS - 1}")
+    return start, end
+
+
+def _strip_wrappers(state_dict, quantization_map=None, tied_weights_map=None, qkv_splitting=True, pdd=False,
+                    ref2va_adaln_t_table=None):
     if qkv_splitting:
         restore_interleaved_h3_qkv(state_dict)
     prefixes = ("model.diffusion_model.", "diffusion_model.")
@@ -38,10 +64,24 @@ def _strip_wrappers(state_dict, quantization_map=None, tied_weights_map=None, qk
                 if key.startswith(prefix):
                     key = key[len(prefix):]
                     break
+            if key.startswith("transformer_blocks.") and ".attn.linear_attention." in key:
+                key = "blocks." + key[len("transformer_blocks."):].replace(".attn.linear_attention.", ".attn.vdn.linear_attention.")
+            elif key.startswith("transformer_blocks.") and ".attn.softmax_gate." in key:
+                key = "blocks." + key[len("transformer_blocks."):].replace(".attn.softmax_gate.", ".attn.vdn.softmax_gate.")
+            elif key.startswith("transformer_blocks.") and ".attn.to_out_linear." in key:
+                key = "blocks." + key[len("transformer_blocks."):].replace(".attn.to_out_linear.", ".attn.vdn.to_out_linear.")
+            if pdd and (key.startswith("final_layer.video_out.") or key.startswith("final_layer.audio_out.") or
+                        key in ("final_layer.video_out", "final_layer.audio_out")):
+                continue
+            if pdd and key.startswith("pdd_heads."):
+                key = "final_layer." + key[len("pdd_heads."):]
             result[key] = value
         return result
 
-    return strip(state_dict), strip(quantization_map), strip(tied_weights_map)
+    state_dict = strip(state_dict)
+    if ref2va_adaln_t_table is not None:
+        state_dict["ref2va_adaln_t_table"] = ref2va_adaln_t_table
+    return state_dict, strip(quantization_map), strip(tied_weights_map)
 
 
 def _strip_text_encoder_wrapper(state_dict, quantization_map=None, tied_weights_map=None):
@@ -52,6 +92,7 @@ def _strip_text_encoder_wrapper(state_dict, quantization_map=None, tied_weights_
 def probe_h3_checkpoint(filename):
     """Inspect tensor headers before allocating the network."""
     checkpoint_path = filename[0] if isinstance(filename, (list, tuple)) else filename
+    hybrid_ref2va_blocks = _hybrid_ref2va_blocks(filename)
     state_dict, _ = quant_router.load_metadata_state_dict(checkpoint_path)
     normalized = {}
     for key, value in state_dict.items():
@@ -62,7 +103,11 @@ def probe_h3_checkpoint(filename):
         normalized[key] = value
     table = next((tensor for key, tensor in normalized.items() if key == "adaln_t_table"), None)
     if table is None:
-        return {"compressed_modulation": False, "adaln_curve_grid": None, "time_embed_dim": 2688}
+        if hybrid_ref2va_blocks is not None:
+            raise ValueError("MiniMax H3 FL2VA/Ref2VA hybrid checkpoints require compressed AdaLN tables")
+        return {"compressed_modulation": False, "adaln_curve_grid": None, "time_embed_dim": 2688, "adaln_dtype": None}
+    if not table.dtype.is_floating_point:
+        raise ValueError(f"H3 AdaLN curve table must use an unquantized floating-point GGUF qtype, got {table.dtype}")
     if len(table.shape) != 2 or table.shape[0] < 2:
         raise ValueError(f"Invalid H3 AdaLN curve table shape: {tuple(table.shape)}")
     rank = int(table.shape[1])
@@ -71,21 +116,63 @@ def probe_h3_checkpoint(filename):
             f"MiniMax H3 pruned checkpoint '{checkpoint_path}' uses non-official AdaLN rank {rank}; the official rank is {ADALN_CURVE_DIM}. "
             "This file may be incompatible with MiniMax H3 LoRAs. Delete it and retry so WanGP can automatically download the official replacement."
         )
-    return {"compressed_modulation": True, "adaln_curve_grid": int(table.shape[0]), "time_embed_dim": rank}
+    return {"compressed_modulation": True, "adaln_curve_grid": int(table.shape[0]), "time_embed_dim": rank, "adaln_dtype": table.dtype,
+            "hybrid_ref2va_blocks": hybrid_ref2va_blocks}
 
 
-def _load_transformer(filename, dtype, qkv_splitting=True):
+def probe_h3_control_module(filenames, time_embed_dim):
+    """Return the control layers and input channels of an attached ControlNet-Union module."""
+    layers, control_in_dim = set(), 0
+    for path in filenames:
+        state_dict, _ = quant_router.load_metadata_state_dict(path)
+        for key, value in state_dict.items():
+            if key.startswith("blocks.") and key.endswith(".control.adaln_proj.linear.weight"):
+                layers.add(int(key.split(".")[1]))
+                if value.shape[1] != time_embed_dim:
+                    raise ValueError(f"MiniMax H3 control module '{os.path.basename(path)}' uses AdaLN width {value.shape[1]} but the transformer uses {time_embed_dim}; "
+                                     "pair pruned control modules with pruned transformers and full modules with full transformers")
+            elif key == "control_patch_proj.weight":
+                control_in_dim = value.shape[1] // 4
+    if layers and (0 not in layers or not control_in_dim):
+        raise ValueError("Incomplete MiniMax H3 control module: it must include the layer-0 control block and control_patch_proj")
+    return tuple(sorted(layers)), control_in_dim
+
+
+def _resample_adaln_table(table, rows, dtype):
+    if table.shape[0] != rows:
+        position = torch.linspace(0, table.shape[0] - 1, rows, device=table.device)
+        lower = position.floor().long().clamp(max=table.shape[0] - 2)
+        table = torch.lerp(table[lower], table[lower + 1], (position - lower).unsqueeze(1))
+    return table.to(dtype=dtype)
+
+
+def _load_transformer(filename, dtype, qkv_splitting=True, qkv_layout="interleaved", pdd=False,
+                      pdd_num_steps=None, pdd_block_size=None, vdn=False):
     checkpoint = probe_h3_checkpoint(filename)
+    hybrid_ref2va_blocks = checkpoint.get("hybrid_ref2va_blocks")
+    filenames = list(filename) if isinstance(filename, (list, tuple)) else [filename]
+    ref2va_adaln_t_table = None
+    if hybrid_ref2va_blocks is not None:
+        from .lora_affine import _load_affine_package
+        ref2va_adaln_t_table = _resample_adaln_table(_load_affine_package("ref2va", checkpoint["time_embed_dim"])[0],
+                                                     checkpoint["adaln_curve_grid"], checkpoint["adaln_dtype"])
+        start, end = hybrid_ref2va_blocks
+        print(f"MiniMax H3: detected FL2VA/Ref2VA hybrid checkpoint; blocks {start}-{end} use the Ref2VA AdaLN table, "
+              "and all other blocks plus the final layer use the FL2VA table.")
+    if pdd and (int(pdd_num_steps) < 1 or int(pdd_block_size) < 1 or int(pdd_num_steps) % int(pdd_block_size)):
+        raise ValueError(f"Invalid MiniMax H3 PDD grid={pdd_num_steps}, block={pdd_block_size}")
+    control_layers, control_in_dim = probe_h3_control_module(filenames[1:], checkpoint["time_embed_dim"])
     with init_empty_weights(include_buffers=True):
-        transformer = MiniMaxH3Model(adaln_curve_grid=checkpoint["adaln_curve_grid"], time_embed_dim=checkpoint["time_embed_dim"],
-                                     dtype=dtype, device="meta")
-    filenames = filename if isinstance(filename, (list, tuple)) else [filename]
-    split_map = get_linear_split_map(transformer.attention_inner_size) if qkv_splitting and not any(path.lower().endswith(".gguf") for path in filenames) else None
+        transformer = MiniMaxH3Model(adaln_curve_grid=checkpoint["adaln_curve_grid"], time_embed_dim=checkpoint["time_embed_dim"], adaln_dtype=checkpoint["adaln_dtype"],
+                                     hybrid_ref2va_blocks=hybrid_ref2va_blocks, pdd_num_steps=pdd_num_steps,
+                                     pdd_block_size=pdd_block_size, vdn=vdn, control_layers=control_layers,
+                                     control_in_dim=control_in_dim, dtype=dtype, device="meta")
+    split_map = get_linear_split_map(transformer.attention_inner_size, qkv_layout=qkv_layout) if qkv_splitting and not any(path.lower().endswith(".gguf") for path in filenames) else None
     if split_map is not None:
         offload.split_linear_modules(transformer, split_map)
     transformer.requires_grad_(False)
-    preprocess_sd = partial(_strip_wrappers, qkv_splitting=qkv_splitting)
-    offload.load_model_data(transformer, filename, writable_tensors=False, default_dtype=dtype, preprocess_sd=preprocess_sd,
+    preprocess_sd = partial(_strip_wrappers, qkv_splitting=qkv_splitting, pdd=pdd, ref2va_adaln_t_table=ref2va_adaln_t_table)
+    offload.load_model_data(transformer, filenames, writable_tensors=False, default_dtype=dtype, preprocess_sd=preprocess_sd,
                             fused_split_map=split_map)
     transformer.eval().requires_grad_(False)
     transformer.h3_checkpoint_info = checkpoint
@@ -108,23 +195,35 @@ def _load_text_encoder(filename, dtype):
     return text_encoder
 
 
-def _load_video_vae(filename, dtype, qkv_splitting=True):
+def _load_video_vae(filename, qkv_splitting=True, upsampling=False):
     filename = fl.locate_file(filename)
+    dtype = quant_router.load_metadata_state_dict(filename)[0]["encoder.conv_in.weight"].dtype
+    dtype = torch.float16 if dtype == torch.float32 else dtype  # checkpoint-native FP16/BF16; FP32 wastes VRAM for little precision
     print(f"Loading MiniMax H3 Video VAE '{filename}'...")
     with init_empty_weights(include_buffers=False):
-        vae = MiniMaxH3VideoVAE()
+        vae = MiniMaxH3VideoVAE(upsampling=upsampling)
     split_map = get_video_vae_linear_split_map() if qkv_splitting else None
     if split_map is not None:
         offload.split_linear_modules(vae, split_map)
     def preprocess(state_dict):
-        state_dict.pop("latents_mean", None)
-        state_dict.pop("latents_std", None)
+        for name in ("latents_mean", "latents_std"):
+            if upsampling:
+                state_dict["_" + name] = state_dict.pop(name)
+            else:
+                state_dict.pop(name, None)
+        if upsampling:
+            # B32 consumes source RGB encoder features and is not part of latent decoding.
+            for name in [key for key in state_dict if key.startswith("detail_b32.")]:
+                del state_dict[name]
         return state_dict
 
-    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=dtype, preprocess_sd=preprocess,
+    # X2's learned tensors are FP16. Give quantized layers the same compute dtype
+    # instead of inheriting FP32 from the empty model's constructor.
+    offload.load_model_data(vae, filename, writable_tensors=False, default_dtype=None if upsampling else dtype, fp32_dtype=dtype, preprocess_sd=preprocess,
                             fused_split_map=split_map)
     vae.split_linear_modules_map = split_map
     vae._model_dtype = dtype
+    vae.upsampling_set = X2_VAE_VALUE if upsampling else None
     vae.eval().requires_grad_(False)
     return vae
 
@@ -149,15 +248,38 @@ def _load_audio_vae(filename):
     return vae
 
 
-def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=torch.bfloat16, VAE_dtype=torch.float32, save_quantized=False,
+def _load_latent_upscaler(filename):
+    filename = fl.locate_file(filename)
+    previous_dtype = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(torch.bfloat16)
+        with init_empty_weights(include_buffers=True):
+            upscaler = MiniMaxH3LatentUpscaler()
+    finally:
+        torch.set_default_dtype(previous_dtype)
+    offload.load_model_data(upscaler, filename, writable_tensors=False, default_dtype=torch.bfloat16)
+    return upscaler.eval().requires_grad_(False)
+
+
+def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=torch.bfloat16, save_quantized=False,
                   model_type="minimax_h3_fl2va", reference_mode=False, video_vae_filename=VIDEO_VAE_FILE,
-                  audio_vae_filename=AUDIO_VAE_FILE):
-    transformer = _load_transformer(model_filename, dtype, qkv_splitting)
-    text_encoder = _load_text_encoder(text_encoder_filename, dtype)
-    video_vae_qkv_splitting = qkv_splitting and video_vae_filename == VIDEO_VAE_FILE
-    video_vae = _load_video_vae(video_vae_filename, VAE_dtype, video_vae_qkv_splitting)
-    audio_vae = _load_audio_vae(audio_vae_filename)
-    pipeline = MiniMaxH3Pipeline(transformer, text_encoder, video_vae, audio_vae, reference_mode=reference_mode, dtype=dtype)
+                  audio_vae_filename=AUDIO_VAE_FILE, latent_upscaler_filename=os.path.join(LATENT_UPSCALER_FOLDER, LATENT_UPSCALER_FILE),
+                  shared_h3_pipeline=None, qkv_layout="interleaved", pdd=False, pdd_num_steps=None, pdd_block_size=None, vdn=False, audio_only=False,
+                  fixed_prompt_filename=None):
+    transformer = _load_transformer(model_filename, dtype, qkv_splitting, qkv_layout, pdd, pdd_num_steps, pdd_block_size, vdn)
+    if shared_h3_pipeline is None:
+        text_encoder = _load_text_encoder(text_encoder_filename, dtype) if fixed_prompt_filename is None else None
+        video_vae_qkv_splitting = qkv_splitting and video_vae_filename in (VIDEO_VAE_FILE, X2_VAE_FILE)
+        video_vae = _load_video_vae(video_vae_filename, video_vae_qkv_splitting, upsampling=video_vae_filename in (X2_VAE_FILE, X2_VAE_INT8_FILE))
+        audio_vae = _load_audio_vae(audio_vae_filename)
+        latent_upscaler = _load_latent_upscaler(latent_upscaler_filename) if fixed_prompt_filename is None else None
+    else:
+        text_encoder = shared_h3_pipeline.text_encoder
+        video_vae = shared_h3_pipeline.vae
+        audio_vae = shared_h3_pipeline.audio_vae
+        latent_upscaler = shared_h3_pipeline.latent_upscaler
+    fixed_prompt = load_fixed_prompt(fixed_prompt_filename) if fixed_prompt_filename is not None else None
+    pipeline = MiniMaxH3Pipeline(transformer, text_encoder, video_vae, audio_vae, latent_upscaler=latent_upscaler, reference_mode=reference_mode, audio_only=audio_only, dtype=dtype, fixed_prompt=fixed_prompt)
     if save_quantized:
         from wgp import save_quantized_model
         save_quantized_model(transformer, model_type, model_filename[0], dtype, None,
@@ -165,5 +287,5 @@ def model_factory(model_filename, text_encoder_filename, qkv_splitting, dtype=to
     return pipeline
 
 
-__all__ = ["ADALN_CURVE_DIM", "AUDIO_VAE_FILE", "TEXT_ENCODER_FOLDER", "VIDEO_VAE_FILE",
-           "VIDEO_VAE_FP8MIX_FILE", "model_factory", "probe_h3_checkpoint"]
+__all__ = ["ADALN_CURVE_DIM", "AUDIO_VAE_FILE", "LATENT_UPSCALER_FILE", "LATENT_UPSCALER_FOLDER", "TEXT_ENCODER_FOLDER",
+           "VIDEO_VAE_FILE", "VIDEO_VAE_FP8MIX_FILE", "VIDEO_VAE_INT8_FILE", "model_factory", "probe_h3_checkpoint"]

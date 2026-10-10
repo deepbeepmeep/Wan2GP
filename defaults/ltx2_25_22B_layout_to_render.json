@@ -1,0 +1,29 @@
+{
+    "model": {
+        "name": "LTX-2 2.5 Layout to Render 22B",
+        "architecture": "ltx2_25_22B_layout_to_render",
+        "description": "Turn a viewport animation or playblast into a finished shot using an appearance reference. Supports two-phase generation with optional tiled phase 2.",
+        "URLs": "ltx2_25_22B_distilled",
+        "loras": [
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/loras/ltx-2.5-22b-ic-lora-layout-to-render-1.0.safetensors"
+        ],
+        "loras_multipliers": [
+            "1;1"
+        ],
+        "ltx2_pipeline": "distilled",
+        "ltx2_layout_to_render": true
+    },
+    "prompt": "A weathered stone well surrounded by summer grass and small white flowers. Warm midday sunlight, realistic stone and wood, matching the appearance reference.",
+    "video_prompt_type": "VGI",
+    "num_inference_steps": 8,
+    "guidance_phases": 2,
+    "video_length": 121,
+    "resolution": "1920x1088",
+    "denoising_strength": 1.0,
+    "masking_strength": 0.0,
+    "input_video_strength": 1.0,
+    "remove_background_images_ref": 0,
+    "prompt_enhancer": "",
+    "force_fps": "control",
+    "seed": -1
+}

@@ -11,6 +11,9 @@ from collections import OrderedDict
 import torch
 from mmgp import offload
 from tqdm.auto import tqdm
+
+from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io
+from shared.deepy.config import DEEPY_REPETITION_PENALTY_DEFAULT, DEEPY_REPETITION_PENALTY_KEY, get_deepy_config_value, normalize_deepy_repetition_penalty
 from shared.utils import files_locator as fl
 from shared.llm_engines.nanovllm import SamplingParams
 from shared.llm_engines.nanovllm.models.qwen3_5 import Qwen3_5ForCausalLM, clear_qwen35_runtime_caches
@@ -44,20 +47,25 @@ from .qwen35_vl import (
 
 QWEN35_TEXT_VLLM_SWITCH_ENV = "WGP_QWEN35_PROMPT_ENHANCER_VLLM"
 QWEN35_TEXT_VLLM_CUDAGRAPH_ENV = "WGP_QWEN35_PROMPT_ENHANCER_VLLM_CUDAGRAPH"
+# Debug switch: keep vLLM kernels active while forcing eager execution.
+QWEN35_TEXT_VLLM_DISABLE_CUDAGRAPH = False #True
 QWEN35_GGUF_LLAMACPP_ENV = "WGP_GGUF_LLAMACPP_CUDA"
 QWEN35_PROMPT_MIN_NEW_TOKENS = 4
+QWEN35_PROMPT_MIN_MODEL_LEN = 8000
 QWEN35_PROMPT_DEFAULT_TOP_K = 20
 QWEN35_PROMPT_DEFAULT_MIN_P_GGUF = 0.05
-QWEN35_PROMPT_ENABLE_PRESENCE_PENALTY = True
+QWEN35_PENALTY_MODE = "repetition"  # "none", "presence", or "repetition"
+QWEN35_PREDICTIVE_PENALTY_ENABLED = False
 QWEN35_PROMPT_PRESENCE_PENALTY = 1.5
+QWEN35_PROMPT_REPETITION_PENALTY = 1.05
 QWEN35_PROMPT_SUPPRESS_LOGITS_BIAS = -1e4
 QWEN35_PROMPT_ENABLE_THINKING = False
 QWEN35_PROMPT_THINKING_EXTRA_TOKENS = 3000
 QWEN35_PROMPT_THINKING_MAX_TOKENS = 2000
 # Applied only to variants that ship a native MTP block.
 QWEN35_PROMPT_ENABLE_SPECULATIVE_DECODING = False
-QWEN35_PROMPT_SPECULATIVE_TOKENS = 5
-QWEN35_PROMPT_SPECULATIVE_SAMPLING_TOKENS = 4
+QWEN35_PROMPT_SPECULATIVE_TOKENS = 2
+QWEN35_PROMPT_SPECULATIVE_SAMPLING_TOKENS = 2
 
 
 def _env_enabled(name: str, default: bool = True) -> bool:
@@ -106,7 +114,10 @@ def _resolve_gguf_linear_attention_layout_from_filename(model_path: str) -> tupl
     if filename in {
         "qwen3.5-9b-abliterated-text-q4-k-m-bis.gguf",
         "qwen3.8-27b-uncensored-q4-k-m.gguf",
+        "qwen3.8-27b-uncensored-nomtp-iq3-s.gguf",
         "qwen3.8-27b-uncensored-iq2-m.gguf",
+        "qwen3.8-9b-uncensored-heretic-q4-k-m.gguf",
+        "qwen3.8-9b-uncensored-heretic-q8-0.gguf",
     }:
         return True, True, False
     if filename in {
@@ -176,67 +187,76 @@ def _resolve_quanto_log_ssm_a(model_path: str, spec: dict) -> bool:
     return filename in log_ssm_a_filenames or (bool(spec.get("text_int8_log_ssm_a", False)) and filename == selected_filename)
 
 
-def _normalize_generated_text(text: str) -> str:
+def _normalize_generated_text(text: str, *, keep_trailing_newlines: bool = False) -> str:
     text = str(text or "")
     text = text.replace("<|im_end|>", "").replace("<|im_start|>", "")
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
-    return "\n".join(line for line in lines if line).strip()
+    text = "\n".join(lines)
+    return text.lstrip() if keep_trailing_newlines else text.strip()
 
 
-def _clean_answer_text(text: str) -> str:
+def _clean_answer_text(text: str, *, keep_trailing_newlines: bool = False) -> str:
     text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"^(?:\s*</think>\s*)+", "", text, flags=re.IGNORECASE)
     text = text.replace("<think>", "\n").replace("</think>", "\n")
     text = re.sub(r"^\s*assistant\s*:?\s*", "", text, flags=re.IGNORECASE)
-    text = re.split(
+    parts = re.split(
         r"(?:<\|im_start\|>\s*(?:assistant|user|system|tool)\b|<tool_call>\s*|<tool_response>\s*|<tools>\s*|\n\s*(?:assistant|user|system|tool)\s*:)",
         text,
         maxsplit=1,
         flags=re.IGNORECASE,
-    )[0]
+    )
+    text = parts[0]
     cleaned_lines = []
     for line in text.split("\n"):
         stripped = line.strip()
-        if len(stripped) == 0:
-            continue
         if stripped.lower() == "code interpreter":
             break
         cleaned_lines.append(line)
-    return _normalize_generated_text("\n".join(cleaned_lines))
+    return _normalize_generated_text("\n".join(cleaned_lines), keep_trailing_newlines=keep_trailing_newlines and len(parts) == 1)
 
 
-def _split_generated_text(text: str) -> tuple[str, str]:
+def _split_generated_parts(text: str, *, keep_trailing_newlines: bool = False) -> tuple[list[str], str]:
     text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
-    think_chunks = [match.group(1) for match in re.finditer(r"<think>\s*(.*?)\s*</think>", text, flags=re.DOTALL | re.IGNORECASE)]
-    answer_text = re.sub(r"<think>.*?</think>", "\n", text, flags=re.DOTALL | re.IGNORECASE)
-    if len(think_chunks) == 0:
-        close_matches = list(re.finditer(r"</think>", text, flags=re.IGNORECASE))
-        if len(close_matches) >= 2:
-            trailing_text = text[close_matches[-1].end():]
+    think_chunks = []
+    answer_parts = []
+    cursor = 0
+    first_open = re.search(r"<think>", text, flags=re.IGNORECASE)
+    first_close = re.search(r"</think>", text, flags=re.IGNORECASE)
+    if first_close is not None and (first_open is None or first_close.start() < first_open.start()):
+        leading_reasoning = _normalize_generated_text(text[:first_close.start()].replace("<think>", "\n"))
+        if len(leading_reasoning) > 0:
+            think_chunks.append(leading_reasoning)
+        cursor = first_close.end()
+    remaining = text[cursor:]
+    explicit_cursor = 0
+    for match in re.finditer(r"<think>\s*(.*?)\s*</think>", remaining, flags=re.DOTALL | re.IGNORECASE):
+        answer_parts.append(remaining[explicit_cursor:match.start()])
+        if len(match.group(1).strip()) > 0:
+            think_chunks.append(match.group(1))
+        explicit_cursor = match.end()
+    trailing = remaining[explicit_cursor:]
+    unmatched_open = re.search(r"<think>\s*(.*)\Z", trailing, flags=re.DOTALL | re.IGNORECASE)
+    if unmatched_open is not None:
+        answer_parts.append(trailing[:unmatched_open.start()])
+        if len(unmatched_open.group(1).strip()) > 0:
+            think_chunks.append(unmatched_open.group(1))
+    else:
+        answer_parts.append(trailing)
+    answer_text = "\n".join(answer_parts)
+    if len(think_chunks) <= 1:
+        close_matches = list(re.finditer(r"</think>", answer_text, flags=re.IGNORECASE))
+        if close_matches:
+            trailing_text = answer_text[close_matches[-1].end():]
             trailing_preview = re.sub(r"(?:<\|im_end\|>\s*|</s>\s*)+$", "", trailing_text, flags=re.IGNORECASE).lstrip()
             if len(trailing_preview) == 0 or trailing_preview.lower().startswith("<tool_call>"):
-                recovered_chunks = []
-                leading_reasoning = _normalize_generated_text(text[: close_matches[0].start()].replace("<think>", "\n"))
-                middle_reasoning = _normalize_generated_text(text[close_matches[0].end() : close_matches[-1].start()].replace("<think>", "\n"))
-                if len(leading_reasoning) > 0:
-                    recovered_chunks.append(leading_reasoning)
-                if len(middle_reasoning) > 0:
-                    recovered_chunks.append(middle_reasoning)
-                if len(recovered_chunks) > 0:
-                    think_chunks.extend(recovered_chunks)
-                    answer_text = trailing_text
-        if len(think_chunks) == 0:
-            forced_open_match = re.search(r"</think>", text, flags=re.IGNORECASE)
-            if forced_open_match is not None:
-                forced_reasoning = text[:forced_open_match.start()]
-                forced_reasoning = forced_reasoning.replace("<think>", "\n")
-                forced_reasoning = _normalize_generated_text(forced_reasoning)
-                if len(forced_reasoning) > 0:
-                    think_chunks.append(forced_reasoning)
-                answer_text = text[forced_open_match.end():]
+                recovered_reasoning = _normalize_generated_text(answer_text[:close_matches[-1].start()].replace("<think>", "\n"))
+                if len(recovered_reasoning) > 0:
+                    think_chunks.append(recovered_reasoning)
+                answer_text = trailing_text
     if len(think_chunks) == 0:
         timeline_match = re.search(r"(?mi)^\(at\s+[0-9]+(?:\.[0-9]+)?\s+seconds?\s*:", text)
         if timeline_match is not None:
@@ -244,8 +264,12 @@ def _split_generated_text(text: str) -> tuple[str, str]:
             if leading_text.lower().startswith("thinking process"):
                 think_chunks.append(leading_text)
                 answer_text = text[timeline_match.start():]
-    answer_text = re.sub(r"<think>.*$", "\n", answer_text, flags=re.DOTALL | re.IGNORECASE)
-    return _normalize_generated_text("\n\n".join(chunk for chunk in think_chunks if chunk.strip())), _clean_answer_text(answer_text)
+    return [normalized for chunk in think_chunks if len(normalized := _normalize_generated_text(chunk)) > 0], _clean_answer_text(answer_text, keep_trailing_newlines=keep_trailing_newlines)
+
+
+def _split_generated_text(text: str, *, keep_trailing_newlines: bool = False) -> tuple[str, str]:
+    think_chunks, answer_text = _split_generated_parts(text, keep_trailing_newlines=keep_trailing_newlines)
+    return _normalize_generated_text("\n\n".join(think_chunks)), answer_text
 
 
 def _clean_generated_text(text: str) -> str:
@@ -350,6 +374,17 @@ class _ThinkingBudgetState:
             for token_id in {int(token_id) for token_id in tuple(stop_token_ids or ()) if int(token_id) >= 0}
             if token_id != self.close_think_token_id
         )
+        self._stop_index_cache = {}
+        self._close_index_cache = {}
+
+    @staticmethod
+    def _token_index(logits: torch.Tensor, token_ids: tuple[int, ...], cache: dict) -> torch.Tensor:
+        cache_key = (logits.shape[-1], logits.device)
+        index = cache.get(cache_key)
+        if index is None:
+            index = torch.tensor([token_id for token_id in token_ids if token_id < logits.shape[-1]], dtype=torch.long, device=logits.device)
+            cache[cache_key] = index
+        return index
 
     def enabled(self) -> bool:
         return self.in_thinking
@@ -368,12 +403,13 @@ class _ThinkingBudgetState:
             return logits
         if self.generated_thinking_tokens < self.max_thinking_tokens:
             if self.stop_token_ids:
-                blocked_ids = [token_id for token_id in self.stop_token_ids if token_id < logits.shape[-1]]
-                if blocked_ids:
-                    logits[..., blocked_ids] = float("-inf")
+                blocked_ids = self._token_index(logits, self.stop_token_ids, self._stop_index_cache)
+                if blocked_ids.numel():
+                    logits.index_fill_(-1, blocked_ids, float("-inf"))
             return logits
         logits.fill_(float("-inf"))
-        logits[..., self.close_think_token_id] = 0
+        close_id = self._token_index(logits, (self.close_think_token_id,), self._close_index_cache)
+        logits.index_fill_(-1, close_id, 0)
         return logits
 
 
@@ -389,14 +425,32 @@ def _build_chat_prompt(tokenizer, message, enable_thinking: bool = False):
     return text.rstrip() + "\n"
 
 
+def _resolve_prompt_penalty_mode(model) -> str:
+    mode = str(getattr(model, "_prompt_enhancer_penalty_mode", QWEN35_PENALTY_MODE)).strip().lower()
+    if mode not in {"none", "presence", "repetition"}:
+        raise ValueError(f"Unknown Qwen3.5 penalty mode: {mode}")
+    return mode
+
+
 def _resolve_prompt_presence_penalty(model) -> float | None:
-    if not bool(getattr(model, "_prompt_enhancer_enable_presence_penalty", QWEN35_PROMPT_ENABLE_PRESENCE_PENALTY)):
+    if _resolve_prompt_penalty_mode(model) != "presence":
         return None
     presence_penalty = getattr(model, "_prompt_enhancer_presence_penalty", QWEN35_PROMPT_PRESENCE_PENALTY)
     if presence_penalty is None:
         return None
     presence_penalty = float(presence_penalty)
     return presence_penalty if presence_penalty > 0 else None
+
+
+def _resolve_prompt_repetition_penalty(model) -> float:
+    if _resolve_prompt_penalty_mode(model) != "repetition":
+        return 1.0
+    repetition_penalty = float(getattr(model, "_prompt_enhancer_repetition_penalty", QWEN35_PROMPT_REPETITION_PENALTY))
+    return repetition_penalty if repetition_penalty > 0 else 1.0
+
+
+def _resolve_predictive_penalty_enabled(model) -> bool:
+    return bool(getattr(model, "_prompt_enhancer_predictive_penalty_enabled", QWEN35_PREDICTIVE_PENALTY_ENABLED))
 
 
 def _build_presence_penalty_logits_processor(presence_penalty: float | None):
@@ -408,15 +462,37 @@ def _build_presence_penalty_logits_processor(presence_penalty: float | None):
         state.apply_(logits)
         return logits
 
+    logits_processor._requires_input_ids = False
+
     def update_state(token_id: int):
         state.update(token_id)
 
     return logits_processor, update_state
 
 
-def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, max_thinking_tokens_override: int | None = None):
+def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, max_thinking_tokens_override: int | None = None, suppress_token_ids: tuple[int, ...] = ()):
     processors = []
+    processors_without_penalty = []
     update_callbacks = []
+    thinking_state = None
+
+    suppressed_ids = tuple(dict.fromkeys(int(token_id) for token_id in suppress_token_ids if int(token_id) >= 0))
+    if suppressed_ids:
+        suppressed_index_cache = {}
+
+        def suppress_tokens_logits_processor(_input_ids, logits):
+            cache_key = (logits.shape[-1], logits.device)
+            valid_ids = suppressed_index_cache.get(cache_key)
+            if valid_ids is None:
+                valid_ids = torch.tensor([token_id for token_id in suppressed_ids if token_id < logits.shape[-1]], dtype=torch.long, device=logits.device)
+                suppressed_index_cache[cache_key] = valid_ids
+            if valid_ids.numel():
+                logits.index_fill_(-1, valid_ids, float("-inf"))
+            return logits
+
+        suppress_tokens_logits_processor._is_token_mask = True
+        processors.append(suppress_tokens_logits_processor)
+        processors_without_penalty.append(suppress_tokens_logits_processor)
 
     presence_processor, presence_update_state = _build_presence_penalty_logits_processor(_resolve_prompt_presence_penalty(model))
     if presence_processor is not None:
@@ -435,7 +511,9 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, 
             def thinking_logits_processor(_input_ids, logits):
                 return thinking_state.apply_(logits)
 
+            thinking_logits_processor._is_token_mask = True
             processors.append(thinking_logits_processor)
+            processors_without_penalty.append(thinking_logits_processor)
             update_callbacks.append(thinking_state.update)
 
     if not processors:
@@ -448,6 +526,39 @@ def _build_prompt_logits_processor(model, thinking_enabled: bool | None = None, 
             for processor in processors:
                 logits = processor(input_ids, logits)
             return logits
+
+    if not processors_without_penalty:
+        logits_processor_without_penalty = None
+    elif len(processors_without_penalty) == 1:
+        logits_processor_without_penalty = processors_without_penalty[0]
+    else:
+        def logits_processor_without_penalty(input_ids, logits):
+            for processor in processors_without_penalty:
+                logits = processor(input_ids, logits)
+            return logits
+    logits_processor._without_penalty = logits_processor_without_penalty
+    logits_processor._is_token_mask = all(getattr(processor, "_is_token_mask", False) for processor in processors)
+    logits_processor._requires_input_ids = False
+    logits_processor._supports_partial_vocab = lambda: thinking_state is None or not thinking_state.in_thinking or thinking_state.generated_thinking_tokens < thinking_state.max_thinking_tokens
+    if logits_processor_without_penalty is not None:
+        logits_processor_without_penalty._is_token_mask = True
+        logits_processor_without_penalty._requires_input_ids = False
+        logits_processor_without_penalty._supports_partial_vocab = logits_processor._supports_partial_vocab
+
+    if presence_processor is None:
+        # A verifier can evaluate these rules against each hypothetical accepted
+        # prefix on the GPU. Python state is updated only for committed tokens.
+        def speculative_batch_rules():
+            return {
+                "suppressed": suppressed_ids,
+                "thinking_stops": () if thinking_state is None else thinking_state.stop_token_ids,
+                "thinking": (-1, 0, 0) if thinking_state is None else (
+                    thinking_state.close_think_token_id,
+                    thinking_state.max_thinking_tokens - thinking_state.generated_thinking_tokens,
+                    int(thinking_state.in_thinking),
+                ),
+            }
+        logits_processor._speculative_batch_rules = speculative_batch_rules
 
     if len(update_callbacks) == 1:
         update_state = update_callbacks[0]
@@ -535,7 +646,8 @@ def _resolve_prompt_enhancer_engine(backend: str, requested_lm_engine: str, runt
             detail = f"lm_decoder_engine={requested_label} -> cg" #; {detail}"
         return "cg", detail, enable_cudagraph, False
 
-    detail = "cuda graph + vllm kernels" if enable_cudagraph else f"eager + vllm kernels; disabled by {QWEN35_TEXT_VLLM_CUDAGRAPH_ENV}"
+    enable_cudagraph = enable_cudagraph and not QWEN35_TEXT_VLLM_DISABLE_CUDAGRAPH
+    detail = "cuda graph + vllm kernels" if enable_cudagraph else "eager + vllm kernels"
     if requested_lm_engine == "":
         detail = f"lm_decoder_engine=auto -> vllm" #; {detail}"
     return "vllm", detail, enable_cudagraph, True
@@ -556,7 +668,7 @@ def _use_legacy_cuda_runner_prompt_enhancer(model) -> bool:
 
 
 def _get_assistant_graph_pool_handle(model, usage_mode: str | None, enable_cudagraph: bool):
-    if usage_mode != "assistant" or not enable_cudagraph or not torch.cuda.is_available():
+    if usage_mode not in ("assistant", "multimodal") or not enable_cudagraph or not torch.cuda.is_available():
         return None
     handle = getattr(model, "_prompt_enhancer_assistant_graph_pool_handle", None)
     if handle is None:
@@ -628,6 +740,9 @@ def _generate_messages_vllm(
     top_k=None,
     seed=None,
     thinking_enabled: bool | None = None,
+    stop_requested=None,
+    stream_callback=None,
+    enhancement_progress=None,
 ):
     reset_context()
     tokenizer = self._prompt_enhancer_tokenizer
@@ -636,6 +751,7 @@ def _generate_messages_vllm(
 
     engine = _get_or_create_vllm_engine(self, usage_mode="text")
     outputs = []
+    apply_repetition_penalty = normalize_deepy_repetition_penalty(get_deepy_config_value(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT))
     thinking_enabled = _prompt_enhancer_thinking_enabled(self, thinking_enabled=thinking_enabled)
     runtime_extra_tokens = _resolve_prompt_runtime_extra_tokens(self, thinking_enabled=thinking_enabled)
     progress_desc = (
@@ -644,10 +760,15 @@ def _generate_messages_vllm(
         else f"Qwen3.5 prompt enhancement ({getattr(self, '_prompt_enhancer_engine_name', 'vllm')})"
     )
     for idx, message in enumerate(tqdm(messages, total=len(messages), desc=progress_desc, dynamic_ncols=True, leave=False)):
+        if enhancement_progress is not None:
+            enhancement_progress.prompt(idx, len(messages), int(max_new_tokens) + runtime_extra_tokens)
+            stream_callback = enhancement_progress.tokens
         prompt = _build_chat_prompt(tokenizer, message, enable_thinking=thinking_enabled)
         try:
-            prompt_len = len(tokenizer.encode(prompt))
+            prompt_token_ids = [int(token_id) for token_id in tokenizer.encode(prompt)]
+            prompt_len = len(prompt_token_ids)
         except Exception:
+            prompt_token_ids = []
             prompt_len = 0
         generation_max_tokens = int(max_new_tokens) + runtime_extra_tokens
         engine.reserve_runtime(prompt_len=prompt_len, max_tokens=generation_max_tokens, cfg_scale=1.0)
@@ -670,6 +791,8 @@ def _generate_messages_vllm(
             top_k=normalized_top_k,
             top_p=normalized_top_p,
             min_p=_resolve_prompt_min_p(self),
+            repetition_penalty=_resolve_prompt_repetition_penalty(self) if apply_repetition_penalty else 1.0,
+            predictive_penalty=_resolve_predictive_penalty_enabled(self),
             ignore_eos=False,
             logits_processor=logits_processor,
             logits_processor_update_state=logits_processor_update_state,
@@ -677,12 +800,23 @@ def _generate_messages_vllm(
             seed=sample_seed,
         )
 
+        if llm_io_enabled():
+            log_llm_io("OUT", "local-prompt-enhancer", "qwen-generation", {
+                "prompt": prompt,
+                "messages": message,
+                "input_token_ids": prompt_token_ids,
+                "known_token_ids": known_token_ids(tokenizer),
+                "generation": {"max_new_tokens": generation_max_tokens, "temperature": temp, "top_p": normalized_top_p, "top_k": normalized_top_k, "seed": sample_seed, "thinking_enabled": thinking_enabled},
+            }, prompt_number=idx + 1)
+
         try:
             batch_outputs = engine._llm.generate(
                 prompts=[prompt],
                 sampling_params=sampling_params,
                 use_tqdm=True,
                 unconditional_prompts=None,
+                stop_requested=stop_requested,
+                stream_callback=stream_callback,
             )
             engine._last_failure_reason = ""
         except Exception as exc:
@@ -699,6 +833,7 @@ def _generate_messages_vllm(
             except Exception:
                 raw_text = text
         thinking_text, answer_text = _split_generated_text(raw_text)
+        log_llm_io("IN", "local-prompt-enhancer", "qwen-generation", {"text": raw_text, "output_token_ids": [int(token_id) for token_id in token_ids], "answer": answer_text}, prompt_number=idx + 1)
         if thinking_enabled:
             _print_thinking_process(idx, len(messages), thinking_text)
         outputs.append(answer_text)
@@ -715,6 +850,9 @@ def _generate_messages(
     top_k=None,
     seed=None,
     thinking_enabled: bool | None = None,
+    stop_requested=None,
+    stream_callback=None,
+    enhancement_progress=None,
 ):
     top_k = _resolve_prompt_top_k(self, top_k)
     if _use_vllm_prompt_enhancer(self) or _use_legacy_cuda_runner_prompt_enhancer(self):
@@ -728,6 +866,9 @@ def _generate_messages(
             top_k=top_k,
             seed=seed,
             thinking_enabled=thinking_enabled,
+            stop_requested=stop_requested,
+            stream_callback=stream_callback,
+            enhancement_progress=enhancement_progress,
         )
     raise RuntimeError("Qwen3.5 prompt enhancer text runtime is not configured with an available decode engine.")
 
@@ -772,12 +913,18 @@ def _load_local_text_model(
     enable_mtp: bool = False,
     modules=None,
     postprocess_sd=None,
+    preserve_native_dtypes=False,
 ):
     config = _load_text_config(config_path)
     config._prompt_enhancer_safe_legacy = bool(safe_legacy_mode)
     config._prompt_enhancer_enable_mtp_speculative = bool(enable_mtp)
     with torch.device("meta"):
         model = Qwen3_5ForCausalLM(config)
+
+    load_options = {}
+    if preserve_native_dtypes:
+        from shared.qtypes.prism import preserve_checkpoint_dtypes
+        load_options["pre_load_callback"] = preserve_checkpoint_dtypes
 
     offload.load_model_data(
         model,
@@ -787,6 +934,7 @@ def _load_local_text_model(
         modules=modules,
         writable_tensors=False,
         default_dtype=default_dtype,
+        **load_options,
     )
     if materialize_source_tensors:
         materialize_module_source_tensors(model)
@@ -937,18 +1085,34 @@ def _build_fused_column_linear(modules):
     return fused
 
 
-def _apply_qwen35_projection_fusions(model) -> None:
+def _apply_qwen35_projection_fusions(model, *, prism=False, optimize_prism=True) -> None:
     blocks = list(getattr(model, "blk", ()))
     mtp = getattr(model, "mtp", None)
     if mtp is not None:
         blocks.append(mtp.block)
+    use_optimized = not bool(getattr(model.config, "_prompt_enhancer_safe_legacy", False)) and torch.version.hip is None
     for block in blocks:
+        block.ffn_down._fuse_silu_mul = use_optimized and not prism and isinstance(block.ffn_down.weight, GGUFWeightTensor)
+
         if getattr(block, "ffn_gate_up", None) is None and all(
             getattr(block, name, None) is not None for name in ("ffn_gate", "ffn_up")
         ):
             block.ffn_gate_up = _build_fused_column_linear([block.ffn_gate, block.ffn_up])
             block.ffn_gate = None
             block.ffn_up = None
+        if prism and block is not getattr(mtp, "block", None):
+            if not optimize_prism:
+                continue
+            # Fuse only projections with the same checkpoint basis and dtype.
+            # Alpha/beta remain unrotated BF16, separate from packed QKV/gate.
+            if block.layer_type == "linear_attention":
+                block.attn_qkv_gate = _build_fused_column_linear([block.attn_qkv, block.attn_gate])
+                block.ssm_ab = _build_fused_column_linear([block.ssm_alpha, block.ssm_beta])
+                block.attn_qkv = block.attn_gate = block.ssm_alpha = block.ssm_beta = None
+            else:
+                block.attn_qkv_full = _build_fused_column_linear([block.attn_q, block.attn_k, block.attn_v])
+                block.attn_q = block.attn_k = block.attn_v = None
+            continue
         if getattr(block, "layer_type", None) != "linear_attention":
             continue
         # Real prompt-enhancer benchmarks only kept this fusion: it removes two extra
@@ -960,6 +1124,10 @@ def _apply_qwen35_projection_fusions(model) -> None:
             block.attn_gate = None
             block.ssm_alpha = None
             block.ssm_beta = None
+
+    for projection in model.modules():
+        if isinstance(getattr(projection, "weight", None), GGUFWeightTensor):
+            projection._use_optimized_kernels = use_optimized
 
 def load_qwen35_text_prompt_enhancer(
     model_path: str | None = None,
@@ -998,13 +1166,28 @@ def load_qwen35_text_prompt_enhancer(
         runtime_model_path=text_assets_dir,
     )
     safe_legacy_mode = not allow_vllm_kernels
-    enable_mtp = bool(speculative_decoding and spec.get("supports_mtp", False))
-    mtp_filename = spec.get("text_mtp_filename") if enable_mtp else None
+    prism_metadata = {}
+    if backend == enhancer_quantization_GGUF:
+        from shared.qtypes.prism import get_prism_metadata
+        model_path = _resolve_gguf_model_path(model_path, assets_dir, variant=variant)
+        prism_metadata = get_prism_metadata(model_path)
+    from .config import BLOCK_DRAFT_METHODS
+    block_draft_method = speculative_decoding if speculative_decoding in BLOCK_DRAFT_METHODS else None
+    if block_draft_method is not None and (variant != "27b" or engine_name != "vllm"):
+        raise ValueError("DSpark and DFlash2 require Qwen3.8/Bonsai 27B with the vLLM decoder engine.")
+    enable_mtp = bool(speculative_decoding and block_draft_method is None and spec.get("supports_mtp", False))
+    q3_filename = spec.get("text_gguf_q3_filename")
+    uses_separate_q3_mtp = backend == enhancer_quantization_GGUF and q3_filename and os.path.basename(str(model_path or "")).lower() == q3_filename.lower()
+    mtp_filename = spec.get("text_gguf_q3_mtp_filename" if uses_separate_q3_mtp else "text_mtp_filename") if enable_mtp else None
+    if enable_mtp and prism_metadata:
+        mtp_filename = spec["text_gguf_ptq1_mtp_filename"]
     mtp_modules = [_resolve_qwen35_checkpoint_file(assets_dir, mtp_filename, variant=variant)] if mtp_filename else None
     postprocess_sd = _add_qwen35_mtp_shared_weights if enable_mtp else None
     if backend == enhancer_quantization_GGUF:
         model_path = _resolve_gguf_model_path(model_path, assets_dir, variant=variant)
         gguf_v_head_reordered, gguf_ssm_param_reordered, gguf_interleave_ssm_ab = _resolve_gguf_linear_attention_layout_from_filename(model_path)
+        if prism_metadata:
+            gguf_v_head_reordered, gguf_ssm_param_reordered, gguf_interleave_ssm_ab = True, True, False
         quanto_log_ssm_a = False
         preprocess_sd = _build_qwen35_gguf_preprocess_sd(
             tie_output_to_embeddings=bool(spec.get("tie_word_embeddings", False)),
@@ -1046,6 +1229,7 @@ def load_qwen35_text_prompt_enhancer(
         enable_mtp=enable_mtp,
         modules=mtp_modules,
         postprocess_sd=postprocess_sd,
+        preserve_native_dtypes=bool(prism_metadata),
     )
     if backend == enhancer_quantization_QUANTO_INT8 and spec.get("text_int8_tie_word_embeddings", False):
         _tie_qwen35_output_to_embeddings(model)
@@ -1059,10 +1243,23 @@ def load_qwen35_text_prompt_enhancer(
         )
     elif quanto_log_ssm_a:
         _configure_qwen35_text_model(model, log_ssm_a=True)
-    _apply_qwen35_projection_fusions(model)
+    _apply_qwen35_projection_fusions(model, prism=bool(prism_metadata))
+    if prism_metadata:
+        from shared.qtypes.prism import install_prism_transforms
+        install_prism_transforms(model, prism_metadata)
+        if engine_name == "vllm":
+            from shared.qtypes.prism import install_prism_decode
+            install_prism_decode(model)
+    if backend == enhancer_quantization_GGUF and variant == "27b" and engine_name == "vllm":
+        from shared.kernels.qwen_gdn import install_gdn_decode
+        install_gdn_decode(model)
     mtp_draft_vocab_size = spec.get("mtp_draft_vocab_size")
     if enable_mtp and mtp_draft_vocab_size is not None:
-        model.mtp.lm_head = GGUFFirstRowsLinear(model.mtp.lm_head, mtp_draft_vocab_size)
+        if prism_metadata:
+            from shared.qtypes.prism import PrismFirstRowsLinear
+            model.mtp.lm_head = PrismFirstRowsLinear(model.mtp.lm_head, mtp_draft_vocab_size)
+        else:
+            model.mtp.lm_head = GGUFFirstRowsLinear(model.mtp.lm_head, mtp_draft_vocab_size)
         model.mtp.draft_vocab_size = mtp_draft_vocab_size
 
     model._prompt_enhancer_tokenizer = tokenizer
@@ -1078,9 +1275,11 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_suppress_logits_bias_cache = {}
     model._prompt_enhancer_default_top_k = QWEN35_PROMPT_DEFAULT_TOP_K
     model._prompt_enhancer_default_min_p = QWEN35_PROMPT_DEFAULT_MIN_P_GGUF if backend == enhancer_quantization_GGUF else None
-    model._prompt_enhancer_enable_presence_penalty = backend != enhancer_quantization_GGUF and QWEN35_PROMPT_ENABLE_PRESENCE_PENALTY
+    model._prompt_enhancer_penalty_mode = QWEN35_PENALTY_MODE
     model._prompt_enhancer_presence_penalty = QWEN35_PROMPT_PRESENCE_PENALTY
-    model._prompt_enhancer_min_model_len_hint = 8000
+    model._prompt_enhancer_repetition_penalty = QWEN35_PROMPT_REPETITION_PENALTY
+    model._prompt_enhancer_predictive_penalty_enabled = QWEN35_PREDICTIVE_PENALTY_ENABLED
+    model._prompt_enhancer_min_model_len_hint = QWEN35_PROMPT_MIN_MODEL_LEN
     model._prompt_enhancer_allow_extended_context = True
     model._prompt_enhancer_min_new_tokens = (
         QWEN35_PROMPT_MIN_NEW_TOKENS
@@ -1103,7 +1302,9 @@ def load_qwen35_text_prompt_enhancer(
     model._prompt_enhancer_speculative_tokens = spec.get("mtp_speculative_tokens", QWEN35_PROMPT_SPECULATIVE_TOKENS)
     model._prompt_enhancer_speculative_sampling_tokens = spec.get("mtp_speculative_sampling_tokens", QWEN35_PROMPT_SPECULATIVE_SAMPLING_TOKENS)
     model._prompt_enhancer_speculative_confidence = spec.get("mtp_speculative_confidence", 0.30)
-    model._prompt_enhancer_reuse_speculative_mtp_cache = True
+    if block_draft_method is not None:
+        from .block_draft import install_block_draft
+        install_block_draft(model, block_draft_method, engine_name, bonsai=bool(prism_metadata))
     model._prompt_enhancer_use_vllm = engine_name in ("cg", "vllm")
     model._prompt_enhancer_use_legacy_cuda_runner = engine_name == "legacy"
     if model._prompt_enhancer_use_vllm or model._prompt_enhancer_use_legacy_cuda_runner:

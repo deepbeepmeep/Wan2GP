@@ -14,6 +14,7 @@
 # of rights and permissions under this agreement.
 # See the License for the specific language governing permissions and limitations under the License.
 
+from shared.utils.phase_progress import vae_decoding_progress, set_phase_status
 import math
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
@@ -865,6 +866,7 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
 
     def encode(self, x: Tensor, return_dict: bool = True):
 
+        set_phase_status("VAE Encoding")
         def _encode(x):
             if self.use_temporal_tiling and x.shape[-3] > self.tile_sample_min_tsize:
                 return self.temporal_tiled_encode(x)
@@ -888,23 +890,30 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
 
     def decode(self, z: Tensor, return_dict: bool = True, generator=None):
 
-        def _decode(z):
-            if self.use_temporal_tiling and z.shape[-3] > self.tile_latent_min_tsize:
-                return self.temporal_tiled_decode(z)
-            if self.use_spatial_tiling and (z.shape[-1] > self.tile_latent_min_size or z.shape[-2] > self.tile_latent_min_size):
-                return self.spatial_tiled_decode(z)
-            return self.decoder(z)
+        tiles = z.shape[0] if self.use_slicing else 1
+        if self.use_temporal_tiling and z.shape[2] > self.tile_latent_min_tsize:
+            tiles *= len(range(0, z.shape[2], int(self.tile_latent_min_tsize * (1 - self.tile_overlap_factor))))
+        if self.use_spatial_tiling and (z.shape[-1] > self.tile_latent_min_size or z.shape[-2] > self.tile_latent_min_size):
+            stride = int(self.tile_latent_min_size * (1 - self.tile_overlap_factor))
+            tiles *= len(range(0, z.shape[-2], stride)) * len(range(0, z.shape[-1], stride))
+        with vae_decoding_progress(tiles, self.decoder):
+            def _decode(z):
+                if self.use_temporal_tiling and z.shape[-3] > self.tile_latent_min_tsize:
+                    return self.temporal_tiled_decode(z)
+                if self.use_spatial_tiling and (z.shape[-1] > self.tile_latent_min_size or z.shape[-2] > self.tile_latent_min_size):
+                    return self.spatial_tiled_decode(z)
+                return self.decoder(z)
 
-        if self.use_slicing and z.shape[0] > 1:
-            decoded_slices = [_decode(z_slice) for z_slice in z.split(1)]
-            decoded = torch.cat(decoded_slices)
-        else:
-            decoded = _decode(z)
+            if self.use_slicing and z.shape[0] > 1:
+                decoded_slices = [_decode(z_slice) for z_slice in z.split(1)]
+                decoded = torch.cat(decoded_slices)
+            else:
+                decoded = _decode(z)
 
-        if not return_dict:
-            return (decoded,)
+            if not return_dict:
+                return (decoded,)
 
-        return DecoderOutput(sample=decoded)
+            return DecoderOutput(sample=decoded)
 
     def forward(
         self,

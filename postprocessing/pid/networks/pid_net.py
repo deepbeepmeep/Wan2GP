@@ -1,3 +1,4 @@
+from shared.utils.media_control import inference_checkpoint
 # PidNet — Super-resolution variant of PixDiT_T2I.
 #
 # Extends the text-to-image PixDiT model with LQ (low-quality) image/latent
@@ -230,6 +231,7 @@ class PidNet(PixDiT_T2I):
         collected_features = [] if feature_indices is not None else None
 
         for i in range(self.patch_depth):
+            inference_checkpoint()
             if has_lq and self.lq_proj.is_gate_active(i):
                 out_idx = self.lq_proj._get_output_index(i)
                 if out_idx < len(lq_features):
@@ -487,6 +489,7 @@ class PidNet(PixDiT_T2I):
             x_pixels = split_inputs_cp(x_pixels, seq_dim=1, cp_group=cp_group)
             x_pixels = x_pixels.reshape(B * L_local, P2, self.pixel_hidden_size)
         for blk in self.pixel_blocks:
+            inference_checkpoint()
             x_pixels_list = [x_pixels]
             x_pixels = None
             x_pixels = blk(x_pixels_list, s_cond, H, W, self.patch_size, mask)

@@ -46,6 +46,9 @@ class GuidesPlugin(WAN2GPPlugin):
         with open("docs/DEEPY.md", "r", encoding="utf-8") as reader:
             deepy = reader.read()
 
+        with open("docs/WORKSPACES.md", "r", encoding="utf-8") as reader:
+            workspaces = reader.read()
+
         with gr.Tabs():
             with gr.Tab("Overview", id="overview"):
                 gr.Markdown(overview, elem_id="guides_overview_markdown")
@@ -65,9 +68,11 @@ class GuidesPlugin(WAN2GPPlugin):
                 )
             with gr.Tab("Deepy", id="deepy"):
                 gr.Markdown(deepy)
+            with gr.Tab("Workspaces", id="workspaces"):
+                gr.Markdown(workspaces)
             with gr.Tab("Prompts", id="prompts"):
                 gr.Markdown(prompts)
-            with gr.Tab("Loras", id="loras"):
+            with gr.Tab("LoRAs", id="loras"):
                 gr.Markdown(loras)
             with gr.Tab("Processing", id="processing"):
                 gr.Markdown(processing)

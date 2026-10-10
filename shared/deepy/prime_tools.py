@@ -1,39 +1,217 @@
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import os
 import queue
 import re
+import shutil
 import threading
 import time
 from concurrent.futures import Future
 from contextlib import AsyncExitStack
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, Callable
 
 import anyio
 from anyio.from_thread import start_blocking_portal
 
 from shared.api import WanGPSession
-from shared.deepy.config import DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT, DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, get_deepy_config_value, normalize_deepy_allow_read_file_system, normalize_deepy_context_tokens, normalize_deepy_prime_mcp_servers
-from shared.mcp_server import build_inprocess_server
+from shared.deepy import media_registry
+from shared.deepy.config import DEEPY_CONTEXT_TOKENS_DEFAULT, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, get_deepy_config_value, get_deepy_runtime_config, normalize_deepy_context_tokens, normalize_deepy_mcp_auto_discover_paths, normalize_deepy_prime_mcp_servers
+from shared.gradio import assistant_chat
+from shared.mcp_server import build_inprocess_server, resolve_gallery_media_path
+from shared.mcp_v2 import RESOURCE_ALIASES
+
+
+_MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+PRIME_ASYNC_ENABLED = False
+
+
+def _resolve_external_stdio_command(value: str, allow_changed_path_search: bool = False) -> str:
+    command = os.path.expanduser(os.path.expandvars(str(value or "").strip()))
+    if not command or os.path.isfile(command):
+        return command
+    if resolved := shutil.which(command):
+        return resolved
+    if not allow_changed_path_search:
+        return command
+    path = Path(command)
+    try:
+        runtime_root = path.parents[2]
+    except IndexError:
+        return command
+    if path.parent.name.casefold() != "bin" or not runtime_root.is_dir():
+        return command
+    candidates = [candidate for candidate in runtime_root.glob(f"*/bin/{path.name}") if candidate.is_file()]
+    return str(max(candidates, key=lambda candidate: candidate.stat().st_mtime)) if candidates else command
+
+
+def _relocate_external_stdio_env(configured_command: str, resolved_command: str, configured_env: dict[str, Any]) -> dict[str, str]:
+    environment = {str(key): str(value) for key, value in configured_env.items()}
+    configured_path = Path(os.path.expanduser(os.path.expandvars(configured_command)))
+    resolved_path = Path(resolved_command)
+    if not configured_path.is_absolute() or configured_path.parent.name.casefold() != "bin" or not resolved_path.is_absolute():
+        return environment
+    configured_bin = str(configured_path.parent)
+    resolved_bin = str(resolved_path.parent)
+    if configured_bin == resolved_bin:
+        return environment
+    pattern = re.compile(re.escape(configured_bin), re.IGNORECASE if os.name == "nt" else 0)
+    return {key: pattern.sub(lambda _match: resolved_bin, value) for key, value in environment.items()}
+
+
+def _mcp_connection_error_message(error: BaseException) -> str:
+    pending, leaves = [error], []
+    while pending:
+        current = pending.pop(0)
+        nested = list(getattr(current, "exceptions", ()) or ())
+        if nested:
+            pending[:0] = nested
+            continue
+        message = str(current).strip()
+        leaves.append(f"{type(current).__name__}: {message}" if message else type(current).__name__)
+    return "; ".join(dict.fromkeys(leaves)) or type(error).__name__
+
+
+def _extract_markdown_sections(markdown: str) -> list[dict[str, Any]]:
+    content = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    content = re.sub(r"\n\n---\n\n> Applies to: [^\n]*\Z", "", content)
+    lines = content.split("\n") if content else []
+    headings = []
+    in_code_block = False
+    for line_no, line in enumerate(lines):
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        match = _MARKDOWN_HEADING_RE.match(line)
+        if match is not None:
+            headings.append((line_no, len(match.group(1)), match.group(2).strip()))
+    include_top_level = not any(level > 1 for _line_no, level, _heading in headings)
+    stack = []
+    sections = []
+    for heading_no, (start_line, level, heading) in enumerate(headings):
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, heading))
+        if not include_top_level and level == 1:
+            continue
+        end_line = len(lines)
+        for next_line, next_level, _next_heading in headings[heading_no + 1:]:
+            if next_level <= level:
+                end_line = next_line
+                break
+        section_path = " > ".join(title for heading_level, title in stack if include_top_level or heading_level > 1)
+        sections.append({"section": section_path or heading, "heading": heading, "heading_level": level, "content": "\n".join(lines[start_line:end_line]).strip(), "body": "\n".join(lines[start_line + 1:end_line]).strip()})
+    if not sections and content:
+        sections.append({"section": "Document", "heading": "Document", "heading_level": 1, "content": content, "body": content})
+    return sections
+
+
+def _select_markdown_sections(markdown: str, section_filter: str) -> tuple[str, list[str]]:
+    sections = _extract_markdown_sections(markdown)
+    pattern = str(section_filter or "").strip().casefold()
+    wildcard = "*" in pattern or "?" in pattern
+    if wildcard:
+        matches = [section for section in sections if any(fnmatch.fnmatchcase(str(section[key]).casefold(), pattern) for key in ("section", "heading"))]
+    else:
+        matches = [section for section in sections if any(pattern == str(section[key]).casefold() for key in ("section", "heading"))]
+        if not matches:
+            matches = [section for section in sections if any(pattern in str(section[key]).casefold() for key in ("section", "heading"))]
+    if not matches:
+        raise ValueError(f"Markdown section not found: {section_filter}")
+    return "\n\n".join(str(section["content"]) for section in matches), [str(section["section"]) for section in matches]
+
+
+def _search_markdown_sections(markdown: str, query: str, title: str = "") -> list[dict[str, Any]]:
+    from shared.deepy.engine import _build_doc_excerpt, _score_doc_section, _tokenize_doc_query
+
+    query = str(query or "").strip()
+    if not query:
+        raise ValueError("query is empty.")
+    query_tokens = _tokenize_doc_query(query)
+    matches = []
+    sections = _extract_markdown_sections(markdown)
+    exact_rows = []
+    for section in sections:
+        rows = [line for line in section["body"].splitlines() if line.startswith("|") and line.split("|", 2)[1].strip().strip("`").casefold() == query.casefold()]
+        if rows:
+            excerpt = "\n".join(rows)
+            exact_rows.append({"section": section["section"], "heading": section["heading"], "heading_level": section["heading_level"], "excerpt": excerpt if len(excerpt) <= 1000 else excerpt[:1000] + "…", "score": 100})
+    if exact_rows:
+        return exact_rows
+    for section in sections:
+        score = _score_doc_section(query, query_tokens, str(title or ""), section)
+        if score <= 0:
+            continue
+        matches.append({"section": section["section"], "heading": section["heading"], "heading_level": section["heading_level"], "excerpt": _build_doc_excerpt(section, query, query_tokens), "score": int(score)})
+    matches.sort(key=lambda item: (-int(item["score"]), len(str(item["section"]))))
+    return matches
+
+
+def _resource_read_blocks(contents, max_chars):
+    """Split oversized text records without omitting or duplicating source text."""
+    for item in contents:
+        if "text" not in item or len(json.dumps(item, ensure_ascii=False, separators=(",", ":"))) + 1 <= max_chars:
+            yield item
+            continue
+        text, start = item["text"], 0
+        text_budget = max_chars - len(json.dumps({**item, "text": ""}, ensure_ascii=False, separators=(",", ":"))) - 1
+        if text_budget < 1:
+            raise ValueError("Resource metadata exceeds the read page budget.")
+        while start < len(text):
+            end = min(len(text), start + text_budget)
+            while (encoded_chars := len(json.dumps(text[start:end], ensure_ascii=False)) - 2) > text_budget:
+                end = start + (end - start) * text_budget // encoded_chars
+                if end == start:
+                    raise ValueError("Resource metadata exceeds the read page budget.")
+            if end < len(text) and (newline := text.rfind("\n", start, end)) >= start:
+                end = newline + 1
+            yield {**item, "text": text[start:end]}
+            start = end
 
 
 class DeepyPrimeTools:
     _POLL_INTERVAL_SECONDS = 0.2
+    _plugin_tools_by_name = {}
 
     def __init__(self, state: dict[str, Any], send_cmd: Callable[..., None], assistant_session, zero_tools=None) -> None:
         self.state = state
         self.send_cmd = send_cmd
         self.assistant_session = assistant_session
         self._zero_tools = zero_tools
-        self.allow_read_file_system = normalize_deepy_allow_read_file_system(get_deepy_config_value(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
-        self._tool_progress_callback: Callable[..., None] | None = None
+        from shared.deepy.filesystem import build_file_access_policy
+        from shared.deepy.prime_filesystem import build_prime_policy
+        from shared.deepy import session_store
+
+        base_policy = build_file_access_policy(zero_tools._server_config() if zero_tools is not None else get_deepy_runtime_config())
         self._api_session = WanGPSession(webui_state=state, console_output=False, console_isatty=False)
         self._api_session._gradio_webui_context = {"defer_load_queue_trigger": True}
-        self._server = build_inprocess_server(self._api_session, toolbox=zero_tools, default_job_event_limit=0, allow_read_file_system=self.allow_read_file_system)
+
+        workspace = session_store.session_workspace(assistant_session)
+        if workspace is None:
+            workspace = session_store.ensure_mono_session_workspace(assistant_session.chat_session_id)
+        self.file_access_policy = build_prime_policy(base_policy, workspace)
+        if zero_tools is not None:
+            zero_tools.file_access_policy_override = self.file_access_policy
+        self.assistant_session.file_access_policy = self.file_access_policy
+        if getattr(self.assistant_session, "artifact_workspace", None) is None:
+            from shared.deepy.artifacts import ArtifactWorkspace
+            self.assistant_session.artifact_workspace = ArtifactWorkspace()
+        self.allow_read_file_system = self.file_access_policy.read_enabled
+        from shared.utils.plugins import get_deepy_prime_plugin_tools
+
+        self._plugin_tools_by_name = {definition.name: definition for definition in get_deepy_prime_plugin_tools() if not definition.requires_file_system or base_policy.read_enabled}
+        self._tool_progress_callback: Callable[..., None] | None = None
+        self._server = build_inprocess_server(self._api_session, toolbox=zero_tools, default_job_event_limit=0, file_access_policy=self.file_access_policy, artifact_workspace=self.assistant_session.artifact_workspace, api_version=2, allow_async=PRIME_ASYNC_ENABLED)
+        self._background_jobs = {}
         self._external_servers = normalize_deepy_prime_mcp_servers(get_deepy_config_value(DEEPY_PRIME_MCP_SERVERS_KEY, {}))
+        self._auto_discover_mcp_paths = normalize_deepy_mcp_auto_discover_paths(get_deepy_config_value(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT))
+        self._external_server_errors: dict[str, str] = {}
         self._request_queue: queue.Queue[Any] = queue.Queue()
         self._ready_event = threading.Event()
         self._worker_error: BaseException | None = None
@@ -50,6 +228,8 @@ class DeepyPrimeTools:
         self._tool_defs_by_name = {tool["function"]["name"]: tool for tool in self._tool_defs}
         self._active_job_id = ""
         self._active_job_cancel_requested = False
+        self._active_session_job = None
+        self._remote_llm = False
 
     def bind_turn(self, state: dict[str, Any], send_cmd: Callable[..., None]) -> None:
         if self.state is not state:
@@ -61,10 +241,17 @@ class DeepyPrimeTools:
     def close(self) -> None:
         if self._active_job_id:
             try:
-                self._call_mcp_tool("wangp_cancel_job", {"job_id": self._active_job_id})
+                if self._active_session_job is not None:
+                    self._active_session_job.cancel()
+                else:
+                    self._server._wangp_jobs.get(self._active_job_id).job.cancel()
             except Exception:
                 pass
             self._active_job_id = ""
+            self._active_session_job = None
+        for job in list(self._background_jobs.values()):
+            job.cancel()
+        self._server._wangp_pages.close()
         self._request_queue.put(None)
         self._worker_future.result(timeout=30)
         self._portal_context.__exit__(None, None, None)
@@ -76,16 +263,20 @@ class DeepyPrimeTools:
             return ""
         self._active_job_cancel_requested = True
         try:
-            self._call_mcp_tool("wangp_cancel_job", {"job_id": job_id})
+            if self._active_session_job is not None:
+                self._active_session_job.cancel()
+            else:
+                self._server._wangp_jobs.get(job_id).job.cancel()
         except Exception:
             self._active_job_cancel_requested = False
             raise
         return job_id
 
-    def bind_runtime_tools(self, vision_query_callback=None, tool_progress_callback=None) -> None:
+    def bind_runtime_tools(self, vision_query_callback=None, tool_progress_callback=None, vision_is_remote: bool = False) -> None:
         self._tool_progress_callback = tool_progress_callback
+        self._remote_llm = bool(vision_is_remote)
         if self._zero_tools is not None:
-            self._zero_tools.bind_runtime_tools(vision_query_callback=vision_query_callback, tool_progress_callback=tool_progress_callback)
+            self._zero_tools.bind_runtime_tools(vision_query_callback=vision_query_callback, tool_progress_callback=tool_progress_callback, vision_is_remote=vision_is_remote)
 
     @staticmethod
     def _safe_tool_name(value: str) -> str:
@@ -107,18 +298,36 @@ class DeepyPrimeTools:
             async with AsyncExitStack() as stack:
                 clients = {"wangp": await stack.enter_async_context(create_connected_server_and_client_session(self._server._mcp_server))}
                 for server_name, config in self._external_servers.items():
-                    transport = config["transport"]
-                    if transport == "stdio":
-                        env = None
-                        if isinstance(config.get("env"), dict):
-                            env = {**os.environ, **{str(key): str(value) for key, value in config["env"].items()}}
-                        streams = await stack.enter_async_context(stdio_client(StdioServerParameters(command=str(config["command"]), args=[str(arg) for arg in list(config.get("args", []) or [])], env=env, cwd=config.get("cwd"))))
-                    elif transport == "sse":
-                        streams = await stack.enter_async_context(sse_client(str(config["url"]), headers=dict(config.get("headers", {}) or {}), timeout=float(config.get("timeout_seconds", 30)), sse_read_timeout=float(config.get("read_timeout_seconds", 300))))
-                    else:
-                        streams = await stack.enter_async_context(streamablehttp_client(str(config["url"]), headers={str(key): str(value) for key, value in dict(config.get("headers", {}) or {}).items()}, timeout=float(config.get("timeout_seconds", 30)), sse_read_timeout=float(config.get("read_timeout_seconds", 300))))
-                    client = await stack.enter_async_context(ClientSession(streams[0], streams[1], read_timeout_seconds=timedelta(seconds=float(config.get("read_timeout_seconds", 300)))))
-                    await client.initialize()
+                    server_stack = AsyncExitStack()
+                    await server_stack.__aenter__()
+                    try:
+                        transport = config["transport"]
+                        if transport == "stdio":
+                            configured_command = str(config["command"])
+                            command = _resolve_external_stdio_command(configured_command, self._auto_discover_mcp_paths)
+                            env = None
+                            if isinstance(config.get("env"), dict):
+                                configured_env = _relocate_external_stdio_env(configured_command, command, config["env"]) if self._auto_discover_mcp_paths and command != configured_command else {str(key): str(value) for key, value in config["env"].items()}
+                                env = {**os.environ, **configured_env}
+                            if command != configured_command:
+                                print(f"[DeepyPrimeTools] External MCP server '{server_name}' resolved updated command: {command}")
+                            streams = await server_stack.enter_async_context(stdio_client(StdioServerParameters(command=command, args=[str(arg) for arg in list(config.get("args", []) or [])], env=env, cwd=config.get("cwd"))))
+                        elif transport == "sse":
+                            streams = await server_stack.enter_async_context(sse_client(str(config["url"]), headers=dict(config.get("headers", {}) or {}), timeout=float(config.get("timeout_seconds", 30)), sse_read_timeout=float(config.get("read_timeout_seconds", 300))))
+                        else:
+                            streams = await server_stack.enter_async_context(streamablehttp_client(str(config["url"]), headers={str(key): str(value) for key, value in dict(config.get("headers", {}) or {}).items()}, timeout=float(config.get("timeout_seconds", 30)), sse_read_timeout=float(config.get("read_timeout_seconds", 300))))
+                        client = await server_stack.enter_async_context(ClientSession(streams[0], streams[1], read_timeout_seconds=timedelta(seconds=float(config.get("read_timeout_seconds", 300)))))
+                        await client.initialize()
+                    except Exception as error:
+                        message = _mcp_connection_error_message(error)
+                        try:
+                            await server_stack.aclose()
+                        except Exception as cleanup_error:
+                            message = f"{message}; cleanup: {_mcp_connection_error_message(cleanup_error)}"
+                        self._external_server_errors[server_name] = message
+                        print(f"[DeepyPrimeTools] Skipping unavailable external MCP server '{server_name}': {message}")
+                        continue
+                    stack.push_async_callback(server_stack.aclose)
                     clients[server_name] = client
 
                 self._tool_defs = []
@@ -148,7 +357,15 @@ class DeepyPrimeTools:
                                 break
                     except Exception:
                         pass
-                    listed_tools = await client.list_tools()
+                    try:
+                        listed_tools = await client.list_tools()
+                    except Exception as error:
+                        if server_name == "wangp":
+                            raise
+                        message = _mcp_connection_error_message(error)
+                        self._external_server_errors[server_name] = message
+                        print(f"[DeepyPrimeTools] Ignoring tools from unavailable external MCP server '{server_name}': {message}")
+                        continue
                     for tool in listed_tools.tools:
                         exposed_name = str(tool.name) if server_name == "wangp" else f"mcp_{self._safe_tool_name(server_name)}_{self._safe_tool_name(tool.name)}"
                         if exposed_name in self._tool_routes:
@@ -158,10 +375,7 @@ class DeepyPrimeTools:
                         if server_name != "wangp":
                             description = f"External MCP server '{server_name}'. {description}".strip()
                         self._tool_defs.append({"type": "function", "function": {"name": exposed_name, "description": description, "parameters": dict(tool.inputSchema or {"type": "object", "properties": {}})}})
-                self._tool_defs.extend([
-                    {"type": "function", "function": {"name": "mcp_list_resources", "description": "List documentation and other resources exposed by connected MCP servers.", "parameters": {"type": "object", "properties": {"server": {"type": "string", "description": "Optional MCP server name such as wangp."}}}}},
-                    {"type": "function", "function": {"name": "mcp_read_resource", "description": "Read one MCP resource by the exact server and URI returned by mcp_list_resources or documented by the trusted WanGP agent guide.", "parameters": {"type": "object", "properties": {"server": {"type": "string", "description": "MCP server name, normally wangp."}, "uri": {"type": "string", "description": "Exact resource URI."}}, "required": ["server", "uri"]}}},
-                ])
+                self._tool_defs.append({"type": "function", "function": {"name": "mcp_resource", "description": "Find documentation and workflows. Without uri, query filters the resource index. With uri, query searches passages ('*' lists headings), section reads matching headings; omit both for full text. limit caps results/text blocks per page; cursor continues unchanged filters. Follow next_call for more.", "parameters": {"type": "object", "properties": {"server": {"type": "string"}, "uri": {"type": "string"}, "query": {"type": "string"}, "section": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}, "cursor": {"type": "string"}}, "additionalProperties": False}}})
                 self._ready_event.set()
 
                 while True:
@@ -170,28 +384,86 @@ class DeepyPrimeTools:
                         break
                     tool_name, arguments, future = request
                     try:
-                        if tool_name == "mcp_list_resources":
-                            requested_server = str(arguments.get("server", "") or "").strip()
-                            resources = [resource for resource in self._resource_defs if not requested_server or resource["server"] == requested_server]
-                            future.set_result({"status": "done", "resources": resources, "count": len(resources)})
-                            continue
-                        if tool_name == "mcp_read_resource":
+                        if tool_name == "mcp_resource":
                             server_name = str(arguments.get("server", "") or "").strip()
                             uri = str(arguments.get("uri", "") or "").strip()
-                            if server_name not in clients:
+                            if not server_name or server_name == "wangp":
+                                uri = RESOURCE_ALIASES.get(uri, uri)
+                            query = str(arguments.get("query", "") or "").strip()
+                            section_filter = str(arguments.get("section", "") or "").strip()
+                            if not uri:
+                                if section_filter:
+                                    raise ValueError("uri is required when section is provided")
+                                resources = [resource for resource in self._resource_defs if not server_name or resource["server"] == server_name]
+                                if query:
+                                    from shared.deepy.engine import _score_doc_section, _tokenize_doc_query
+
+                                    tokens = _tokenize_doc_query(query)
+                                    ranked = [(_score_doc_section(query, tokens, resource["title"] or resource["name"], {"section": resource["uri"], "body": resource["description"]}), resource) for resource in resources]
+                                    resources = [resource for score, resource in sorted(ranked, key=lambda item: -item[0]) if score > 0]
+                                resources = ({key: resource[key] for key in ("server", "uri", "description")} for resource in resources)
+                                future.set_result(self._server._wangp_pages.page(["resources", server_name, query], resources, key="resources", limit=arguments.get("limit", 20), cursor=arguments.get("cursor"), metadata={"unavailable_servers": dict(self._external_server_errors)}))
+                                continue
+                            if query and section_filter:
+                                raise ValueError("query and section are mutually exclusive")
+                            if server_name and server_name not in clients:
                                 raise ValueError(f"Unknown MCP server: {server_name}")
-                            if not any(resource["server"] == server_name and resource["uri"] == uri for resource in self._resource_defs):
-                                raise ValueError(f"Unknown MCP resource for server '{server_name}': {uri}")
+                            resource_matches = [resource for resource in self._resource_defs if resource["uri"] == uri and (not server_name or resource["server"] == server_name)]
+                            if not resource_matches:
+                                raise ValueError(f"Unknown MCP resource{f' for server {server_name!r}' if server_name else ''}: {uri}")
+                            matching_servers = sorted({resource["server"] for resource in resource_matches})
+                            if not server_name:
+                                if len(matching_servers) != 1:
+                                    raise ValueError(f"Resource URI is exposed by multiple MCP servers; specify one of: {', '.join(matching_servers)}")
+                                server_name = matching_servers[0]
+                            page_query = ["resource", server_name, uri, query, section_filter]
+                            page_key = "sections" if query == "*" else "matches" if query else "contents"
+                            read_page_chars = min(16000, normalize_deepy_context_tokens(get_deepy_config_value(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT)) // 2)
+                            page_options = {"key": page_key, "limit": arguments.get("limit", 100 if query == "*" else 5 if query else 20), "max_chars": 6000 if query else read_page_chars}
+                            if arguments.get("cursor"):
+                                page = self._server._wangp_pages.page(page_query, cursor=arguments["cursor"], **page_options)
+                                if page["has_more"]:
+                                    page["next_call"] = {**arguments, "cursor": page["next_cursor"]}
+                                future.set_result(page)
+                                continue
                             resource_result = await clients[server_name].read_resource(uri)
+                            scope = {"applicability": resource_matches[0]["description"]} if server_name == "wangp" and uri.startswith("wangp://docs/") else {}
+                            if query:
+                                matches = []
+                                resource_def = resource_matches[0]
+                                for content in resource_result.contents:
+                                    if not hasattr(content, "text"):
+                                        raise ValueError("Markdown resource search is only available for text resources.")
+                                    if query == "*":
+                                        matches.extend(section["section"] for section in _extract_markdown_sections(str(content.text)))
+                                    else:
+                                        matches.extend(_search_markdown_sections(str(content.text), query, title=resource_def["title"] or resource_def["name"]))
+                                if query != "*":
+                                    matches.sort(key=lambda item: (-int(item["score"]), len(str(item["section"]))))
+                                page = self._server._wangp_pages.page(page_query, matches, metadata={"server": server_name, "uri": uri, "query": query, **scope}, **page_options)
+                                if page["has_more"]:
+                                    page["next_call"] = {**arguments, "cursor": page["next_cursor"]}
+                                future.set_result(page)
+                                continue
                             contents = []
+                            matched_sections = []
                             for content in resource_result.contents:
                                 item = {"uri": str(content.uri), "mime_type": str(content.mimeType or "")}
                                 if hasattr(content, "text"):
-                                    item["text"] = str(content.text)
+                                    text = str(content.text)
+                                    if section_filter:
+                                        text, current_matches = _select_markdown_sections(text, section_filter)
+                                        matched_sections.extend(current_matches)
+                                    item["text"] = text
                                 elif hasattr(content, "blob"):
+                                    if section_filter:
+                                        raise ValueError("Markdown section filtering is only available for text resources.")
                                     item["blob"] = str(content.blob)
                                 contents.append(item)
-                            future.set_result({"status": "done", "server": server_name, "uri": uri, "contents": contents})
+                            page = self._server._wangp_pages.page(page_query, _resource_read_blocks(contents, read_page_chars), metadata={"server": server_name, "uri": uri, "section": section_filter, **scope, "matched_sections": matched_sections}, **page_options)
+                            if page["has_more"]:
+                                page["next_call"] = {**arguments, "cursor": page["next_cursor"]}
+                            future.set_result(page)
                             continue
                         server_name, original_name = self._tool_routes[tool_name]
                         future.set_result(await clients[server_name].call_tool(original_name, arguments))
@@ -205,14 +477,17 @@ class DeepyPrimeTools:
             logger.setLevel(previous_level)
 
     def _call_mcp_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._remember_gallery_input_references(tool_name, arguments)
         future = Future()
         self._request_queue.put((tool_name, dict(arguments or {}), future))
         result = future.result()
         if isinstance(result, dict):
-            return self._enforce_output_budget(tool_name, result)
+            normalized = self._enforce_output_budget(tool_name, self.file_access_policy.virtualize_result(result))
+            self._remember_gallery_download_references(tool_name, normalized)
+            return normalized
         content_text = "\n".join(str(getattr(item, "text", "") or "") for item in result.content if getattr(item, "type", "") == "text").strip()
         if result.isError:
-            return {"status": "error", "tool": tool_name, "error": content_text or f"MCP tool '{tool_name}' failed."}
+            return self.file_access_policy.virtualize_result({"status": "error", "tool": tool_name, "error": content_text or f"MCP tool '{tool_name}' failed."})
         payload = result.structuredContent
         if payload is None and content_text:
             try:
@@ -224,7 +499,80 @@ class DeepyPrimeTools:
             normalized.setdefault("status", "done")
         else:
             normalized = {"status": "done", "content": payload}
-        return self._enforce_output_budget(tool_name, normalized)
+        normalized = self._enforce_output_budget(tool_name, self.file_access_policy.virtualize_result(normalized))
+        self._remember_gallery_download_references(tool_name, normalized)
+        return normalized
+
+    def _remember_gallery_input_references(self, tool_name: str, arguments: Any) -> None:
+        route = self._tool_routes.get(tool_name)
+        if route is None or route[0] != "wangp":
+            return
+        media_ids = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                for child_value in value.values():
+                    collect(child_value)
+            elif isinstance(value, (list, tuple)):
+                for child_value in value:
+                    collect(child_value)
+            elif isinstance(value, str) and re.fullmatch(r"(?:visual|audio):[a-f0-9]{12}", value.strip(), re.IGNORECASE):
+                media_ids.append(value.strip().casefold())
+
+        collect(arguments)
+        for media_id in dict.fromkeys(media_ids):
+            try:
+                path = resolve_gallery_media_path(self._api_session, media_id)
+            except (FileNotFoundError, KeyError, OSError, ValueError):
+                continue
+            self.assistant_session.gallery_download_registry[media_id] = path
+            media_registry.record_media_access(self.assistant_session, path, source="wangp", access="read")
+
+    def _remember_generated_media(self, result: Any) -> None:
+        output_paths = []
+
+        def collect(value: Any, key: str = "") -> None:
+            if isinstance(value, dict):
+                for child_key, child_value in value.items():
+                    collect(child_value, str(child_key).casefold())
+            elif isinstance(value, (list, tuple)):
+                for child_value in value:
+                    collect(child_value, key)
+            elif key in {"output_file", "generated_files"} and isinstance(value, str):
+                output_paths.append(value.strip())
+
+        collect(self.file_access_policy.virtualize_result(result))
+        for output_path in dict.fromkeys(path for path in output_paths if path):
+            try:
+                path = self.file_access_policy.resolve_path(output_path)
+            except (FileNotFoundError, OSError, PermissionError, ValueError):
+                continue
+            if not path.is_file():
+                continue
+            media_registry.record_media_access(self.assistant_session, str(path), source="deepy", access="write")
+
+    def _remember_gallery_download_references(self, tool_name: str, result: Any) -> None:
+        route = self._tool_routes.get(tool_name)
+        if route is None or route[0] != "wangp":
+            return
+        media_ids = []
+
+        def collect(value: Any, key: str = "") -> None:
+            if isinstance(value, dict):
+                for child_key, child_value in value.items():
+                    collect(child_value, str(child_key).casefold())
+            elif isinstance(value, (list, tuple)):
+                for child_value in value:
+                    collect(child_value, key)
+            elif key in {"media_id", "media_ids"} and isinstance(value, str) and re.fullmatch(r"(?:visual|audio):[a-f0-9]{12}", value.strip(), re.IGNORECASE):
+                media_ids.append(value.strip().casefold())
+
+        collect(result)
+        for media_id in dict.fromkeys(media_ids):
+            try:
+                self.assistant_session.gallery_download_registry[media_id] = resolve_gallery_media_path(self._api_session, media_id)
+            except (FileNotFoundError, KeyError, OSError, ValueError):
+                continue
 
     @staticmethod
     def _enforce_output_budget(tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
@@ -232,6 +580,40 @@ class DeepyPrimeTools:
         max_chars = max(8000, min(normalize_deepy_context_tokens(get_deepy_config_value(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT)), 100000))
         if len(serialized) <= max_chars:
             return result
+        if tool_name == "wangp_io" and isinstance(result.get("entries"), list) and result["entries"]:
+            page = dict(result)
+            entries = page["entries"] = []
+            offset = int(page["offset"])
+            page.update(count=0, has_more=True, next_offset=offset)
+            for entry in result["entries"]:
+                entries.append(entry)
+                page.update(count=len(entries), next_offset=offset + len(entries))
+                if len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), default=str)) > max_chars:
+                    entries.pop()
+                    page.update(count=len(entries), next_offset=offset + len(entries))
+                    break
+            page["has_more"] = bool(result.get("has_more")) or len(entries) < len(result["entries"])
+            if not page["has_more"]:
+                page["next_offset"] = None
+            if entries and len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), default=str)) <= max_chars:
+                return page
+        if tool_name == "wangp_artifact" and isinstance(result.get("items"), list) and result["items"]:
+            page = dict(result)
+            source_items = page["items"]
+            items = page["items"] = []
+            offset = int(page.get("offset", 0) or 0)
+            for item in source_items:
+                items.append(item)
+                page.update(count=len(items), has_more=True, next_offset=offset + len(items))
+                if len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), default=str)) > max_chars:
+                    items.pop()
+                    page.update(count=len(items), next_offset=offset + len(items))
+                    break
+            page["has_more"] = bool(result.get("has_more")) or len(items) < len(source_items)
+            if not page["has_more"]:
+                page["next_offset"] = None
+            if items and len(json.dumps(page, ensure_ascii=False, separators=(",", ":"), default=str)) <= max_chars:
+                return page
         return {
             "status": "error",
             "tool": tool_name,
@@ -244,9 +626,19 @@ class DeepyPrimeTools:
 
     def _update_tool_progress(self, status: str, status_text: str, result: dict[str, Any]) -> None:
         if callable(self._tool_progress_callback):
-            self._tool_progress_callback(status=status, status_text=status_text, result=result)
+            self._tool_progress_callback(status=status, status_text=status_text, result=self.file_access_policy.virtualize_result(result))
 
-    def _wait_for_generation(self, initial: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _finalize_generation_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+        result = snapshot.get("result")
+        if isinstance(result, dict):
+            snapshot["status"] = "done" if result.get("success") else ("interrupted" if result.get("cancelled") else "error")
+            generated_files = list(result.get("generated_files", []) or [])
+            if generated_files:
+                snapshot["output_file"] = str(generated_files[-1])
+        return snapshot
+
+    def _wait_for_generation(self, initial: dict[str, Any], timeout_s: float | None = None, event_limit: int = 0) -> dict[str, Any]:
         job_id = str(initial.get("job_id", "") or "").strip()
         if not job_id:
             return initial
@@ -255,29 +647,31 @@ class DeepyPrimeTools:
         queue_triggered = False
         cancel_requested = False
         snapshot = initial
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        from shared.deepy.media_pause import MediaToolPause
+        job = self._server._wangp_jobs.get(job_id).job
         try:
-            while True:
-                if snapshot.get("webui_submission_ready") and not queue_triggered:
-                    self.send_cmd("load_queue_trigger", {"job_id": job_id, "token": snapshot.get("webui_load_queue_token", "")})
-                    queue_triggered = True
-                    self._update_tool_progress("running", "Running", {"status": "running", "job_id": job_id})
-                if snapshot.get("done"):
-                    result = snapshot.get("result")
-                    if isinstance(result, dict):
-                        snapshot["status"] = "done" if result.get("success") else ("interrupted" if result.get("cancelled") else "error")
-                        generated_files = list(result.get("generated_files", []) or [])
-                        if generated_files:
-                            snapshot["output_file"] = str(generated_files[-1])
-                    return snapshot
-                if self._is_interrupted() and not cancel_requested:
-                    if not self._active_job_cancel_requested:
-                        snapshot = self._call_mcp_tool("wangp_cancel_job", {"job_id": job_id})
-                        self._active_job_cancel_requested = True
-                    cancel_requested = True
-                    self._update_tool_progress("running", "Stopping generation", {"status": "running", "job_id": job_id})
-                    continue
-                time.sleep(self._POLL_INTERVAL_SECONDS)
-                snapshot = self._call_mcp_tool("wangp_get_job", {"job_id": job_id})
+            with MediaToolPause(self.assistant_session, self.state["gen"], job.webui_client_ids, self.send_cmd) as media_pause:
+                while True:
+                    media_pause.poll()
+                    if snapshot.get("webui_submission_ready") and not queue_triggered:
+                        self.send_cmd("load_queue_trigger", {"job_id": job_id, "token": snapshot.get("webui_load_queue_token", "")})
+                        queue_triggered = True
+                        self._update_tool_progress("running", "Running", {"status": "running", "job_id": job_id})
+                    if snapshot.get("done"):
+                        return self._finalize_generation_snapshot(snapshot)
+                    if self._is_interrupted() and not cancel_requested:
+                        if not self._active_job_cancel_requested:
+                            self._server._wangp_jobs.get(job_id).job.cancel()
+                            self._active_job_cancel_requested = True
+                        cancel_requested = True
+                        self._update_tool_progress("running", "Stopping generation", {"status": "running", "job_id": job_id})
+                        continue
+                    if deadline is not None and not self.assistant_session.pause_requested and time.monotonic() >= deadline:
+                        self._watch_background_job(job_id, trigger_queue=not queue_triggered)
+                        return {**snapshot, "status": "timeout", "waiting_timed_out": True}
+                    time.sleep(self._POLL_INTERVAL_SECONDS)
+                    snapshot = self._server._wangp_jobs.get(job_id).snapshot(event_limit=event_limit)
         finally:
             self._active_job_id = ""
             self._active_job_cancel_requested = False
@@ -287,6 +681,21 @@ class DeepyPrimeTools:
 
     def get_system_instructions(self) -> str:
         return str(self._server_instructions or "").strip()
+
+    def get_remote_execution_instructions(self) -> str:
+        if PRIME_ASYNC_ENABLED:
+            return ""
+        return "WanGP waits for generation and post-processing internally and returns their results; do not poll jobs."
+
+    def get_runtime_context(self) -> str:
+        from shared.deepy.ui_settings import normalize_assistant_tool_ui_settings
+
+        settings = normalize_assistant_tool_ui_settings(**self.assistant_session.tool_ui_settings)
+        signature = f"{settings['model_speed']}:{settings['model_size']}"
+        if signature == self.assistant_session.model_selection_runtime_signature:
+            return ""
+        self.assistant_session.model_selection_runtime_signature = signature
+        return f"Current model selection preferences: speed={settings['model_speed']}, size={settings['model_size']}. These replace earlier standing preferences. Model search applies them automatically; explicit user choices still win and configured templates remain the normal choice."
 
     def get_system_context(self) -> str:
         from shared.deepy import ui_settings as deepy_ui_settings
@@ -308,16 +717,190 @@ class DeepyPrimeTools:
                 f"Default seed: {int(settings['seed'])}.",
             ])
             lines.append("Override compatible template/model defaults with the width, height, frame count, audio duration, and seed above when the user does not specify them.")
+        lines.append("The generate tool fills omitted dimensions, duration, and seed from Deepy's standing defaults before model factory defaults; pass the template values explicitly to preserve them.")
         return "\n".join(lines)
 
     def get_tool_display_name(self, tool_name: str) -> str:
         normalized_name = str(tool_name or "").strip()
+        plugin_tool = self._plugin_tools_by_name.get(normalized_name)
+        if plugin_tool is not None:
+            return plugin_tool.display_name
+        if normalized_name == "wangp_notify":
+            return "Send Notification"
         if normalized_name.startswith("wangp_"):
             normalized_name = normalized_name[len("wangp_"):]
         return normalized_name.replace("_", " ").strip().title()
 
-    def get_tool_transcript_label(self, tool_name: str) -> str:
-        return self.get_tool_display_name(tool_name)
+    @staticmethod
+    def get_tool_stream_label_fields(tool_name: str) -> tuple[str, ...]:
+        return {
+            "wangp_generate": ("model_type",),
+            "wangp_postprocess": ("media",),
+            "wangp_model": ("model_type",),
+            "wangp_models": ("action",),
+            "wangp_deepy_templates": ("tool_id",),
+            "wangp_session": ("action",),
+            "wangp_toolbox": ("action",),
+            "wangp_io": ("action",),
+            "wangp_artifact": ("action", "arguments"),
+        }.get(str(tool_name or "").strip(), ())
+
+    @staticmethod
+    def _generation_settings(source: Any) -> list[dict[str, Any]]:
+        settings = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    collect(item)
+                return
+            if not isinstance(value, dict):
+                return
+            if isinstance(value.get("tasks"), list):
+                collect(value["tasks"])
+                return
+            settings.append(value["params"] if isinstance(value.get("params"), dict) else value["settings"] if isinstance(value.get("settings"), dict) else value)
+
+        collect(source)
+        return settings
+
+    def _model_label_metadata(self, model_type: str) -> tuple[str, dict[str, Any]]:
+        model_type = str(model_type or "").strip()
+        if not model_type:
+            return "", {}
+        metadata = self._api_session.get_model_metadata(model_type) or {}
+        return str(metadata.get("name", "") or model_type.replace("_", " ").replace("-", " ").title()).strip(), metadata
+
+    def _generation_label_context(self, source: Any) -> tuple[str, str]:
+        tasks = self._generation_settings(source)
+        model_names = []
+        media_kinds = []
+        for settings in tasks:
+            model_name, metadata = self._model_label_metadata(settings.get("model_type", ""))
+            if model_name and model_name not in model_names:
+                model_names.append(model_name)
+            try:
+                image_mode = int(settings.get("image_mode", 0) or 0)
+            except (TypeError, ValueError):
+                image_mode = 0
+            outputs = metadata.get("main_output", [])
+            outputs = [outputs] if isinstance(outputs, str) else list(outputs or [])
+            normalized_outputs = {str(output or "").strip().casefold() for output in outputs}
+            if "image_mode" in settings:
+                media_kinds.append("Image" if image_mode > 0 else "Video" if "video" in normalized_outputs else "Audio" if normalized_outputs == {"audio"} else "Media")
+            else:
+                media_kinds.append("Image" if normalized_outputs == {"image"} else "Video" if normalized_outputs == {"video"} else "Audio" if normalized_outputs == {"audio"} else "Media")
+        count = len(tasks)
+        if count == 0:
+            media_label = "Media"
+        elif len(set(media_kinds)) > 1:
+            media_label = f"{count} Media Items"
+        else:
+            kind = media_kinds[0]
+            media_label = kind if count == 1 else f"{count} Media Items" if kind == "Media" else f"{count} {kind}s"
+        return media_label, " and ".join(model_names)
+
+    def get_tool_transcript_label(self, tool_name: str, arguments: dict[str, Any] | None = None) -> str:
+        arguments = dict(arguments or {})
+        if tool_name not in self._tool_defs_by_name:
+            return f"Unknown Tool - {self.get_tool_display_name(tool_name)}"
+        if self._zero_tools is not None:
+            arguments = self._zero_tools.resolve_tool_label_arguments(arguments)
+        finish = assistant_chat._finish_tool_call_label
+        short = assistant_chat._short_tool_label_value
+        humanize = assistant_chat._humanize_tool_value
+        if tool_name in {"wangp_toolbox", "wangp_io", "wangp_artifact"}:
+            action = str(arguments.get("action", "") or "").strip()
+            action_arguments = arguments.get("arguments")
+            if tool_name == "wangp_io":
+                if action == "info" and isinstance(action_arguments, dict):
+                    if isinstance(action_arguments.get("paths"), list):
+                        return f"Get File Information for {len(action_arguments['paths'])} Files"
+                    path = str(action_arguments.get("path", action_arguments.get("source", action_arguments.get("file_path", ""))))
+                    if path.startswith(("visual:", "audio:")):
+                        return finish(f"Get Media Information for {short(path)}")
+                if action in {"rg", "edit", "append_text"}:
+                    label = {"rg": "Search Files", "edit": "Edit Text", "append_text": "Append Text"}[action]
+                    if not isinstance(action_arguments, dict):
+                        return f"Get {label} Schema"
+                    if action == "rg":
+                        return finish(f"{label}: {action_arguments.get('command', action_arguments.get('arguments', ''))}")
+                    return finish(f"{label} in {short(action_arguments.get('path', action_arguments.get('file_path')))}")
+                return assistant_chat.build_io_tool_call_label(action, action_arguments if "arguments" in arguments else None)
+            if tool_name == "wangp_artifact":
+                if not action and isinstance(action_arguments, dict):
+                    nested_action = str(action_arguments.get("action", "") or "").strip()
+                    if nested_action and isinstance(action_arguments.get("arguments"), dict):
+                        action, action_arguments = nested_action, action_arguments["arguments"]
+                    elif not action_arguments:
+                        action = "list"
+                if action == "list" and isinstance(action_arguments, dict):
+                    return "List Artifacts"
+                if not action and "arguments" in arguments:
+                    return "Artifact Request"
+                action_label = {"prepare": "Load Next Workflow Item", "commit_item": "Commit Workflow Item", "query": "Query Exact Artifact Data", "update_ledger": "Update Ledger Artifact"}.get(action, action.replace("_", " ").title())
+                return "List Artifact Actions" if not action else f"Get {action_label} Schema" if "arguments" not in arguments else action_label
+            if not action:
+                return "List Toolbox Content"
+            if action == "media_settings":
+                return "Get Media Settings Schema" if action_arguments is None else assistant_chat.build_tool_call_label("wangp_get_media_settings", action_arguments)
+            if action_arguments is None:
+                action_label = self._zero_tools.get_tool_transcript_label(action, {}) if self._zero_tools is not None else action.replace("_", " ").title()
+                return f"Get {action_label} Schema"
+            if self._zero_tools is not None:
+                return self._zero_tools.get_tool_transcript_label(action, action_arguments)
+        model_label = ""
+        media_label = ""
+        if tool_name == "wangp_generate":
+            settings = arguments.get("settings")
+            if settings is None and isinstance(arguments.get("arguments"), dict):
+                settings = arguments["arguments"].get("source")
+            if settings is None and arguments.get("model_type"):
+                settings = arguments  # members already streamed from an incomplete settings object
+            if settings is None:
+                return self.get_tool_display_name(tool_name)
+            media_label, model_label = self._generation_label_context(settings)
+        elif tool_name in {"wangp_deepy_templates", "wangp_list_gallery"} and "action" not in arguments:
+            if tool_name == "wangp_deepy_templates":
+                tool_name = "wangp_list_deepy_templates" if arguments.get("cursor") else "wangp_get_deepy_template_settings"
+                arguments = {"template": "default", **arguments}
+        elif tool_name in {"wangp_model", "wangp_models", "wangp_deepy_templates", "wangp_list_gallery", "wangp_postprocess", "wangp_session"}:
+            if tool_name == "wangp_models" and arguments.get("query") is not None:
+                return finish(f"Find Models for {short(arguments['query'])}")
+            action = arguments.get("action")
+            nested = arguments.get("arguments")
+            describing = nested is None and tool_name not in {"wangp_model", "wangp_models"}
+            nested = dict(nested or {})
+            target = ""
+            if tool_name == "wangp_model":
+                model_label, _metadata = self._model_label_metadata(arguments.get("model_type", ""))
+                target = short(model_label)
+            elif tool_name == "wangp_postprocess":
+                target = short(arguments.get("media"))
+            if not action:
+                return finish(f"Explore {self.get_tool_display_name(tool_name)}{f' for {target}' if target else ''}")
+            if describing:
+                return finish(f"Get {humanize(action)} Schema{f' for {target}' if target else ''}")
+            if tool_name == "wangp_model":
+                if action in {"capabilities", "definition", "defaults"}:
+                    subject = short(nested.get("property")) if action == "definition" else ""
+                    return finish(f"Read {subject or humanize(action)} for {target}")
+                if action == "profiles" and "setting_id" not in nested:
+                    return finish(f"Read Accelerator Profiles for {target}")
+                tool_name = {"saved_settings": "wangp_model_settings", "user_settings": "wangp_model_settings", "presets": "wangp_model_settings", "profiles": "wangp_model_settings", "loras": "wangp_list_loras"}.get(action, tool_name)
+                nested["model_type"] = arguments["model_type"]
+            elif tool_name == "wangp_deepy_templates":
+                tool_name = {"deepy_templates": "wangp_list_deepy_templates", "deepy_template_settings": "wangp_get_deepy_template_settings"}.get(action, tool_name)
+            elif tool_name == "wangp_session":
+                tool_name = f"wangp_{action}"
+            elif tool_name == "wangp_postprocess":
+                return finish(f"Run {humanize(action)} on {target}")
+            arguments = nested
+        elif tool_name == "mcp_resource" and not arguments.get("uri") and arguments.get("query"):
+            return finish(f"Find Documentation for {short(arguments['query'], 72)}")
+        elif arguments.get("model_type"):
+            model_label, _metadata = self._model_label_metadata(arguments["model_type"])
+        return assistant_chat.build_tool_call_label(tool_name, arguments, base_label=self.get_tool_display_name(tool_name), model_label=model_label, media_label=media_label)
 
     def get_tool_template_filename(self, tool_name: str) -> str:
         return ""
@@ -325,32 +908,127 @@ class DeepyPrimeTools:
     def get_tool_variant(self, tool_name: str) -> str:
         return ""
 
-    def get_tool_policy(self, tool_name: str) -> dict[str, Any]:
-        return {"pause_runtime": tool_name in {"wangp_generate", "wangp_postprocess", "wangp_toolbox"}, "pause_reason": "tool"}
+    def get_tool_policy(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        call_arguments = dict(arguments or {})
+        plugin_tool = self._plugin_tools_by_name.get(tool_name)
+        if plugin_tool is not None:
+            return {"pause_runtime": plugin_tool.pause_runtime, "pause_reason": plugin_tool.pause_reason}
+        if tool_name == "wangp_generate":
+            return {"pause_runtime": isinstance(call_arguments.get("settings"), (dict, list, str)), "pause_reason": "tool"}
+        if tool_name == "wangp_postprocess":
+            return {"pause_runtime": bool(call_arguments.get("action")) and isinstance(call_arguments.get("arguments"), dict), "pause_reason": "tool"}
+        if tool_name == "wangp_toolbox":
+            action = str(call_arguments.get("action", "") or "").strip()
+            if not action or call_arguments.get("arguments") is None:
+                return {"pause_runtime": False, "pause_reason": "tool"}
+            return {"pause_runtime": False, "pause_reason": "tool"} if action == "media_settings" else self._zero_tools.get_tool_policy(action, call_arguments["arguments"])
+        if tool_name in {"wangp_io", "wangp_artifact"}:
+            return {"pause_runtime": False, "pause_reason": "tool"}
+        return {"pause_runtime": False, "pause_reason": "tool"}
 
     def validate_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         schema = self._tool_defs_by_name.get(str(tool_name or "").strip())
         if schema is None:
             return f"Unknown MCP tool: {tool_name}"
         parameters = schema["function"].get("parameters", {})
+        properties = parameters.get("properties", {})
+        toolbox = "action" in properties and "arguments" in properties
+        unknown = set(arguments) - set(properties)
+        if not PRIME_ASYNC_ENABLED and tool_name in {"wangp_generate", "wangp_postprocess"}:
+            unknown -= {"wait", "timeout_s"}
+        unknown = sorted(unknown)
+        if unknown and (toolbox or parameters.get("additionalProperties") is False):
+            hint = ' Put action at the top level and action parameters inside arguments: {"action":"<action>","arguments":{...}}.' if toolbox else " Pass the declared parameters directly, without action or arguments." if {"action", "arguments"} & set(unknown) else " Use only the declared parameters."
+            if tool_name == "wangp_generate" and "settings" not in unknown:
+                hint = ' Put every generation setting inside settings: {"settings": {"model_type": "...", "prompt": "...", ...}}.'
+            if tool_name == "wangp_toolbox" and arguments.get("action") == "inspect_media" and "media" in unknown:
+                hint = ' Put media_id (one visual) or media_ids (a list) inside arguments alongside question. Read the contract with {"action":"inspect_media","arguments":null}.'
+            return f"Unexpected top-level parameters: {', '.join(unknown)}. Nothing was executed." + hint
+        for name, parameter in parameters.get("properties", {}).items():
+            value = arguments.get(name)
+            kinds = {kind for option in (parameter, *parameter.get("anyOf", [])) for kind in (option.get("type") if isinstance(option.get("type"), list) else [option.get("type")])}
+            if not isinstance(value, str) or not kinds & {"object", "array"}:
+                continue
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError as error:
+                if value.lstrip()[:1] in ("{", "["):  # malformed JSON object/array: point at the fault instead of a generic type error
+                    return f"{name} is not valid JSON: {error.msg} at character {error.pos}, near {value[max(0, error.pos - 40):error.pos + 20]!r}. Nothing was executed; fix that spot and repeat the call with {name} as an object."
+                continue
+            if isinstance(decoded, dict) and "object" in kinds or isinstance(decoded, list) and "array" in kinds:
+                arguments[name] = decoded
+        if toolbox and tool_name != "wangp_artifact" and arguments.get("arguments") is not None:
+            nested = arguments["arguments"]
+            if not isinstance(nested, dict):
+                hint = ' For rg, use {"action":"rg","arguments":{"command":"-n pattern -- @workspace/file.txt"}}.' if tool_name == "wangp_io" and arguments.get("action") == "rg" else ""
+                return 'arguments must be an object: {"action":"<action>","arguments":{...}}.' + hint
+            if not arguments.get("action") and nested:
+                return 'action belongs at the top level, beside arguments: {"action":"<action>","arguments":{...}}. Nothing was executed.'
+        if tool_name == "wangp_artifact" and "arguments" in arguments and not isinstance(arguments["arguments"], dict):
+            raw_arguments = arguments["arguments"]
+            if isinstance(raw_arguments, str) and "\\'" in raw_arguments:
+                return "Artifact arguments are malformed JSON: \\' is not a valid JSON escape. Write apostrophes directly inside double-quoted JSON strings, then repeat the call with arguments as an object. This is not a payload-size limit."
+            return "Artifact arguments must be a JSON object, not a JSON string. This is malformed call syntax, not a payload-size limit; repeat action and arguments as separate top-level tool parameters."
         for parameter_name in parameters.get("required", []) or []:
             if parameter_name not in arguments or arguments[parameter_name] is None:
                 return f"{parameter_name} is required."
         return ""
+
+    def extract_tool_calls(self, raw_text: str) -> list[dict[str, Any]]:
+        from shared.prompt_enhancer.qwen35_assistant_runtime import extract_tool_calls
+
+        parameters = {name: set(schema["function"]["parameters"].get("properties", {})) for name, schema in self._tool_defs_by_name.items()}
+        return extract_tool_calls(raw_text, tool_parameters=parameters, preserve_unknown_parameters=True)
 
     def infer_tool_calls(self, raw_text: str) -> list[dict[str, Any]]:
         from shared.deepy.engine import DeepyZeroTools
 
         return DeepyZeroTools.infer_tool_calls(self, raw_text)
 
+    def _watch_background_job(self, job_id, *, trigger_queue=True):
+        if job_id in self._background_jobs:
+            return
+        record = self._server._wangp_jobs.get(job_id)
+        self._background_jobs[job_id] = record.job
+
+        def finish():
+            try:
+                if record.job.wait_for_webui_submission_or_completion() and trigger_queue and not record.job.done and not record.job.cancel_requested:
+                    self.send_cmd("load_queue_trigger", {"job_id": job_id, "token": record.job.webui_load_queue_token})
+                record.job.result()
+                self._remember_generated_media(record.snapshot(event_limit=0))
+            finally:
+                self._background_jobs.pop(job_id, None)
+
+        threading.Thread(target=finish, name=f"deepy-job-{job_id}", daemon=True).start()
+
     def call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        ignored = []
+        if not PRIME_ASYNC_ENABLED and tool_name in {"wangp_generate", "wangp_postprocess"}:
+            arguments = dict(arguments)
+            if isinstance(arguments.get("arguments"), dict):
+                arguments["arguments"] = dict(arguments["arguments"])
+            for values in (arguments, arguments.get("arguments")):
+                if isinstance(values, dict):
+                    for name in ("wait", "timeout_s"):
+                        if name in values:
+                            values.pop(name)
+                            if name not in ignored:
+                                ignored.append(name)
+        result = self._call_mcp_tool(tool_name, arguments)
+        if tool_name in {"wangp_generate", "wangp_postprocess"} and result.get("job_id"):
+            action_arguments = arguments if tool_name == "wangp_generate" else arguments["arguments"]
+            if action_arguments.get("wait", True):
+                result = self._wait_for_generation(result, action_arguments.get("timeout_s"), action_arguments.get("event_limit", 0))
+            else:
+                self._watch_background_job(result["job_id"])
+        if ignored:
+            result["info"] = f"Ignored {', '.join(ignored)}: WanGP manages waiting for generation and post-processing."
+        self._remember_generated_media(result)
         if tool_name in {"wangp_generate", "wangp_postprocess"}:
-            call_arguments = dict(arguments or {})
-            if tool_name == "wangp_generate":
-                call_arguments["wait"] = False
-            initial = self._call_mcp_tool(tool_name, call_arguments)
-            return self._wait_for_generation(initial) if initial.get("job_id") else initial
-        return self._call_mcp_tool(tool_name, arguments)
+            from shared.mcp_v2 import public_media_result
+            result = public_media_result(result)
+        return self.file_access_policy.virtualize_result(result)
 
     def _get_selected_media_record_from_source(self, source: str, requested_media_type: str = "all"):
         return None, None

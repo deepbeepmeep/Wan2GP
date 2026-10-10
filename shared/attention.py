@@ -62,8 +62,20 @@ try:
             cu_seqlens_kv,
             max_seqlen_q,
             max_seqlen_kv,
+            is_causal=False,
+            sm_scale=None,
         ):
-        return sageattn_varlen(q, k, v, cu_seqlens_q, cu_seqlens_kv, max_seqlen_q, max_seqlen_kv)
+        return sageattn_varlen(
+            q,
+            k,
+            v,
+            cu_seqlens_q,
+            cu_seqlens_kv,
+            max_seqlen_q,
+            max_seqlen_kv,
+            is_causal=is_causal,
+            sm_scale=sm_scale,
+        )
     
 except ImportError:
     sageattn_varlen_wrapper = None
@@ -80,7 +92,7 @@ except ImportError:
             pass
 
 try:
-    from .sage2_core import sageattn as sageattn2, is_sage2_supported, sageattn_attention_mask_support_reason
+    from .sage2_core import sageattn as sageattn2, is_sage2_supported, sageattn_attention_mask_support_reason, staged_settings as _sage2_staged_settings
     sage2_supported =  is_sage2_supported()
 except ImportError:
     sageattn2 = None
@@ -93,6 +105,27 @@ except ImportError:
         except ImportError:
             pass
 
+def sage_attention_mask(attention_mask, q_dtype, causal_mask=None):
+    """pay_attention's mask ((batch, q, heads, k), 3D or 2D) as SageAttention takes it: (batch, heads, q, k), in q's dtype when it is
+    additive; a boolean mask lets the queries that see no key attend to all keys."""
+    if attention_mask.ndim == 4:
+        attention_mask = attention_mask.transpose(1, 2)
+    elif attention_mask.ndim == 3:
+        attention_mask = attention_mask.unsqueeze(1)
+    elif attention_mask.ndim == 2:
+        attention_mask = attention_mask.unsqueeze(0).unsqueeze(0)
+    if torch.is_floating_point(attention_mask):
+        attention_mask = attention_mask.to(dtype=q_dtype)
+        if causal_mask is not None:
+            attention_mask = attention_mask.masked_fill(~causal_mask, torch.finfo(attention_mask.dtype).min)
+    elif attention_mask.dtype == torch.bool:
+        if causal_mask is not None:
+            attention_mask = attention_mask & causal_mask
+        has_keys = attention_mask.any(dim=-1, keepdim=True)
+        attention_mask = torch.where(has_keys, attention_mask, torch.ones_like(attention_mask))
+    return attention_mask
+
+
 @torch.compiler.disable()
 def sageattn2_wrapper(
         qkv_list,
@@ -101,32 +134,16 @@ def sageattn2_wrapper(
         attention_mask = None,
         causal = False,
     ):
-    q,k, v = qkv_list
-    q_dtype = q.dtype
-    qkv_list = [q,k,v]
+    # no reference is kept here: the kernel takes q, k and v out of the list and frees k and v once quantized
     if attention_mask is not None:
-        if attention_mask.ndim == 4:
-            attention_mask = attention_mask.transpose(1, 2)
-        elif attention_mask.ndim == 3:
-            attention_mask = attention_mask.unsqueeze(1)
-        elif attention_mask.ndim == 2:
-            attention_mask = attention_mask.unsqueeze(0).unsqueeze(0)
         causal_mask = None
         if causal:
-            lq, lk = q.shape[1], k.shape[1]
-            row = torch.arange(lq, device=q.device)[:, None]
-            col = torch.arange(lk, device=q.device)[None, :]
+            lq, lk, device = qkv_list[0].shape[1], qkv_list[1].shape[1], qkv_list[0].device
+            row = torch.arange(lq, device=device)[:, None]
+            col = torch.arange(lk, device=device)[None, :]
             causal_mask = (col <= row).view(1, 1, lq, lk)
             causal = False
-        if torch.is_floating_point(attention_mask):
-            attention_mask = attention_mask.to(dtype=q_dtype)
-            if causal_mask is not None:
-                attention_mask = attention_mask.masked_fill(~causal_mask, torch.finfo(attention_mask.dtype).min)
-        elif attention_mask.dtype == torch.bool:
-            if causal_mask is not None:
-                attention_mask = attention_mask & causal_mask
-            has_keys = attention_mask.any(dim=-1, keepdim=True)
-            attention_mask = torch.where(has_keys, attention_mask, torch.ones_like(attention_mask))
+        attention_mask = sage_attention_mask(attention_mask, qkv_list[0].dtype, causal_mask)
     o = sageattn2(qkv_list, tensor_layout="NHD", is_causal=causal, recycle_q=recycle_q, attn_mask=attention_mask)
     qkv_list.clear()
 
@@ -330,6 +347,15 @@ def attention_config_shared_state(attention_mode=None, resolver=resolve_attentio
         else:
             offload.shared_state["_attention"] = previous
 
+def sage2_staged_settings(device, force_attention=None, masked=False):
+    """Settings of shared.sage2_core's staged_* functions (q, k and v quantized as soon as each is computed) when pay_attention would run
+    SageAttention 2 without sequence lengths on this device (with this force_attention, and a mask when masked); None otherwise."""
+    attn = force_attention or offload.shared_state["_attention"]
+    attn = get_default_attention_mode() if attn in ("sol", "vdn") else attn
+    if attn not in ("sage2", "radial") or sageattn2 is None or masked and sageattn_attention_mask_support_reason(device=device) is not None:
+        return None
+    return _sage2_staged_settings(device, masked)
+
 __all__ = [
     'ATTENTION_MODE_AVAILABILITY',
     'attention_config_shared_state',
@@ -339,6 +365,8 @@ __all__ = [
     'get_supported_override_attention_modes',
     'resolve_attention_mode',
     'pay_attention',
+    'sage2_staged_settings',
+    'sage_attention_mask',
     'attention',
 ]
 
@@ -379,7 +407,7 @@ def pay_attention(
         raise ValueError("pay_attention received both attention_mask and causal=True; build a combined mask once and pass causal=False.")
     if attention_mask != None:
         requested_attn = offload.shared_state["_attention"] if force_attention == None else force_attention
-        requested_attn = get_default_attention_mode() if requested_attn == "sol" else requested_attn
+        requested_attn = get_default_attention_mode() if requested_attn in ("sol", "vdn") else requested_attn
         requested_attn = "sage2" if requested_attn == "radial" else requested_attn
         support_reason = None
         if _is_mps:
@@ -397,7 +425,7 @@ def pay_attention(
         if  attention_mask.dtype == torch.bfloat16 and not bfloat16_supported:
             attention_mask = attention_mask.to(torch.float16)
     attn = offload.shared_state["_attention"] if force_attention== None else force_attention
-    attn = get_default_attention_mode() if attn == "sol" else attn
+    attn = get_default_attention_mode() if attn in ("sol", "vdn") else attn
 
     q,k,v = qkv_list
     qkv_list.clear()
@@ -502,6 +530,8 @@ def pay_attention(
             cu_seqlens_kv= cu_seqlens_k,
             max_seqlen_q=lq,
             max_seqlen_kv=lk,
+            is_causal=causal,
+            sm_scale=softmax_scale,
         ).unflatten(0, (b, lq))
     elif attn=="sage3":
         qkv_list = [q,k,v]

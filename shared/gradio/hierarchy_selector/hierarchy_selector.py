@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -111,6 +112,11 @@ class HierarchySelector(FormComponent):
     EVENTS = [Events.change, Events.input, Events.select, Events.focus, Events.blur]
     TEMPLATE_DIR = "templates/"
     FRONTEND_DIR = "frontend/"
+
+    @classmethod
+    def get_component_class_id(cls) -> str:
+        # Gradio hashes the module path, including Windows drive-letter casing.
+        return hashlib.sha256(f"{cls.__module__}.{cls.__name__}".encode()).hexdigest()
 
     def __init__(
         self,

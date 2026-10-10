@@ -73,6 +73,7 @@ python wgp.py --preload 0
 2. Lower resolution in advanced settings
 3. Use lower batch size
 4. Clear GPU cache between generations
+5. In *Configuration / Performance*, set **Attention Head Split** to *Low*, *Medium* or *High*. For long or high-resolution videos, models that support it compute attention one group of heads at a time, which lowers the VRAM peak of denoising: with MiniMax H3 at 1920x1088 and 362 frames, about 1 GB less with *Low* and about 2 GB less with *Medium* or *High*, for up to about 3% slower denoising steps. It also applies to MiniMax H3 with *Sol* sparse attention and to the H3 VDN models: with *Medium* at 1920x1088 and 362 frames, about 4 GB less with *Sol* and about 2.5 GB less with VDN. The gain depends on the model and is largest when attention dominates its memory use. The result is of the same quality but not identical to *Off*: details, and sometimes the motion, can differ. The setting applies to the next generation without reloading the model.
 
 ### System RAM Issues
 
@@ -88,6 +89,7 @@ python wgp.py --profile 5
 
 # Enable swap file (OS level)
 ```
+To use less reserved RAM while keeping most of the speed of profile 4, lower *Configuration / RAM/VRAM Management / Reserved RAM for Pinning* and keep *Smart Memory Pinning* On: what no longer fits still reaches the GPU almost as fast (see [Smart Memory Pinning](CLI.md#smart-memory-pinning)).
 
 ## Performance Issues
 
@@ -110,19 +112,24 @@ python wgp.py --profile 3
 
 #### GPU-Specific Optimizations
 
-**RTX 10XX/20XX Series**:
+**GTX 10XX Series**:
 ```bash
 python wgp.py --attention sdpa --profile 4 --teacache 1.5
 ```
 
+**RTX 20XX Series (SageAttention 1.0.6)**:
+```bash
+python wgp.py --attention sage --profile 4 --teacache 1.5
+```
+
 **RTX 30XX/40XX Series**:
 ```bash
-python wgp.py --compile --attention sage --profile 3 --teacache 2.0
+python wgp.py --compile --attention sage2 --profile 3 --teacache 2.0
 ```
 
 **RTX 50XX Series**:
 ```bash
-python wgp.py --attention sage --profile 4 --fp16
+python wgp.py --attention sage2 --profile 4 --fp16
 ```
 
 ### Attention Mechanism Issues
@@ -291,9 +298,10 @@ python wgp.py --profile 4 --perc-reserved-mem-max 0.2
 ### Performance Profiling
 ```bash
 # Test different configurations
-python wgp.py --attention sdpa --profile 4  # Baseline
-python wgp.py --attention sage --profile 3  # Performance
-python wgp.py --compile --teacache 2.0      # Maximum speed
+python wgp.py --attention sdpa --profile 4   # Baseline / GTX 10XX
+python wgp.py --attention sage --profile 3   # RTX 20XX with SageAttention 1
+python wgp.py --attention sage2 --profile 3  # RTX 30XX+ with SageAttention 2
+python wgp.py --compile --teacache 2.0       # Maximum speed
 ```
 
 ## Getting Help
@@ -336,3 +344,7 @@ python wgp.py --t2v-1-3B --attention sdpa --profile 4 --teacache 0 --fp16
 # If that fails, check basic PyTorch installation
 python -c "import torch; print(torch.cuda.is_available())"
 ```
+
+---
+
+> Applies to: Diagnosing installation, GPU memory, performance, networking and generation problems. Sections identify the relevant platforms and symptoms; shell examples configure or diagnose the WanGP process.

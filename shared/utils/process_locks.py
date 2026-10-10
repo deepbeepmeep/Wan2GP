@@ -4,6 +4,7 @@ import torch
 
 gen_lock = threading.Lock()
 _MAIN_PROCESS_RUNNING_KEY = "main_process_running"
+_PROCESS_NAMES_KEY = "process_names"
 
 def get_gen_info(state):
     cache = state.get("gen", None)
@@ -25,10 +26,10 @@ def set_main_generation_running(state, running):
         else:
             gen.pop(_MAIN_PROCESS_RUNNING_KEY, None)
 
-def any_GPU_process_running(state, process_id, ignore_main = False):
+def any_GPU_process_running(state, process_id, ignore_main = False, *, wait_for_lock = False):
     gen = get_gen_info(state)
 #"process:" + process_id
-    if gen_lock.locked():
+    if not wait_for_lock and gen_lock.locked():
         return True
     with gen_lock:
         process_status = gen.get("process_status", None)
@@ -109,6 +110,7 @@ def force_release_GPU_resident(state, process_id):
 def acquire_main_GPU_ressources(state):
     gen = get_gen_info(state)
     release_actions = []
+    waiting_on = None
     while True:
         with gen_lock:
             process_status = gen.get("process_status", None)
@@ -116,11 +118,33 @@ def acquire_main_GPU_ressources(state):
                 release_actions = _collect_resident_release_actions_locked(gen, requester_id="main")
                 gen["process_status"] = "process:main"
                 break
+            if process_status != waiting_on:
+                process_id = process_status.split(":", 1)[1]
+                process_name = gen[_PROCESS_NAMES_KEY][process_id]
+                gen["status"] = f"Media generation is waiting for {process_name} to release GPU resources..."
+                waiting_on = process_status
         time.sleep(0.1)
     _run_release_actions(release_actions)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     
+def try_acquire_GPU_ressources(state, process_id, process_name):
+    """Atomically claim an idle GPU, without suspending an active generation."""
+    gen = get_gen_info(state)
+    with gen_lock:
+        status = gen.get("process_status")
+        if status is not None and not (status == "process:main" and not _main_generation_active_locked(gen)):
+            return False
+        release_actions = _collect_resident_release_actions_locked(gen, requester_id=process_id)
+        gen.setdefault("process_hierarchy", {})[process_id] = None
+        gen.setdefault(_PROCESS_NAMES_KEY, {})[process_id] = process_name
+        gen["process_status"] = "process:" + process_id
+    _run_release_actions(release_actions)
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    return True
+
+
 def acquire_GPU_ressources(state, process_id, process_name, gr = None, custom_pause_msg = None, custom_wait_msg = None):
     gen = get_gen_info(state)
     original_process_status = None
@@ -131,6 +155,11 @@ def acquire_GPU_ressources(state, process_id, process_name, gr = None, custom_pa
             if process_hierarchy is None:
                 process_hierarchy = dict()
                 gen["process_hierarchy"]= process_hierarchy
+            process_names = gen.get(_PROCESS_NAMES_KEY, None)
+            if process_names is None:
+                process_names = dict()
+                gen[_PROCESS_NAMES_KEY] = process_names
+            process_names[process_id] = process_name
 
             process_status = gen.get("process_status", None)
             if process_status is None:
@@ -211,3 +240,4 @@ def release_GPU_ressources(state, process_id, keep_resident = False, process_nam
         if restore_status == "process:main" and not _main_generation_active_locked(gen):
             restore_status = None
         gen["process_status"] = restore_status
+        gen.get(_PROCESS_NAMES_KEY, {}).pop(process_id, None)

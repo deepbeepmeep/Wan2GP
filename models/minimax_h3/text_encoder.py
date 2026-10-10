@@ -11,6 +11,7 @@ from models.ideogram4.qwen3_vl_configuration import Qwen3VLConfig
 from models.ideogram4.qwen3_vl_transformers import Qwen3VLTextModel, Qwen3VLVisionModel
 
 from .interrupt import GenerationInterrupted
+from shared.utils.phase_progress import text_encoding_progress
 
 VISION_START = 151652
 VISION_END = 151653
@@ -206,8 +207,9 @@ class MiniMaxH3TextEncoder(nn.Module):
 
         positions = _mrope_positions(visuals, embeds.shape[1], device)
         self.language_model._interrupt = self._interrupt
-        output = self.language_model(inputs_embeds=embeds, position_ids=positions, visual_pos_masks=visual_mask if visuals else None,
-                                     deepstack_visual_embeds=deepstack, use_cache=False)
+        with text_encoding_progress(self.language_model.layers):
+            output = self.language_model(inputs_embeds=embeds, position_ids=positions, visual_pos_masks=visual_mask if visuals else None,
+                                         deepstack_visual_embeds=deepstack, use_cache=False)
         if output.last_hidden_state is None:
             raise GenerationInterrupted
         return output.last_hidden_state.to(dtype), tags

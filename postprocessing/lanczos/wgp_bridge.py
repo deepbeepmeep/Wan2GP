@@ -8,10 +8,9 @@ from postprocessing.spatial_upsamplers import SimpleScaleSuffixMixin, UPSAMPLER_
 from shared.utils.utils import get_default_workers, process_images_multithread, resize_lanczos
 
 
-def resize_lanczos_spatial(sample, scale, method=None):
+def resize_lanczos_spatial(sample, scale, method=None, size=None):
     h, w = sample.shape[-2:]
-    h = int(round(h * scale / 16) * 16)
-    w = int(round(w * scale / 16) * 16)
+    h, w = size if size is not None else (int(round(h * scale / 16) * 16), int(round(w * scale / 16) * 16))
     frames_to_upsample = [sample[:, i] for i in range(sample.shape[1])]
     if sample.dtype == torch.uint8:
         resample = Image.Resampling.LANCZOS if method is None else method
@@ -53,8 +52,9 @@ class LanczosUpsampler(SimpleScaleSuffixMixin):
             "methods": [("Lanczos", "lanczos")],
             "vae_methods": [],
             "multipliers": {"lanczos": self.MULTIPLIERS},
-            "default_spatial_upsampling": "lanczos2",
-            "description": "Resize images or videos with fast, deterministic Lanczos interpolation.",
+            "default_spatial_upsampling": "lanczos*2",
+            "postprocessing_category": "upsampler",
+            "description": "A very fast CPU resize with negligible VRAM use. It is sharper than a basic resize, but cannot reconstruct lost detail and may add ringing or aliasing.",
         }
 
     def validate_upsampling(self, spatial_upsampling, image_mode: int) -> str:

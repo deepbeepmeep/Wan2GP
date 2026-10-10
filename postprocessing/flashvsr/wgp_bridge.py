@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable
 
+from postprocessing.spatial_upsamplers import format_multiplier_value, parse_multiplier_suffix
 from postprocessing.flashvsr.sparse_backend_config import (
     SPARSE_BACKEND_AUTO,
     SPARSE_BACKEND_CHOICES,
@@ -131,22 +132,17 @@ class FlashVSRBridge:
 
     @classmethod
     def upsampling_value(cls, scale: float) -> str:
-        return f"{cls.UPSAMPLING_VALUE_PREFIX}{cls.format_ratio(scale)}"
+        return format_multiplier_value(cls.UPSAMPLING_VALUE_PREFIX, scale)
 
     @classmethod
     def upsampling_two_pass_value(cls, scale: float) -> str:
-        return f"{cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX}{cls.format_ratio(scale)}"
+        return format_multiplier_value(cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX, scale)
 
     @classmethod
     def scale_for_upsampling(cls, spatial_upsampling) -> float | None:
         text = str(spatial_upsampling or "").strip().lower()
         prefix = cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX if text.startswith(cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX) else cls.UPSAMPLING_VALUE_PREFIX
-        if not text.startswith(prefix):
-            return None
-        try:
-            scale = float(text[len(prefix):])
-        except ValueError:
-            return None
+        scale = parse_multiplier_suffix(text, prefix, 2.0)
         return scale if scale in cls.UPSAMPLING_RATIOS else None
 
     @classmethod
@@ -167,9 +163,12 @@ class FlashVSRBridge:
             "vae_methods": [],
             "multipliers": {cls.UPSAMPLING_VALUE_PREFIX: cls.UPSAMPLING_RATIOS, cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX: cls.UPSAMPLING_RATIOS},
             "default_spatial_upsampling": cls.upsampling_value(2.0),
+            "postprocessing_category": "upsampler",
+            "description": "Provides learned detail recovery and is optimized for modest VRAM use. The Full variant's final VAE decode can be slow; Tiny is faster, and Two Pass may reduce horizontal banding.",
+            "media_descriptions": {"video": "Its learned reconstruction is designed for good temporal stability."},
             "method_descriptions": {
-                cls.UPSAMPLING_VALUE_PREFIX: "Restore detail and spatially upscale an image or video with FlashVSR.",
-                cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX: "Apply two FlashVSR restoration passes for stronger spatial upscaling.",
+                cls.UPSAMPLING_VALUE_PREFIX: "Restore detail and spatially upscale with learned FlashVSR reconstruction. The Full variant's final VAE decode can be slow; Tiny is faster and large outputs can consume substantial VRAM.",
+                cls.UPSAMPLING_TWO_PASS_VALUE_PREFIX: "Apply two FlashVSR restoration passes for stronger detail reconstruction and reduced horizontal banding, at approximately twice the processing cost.",
             },
         }
 
@@ -225,10 +224,14 @@ class FlashVSRBridge:
     def query_download_def(self, enabled_only: bool = True) -> dict[str, Any] | None:
         if enabled_only and not self.enabled():
             return None
+        _, variant = self.settings()
+        files = [self.TRANSFORMER_FILENAME, self.LQ_PROJ_FILENAME, self.POSI_PROMPT_FILENAME]
+        if variant != "full":
+            files.append(self.TCDECODER_FILENAME)
         return {
             "repoId": "DeepBeepMeep/Wan2.1",
-            "sourceFolderList": ["FlashVSR", ""],
-            "fileList": [[self.TRANSFORMER_FILENAME, self.LQ_PROJ_FILENAME, self.TCDECODER_FILENAME, self.POSI_PROMPT_FILENAME], [self.VAE_FILENAME]],
+            "sourceFolderList": ["FlashVSR", ""] if variant == "full" else ["FlashVSR"],
+            "fileList": [files, [self.VAE_FILENAME]] if variant == "full" else [files],
         }
 
     def _locate_flashvsr_file(self, filename: str) -> str:
@@ -253,19 +256,9 @@ class FlashVSRBridge:
         return WanVAE.get_VAE_tile_size(vae_config, device_mem_capacity, mixed_precision, output_height=output_height, output_width=output_width)
 
     def download(self, process_files: Callable[..., Any], send_cmd=None, status_text: str | None = None, spatial_upsampling=None) -> bool:
-        flashvsr_def = self.query_download_def()
-        if flashvsr_def is None:
-            return False
-        _, variant = self.settings()
-        required = [os.path.join("FlashVSR", self.TRANSFORMER_FILENAME), os.path.join("FlashVSR", self.LQ_PROJ_FILENAME), os.path.join("FlashVSR", self.POSI_PROMPT_FILENAME)]
-        required.append(self.VAE_FILENAME if variant == "full" else os.path.join("FlashVSR", self.TCDECODER_FILENAME))
-        if all(self.files_locator.locate_file(path, error_if_none=False) is not None for path in required):
-            return False
-        from shared.utils.download import send_download_status
+        from shared.utils.download import process_files_def_if_needed
 
-        send_download_status(send_cmd, status_text)
-        process_files(**flashvsr_def)
-        return True
+        return process_files_def_if_needed(self.query_download_def(), process_files=process_files, send_cmd=send_cmd, status_text=status_text)
 
     def load_upsampler(self, spatial_upsampling, *, process_files: Callable[..., Any], init_pipe: Callable[..., int], profile, progress_callback=None, **kwargs):
         scale = self.scale_for_upsampling(spatial_upsampling)

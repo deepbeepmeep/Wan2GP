@@ -2,7 +2,7 @@
 
 This guide covers manual installation for different GPU generations and operating systems. Alternatively you may use the 1 click install / update scripts (please check the repo readme for instructions).
 
-It is recommended to use Python 3.10.9, PyTorch 2.7.1 with Cuda 12.8 for GTX 10XX and Python 3.11.14, PyTorch 2.10 with Cuda 13.0/13.1 for RTX 30XX - RTX 50XX as both these configs are well-tested and stable.
+It is recommended to use Python 3.10.9, PyTorch 2.7.1 with Cuda 12.8 for GTX 10XX and Python 3.11.14, PyTorch 2.10 with Cuda 13.0/13.1 for RTX 20XX - RTX 50XX. RTX 20XX requires Triton 3.2.
 
 It is not recommended to use either PytTorch 2.8.0 as some System RAM memory leaks have been observed when switching models or 2.9.0 which has some Convolution 3D perf issues (VAE VRAM requirements explode).
 
@@ -40,48 +40,101 @@ pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https
 pip install -r requirements.txt
 ```
 
+## INT8 Math Kernels
+
+In the configuration menu, **INT8 Math Kernels** selects the backend for INT8 quantized linear layers, including INT8 ConvRot checkpoints:
+
+- **Auto** (default): tries Comfy Kitchen CUDA on NVIDIA or HIP on AMD ROCm, then Triton, then PyTorch when neither backend is available.
+- **Triton**: selects WanGP's Triton INT8 kernels. See [Triton Installation](#triton-installation) below.
+- **Comfy Kitchen Kernels**: selects Kitchen's native CUDA or HIP kernels for the current PyTorch runtime.
+- **Disabled (PyTorch)**: uses the standard PyTorch/Quanto path.
+
+Kitchen falls back to Triton when unavailable, and Triton falls back to PyTorch when unavailable, including explicit selections. Startup reports the backend actually selected. Finish the current generation before changing the selection. Weights stay loaded; autoregressive CUDA graphs and KV caches rebuild on the next request when the resolved backend changes. Existing `enable_int8_kernels` configurations migrate automatically: enabled becomes `int8_kernels: "auto"`, disabled becomes `int8_kernels: "disabled"`.
+
+Comfy Kitchen is installed with `requirements.txt`; its prebuilt CUDA kernels require an NVIDIA R580+ driver. AMD INT8/ConvRot uses ROCm PyTorch and Kitchen's HIP extension on supported RDNA3/3.5/4 devices. RDNA2 and unavailable or failing HIP backends retain the Triton/PyTorch fallback. WanGP probes small plain and ConvRot linear operations before selecting Kitchen, and reports CUDA or HIP in the startup message. This option selects INT8 linear math; it does not change the attention backend or enable FP16 accumulation.
+
+### CUDA Kernels Optimized Ops Precision (When Available)
+
+The separate **CUDA Kernels Optimized Ops Precision (When Available)** dropdown controls additional H3 VAE optimizations. The default is **Allow Faster Approximate Kernels** (`kernel_precision: "fast"`), including migration from configs without this key. Explicitly saved choices are preserved:
+
+- **Preserve Precision**: keeps the existing decoder rounding and uses the Triton encoder SiLU/layout/padding fusion when supported. This path preserves native PyTorch GroupNorm statistics.
+- **Allow Faster Approximate Kernels**: additionally enables Kitchen's fused encoder GroupNorm/SiLU/padding and a contiguous Triton decoder SwiGLU output. Kitchen also combines decoder Q/K RMSNorm and partial RoPE for BF16 activations (including BF16, FP8, and INT8 checkpoints). With Kitchen INT8 ConvRot decoding, it also fuses RMSNorm/SwiGLU into activation quantization and residual scaling/addition into linear outputs. These preserve checkpoint dtypes, but normalization rounding and the following matrix multiplication's layout can slightly change outputs. Kitchen's encoder fusion can lower VRAM even when it is slower than the strict Triton path.
+
+Kitchen falls back to the available Triton implementation, then PyTorch. These additional H3 fusions are enabled on validated RTX 50-series SM120 devices; other architectures keep their existing path. FP16 accumulation and attention settings are unchanged. The selection applies between generations without reloading weights, independently of **INT8 Math Kernels**.
+
+
+
+### H3 Video VAE Selection
+
+H3's **Video VAE** configuration defaults to **Auto**, which follows the current **Transformer Model Quantization** choice: 16-bit selects BF16, FP8 selects FP8 Mixed Precision, and INT8 selects INT8 ConvRot Decoder. Explicit **BF16**, **FP8 Mixed Precision**, and **INT8 ConvRot Decoder** choices override Auto. The selected VAE is downloaded automatically before loading; INT8 math still follows the separate **INT8 Math Kernels** selection.
+
+## Optional DLSS 5 upsamplers
+
+WanGP can expose NVIDIA DLSS 5 Neural Rendering as a native-resolution refiner or spatial upsampler, and DLSS Frame Generation as a temporal upsampler. These optional Windows components are not installed by the normal WanGP installer and include closed-source third-party binaries with separate licenses and security implications. Close WanGP and run `scripts\install_dlss5.bat` for the checksum-verified automatic installation.
+
+Read the full **[DLSS 5 runtime installation, directory layout, copyright, and safety instructions](DLSS5.md)** before downloading or running them. The WanGP worker release ZIP is extracted into the root `dlss5` folder; the guide provides version-pinned downloads for the tested community components and identifies which files are modified, unsigned, or unavailable from NVIDIA's public SDK.
+
 
 ## Triton Installation
 The Triton library is required for Pytorch compilation and Sage Attention and by various kernels to accelerate tensors processing.
 
-### Windows RTX 20XX -RTX 30xx
-```
-pip install -U "triton-windows<3.3"
+### Windows RTX 30XX - RTX 50XX
+
+Use the Triton version matching your PyTorch installation. For the recommended **PyTorch 2.10** environment:
+
+```bash
+python -m pip install -U "triton-windows>=3.6,<3.7"
 ```
 
-### Windows RTX 40XX -RTX 50xx
+For an existing **PyTorch 2.7 / 2.7.1** environment:
+
+```bash
+python -m pip install -U "triton-windows>=3.3,<3.4"
 ```
-pip install triton-windows
+
+Triton 3.3 or newer is required for optimized ConvRot support.
+
+### Windows RTX 20XX
+
+RTX 20XX must use Triton 3.2:
+
+```bash
+python -m pip install -U "triton-windows>=3.2,<3.3"
 ```
 
 ### Linux
-Triton library should be automatically installed when installing pytorch.
+
+PyTorch normally installs the matching Triton version automatically: 3.3 for PyTorch 2.7, or 3.6 for PyTorch 2.10. RTX 20XX requires Triton 3.2.
 
 ## Sage Attention
-Sage Attention accelerates a Video / Image Generation up to x2 with very little quality loss. Sage doesnt support GTX 10xx.
+Sage Attention accelerates Video / Image Generation up to x2 with very little quality loss. Sage does not support GTX 10XX in WanGP.
 
-#### Windows Install Sage Attention for RTX 30XX Only
-Only Sage attention 1 is supported for these GPUs 
+Use the version matching your GPU generation:
+
+- **RTX 20XX (Turing):** SageAttention 1.0.6. SageAttention 2 is not supported.
+- **RTX 30XX or newer (Ampere, Ada, and Blackwell):** SageAttention 2.2.0.
+
+#### Windows: Install SageAttention 1 for RTX 20XX
 ```
 pip install sageattention==1.0.6
 ```
-#### Windows Install Sage2 Attention for RTX 40XX-50xx 
+
+#### Windows: Install SageAttention 2 for RTX 30XX-50XX
 ```
 pip install https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl
 ```
 
-#### Linux Install Sage Attention for RTX 30XX Only
-Only Sage attention 1 is supported for these GPUs 
+#### Linux: Install SageAttention 1 for RTX 20XX
 ```
 pip install sageattention==1.0.6
 ```
 
-#### Linux Install Sage Attention for RTX 40XX, 50XX Only. Make sure it's Sage 2.2.0
+#### Linux: Install SageAttention 2 for RTX 30XX-50XX
 ```
 python -m pip install "setuptools<=75.8.2" --force-reinstall
 git clone https://github.com/thu-ml/SageAttention
 cd SageAttention 
-pip install -e .
+pip install --no-build-isolation -e .
 ```
 
 ## Sparge Attention
@@ -107,6 +160,8 @@ python -m pip install --no-build-isolation git+https://github.com/woct0rdho/Spar
 ## Flash Attention
 Flash attention is not as fast as Sage for Generating Videos or Images but it preserves quality. However when used with a Language Model (prompt enhancer, Text to Speech, Deepy) it can offer a significant speedup.
 
+The FlashAttention 2 packages below require RTX 30XX or newer. RTX 20XX users should use SDPA or SageAttention 1 where supported, and the PyTorch/legacy LM decoder for autoregressive models.
+
  
 ### Flash Attention Windows
 #### Windows Pytorch 2.10 / Python 3.11
@@ -127,67 +182,73 @@ pip install flash-attn==2.7.2.post1
 
 ## GGUF llama.cpp CUDA Kernels
 
-These kernels are used to accelerate GGUF models. Wheel 1.0.11 provides optimized FP16/BF16 modes, CUDA-graph-safe Stream-K, and quantized KV-cache attention on Windows and Linux.
+These kernels accelerate GGUF models with packed MMVQ/MMQ, direct FP16/BF16 activation quantization, CUDA-graph-safe workspaces and quantized KV-cache attention. Wheel **1.0.25** speeds up speculative decoding (MTP, DFlash2 and DSpark) for Q4_K models such as Qwen3.8 Q4 and for the Bonsai PTQ1_0 model: draft tokens are verified on INT8 tensor cores, with the same or better accuracy and no additional VRAM. On an RTX 5090, a Qwen3.8 Q4 decoding cycle is about 9% faster than with 1.0.23, and Bonsai decodes about 15% faster than with 1.0.24 (about 60% faster than with 1.0.23), with identical output. When a model loads, WanGP compares this path with the previous kernel on your own GPU (RTX 30xx or newer) and uses it only where it is faster; the first load of a model takes about one second longer, and later loads reuse the stored choice. Set the environment variable `LLAMACPP_GGUF_SHORT_BATCH=native` to keep the previous kernel, for example to compare speed. The wheel also keeps the precompiled RTX50xx (SM120) async-copy kernels for Q8 prefill and decode/verification, which WanGP's vLLM backend selects automatically on compatible GPUs without runtime Triton compilation. Other architectures retain the shared kernels.
 
-### GGUF Kernels Wheels for Python 3.11 / Pytorch 2.10 / Cuda 13
+Install the wheel matching your Python, PyTorch and CUDA stack. `--no-deps` preserves the installed PyTorch environment.
 
-- Windows
-   ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.11+torch210cu130py311-cp311-cp311-win_amd64.whl
-   ```
+### Python 3.11 / PyTorch 2.10 / CUDA 13
 
-- Linux
-   ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.11+torch210cu130py311-cp311-cp311-linux_x86_64.whl
-   ```
-
-### GGUF Kernels Wheels for Python 3.10 / Pytorch 2.7.1 / Cuda 12.8
-
-- Windows
-   ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.11+torch271cu128py310-cp310-cp310-win_amd64.whl
-   ```
-
-- Linux
-   ```
-  pip install https://github.com/deepbeepmeep/kernels/releases/download/GGUF_Kernels/llamacpp_gguf_cuda-1.0.11+torch271cu128py310-cp310-cp310-linux_x86_64.whl
-   ```
-
-### FP16/BF16 matmul modes
-
-The default automatic policy keeps GGUF weights packed and uses native BF16 MMQ when BF16 is requested. To select a policy explicitly, set `WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE` before starting WanGP:
-
-- `fast`: use MMQ for small workloads and materialize larger matrices directly as FP16 or BF16 for cuBLAS.
-- `low_vram`: always multiply from packed GGUF weights with MMQ, without materializing a full dense weight matrix.
-
-For example, in Windows Command Prompt:
-
-```
-set WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE=fast
-python wgp.py
+Windows:
+```bash
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch210cu130py311-cp311-cp311-win_amd64.whl
 ```
 
-Or in PowerShell:
-
+Linux:
+```bash
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch210cu130py311-cp311-cp311-linux_x86_64.whl
 ```
+
+### Python 3.10 / PyTorch 2.7.1 / CUDA 12.8
+
+Windows:
+```bash
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch271cu128py310-cp310-cp310-win_amd64.whl
+```
+
+Linux:
+```bash
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch271cu128py310-cp310-cp310-linux_x86_64.whl
+```
+
+The CUDA 13 builds contain native GPU code for SM75 through the architectures supported by CUDA 13.1. CUDA 12.8 builds additionally contain pre-SM75 code, subject to PyTorch's own support. The release includes the exact architecture lists, source and build instructions. Hardware validation was performed on RTX5090; Linux wheels were built and tested under Ubuntu 22.04 in WSL.
+
+### Experimental AMD HIP wheel: Windows / Python 3.11 / PyTorch 2.10
+
+For RX 9070-series GPUs (`gfx1201`), the separate HIP wheel targets exactly
+**PyTorch 2.10.0+rocm7.14.0**. It does not use the NVIDIA PyTorch build and does not
+load in the installer's AMD environment (PyTorch 2.13.0+rocm10.0.0). Install into a
+separate AMD environment:
+
+```powershell
+python -m pip install --index-url https://repo.amd.com/rocm/whl-multi-arch/ "torch[device-gfx1201]==2.10.0+rocm7.14.0" "rocm[libraries,device-gfx1201]==7.14.0"
+python -m pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch210rocm714py311-cp311-cp311-win_amd64.whl
+```
+
+The HIP and CUDA wheels use the same package name; select the matching backend.
+The HIP wheel rejects a different PyTorch build at import. It replaces the earlier
+`+hip` asset compiled against PyTorch 2.12. Compilation and DLL import checks do
+not establish AMD inference correctness: hardware validation remains pending.
+
+### Matmul selection and CUDA graphs
+
+The default keeps weights packed and selects MMVQ for decoding/short batches or MMQ for larger batches. To override it, set `WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE` before starting WanGP:
+
+- `fast` or `low_vram`: packed MMVQ/MMQ, with no full dense weight materialization.
+- `materialized` or `cublas`: materialize weights for cuBLAS.
+
+For example, in PowerShell:
+```powershell
 $env:WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE = "low_vram"
 python wgp.py
 ```
 
-Or on Linux:
-
-```
+On Linux:
+```bash
 export WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE=low_vram
 python wgp.py
 ```
 
-The setting is read when the kernel package loads. If it is changed inside an already-running Python process, call `llamacpp_gguf_cuda.refresh_env()` before the next generation. Set `WGP_GGUF_LLAMACPP_CUDA_BF16_FP16=1` only to restore the legacy behavior that computes automatic BF16 requests through FP16 cuBLAS. To disable the GGUF CUDA package entirely, set `WGP_GGUF_LLAMACPP_CUDA=0` before starting WanGP.
-
-### Stream-K and CUDA graphs (wheel 1.0.11+)
-
-Stream-K is enabled by default and reuses a persistent 16 MiB workspace, so it does not allocate memory while a CUDA graph is being recorded. Set `WGP_GGUF_LLAMACPP_CUDA_STREAM_K=0` to disable Stream-K without disabling the rest of the GGUF kernels. Set `WGP_GGUF_LLAMACPP_CUDA_STREAM_K_BUFFER_MB` to change the workspace size; `0` also disables Stream-K.
-
-These variables are cached when the package loads. After changing either one in a running process, call `llamacpp_gguf_cuda.refresh_env()` before the next generation. Existing CUDA graphs must be captured again to use the new setting.
+The wrapper reads the setting for eager calls. Existing CUDA graphs must be recreated to change their recorded operations. MMQ reuses a Stream-K workspace sized from the GPU's SM count and rounded to 16 MiB; WanGP reserves it before graph capture. This version has no `refresh_env()` API or Stream-K environment controls. To disable the GGUF CUDA package, set `WGP_GGUF_LLAMACPP_CUDA=0` before starting WanGP.
 
 ## INT4 / FP4 quantized support
 
@@ -239,3 +300,7 @@ These kernels accelerate bitsandbytes 4-bit / NF4 checkpoints. Install them afte
 ```
 pip install bitsandbytes==0.49.2
 ```
+
+---
+
+> Applies to: Manual installation and dependencies on Windows and Linux. Requirements vary by operating system and GPU; the commands in this guide concern installation and launch.

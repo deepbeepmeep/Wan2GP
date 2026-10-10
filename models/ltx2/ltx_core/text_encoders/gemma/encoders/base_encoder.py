@@ -53,7 +53,10 @@ class GemmaTextEncoderModelBase(torch.nn.Module):
         input_ids = torch.tensor([[t[0] for t in token_pairs]], device=self.model.device)
         attention_mask = torch.tensor([[w[1] for w in token_pairs]], device=self.model.device)
         language_model = self.model.model if hasattr(self.model, "model") else self.model
-        outputs = language_model(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True, use_cache=False)
+        from shared.utils.phase_progress import text_encoding_progress
+        layers = self.model.get_decoder().layers if isinstance(self.model, Gemma3ForConditionalGeneration) else language_model.layers
+        with text_encoding_progress(layers, next_status="Processing Text Embeddings"):
+            outputs = language_model(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True, use_cache=False)
         return RawTextEmbeddings(outputs.hidden_states, attention_mask, padding_side)
 
     def _run_feature_extractor(

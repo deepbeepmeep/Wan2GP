@@ -29,6 +29,7 @@ class family_handler():
         extra_model_def["frames_minimum"] = 17
         extra_model_def["frames_steps"] = 20
         extra_model_def["latent_size"] = 4
+        extra_model_def["tiny_vae_architecture"] = "t2v"
         extra_model_def["sliding_window"] = True
         extra_model_def["perturbation"] = True
         extra_model_def["tea_cache"] = True
@@ -75,16 +76,10 @@ class family_handler():
         return {}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
+    def get_lora_dir(base_model_type):
         from .wan_handler import family_handler as wan_family_handler
 
-        return wan_family_handler.register_lora_cli_args(parser, lora_root)
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        from .wan_handler import family_handler as wan_family_handler
-
-        return wan_family_handler.get_lora_dir(base_model_type, args, lora_root)
+        return wan_family_handler.get_lora_dir(base_model_type)
 
     @staticmethod
     def get_rgb_factors(base_model_type ):

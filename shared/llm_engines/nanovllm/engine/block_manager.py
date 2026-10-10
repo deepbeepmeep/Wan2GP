@@ -32,6 +32,12 @@ class BlockManager:
         self.free_block_ids: deque[int] = deque(range(num_blocks))
         self.used_block_ids: set[int] = set()
 
+    def grow(self, num_blocks: int):
+        first = len(self.blocks)
+        assert num_blocks >= first
+        self.blocks.extend(Block(i) for i in range(first, num_blocks))
+        self.free_block_ids.extend(range(first, num_blocks))
+
     @classmethod
     def compute_hash(cls, token_ids: list[int], prefix: int = -1):
         h = xxhash.xxh64()

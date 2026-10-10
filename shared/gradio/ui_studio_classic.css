@@ -1,0 +1,27 @@
+/* Classic Gradio palette; the shared studio rules own layout and controls. */
+.wangp-studio-scope {
+    --studio-surface: #ffffff;
+    --studio-input: #ffffff;
+    --studio-border: #ebbf97;
+    --studio-label: #994616;
+    --studio-accent: #c65c10;
+    --studio-soft: #fff0df;
+    --studio-button: #ffe6cd;
+    --studio-button-hover: #ffd6ae;
+    --studio-button-text: #873c12;
+    --studio-disabled: #f0efed;
+    --studio-disabled-text: #797570;
+}
+.dark .wangp-studio-scope {
+    --studio-surface: #30251f;
+    --studio-input: #241c17;
+    --studio-border: #865b39;
+    --studio-label: #ffc68f;
+    --studio-accent: #fb923c;
+    --studio-soft: #57341e;
+    --studio-button: #69401f;
+    --studio-button-hover: #83532a;
+    --studio-button-text: #ffead5;
+    --studio-disabled: #363330;
+    --studio-disabled-text: #a6a09a;
+}

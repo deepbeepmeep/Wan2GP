@@ -15,6 +15,10 @@
 # WanGP boundary adapter around the official MiniMax-H3 video VAE.
 
 import torch
+import torch.nn.functional as F
+
+from shared.utils.phase_progress import vae_encoding_progress
+from shared.utils.utils import guide_to_float
 
 from .components.video_autoencoder import AutoencoderKLMiniMaxH3, get_linear_split_map as get_video_vae_linear_split_map
 
@@ -40,12 +44,13 @@ LATENTS_STD = (
 
 
 class MiniMaxH3VideoVAE(AutoencoderKLMiniMaxH3):
-    def __init__(self):
-        super().__init__(latents_mean=LATENTS_MEAN, latents_std=LATENTS_STD)
-        self.register_buffer("_latents_mean", torch.tensor(LATENTS_MEAN, dtype=torch.float32), persistent=False)
-        self.register_buffer("_latents_std", torch.tensor(LATENTS_STD, dtype=torch.float32), persistent=False)
-        self.register_buffer("pixel_mean", torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1, 1), persistent=False)
-        self.register_buffer("pixel_std", torch.tensor(IMAGENET_STD).view(1, 3, 1, 1, 1), persistent=False)
+    def __init__(self, upsampling=False):
+        super().__init__(out_channels=12 if upsampling else 3, latents_mean=LATENTS_MEAN, latents_std=LATENTS_STD)
+        self.upsampling = upsampling
+        self.register_buffer("_latents_mean", torch.tensor(LATENTS_MEAN, dtype=torch.float32, device="cpu"), persistent=upsampling)
+        self.register_buffer("_latents_std", torch.tensor(LATENTS_STD, dtype=torch.float32, device="cpu"), persistent=upsampling)
+        self.register_buffer("pixel_mean", torch.tensor(IMAGENET_MEAN, device="cpu").view(1, 3, 1, 1, 1), persistent=False)
+        self.register_buffer("pixel_std", torch.tensor(IMAGENET_STD, device="cpu").view(1, 3, 1, 1, 1), persistent=False)
         self._interrupt = False
 
     @staticmethod
@@ -74,44 +79,72 @@ class MiniMaxH3VideoVAE(AutoencoderKLMiniMaxH3):
         if hasattr(self, "decoder"):
             self.decoder._interrupt = self._abort
 
-    def _pixels(self, video):
-        video = video.float().add(1.0).mul_(0.5)
+    def _pixels(self, video, device):
+        """``video`` in [-1, 1], possibly in RAM and FP32, is rounded to the model dtype on ``device`` before normalization. A uint8 control
+        video (model_def "uint8_guides") gets WanGP's float values first, in RAM, a part of the video at a time."""
+        video = guide_to_float(video).to(device=device, dtype=self._model_dtype).float().add(1.0).mul_(0.5)
         video.sub_(self.pixel_mean.to(video)).div_(self.pixel_std.to(video))
         return video.to(self._model_dtype)
+
+    def _prepare_encoder_clip(self, clip, device):
+        return self._pixels(clip, device)
 
     def _normalize(self, latents):
         mean = self._latents_mean.view(1, -1, 1, 1, 1).to(latents)
         std = self._latents_std.view(1, -1, 1, 1, 1).to(latents)
         return (latents - mean) / std
 
-    def encode(self, video):
-        posterior = super().encode(self._pixels(video), return_dict=False)[0]
+    def encode(self, video, device):
+        """``video`` may stay in RAM: each row of tiles of each clip is moved to ``device`` and normalized on its own."""
+        posterior = super().encode(video, return_dict=False, device=device)[0]
         return self._normalize(posterior.mode().float())
 
-    def encode_condition(self, video, keep_all_latents=False):
-        pixels = self._pixels(video)
-        if pixels.shape[2] == 1:
-            moments = self._encode_clip(pixels)
-        elif keep_all_latents:
-            clip_length = self.config.clip_length
-            moments = torch.cat([
-                self._encode_clip(pixels[:, :, start:start + clip_length])
-                for start in range(0, pixels.shape[2], clip_length)
-            ], dim=2)
-        else:
-            moments = self._encode(pixels)
-        mean, logvar = moments.float().chunk(2, dim=1)
-        std = torch.exp(0.5 * logvar.clamp(-30.0, 20.0))
-        noise = torch.randn(mean.shape, generator=torch.Generator().manual_seed(42), dtype=torch.float32, device="cpu")
-        latents = (mean + std * noise.to(mean.device)).to(torch.float16).float()
-        return self._normalize(latents)
+    def encode_condition(self, video, device, keep_all_latents=False):
+        tiles = (video.shape[2] + self.config.clip_length - 1) // self.config.clip_length
+        if self.use_tiling:
+            rows = self._split_tiles(video.shape[-2], self.tile_sample_min_height, self.tile_sample_min_overlap_height)[0]
+            cols = self._split_tiles(video.shape[-1], self.tile_sample_min_width, self.tile_sample_min_overlap_width)[0]
+            tiles *= len(rows) * len(cols)
+        with vae_encoding_progress(tiles, self.encoder, enabled=video.shape[2] > 1):
+            if video.shape[2] == 1:
+                moments = self._encode_clip(video, device)
+            elif keep_all_latents:
+                clip_length = self.config.clip_length
+                moments = torch.cat([
+                    self._encode_clip(video[:, :, start:start + clip_length], device)
+                    for start in range(0, video.shape[2], clip_length)
+                ], dim=2)
+            else:
+                moments = self._encode(video, device)
+            mean, logvar = moments.float().chunk(2, dim=1)
+            std = torch.exp(0.5 * logvar.clamp(-30.0, 20.0))
+            noise = torch.randn(mean.shape, generator=torch.Generator().manual_seed(42), dtype=torch.float32, device="cpu")
+            latents = (mean + std * noise.to(mean.device)).to(torch.float16).float()
+            return self._normalize(latents)
 
-    def decode(self, latents):
+    def decode(self, latents, uint8_rounding=None):
+        """The CPU video in [-1, 1]; with uint8_rounding, its uint8 frames, converted on the GPU before they reach the RAM: "truncate" as WGP
+        converts float videos (convert_video_tensor_to_uint8_chunked), "round" as _video_to_uint8_cpu."""
         mean = self._latents_mean.view(1, -1, 1, 1, 1).to(latents)
         std = self._latents_std.view(1, -1, 1, 1, 1).to(latents)
-        decoded = super().decode((latents * std + mean).to(self._model_dtype), return_dict=False)[0].float()
+        return super().decode((latents * std + mean).to(self._model_dtype), return_dict=False, uint8_rounding=uint8_rounding)[0]
+
+    def _prepare_decoded_chunk(self, chunk, uint8_rounding=None):
+        if self.upsampling:
+            # Spatial/temporal blending operates on the native packed grid. Shuffle
+            # only finalized chunks, before the existing RGB normalization and CPU copy.
+            batch, channels, frames, height, width = chunk.shape
+            chunk = F.pixel_shuffle(chunk.permute(0, 2, 1, 3, 4).reshape(batch * frames, channels, height, width), 2)
+            chunk = chunk.reshape(batch, frames, 3, height * 2, width * 2).permute(0, 2, 1, 3, 4)
+        decoded = chunk.float()
         decoded.mul_(self.pixel_std.to(decoded)).add_(self.pixel_mean.to(decoded))
-        return decoded.clamp_(0.0, 1.0).mul_(2.0).sub_(1.0)
+        decoded = decoded.clamp_(0.0, 1.0).mul_(2.0).sub_(1.0)
+        if uint8_rounding == "round":
+            return decoded.add_(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
+        if uint8_rounding == "truncate":
+            decoded = decoded.to(torch.float16)
+            return decoded.sub_(-1).mul_(127.5).clamp_(0, 255).to(torch.uint8)
+        return decoded
 
 
 __all__ = ["IMAGENET_MEAN", "IMAGENET_STD", "LATENTS_MEAN", "LATENTS_STD", "MiniMaxH3VideoVAE",

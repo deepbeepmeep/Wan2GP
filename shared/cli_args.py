@@ -1,29 +1,18 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import sys
 from collections.abc import Sequence
 
-
-def _register_family_lora_args(parser, family_handlers: Sequence[str], lora_root: str) -> None:
-    registered_families = set()
-    for path in family_handlers:
-        handler = importlib.import_module(path).family_handler
-        family_name = handler.query_model_family()
-        family_key = family_name or path
-        if family_key in registered_families:
-            continue
-        if hasattr(handler, "register_lora_cli_args"):
-            handler.register_lora_cli_args(parser, lora_root)
-        registered_families.add(family_key)
+from shared.lora_paths import load_lora_config
 
 
 def _arg_provided(argv: Sequence[str], name: str) -> bool:
     return any(one_arg == name or str(one_arg).startswith(f"{name}=") for one_arg in argv)
 
 
-def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default_lora_root: str, argv: Sequence[str] | None = None):
+def parse_wgp_args(config_filename: str, argv: Sequence[str] | None = None):
+    from shared.deepy.config import normalize_deepy_voice_language
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = argparse.ArgumentParser(description="Generate a video from a text prompt or image using Gradio")
     add = parser.add_argument
@@ -39,10 +28,10 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--save-quantized", action="store_true", help="Save a quantized version of the current model")
     add("--convrot", action="store_true", help="Save INT8 ConvRot instead of Quanto INT8 (requires --save-quantized)")
     add("--test", action="store_true", help="Load the model and exit generation immediately")
-    add("--preload", type=str, default="0", help="Megabytes of the diffusion model to preload in VRAM")
+    add("--preload", type=str, default="0", help="Megabytes of each model to preload in VRAM with memory profiles 2, 4 and 5 (overrides the Configuration preload of every kind of output)")
     add("--multiple-images", action="store_true", help="Allow inputting multiple images with image to video")
     add("--loras", type=str, default="", help="Root folder for LoRAs (default: loras)")
-    _register_family_lora_args(parser, family_handlers, default_lora_root)
+    add("--lora-config", type=load_lora_config, default={}, metavar="FILE", help="JSON mapping LoRA subfolder names to directory paths")
     add("--check-loras", action="store_true", help="Filter Loras that are not valid")
     add("--lora-preset", type=str, default="", help="Lora preset to preload")
     add("--settings", type=str, default="settings", help="Path to settings folder")
@@ -50,6 +39,9 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--profile", type=str, default=-1, help="Profile No")
     add("--verbose", type=str, default=1, help="Verbose level")
     add("--debug-deepy", type=str, default=None, help="Enable Deepy verbose debug logging and write it to the given folder")
+    add("--deepy-sessions-dir", type=str, default="", metavar="FOLDER", help="Store persistent Deepy sessions in FOLDER (default: ./deepy_sessions)")
+    add("--workspaces-dir", type=str, default="", metavar="FOLDER", help="Store gallery workspaces in FOLDER (default: ./workspaces)")
+    add("--llm-io", type=str, default="", metavar="FOLDER", help="Write a plain-text transcript of all local and remote LLM input/output to FOLDER")
     add("--steps", type=int, default=0, help="default denoising steps")
     add("--frames", type=int, default=0, help="default number of frames")
     add("--seed", type=int, default=-1, help="default generation seed")
@@ -58,27 +50,39 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--bf16", action="store_true", help="For using bf16 transformer model")
     add("--server-port", type=str, default=0, help="Server port")
     add("--theme", type=str, default="", help="set UI Theme")
-    add("--perc-reserved-mem-max", type=float, default=0, help="percent of RAM allocated to Reserved RAM")
+    add("--perc-reserved-mem-max", type=float, default=0, help="Share of RAM that pinning may lock, as a fraction, e.g. 0.4 (default: the Configuration setting, else 0.4 on Windows and 0.6 on Linux)")
+    add("--vram-debug", type=float, default=0, metavar="MIN_MB", help="Debug mode of the MMGP VRAM allocator: records the allocations of MIN_MB and more (module, tags, Python stack) and writes after each generation a report of the tensors alive at the peak of each phase in <outputs>/vram_debug")
+    add("--ram-debug", type=float, nargs="?", const=16, default=0, metavar="MIN_MB", help="RAM debug mode (MIN_MB 16 when omitted): after each generation and each model release, writes in <outputs>/ram_debug a report of where the process's RAM goes (PyTorch and C allocators with what they keep free, pinned memory, CUDA, mapped files, the objects alive and what holds them) with the peak of each phase; CPU allocations of MIN_MB and more are traced to their source")
+    add("--ram-allocator", choices=["default", "mmgp"], default=None, help="RAM allocator for CPU tensors, applied at startup: mmgp (MMGP RAM Allocator, the default: the RAM of freed tensors goes back to the system when the queue is done, a model is released or the RAM runs short) or default (PyTorch's, which keeps it for reuse). Overrides the Configuration setting")
+    add("--vram-allocator", choices=["default", "vmm", "vmm_spill"], default=None, help="VRAM allocator, applied at startup: vmm_spill (MMGP Optimized VRAM Allocator, the default, with RAM spilling: a generation slightly too large for the VRAM can finish, slowly), vmm (the same, an out of memory error when no VRAM is left) or default (PyTorch's). Overrides the Configuration setting")
+    add("--prevent-power-throttling", action=argparse.BooleanOptionalAction, default=True, help="Windows: keep full CPU speed while WanGP is in the background or minimized (--no-prevent-power-throttling lets Windows save power instead)")
     add("--server-name", type=str, default="", help="Server name")
     add("--gpu", type=str, default="", help="Default GPU Device")
     add("--open-browser", action="store_true", help="open browser")
-    add("--t2v", action="store_true", help="text to video mode")
-    add("--i2v", action="store_true", help="image to video mode")
-    add("--t2v-14B", action="store_true", help="text to video mode 14B model")
-    add("--t2v-1-3B", action="store_true", help="text to video mode 1.3B model")
-    add("--vace-1-3B", action="store_true", help="Vace ControlNet 1.3B model")
-    add("--i2v-1-3B", action="store_true", help="Fun InP image to video mode 1.3B model")
-    add("--i2v-14B", action="store_true", help="image to video mode 14B model")
+    # Deprecated model-selection shortcuts: keep accepting existing launch scripts.
+    add("--t2v", action="store_true", help=argparse.SUPPRESS)
+    add("--i2v", action="store_true", help=argparse.SUPPRESS)
+    add("--t2v-14B", action="store_true", help=argparse.SUPPRESS)
+    add("--t2v-1-3B", action="store_true", help=argparse.SUPPRESS)
+    add("--vace-1-3B", action="store_true", help=argparse.SUPPRESS)
+    add("--i2v-1-3B", action="store_true", help=argparse.SUPPRESS)
+    add("--i2v-14B", action="store_true", help=argparse.SUPPRESS)
     add("--compile", action="store_true", help="Enable pytorch compilation")
     add("--listen", action="store_true", help="Server accessible on local network")
     add("--attention", type=str, default="", help="attention mode")
     add("--vae-config", type=str, default="", help="vae config mode")
     add("--process", type=str, default="", help="Process a saved queue (.zip) or settings file (.json) without launching the web UI")
+    add("--deepy-server", action="store_true", help="Serve the Deepy chat and media galleries without the Gradio UI")
+    from shared.authentication import add_arguments
+    add_arguments(parser)
+    add("--deepy-voice-language", default=None, type=normalize_deepy_voice_language, help="Override the configured Whisper dictation language, e.g. fr, en or auto (default: Deepy configuration)")
     add("--ask-deepy", action="store_true", help="Start an interactive Deepy console session without launching the web UI")
     add("--mcp", action="store_true", help="Start WanGP as an MCP server without launching the web UI")
     add("--mcp-transport", type=str, default="stdio", help="MCP transport: stdio, sse, or streamable-http")
     add("--mcp-host", type=str, default="", help="Optional MCP host for non-stdio transports")
     add("--mcp-port", type=int, default=None, help="Optional MCP port for non-stdio transports")
+    add("--mcp-api-version", type=int, choices=(1, 2), default=2, help="WanGP MCP API version (latest: 2); use 1 for historical compatibility")
+    add("--mcp-async", action="store_true", help="Allow asynchronous generation/post-processing in MCP API v2; disabled by default")
     add("--mcp-console-output", action="store_true", help="Mirror WanGP stdout/stderr while serving MCP requests")
     add("--mcp-allow-read-file-system", action="store_true", help="Allow MCP agents to reference arbitrary server filesystem paths; disabled by default")
     add("--dry-run", action="store_true", help="Validate file without generating (use with --process)")
@@ -88,6 +92,10 @@ def parse_wgp_args(family_handlers: Sequence[str], config_filename: str, default
     add("--merge-catalog", action="store_true", help="Merge plugins_local.json into plugins.json and remove plugins_local.json")
 
     args = parser.parse_args(argv)
+    if args.llm_io:
+        from shared.llm_io import configure_llm_io
+
+        configure_llm_io(args.llm_io)
     if args.ask_deepy and not _arg_provided(argv, "--verbose"):
         args.verbose = "0"
     return args

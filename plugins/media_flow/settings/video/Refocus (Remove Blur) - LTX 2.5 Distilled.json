@@ -12,6 +12,6 @@
   "denoising_strength": 1,
   "loras_multipliers": "1",
   "activated_loras": [
-    "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.3-22b-ic-lora-refocus.safetensors"
+    "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/ltx-2.5-22b-ic-lora-deblur-0.9.safetensors"
   ]
 }

@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import text_encoding_progress
 from dataclasses import dataclass
 from typing import Optional, Tuple
 from copy import deepcopy
@@ -336,16 +337,18 @@ class TextEncoder(nn.Module):
             )
 
             if 'pixel_value_llava' in batch_encoding:
-                outputs = self.model(
+                with text_encoding_progress(self.model.language_model.model.layers if "i2v" in self.text_encoder_type else self.model.model.layers if "llm" in self.text_encoder_type else self.model.text_model.encoder.layers, prompt_count=batch_encoding["input_ids"].shape[0]):
+                    outputs = self.model(
+                        input_ids=batch_encoding["input_ids"].to(self.model.device),
+                        attention_mask=attention_mask,
+                        pixel_values=batch_encoding["pixel_value_llava"].to(self.model.device),
+                        output_hidden_states=output_hidden_states or hidden_state_skip_layer is not None)
+            else:
+                with text_encoding_progress(self.model.language_model.model.layers if "i2v" in self.text_encoder_type else self.model.model.layers if "llm" in self.text_encoder_type else self.model.text_model.encoder.layers, prompt_count=batch_encoding["input_ids"].shape[0]):
+                    outputs = self.model(
                     input_ids=batch_encoding["input_ids"].to(self.model.device),
                     attention_mask=attention_mask,
-                    pixel_values=batch_encoding["pixel_value_llava"].to(self.model.device),
-                    output_hidden_states=output_hidden_states or hidden_state_skip_layer is not None)
-            else:
-                outputs = self.model(
-                input_ids=batch_encoding["input_ids"].to(self.model.device),
-                attention_mask=attention_mask,
-                output_hidden_states=output_hidden_states or hidden_state_skip_layer is not None,)
+                    output_hidden_states=output_hidden_states or hidden_state_skip_layer is not None,)
 
             if hidden_state_skip_layer is not None:
                 last_hidden_state = outputs.hidden_states[
@@ -386,13 +389,14 @@ class TextEncoder(nn.Module):
                 if use_attention_mask
                 else None
             )
-            outputs = self.model(
-                input_ids=batch_encoding["input_ids"].to(device),
-                attention_mask=attention_mask,
-                output_hidden_states=output_hidden_states
-                or hidden_state_skip_layer is not None,
-                pixel_values=image_outputs,
-            )
+            with text_encoding_progress(self.model.language_model.model.layers if "i2v" in self.text_encoder_type else self.model.model.layers if "llm" in self.text_encoder_type else self.model.text_model.encoder.layers, prompt_count=batch_encoding["input_ids"].shape[0]):
+                outputs = self.model(
+                    input_ids=batch_encoding["input_ids"].to(device),
+                    attention_mask=attention_mask,
+                    output_hidden_states=output_hidden_states
+                    or hidden_state_skip_layer is not None,
+                    pixel_values=image_outputs,
+                )
             if hidden_state_skip_layer is not None:
                 last_hidden_state = outputs.hidden_states[
                     -(hidden_state_skip_layer + 1)

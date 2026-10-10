@@ -1,0 +1,41 @@
+<svg width="160" height="160" viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Compressed folder</title>
+  <defs>
+    <linearGradient id="folder-back" x1="80" y1="29" x2="80" y2="125" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFE38A"/>
+      <stop offset="1" stop-color="#D99118"/>
+    </linearGradient>
+    <linearGradient id="folder-front" x1="80" y1="55" x2="80" y2="143" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD75B"/>
+      <stop offset="1" stop-color="#E89A1D"/>
+    </linearGradient>
+    <linearGradient id="zipper" x1="72" y1="55" x2="91" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FAFCFF"/>
+      <stop offset="0.48" stop-color="#AEB6C0"/>
+      <stop offset="1" stop-color="#68717D"/>
+    </linearGradient>
+    <linearGradient id="pull" x1="80" y1="109" x2="80" y2="142" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F8FAFC"/>
+      <stop offset="1" stop-color="#8C96A2"/>
+    </linearGradient>
+    <filter id="shadow" x="4" y="20" width="152" height="135" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#7B4A0B" flood-opacity="0.24"/>
+    </filter>
+  </defs>
+  <g filter="url(#shadow)">
+    <path d="M14 47C14 38.1634 21.1634 31 30 31H61.6C65.3687 31 68.9835 32.4971 71.6485 35.1621L81.4864 45H132C140.837 45 148 52.1634 148 61V121C148 129.837 140.837 137 132 137H30C21.1634 137 14 129.837 14 121V47Z" fill="url(#folder-back)"/>
+    <path d="M14 67C14 58.1634 21.1634 51 30 51H132C140.837 51 148 58.1634 148 67L141.241 128.507C140.363 136.498 133.611 142.55 125.572 142.55H30.0832C21.807 142.55 14.934 136.174 14.314 127.921L14 67Z" fill="url(#folder-front)"/>
+    <path d="M19 65C20.1018 59.8588 24.6658 56 30.136 56H131.864C137.334 56 141.898 59.8588 143 65H19Z" fill="#FFE78B" fill-opacity="0.85"/>
+  </g>
+  <rect x="76" y="55" width="10" height="68" rx="3" fill="#59616C"/>
+  <path d="M72 58H80V66H72C69.7909 66 68 64.2091 68 62C68 59.7909 69.7909 58 72 58Z" fill="url(#zipper)"/>
+  <path d="M90 67H82V75H90C92.2091 75 94 73.2091 94 71C94 68.7909 92.2091 67 90 67Z" fill="url(#zipper)"/>
+  <path d="M72 76H80V84H72C69.7909 84 68 82.2091 68 80C68 77.7909 69.7909 76 72 76Z" fill="url(#zipper)"/>
+  <path d="M90 85H82V93H90C92.2091 93 94 91.2091 94 89C94 86.7909 92.2091 85 90 85Z" fill="url(#zipper)"/>
+  <path d="M72 94H80V102H72C69.7909 102 68 100.209 68 98C68 95.7909 69.7909 94 72 94Z" fill="url(#zipper)"/>
+  <path d="M90 103H82V111H90C92.2091 111 94 109.209 94 107C94 104.791 92.2091 103 90 103Z" fill="url(#zipper)"/>
+  <path d="M72 112H80V120H72C69.7909 120 68 118.209 68 116C68 113.791 69.7909 112 72 112Z" fill="url(#zipper)"/>
+  <rect x="72" y="113" width="18" height="18" rx="5" fill="url(#pull)" stroke="#59616C" stroke-width="3"/>
+  <path d="M77 130V137C77 139.761 79.2386 142 82 142C84.7614 142 87 139.761 87 137V130" stroke="#59616C" stroke-width="5" stroke-linecap="round"/>
+  <path d="M79 118H83" stroke="#F8FAFC" stroke-width="3" stroke-linecap="round" opacity="0.9"/>
+</svg>

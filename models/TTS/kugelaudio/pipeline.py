@@ -338,6 +338,7 @@ class KugelAudioPipeline:
         audio_guide: Optional[str],
         *,
         temperature: float = 1.0,
+        audio_guide3: Optional[str] = None,
         **kwargs,
     ):
         self._interrupt = False
@@ -523,14 +524,12 @@ class KugelAudioPipeline:
                 if line_text:
                     parsed.append((speaker_id, line_text))
             speaker_id_map = None
+            voices = [audio_guide, audio_guide2] + ([audio_guide3] if audio_guide3 is not None else [])
             if parsed and audio_guide2 is not None:
                 unique_ids = sorted({speaker_id for speaker_id, _ in parsed})
-                if len(unique_ids) > 2:
-                    raise ValueError("Two-speaker mode supports exactly two speaker IDs.")
-                if len(unique_ids) >= 2:
-                    speaker_id_map = {unique_ids[0]: 0, unique_ids[1]: 1}
-                elif len(unique_ids) == 1:
-                    speaker_id_map = {unique_ids[0]: 0}
+                if len(unique_ids) > len(voices):
+                    raise ValueError(f"{len(voices)}-voice cloning supports at most {len(voices)} speaker IDs.")
+                speaker_id_map = {speaker_id: index for index, speaker_id in enumerate(unique_ids)}
             if KUGELAUDIO_DEBUG:
                 print("[KugelAudio][debug] parsed segments:", len(parsed))
                 for idx, (sid, seg) in enumerate(parsed[:6]):
@@ -576,11 +575,8 @@ class KugelAudioPipeline:
                         if duration_left <= 0:
                             break
                     voice_path = audio_guide
-                    mapped_id = speaker_id
                     if speaker_id_map is not None:
-                        mapped_id = speaker_id_map.get(speaker_id, 0)
-                    if mapped_id == 1 and audio_guide2 is not None:
-                        voice_path = audio_guide2
+                        voice_path = voices[speaker_id_map.get(speaker_id, 0)]
                     extra_tail_tokens = tail_tokens
                     segment = _run_single(
                         line_text,

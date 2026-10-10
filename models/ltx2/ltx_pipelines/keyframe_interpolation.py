@@ -160,7 +160,7 @@ class KeyframeInterpolationPipeline:
         video_encoder = self.stage_1_model_ledger.video_encoder()
         transformer = self.stage_1_model_ledger.transformer()
         bind_interrupt_check(transformer, interrupt_check)
-        sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
+        sigmas = LTX2Scheduler().execute(steps=num_inference_steps, device=self.device)
         if loras_slists is not None:
             stage_1_steps = len(sigmas) - 1
             update_loras_slists(

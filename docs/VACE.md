@@ -140,3 +140,7 @@ Advanced tips:
 2. **Quality Reference Images:** use high-resolution, well-lit reference images.
 3. **Proper Masking:** take time to create precise masks with Matanyone.
 4. **Consistent Lighting:** match lighting between reference images and the intended scene.
+
+---
+
+> Applies to: VACE control video, masks, reference images, subject replacement, inpainting and outpainting. Settings recommendations are specific to the named VACE variant and its supported capabilities.

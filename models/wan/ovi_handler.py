@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -25,16 +24,12 @@ class family_handler:
         return {}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        from .wan_handler import family_handler as wan_family_handler
-
-        return wan_family_handler.register_lora_cli_args(parser, lora_root)
-
-    @staticmethod
     def query_model_def(base_model_type: str, model_def: Dict[str, Any]):
         text_encoder_folder = "umt5-xxl"
         cfg = {
             "wan_5B_class": True,
+            "tiny_vae_architecture": "ti2v_2_2",
+            "device_explicit": True,
             "text_encoder_URLs": [
                 build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-bf16.safetensors"),
                 build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-quanto_int8.safetensors"),
@@ -84,10 +79,10 @@ class family_handler:
         return download_def
 
     @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         from .wan_handler import family_handler as wan_family_handler
 
-        return wan_family_handler.get_lora_dir(base_model_type, args, lora_root)
+        return wan_family_handler.get_lora_dir(base_model_type)
 
     @staticmethod
     def load_model(

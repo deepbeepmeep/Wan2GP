@@ -76,6 +76,14 @@ def _quiet_load_output(show_logs):
         yield
 
 
+def _on_generation_device(method):
+    # reference audio preprocessing (torchaudio transforms, wav2vec2-BERT layer drop draws) creates tensors on the default device
+    def wrapped(self, *args, **kwargs):
+        with torch.device(self.device):
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
 class IndexTTS2:
     def __init__(
             self, cfg_path="checkpoints/config.yaml", model_dir="checkpoints", use_fp16=False, use_bf16=False, device=None,
@@ -489,6 +497,7 @@ class IndexTTS2:
             audio = audio[:, :max_audio_samples]
         return audio, sr
 
+    @_on_generation_device
     def _ensure_speaker_entry(self, spk_audio_prompt, verbose=False):
         key = str(spk_audio_prompt)
         cached = self.cache_spk_entries.get(key, None)
@@ -544,6 +553,7 @@ class IndexTTS2:
                 torch.cuda.ipc_collect()
         return cached
 
+    @_on_generation_device
     def _ensure_emo_entry(self, emo_audio_prompt, verbose=False):
         key = str(emo_audio_prompt)
         cached = self.cache_emo_entries.get(key, None)
@@ -596,6 +606,7 @@ class IndexTTS2:
         print(f">> detected emotion from text: '{key_preview}' -> {emo_dict}")
         return list(emo_vector)
 
+    @_on_generation_device
     def precache_reference_audio(self, audio_paths, verbose=False):
         self._raise_if_aborted()
         if audio_paths is None:
@@ -1263,7 +1274,7 @@ class IndexTTS2:
                     m_start_time = time.perf_counter()
                     latent = None
                     if not self.is_v25:
-                        use_speed = torch.zeros(spk_cond_emb.size(0)).to(spk_cond_emb.device).long()
+                        use_speed = torch.zeros(spk_cond_emb.size(0), device=spk_cond_emb.device, dtype=torch.long)
                         with torch.amp.autocast(text_tokens.device.type, enabled=self.dtype is not None, dtype=self.dtype):
                             latent = self.gpt(
                                 speech_conditioning_latent,

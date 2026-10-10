@@ -4,7 +4,7 @@
   "system_handler": "pid",
   "media_type": "image",
   "image_mode": 1,
-  "spatial_upsampling_method": "flux_pid4",
-  "target_ratio": "flux_pid4",
+  "spatial_upsampling_method": "flux_pid*4",
+  "target_ratio": "flux_pid*4",
   "prompt": ""
 }

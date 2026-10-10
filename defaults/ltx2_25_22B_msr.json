@@ -1,0 +1,24 @@
+{
+    "model": {
+        "name": "LTX-2 2.5 MSR Ref Distilled 22B",
+        "architecture": "ltx2_25_22B_msr",
+        "description": "LTX-2.5 distilled checkpoint (22B) with LiconStudio Multiple Subject Reference V1. Provide 1 to 4 subjects or objects, or 2 to 5 references with the background first. Describe the subjects, their actions, and the role of each reference in the prompt.",
+        "URLs": "ltx2_25_22B_distilled",
+        "preload_URLs": [
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/LTX-2.5-Licon-MSR-V1_slot_embeddings_bf16.safetensors"
+        ],
+        "loras": [
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/loras/LTX-2.5-Licon-MSR-V1_bf16.safetensors"
+        ],
+        "loras_multipliers": [1],
+        "ltx2_pipeline": "distilled",
+        "ltx2_msr": true,
+        "ltx2_msr_frame_count": 33
+    },
+    "prompt": "A cinematic tracking shot of the subjects from the reference images walking together in the referenced environment. Preserve each subject's identity and clothing. Natural movement, realistic lighting, and quiet ambient sound.",
+    "video_prompt_type": "KI",
+    "num_inference_steps": 8,
+    "video_length": 145,
+    "resolution": "1280x704",
+    "remove_background_images_ref": 1
+}

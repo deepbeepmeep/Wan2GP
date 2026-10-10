@@ -288,6 +288,10 @@ def _install_template_cache_bust_patch(gradio_routes) -> bool:
 
 def install(verbose: bool = False) -> bool:
     global _installed, _verbose
+    from shared.gradio import gradio_engine_patch
+
+    if os.getenv("WANGP_DISABLE_GRADIO_ENGINE_PATCH", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        gradio_engine_patch.install()
     _verbose = verbose
     if os.getenv("WANGP_DISABLE_GRADIO_MODEL_SWITCH_PATCH", "").strip().lower() in {"1", "true", "yes", "on"}:
         if verbose:

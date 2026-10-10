@@ -212,6 +212,7 @@ def build_signature(request, items: list[BatchItem], *, batch_name: str, process
         "source_audio_track": request.source_audio_track,
         "output_resolution": request.output_resolution,
         "target_ratio": request.target_ratio,
+        "spatial_upsampler_parameters": dict(request.spatial_upsampler_parameters),
         "chunk_size_seconds": str(request.chunk_size_seconds),
         "sliding_window_overlap": str(request.sliding_window_overlap),
         "start_seconds": request.start_seconds,

@@ -50,6 +50,10 @@ class MyAudioProcessor:
     def download(self, method, process_files, send_cmd=None, status_text=None, **kwargs): ...
     def query_download_defs(self, *, enabled_only=True): ... # -> list of process_files definitions
     def enabled(self): ...                                  # optional UI gating
+    @property
+    def status(self): ...                                   # optional: "enabled" or "disabled"
+    @property
+    def reason_disabled(self): ...                          # optional user-facing reason
     def release_vram(self): ...                             # optional Configuration-tab release hook
     # soundtrack type:
     def generate_soundtrack(self, method, video_path, prompt="", negative_prompt="", seed=-1, duration=0, output_path=None, send_cmd=None, status_callback=None, **kwargs): ...
@@ -64,6 +68,17 @@ class MyAudioProcessor:
     def validate_config_section(self, section): ...         # -> "" or message/list
     def config_requires_release(self, old, new, changed_keys): ...
 ```
+
+The handler instance's `status` availability property is distinct from the
+existing `query_audio_processor_def()["status"]` mapping, which contains
+per-method progress text. Discovery evaluates the historical `enabled()` method
+first: `True` maps to `enabled` and `False` to `disabled`. Only handlers without
+`enabled()` use the optional instance `status` property; `unknown` means neither
+mechanism supplied a valid status.
+`reason_disabled` is returned only for disabled handlers. The internal processor
+catalog includes this availability metadata. Prime's post-processing toolbox
+omits disabled processors from callable discovery; internal/compatibility views
+may include them for diagnostics, but disabled processors cannot be dispatched.
 
 The supported processor type constants are:
 
@@ -207,6 +222,7 @@ use the normalized method ids.
 | `seedvc_one_speaker` | `voice_replacement`, `audio_edit` | `postprocessing/seedvc/audio_processor.py` |
 | `seedvc_two_speakers` | `voice_replacement`, `audio_edit` | `postprocessing/seedvc/audio_processor.py` |
 | `remove_background` | `audio_edit` | `postprocessing/audio_background_removal/audio_processor.py` |
+| `remove_vocals` | `audio_edit` | `postprocessing/audio_background_removal/audio_processor.py` |
 
 ## Extension Offload Object Registry
 
@@ -222,3 +238,7 @@ offload_registry.unregister_offloadobj("MyAudioProcessor", offloadobj)  # in rel
 This lets WanGP track every extension offload object and release all extension
 resources centrally: the toolbar "Unload Models" tool and Configuration plugin
 release button call `offload_registry.release_all()`.
+
+---
+
+> Applies to: Developing audio processor plugins: handler methods, registration and shared configuration. Installed processing options are available through WanGP's post-processing controls and API.

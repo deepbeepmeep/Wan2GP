@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from postprocessing import spatial_upsamplers as upsampler_api
 from shared.utils.virtual_media import build_virtual_media_path
 from .wgp_bridge import SeedVR2Bridge
 
@@ -108,13 +109,7 @@ class SeedVR2ProcessHandler:
 
 
 def _scale_for_value(value: str | None) -> float | None:
-    text = str(value or "").strip().lower()
-    if text.startswith(SeedVR2Bridge.UPSAMPLING_VALUE_PREFIX):
-        text = text[len(SeedVR2Bridge.UPSAMPLING_VALUE_PREFIX):]
-    try:
-        return float(text)
-    except ValueError:
-        return None
+    return upsampler_api.parse_multiplier_suffix(value, SeedVR2Bridge.UPSAMPLING_VALUE_PREFIX, 2.0)
 
 
 HANDLER = SeedVR2ProcessHandler()

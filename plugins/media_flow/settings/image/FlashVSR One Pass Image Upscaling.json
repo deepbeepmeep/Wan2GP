@@ -5,6 +5,6 @@
   "media_type": "image",
   "image_mode": 1,
   "spatial_upsampling_method": "flashvsr",
-  "target_ratio": "flashvsr2",
+  "target_ratio": "flashvsr*2",
   "prompt": ""
 }

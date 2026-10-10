@@ -1,0 +1,18 @@
+{
+    "model": {
+        "name": "Ming Image 0.1 Design-Layer 6B",
+        "architecture": "ming_image_0_1_design_layer",
+        "description": "Separate one flattened design into transparent, individually usable image layers.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/MingImage/resolve/main/Ming-Image-0.1-Design-Layer_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/MingImage/resolve/main/Ming-Image-0.1-Design-Layer_int8_convrot.safetensors"
+        ]
+    },
+    "image_mode": 1,
+    "video_prompt_type": "I",
+    "prompt": "Decompose this image into 4 layers with the following specifications:\nNumber of layers: 4\nLayer 1: All clearly readable foreground text, preserving its exact wording and placement.\nLayer 2: The card, panel, or banner directly behind the text, if present.\nLayer 3: The main foreground subject or illustration.\nLayer 4: The complete background with remaining supporting shapes, surfaces, patterns, and shadows.",
+    "num_inference_steps": 12,
+    "guidance_scale": 2.0,
+    "batch_size": 1,
+    "prompt_enhancer": ""
+}

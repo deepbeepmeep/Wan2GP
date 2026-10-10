@@ -1,0 +1,11 @@
+{
+  "id": "../",
+  "name": "Deepy",
+  "short_name": "Deepy",
+  "start_url": "../",
+  "scope": "../",
+  "display": "standalone",
+  "background_color": "#edf3f6",
+  "theme_color": "#0c4b69",
+  "icons": [{"src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}]
+}

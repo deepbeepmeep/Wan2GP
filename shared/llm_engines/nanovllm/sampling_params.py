@@ -12,6 +12,7 @@ class SamplingParams:
     top_p: Optional[float] = None  # Top-p (nucleus) sampling: consider tokens with cumulative probability <= top_p
     min_p: Optional[float] = None  # Min-p sampling: keep tokens with probability >= min_p * max_prob
     repetition_penalty: float = 1.0  # Repetition penalty: >1.0 reduces repetition, <1.0 increases it
+    predictive_penalty: bool = True  # Apply the selected penalty to speculative draft proposals
     # Optional logits processor for constrained decoding
     # Should be a callable with signature: (input_ids: torch.Tensor, logits: torch.Tensor) -> torch.Tensor
     logits_processor: Optional[Any] = field(default=None, repr=False)

@@ -72,10 +72,10 @@ def _pad_metadata_bytes(payload_bytes, reserved_bytes):
     return payload_bytes + (b" " * (reserved_bytes - len(payload_bytes)))
 
 
-def build_reserved_video_metadata_text(reserved_bytes=DEFAULT_RESERVED_VIDEO_METADATA_BYTES):
+def build_reserved_video_metadata_text(reserved_bytes=DEFAULT_RESERVED_VIDEO_METADATA_BYTES, metadata_dict=None):
     reserved_bytes = max(128, int(reserved_bytes))
-    placeholder = _encode_metadata_bytes({_RESERVED_METADATA_KEY: True})
-    return _pad_metadata_bytes(placeholder, max(reserved_bytes, len(placeholder))).decode("utf-8")
+    payload = _encode_metadata_bytes({_RESERVED_METADATA_KEY: True} if metadata_dict is None else metadata_dict)
+    return _pad_metadata_bytes(payload, max(reserved_bytes, len(payload))).decode("utf-8")
 
 
 def _escape_ffmetadata_value(value):
@@ -93,8 +93,8 @@ def _write_ffmetadata_file(file_path, tags):
     return file_path
 
 
-def write_reserved_video_ffmetadata(file_path, reserved_bytes=DEFAULT_RESERVED_VIDEO_METADATA_BYTES):
-    return _write_ffmetadata_file(file_path, {"comment": build_reserved_video_metadata_text(reserved_bytes)})
+def write_reserved_video_ffmetadata(file_path, reserved_bytes=DEFAULT_RESERVED_VIDEO_METADATA_BYTES, metadata_dict=None):
+    return _write_ffmetadata_file(file_path, {"comment": build_reserved_video_metadata_text(reserved_bytes, metadata_dict)})
 
 
 def _read_container_tags(file_path):
@@ -729,8 +729,9 @@ def read_metadata_from_mp4(file_path):
             return metadata
     except Exception:
         pass
+    tags = _read_container_tags(file_path)
     for tag_key in _CONTAINER_COMMENT_TAGS:
-        metadata = _parse_metadata_text(_read_container_tags(file_path).get(tag_key))
+        metadata = _parse_metadata_text(tags.get(tag_key))
         if metadata is not None:
             return metadata
     return None

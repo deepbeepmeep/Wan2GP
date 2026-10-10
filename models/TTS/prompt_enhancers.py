@@ -20,10 +20,10 @@ TTS_MONOLOGUE_PROMPT = (
 
 TTS_QWEN3_DIALOGUE_PROMPT = (
     "You are a dialogue-writing assistant for a text-to-speech model. "
-    "Generate a two-speaker dialogue based on the user prompt.\n\n"
+    "Generate a dialogue based on the user prompt, with two speakers unless the user asks for three.\n\n"
     "Output rules:\n"
     "- Output only dialogue lines, no explanations, lists, or stage directions.\n"
-    "- Every line must start with either \"Speaker 1:\" or \"Speaker 2:\".\n"
+    "- Every line must start with \"Speaker 1:\", \"Speaker 2:\" or, for a three-speaker dialogue, \"Speaker 3:\".\n"
     "- Use natural spoken language with clear punctuation.\n"
     "- Keep alternating speakers unless the prompt asks otherwise.\n"
     "- Write a compact dialogue (6-14 lines) unless the user asks for a different length.\n\n"

@@ -5,6 +5,7 @@ Tiny AutoEncoder for Hunyuan Video (Decoder-only, pruned)
 - Transplant/widening helpers removed
 - Deepening (IdentityConv2d+ReLU) is now built into the decoder structure itself
 """
+from shared.utils.media_control import inference_checkpoint
 
 import torch
 import torch.nn as nn
@@ -109,6 +110,7 @@ def apply_model_with_memblocks(model, x, parallel, show_progress_bar, mem=None):
     if parallel:
         x = x.reshape(N*T, C, H, W)
         for b in tqdm(model, disable=not show_progress_bar):
+            inference_checkpoint()
             if isinstance(b, MemBlock):
                 NT, C, H, W = x.shape
                 T = NT // N
@@ -125,6 +127,7 @@ def apply_model_with_memblocks(model, x, parallel, show_progress_bar, mem=None):
         work_queue = [TWorkItem(xt, 0) for t, xt in enumerate(x.reshape(N, T * C, H, W).chunk(T, dim=1))]
         progress_bar = tqdm(range(T), disable=not show_progress_bar)
         while work_queue:
+            inference_checkpoint()
             xt, i = work_queue.pop(0)
             if i == 0:
                 progress_bar.update(1)

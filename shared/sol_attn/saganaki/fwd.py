@@ -910,4 +910,40 @@ def sol_attn(
     return output
 
 
-__all__ = ["sol_attn"]
+def inline_q_path(arch, tokens, thresh_type):
+    """True when sol_attn(..., int8_qk=True) runs the pointer forward with Q quantized inline (K/V from prepare_int8_kv)."""
+    return _use_pointer_arch(arch) and _POINTER_INLINE_Q and thresh_type == "diag" and tokens >= 4096
+
+
+def sol_attn_prepared(q, v, prepared, *, scale=None, tau=1.0, sink_blocks=(0, 0), sink_q=(0, 0), out=None):
+    """sol_attn(q, k, v, int8_qk=True, thresh_type="diag") on the inline-Q pointer path (inline_q_path) from prepared =
+    prepare_int8_kv(k, v), so that k can be released before q exists. out may be q itself: each program reads its query
+    block before writing that block."""
+    kc, vc, stat_mean, stat_var, k8, k_scale = prepared
+    scale = q.shape[-1] ** -0.5 if scale is None else float(scale)
+    batch, tokens, heads, head_dim = q.shape
+    blocks = triton.cdiv(tokens, BLOCK)
+    output = torch.empty(q.shape, device=q.device, dtype=q.dtype) if out is None else out
+    # the arguments of sol_attn's inline-Q launch, its unused Q-side inputs being q as there
+    _forward_int8_ptr[(1, blocks, batch * heads)](
+        q, v, kc, vc, q, k8, q, k_scale,
+        q, q, q, stat_mean, stat_var, output,
+        scale,
+        float(tau),
+        int(sink_blocks[0]), int(sink_blocks[1]), int(sink_q[0]), int(sink_q[1]),
+        tokens,
+        q.stride(0), q.stride(1), q.stride(2),
+        v.stride(0), v.stride(1), v.stride(2),
+        H=heads,
+        D=head_dim,
+        NT=blocks,
+        BV=head_dim,
+        BLOCK_SIZE=BLOCK,
+        GROUP_SIZE=GROUP,
+        INT8_PV=False,
+        INLINE_Q=True,
+    )
+    return output
+
+
+__all__ = ["inline_q_path", "sol_attn", "sol_attn_prepared"]

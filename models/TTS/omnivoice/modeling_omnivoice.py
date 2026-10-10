@@ -1074,6 +1074,7 @@ class OmniVoice(PreTrainedModel):
             t_end=1.0,
             num_step=gen_config.num_step,
             t_shift=gen_config.t_shift,
+            device=device,
         ).tolist()
         schedules = []
         for t_len in task.target_lens:
@@ -1370,7 +1371,7 @@ def _get_time_steps(
     t_shift: float = 1.0,
     device: torch.device = torch.device("cpu"),
 ) -> torch.Tensor:
-    timesteps = torch.linspace(t_start, t_end, num_step + 1).to(device)
+    timesteps = torch.linspace(t_start, t_end, num_step + 1, device=device)
     timesteps = t_shift * timesteps / (1 + (t_shift - 1) * timesteps)
     return timesteps
 
@@ -1418,7 +1419,7 @@ def _tokenize_with_nonverbal_tags(text: str, tokenizer) -> torch.Tensor:
         combined = []
         for p in parts:
             combined.extend(p)
-        result = torch.tensor([combined], dtype=torch.long)
+        result = torch.tensor([combined], dtype=torch.long, device="cpu")
     return result
 
 

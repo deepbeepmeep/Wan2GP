@@ -15,14 +15,35 @@ Every spatial upsampler (built-in or extension) class is listed in
     "method_pos": {"flashvsr": 20},          # optional per-method order; independent of multiplier
     "methods": [("FlashVSR", "flashvsr")],   # interchangeable post-processing methods (label, method key)
     "vae_methods": [],                       # VAE methods (label, method key); model-pipeline integration
-    "multipliers": {"flashvsr": (2.0, 4.0)}, # supported upsampling multipliers per method key
-    "default_spatial_upsampling": "flashvsr2",
+    "multipliers": {"flashvsr": (2.0, 4.0)}, # optional; omit when a refiner has no scale
+    "default_spatial_upsampling": "flashvsr*2",
+    "postprocessing_category": "upsampler",   # "upsampler" or "refiner"
     "source_audio_conditioning": False,        # request a decoded source-audio input without changing final remux audio
-    "description": "Restore detail while spatially upscaling media.", # optional fallback description for discovery UIs/tools
+    "description": "Restore detail while spatially upscaling media.", # processor-owned help/discovery description
     "method_descriptions": {"flashvsr": "..."}, # optional descriptions per method
-    "method_parameters": {"flashvsr": [...]}, # optional extra parameter descriptors per method
+    "method_parameters": {"flashvsr": [{      # optional runtime/UI/assistant descriptors
+        "name": "spatial_upsampler_strength", # shared prefix required for UI controls
+        "setting": "strength",                # upscale() keyword; defaults to name
+        "type": "number",
+        "component": "slider",
+        "ui": ("postprocessing", "late_postprocessing"),
+        "required": False,
+        "default": 0.5,
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "description": "Restoration strength.",
+    }]},
 }
 ```
+
+Decoded-media handlers declare category ``upsampler`` or ``refiner``. Methods
+without declared multipliers serialize as their bare method key and do not show
+a Scale dropdown. Handler descriptions power both the selector's dynamic help
+and postprocessing discovery. UI parameters may use textbox, number, slider,
+dropdown, checkbox, or images components; images are rendered by the shared
+``AdvancedMediaGallery`` and support ``multiple=True``. Assistant discovery
+keeps only call-relevant parameter fields and omits UI/runtime presentation
+metadata.
 
 Handlers must also implement:
 - ``is_upsampling(value)``: does this handler own this ``spatial_upsampling`` value?
@@ -40,6 +61,11 @@ additionally implement ``upscale(sample, value, **kwargs)`` and may implement
 existing media. VAE ("vae") handlers are plugged into model pipelines through
 the generic VAE upsampler hooks below; model defs declare support.
 
+Discovery tests the existing optional ``enabled()`` method first. When it is
+absent, handlers may expose a ``status`` property containing ``"enabled"`` or
+``"disabled"``. Discovery reports ``"unknown"`` only when neither contract
+provides a valid status. Disabled handlers may expose ``reason_disabled``.
+
 Handlers may also expose Config-tab controls with ``create_config_ui(...)`` and
 normalize their own nested section under ``wgp_config["spatial_upsamplers"]``.
 Model persistence is shared by all handlers through
@@ -56,18 +82,31 @@ centrally (WanGP unload tool).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
+import hashlib
 import importlib
+import inspect
 import sys
 from typing import Any
 
 from shared.attention import attention_shared_state
 from shared.utils import offload_registry
+from .model_context import compatible_loaded_model
+from .processor_status import PROCESSOR_STATUS_DISABLED, PROCESSOR_STATUS_ENABLED, PROCESSOR_STATUS_UNKNOWN, handler_reason_disabled, handler_status
 
 # Backward compatibility for external plugins written against the old module name.
 sys.modules.setdefault("postprocessing.upsamplers", sys.modules[__name__])
 
 UPSAMPLER_TYPE_POSTPROCESSING = "postprocessing"
 UPSAMPLER_TYPE_VAE = "vae"
+POSTPROCESSING_CATEGORY_UPSAMPLER = "upsampler"
+POSTPROCESSING_CATEGORY_REFINER = "refiner"
+POSTPROCESSING_CATEGORIES = (POSTPROCESSING_CATEGORY_UPSAMPLER, POSTPROCESSING_CATEGORY_REFINER)
+PARAMETER_PREFIX = "spatial_upsampler_"
+PARAMETER_UI_POSTPROCESSING = "postprocessing"
+PARAMETER_UI_LATE_POSTPROCESSING = "late_postprocessing"
+PARAMETER_UI_MEDIA_FLOW = "media_flow"
 UPSAMPLER_PROFILE_VIDEO = "video"
 UPSAMPLER_PROFILE_IMAGE = "image"
 UPSAMPLER_PROFILE_AUDIO = "audio"
@@ -77,15 +116,19 @@ PERSIST_UNLOAD = 1
 PERSIST_RAM = 2
 PERSISTENCE_CHOICES = [("Unload after use", PERSIST_UNLOAD), ("Persistent in RAM", PERSIST_RAM)]
 _SHARED_PERSISTENCE_BINDING_KEY = "__shared_persistence__"
+MULTIPLIER_SEPARATOR = "*"
 
 spatial_upsampler_handlers = [
     "postprocessing.lanczos.wgp_bridge.LanczosUpsampler",
+    "postprocessing.dlss5.spatial_upsampler.DLSS5SpatialUpsampler",
     "postprocessing.flashvsr.wgp_bridge.FlashVSRBridge",
     "postprocessing.seedvr2.wgp_bridge.SeedVR2Bridge",
     "postprocessing.pid.wgp_bridge.PiDBridge",
+    "postprocessing.h3_face_refiner.wgp_bridge.H3FaceRefinerBridge",
     "postprocessing.chain_of_zoom.wgp_bridge.ChainOfZoomBridge",
     "postprocessing.ltx2_upsampler.wgp_bridge.LTXVideoUpsamplerBridge",
     "postprocessing.spatial_upsamplers.WanVaeUpsampler",
+    "models.minimax_h3.vae_upsampler.MiniMaxH3VaeUpsampler",
 ]
 _upsampler_handlers: list[Any] = []
 _registered_upsampler_handler_paths: set[str] = set()
@@ -107,6 +150,28 @@ def format_multiplier(scale: float) -> str:
 
 def format_multiplier_label(scale: float) -> str:
     return f"x{format_multiplier(scale)}"
+
+
+def format_multiplier_value(method: str, scale: float) -> str:
+    return f"{str(method or '').strip().lower()}{MULTIPLIER_SEPARATOR}{format_multiplier(scale)}"
+
+
+def parse_multiplier_suffix(value, method: str, default_scale: float) -> float | None:
+    text = str(value or "").strip().lower()
+    method = str(method or "").strip().lower()
+    if not text.startswith(method):
+        return None
+    suffix = text[len(method):]
+    if suffix.startswith(MULTIPLIER_SEPARATOR):
+        suffix = suffix[len(MULTIPLIER_SEPARATOR):]
+        if not suffix:
+            return None
+    elif MULTIPLIER_SEPARATOR in suffix:
+        return None
+    try:
+        return float(suffix or default_scale)
+    except ValueError:
+        return None
 
 
 def format_method_label(label: str) -> str:
@@ -165,10 +230,37 @@ def register_spatial_upsamplers(server_config, files_locator, handler_modules: l
         _registered_upsampler_handler_paths.add(path)
 
 
+_ui_queries = ContextVar("spatial_upsampler_ui_queries", default=None)
+
+
+@contextmanager
+def ui_query_scope():
+    """Reuse discovery within one form build, never across pages or refreshes."""
+    token = _ui_queries.set({})
+    try:
+        yield
+    finally:
+        _ui_queries.reset(token)
+
+
+def _ui_query(handler, kind, query):
+    cache = _ui_queries.get()
+    if cache is None:
+        return query()
+    key = (id(handler), kind)
+    if key not in cache:
+        cache[key] = query()
+    return cache[key]
+
+
+def _handler_def(handler):
+    return _ui_query(handler, "definition", handler.query_upsampler_def)
+
+
 def upsampler_handlers(upsampler_type: str | None = None, enabled_only: bool = False) -> list[Any]:
     handlers = []
     for handler in _upsampler_handlers:
-        if upsampler_type is not None and upsampler_type not in handler.query_upsampler_def().get("upsampler_types", ()):
+        if upsampler_type is not None and upsampler_type not in _handler_def(handler).get("upsampler_types", ()):
             continue
         if enabled_only and not handler_enabled(handler):
             continue
@@ -177,11 +269,11 @@ def upsampler_handlers(upsampler_type: str | None = None, enabled_only: bool = F
 
 
 def handler_enabled(handler) -> bool:
-    return not hasattr(handler, "enabled") or handler.enabled()
+    return not hasattr(handler, "enabled") or _ui_query(handler, "enabled", handler.enabled)
 
 
 def _handler_name(handler) -> str:
-    return str(handler.query_upsampler_def()["name"])
+    return str(_handler_def(handler)["name"])
 
 
 def _release_upsampler_handler(handler) -> None:
@@ -205,7 +297,7 @@ def _activate_upsampler(handler) -> None:
 
 
 def query_upsampler_defs(upsampler_type: str | None = None, enabled_only: bool = False) -> list[dict[str, Any]]:
-    return [handler.query_upsampler_def() for handler in upsampler_handlers(upsampler_type, enabled_only)]
+    return [_handler_def(handler) for handler in upsampler_handlers(upsampler_type, enabled_only)]
 
 
 def _method_choices(handler_def: dict[str, Any]) -> list[tuple[str, str]]:
@@ -214,6 +306,76 @@ def _method_choices(handler_def: dict[str, Any]) -> list[tuple[str, str]]:
 
 def _method_labels(handler_def: dict[str, Any]) -> dict[str, str]:
     return {key: label for label, key in _method_choices(handler_def)}
+
+
+def method_definition(method) -> tuple[Any | None, dict[str, Any], str]:
+    handler = find_upsampler_by_method(method)
+    if handler is None:
+        return None, {}, str(method or "").strip()
+    return handler, _handler_def(handler), str(method or "").strip()
+
+
+def method_description(method) -> str:
+    handler, handler_def, method = method_definition(method)
+    if handler is None:
+        return ""
+    descriptions = handler_def.get("method_descriptions", {})
+    if isinstance(descriptions, dict) and method in descriptions:
+        description = str(descriptions[method] or "").strip()
+        if description:
+            return description
+    return str(handler_def.get("description", "") or "").strip()
+
+
+def method_category(method) -> str:
+    _handler, handler_def, _method = method_definition(method)
+    category = str(handler_def.get("postprocessing_category", POSTPROCESSING_CATEGORY_UPSAMPLER) or "").strip().lower()
+    return category if category in POSTPROCESSING_CATEGORIES else POSTPROCESSING_CATEGORY_UPSAMPLER
+
+
+def method_progress_label(method, default="Upsampling - Starting") -> str:
+    _handler, handler_def, _method = method_definition(method)
+    return str(handler_def.get("progress_label", default) or default)
+
+
+def method_parameters(method, *, ui_context: str | None = None) -> list[dict[str, Any]]:
+    _handler, handler_def, method = method_definition(method)
+    parameters = handler_def.get("method_parameters", {})
+    values = parameters.get(method, ()) if isinstance(parameters, dict) else ()
+    if not isinstance(values, (list, tuple)):
+        return []
+    output = []
+    for parameter in values:
+        if not isinstance(parameter, dict) or not str(parameter.get("name", "") or "").strip():
+            continue
+        contexts = parameter.get("ui", ())
+        contexts = (contexts,) if isinstance(contexts, str) else tuple(contexts)
+        if ui_context is not None and ui_context not in contexts:
+            continue
+        output.append(dict(parameter))
+    return output
+
+
+def method_uses_setting(method, setting: str) -> bool:
+    return any(str(parameter.get("setting", parameter["name"])) == setting for parameter in method_parameters(method))
+
+
+def runtime_parameter_kwargs(spatial_upsampling, parameter_values) -> dict[str, Any]:
+    if not isinstance(parameter_values, dict):
+        return {}
+    split = split_upsampling_value(spatial_upsampling)
+    if split is None:
+        return {}
+    output = {}
+    for parameter in method_parameters(split[0]):
+        name = str(parameter["name"])
+        if name not in parameter_values:
+            continue
+        value = parameter_values[name]
+        if value is None or value == "" or value == []:
+            continue
+        output[str(parameter.get("setting", name))] = value
+    return output
 
 
 def _handler_method_label(handler, label: str, method: str) -> str:
@@ -252,7 +414,7 @@ def find_postprocessing_upsampler(spatial_upsampling) -> Any | None:
     if handler is None:
         return None
     method = handler.split_value(spatial_upsampling)[0]
-    return handler if method in [key for _, key in handler.query_upsampler_def().get("methods", [])] else None
+    return handler if method in [key for _, key in _handler_def(handler).get("methods", [])] else None
 
 
 def resolve_late_postprocessing_prompt(spatial_upsampling, prompt) -> str:
@@ -260,7 +422,7 @@ def resolve_late_postprocessing_prompt(spatial_upsampling, prompt) -> str:
     if prompt:
         return prompt
     handler = find_postprocessing_upsampler(spatial_upsampling)
-    return "" if handler is None else str(handler.query_upsampler_def().get("default_prompt", "")).strip()
+    return "" if handler is None else str(_handler_def(handler).get("default_prompt", "")).strip()
 
 
 def find_vae_upsampler(spatial_upsampling) -> Any | None:
@@ -268,26 +430,81 @@ def find_vae_upsampler(spatial_upsampling) -> Any | None:
     if handler is None:
         return None
     method = handler.split_value(spatial_upsampling)[0]
-    return handler if method in [key for _, key in handler.query_upsampler_def().get("vae_methods", [])] else None
+    return handler if method in [key for _, key in _handler_def(handler).get("vae_methods", [])] else None
 
 
 def is_vae_upsampling(spatial_upsampling) -> bool:
     return find_vae_upsampler(spatial_upsampling) is not None
 
 
-def upscale_postprocessing(handler, sample, spatial_upsampling, *, main_offloadobj=None, **kwargs):
+def query_download_defs(enabled_only: bool = True) -> list[dict[str, Any]]:
+    """Inventory optional assets through their owners, without downloading them."""
+    import inspect
+
+    definitions = []
+    for handler in _upsampler_handlers:
+        if enabled_only and handler_status(handler) == PROCESSOR_STATUS_DISABLED:
+            continue
+        query = getattr(handler, "query_download_defs", None) or getattr(handler, "query_download_def", None)
+        if query is None:
+            continue
+        kwargs = {"enabled_only": enabled_only} if "enabled_only" in inspect.signature(query).parameters else {}
+        result = query(**kwargs)
+        if result is not None:
+            definitions.extend(result if isinstance(result, list) else [result])
+    return definitions
+
+
+def download_for_value(spatial_upsampling, process_files, **kwargs):
+    handler = find_upsampler(spatial_upsampling)
+    if handler is None or not hasattr(handler, "download"):
+        return False
+    kwargs.setdefault("status_text", f"Downloading {_handler_def(handler)['name']} Model Files")
+    return handler.download(process_files, spatial_upsampling=spatial_upsampling, **kwargs)
+
+
+_progress_compat_warnings = set()
+
+
+def _unit_compatible_progress(progress_callback):
+    """Adapt plugin wrappers written for the older progress_callback(phase, current, total) by dropping the optional unit."""
+    try:
+        inspect.signature(progress_callback).bind(None, None, None, None)
+        return progress_callback
+    except TypeError:
+        pass
+    parts = (inspect.getsourcefile(progress_callback) or "unknown").replace("\\", "/").split("/")
+    owner = next((f"Plugin '{parts[i + 1]}'" for i, part in enumerate(parts[:-1]) if part.lower() == "plugins"), "/".join(parts))
+    if owner not in _progress_compat_warnings:
+        _progress_compat_warnings.add(owner)
+        print(f"[Upsamplers] Warning: {owner} wraps the post-processing progress callback without its optional 'unit' argument; progress units will not be shown. Please update it.")
+    return lambda phase, current=None, total=None, unit=None: progress_callback(phase, current, total)
+
+
+def upscale_postprocessing(handler, sample, spatial_upsampling, *, main_offloadobj=None, loaded_model_context=None, **kwargs):
+    if kwargs.get("progress_callback") is not None:
+        kwargs["progress_callback"] = _unit_compatible_progress(kwargs["progress_callback"])
     _activate_upsampler(handler)
     persistent = persistent_models()
-    name = handler.query_upsampler_def()["name"]
+    name = _handler_def(handler)["name"]
+    parameter_values = {name: kwargs.pop(name) for name in tuple(kwargs) if str(name).startswith(PARAMETER_PREFIX)}
+    kwargs.update(runtime_parameter_kwargs(spatial_upsampling, parameter_values))
+    borrowed_context = compatible_loaded_model(handler, spatial_upsampling, loaded_model_context, **kwargs)
     with attention_shared_state():
         try:
-            if main_offloadobj is not None:
-                main_offloadobj.unload_all()
-            if hasattr(handler, "load_upsampler"):
+            core_offloadobj = loaded_model_context.offloadobj if loaded_model_context is not None else main_offloadobj
+            if core_offloadobj is not None:
+                core_offloadobj.unload_all()
+            if borrowed_context is not None and hasattr(handler, "release_private_runtime"):
+                handler.release_private_runtime()
+            elif borrowed_context is None and hasattr(handler, "load_upsampler"):
                 handler.load_upsampler(spatial_upsampling, **kwargs)
-            return handler.upscale(sample, spatial_upsampling, **kwargs)
+            return handler.upscale(sample, spatial_upsampling, loaded_model_context=borrowed_context, **kwargs)
         finally:
-            if persistent:
+            if borrowed_context is not None:
+                borrowed_context.offloadobj.unload_all()
+                _release_upsampler_handler(handler)
+            elif persistent:
                 offload_registry.unload_vram([name])
             else:
                 _release_upsampler_handler(handler)
@@ -313,7 +530,7 @@ def _handler_supports_model_vae_method(handler, method: str, model_type, model_d
 def query_model_vae_method_choices(model_type, model_def, image_mode: int) -> list[tuple[str, str]]:
     choices = []
     for handler in upsampler_handlers(UPSAMPLER_TYPE_VAE):
-        handler_def = handler.query_upsampler_def()
+        handler_def = _handler_def(handler)
         for label, method in handler_def.get("vae_methods", []):
             if _handler_supports_model_vae_method(handler, method, model_type, model_def, image_mode):
                 choices.append((_method_pos(handler_def, method), str(label or "").casefold(), str(method or ""), _handler_method_label(handler, label, method), method))
@@ -367,6 +584,17 @@ def has_post_model_process_vae_upsampling(spatial_upsampling) -> bool:
     return handler is not None and hasattr(handler, "post_model_process_vae_upsampling")
 
 
+def resize_x2_vae_output(sample, scale):
+    """Brings the output of a VAE decoder that always upsamples x2 to the selected multiplier."""
+    if scale == 2.0:
+        return sample
+    from PIL import Image
+    from postprocessing.lanczos import resize_lanczos_spatial
+
+    height, width = sample.shape[-2:]
+    return resize_lanczos_spatial(sample, None, size=(round(height * scale / 2), round(width * scale / 2)), method=Image.Resampling.BICUBIC)
+
+
 def prepare_vae_upsampler(handler, spatial_upsampling, **kwargs):
     if handler is None or not hasattr(handler, "prepare_vae_upsampler"):
         return None
@@ -384,7 +612,7 @@ def find_upsampler_by_method(method) -> Any | None:
     if not method:
         return None
     for handler in _upsampler_handlers:
-        handler_def = handler.query_upsampler_def()
+        handler_def = _handler_def(handler)
         if method in [key for _, key in _method_choices(handler_def)]:
             return handler
     return None
@@ -401,7 +629,7 @@ def method_multipliers(method) -> tuple[float, ...]:
     handler = find_upsampler_by_method(method)
     if handler is None:
         return ()
-    return tuple(handler.query_upsampler_def().get("multipliers", {}).get(str(method), ()))
+    return tuple(_handler_def(handler).get("multipliers", {}).get(str(method), ()))
 
 
 def ratio_choices_for_method(method) -> list[tuple[str, float]]:
@@ -425,13 +653,16 @@ def default_multiplier_for_method(method) -> float:
     handler = find_upsampler_by_method(method)
     if handler is None:
         return 2.0
-    return _default_multiplier_from_def(handler.query_upsampler_def(), str(method or "").strip()) or 2.0
+    handler_def = _handler_def(handler)
+    if not tuple(handler_def.get("multipliers", {}).get(str(method or "").strip(), ())):
+        return 1.0
+    return _default_multiplier_from_def(handler_def, str(method or "").strip()) or 2.0
 
 
 def normalize_multiplier_for_method(method, scale) -> float:
     multipliers = method_multipliers(method)
     if not multipliers:
-        return default_multiplier_for_method("lanczos")
+        return default_multiplier_for_method(method)
     try:
         scale = float(scale)
     except (TypeError, ValueError):
@@ -449,6 +680,18 @@ def build_upsampling_value(method, scale) -> str | None:
     return None if handler is None else handler.build_value(method, scale)
 
 
+def normalize_upsampling_value(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    split = split_upsampling_value(text)
+    if split is None:
+        return text
+    handler = find_upsampler_by_method(split[0])
+    normalized = None if handler is None else handler.build_value(*split)
+    return normalized or text
+
+
 def format_upsampling_label(value) -> str:
     text = str(value or "").strip()
     if not text:
@@ -460,16 +703,18 @@ def format_upsampling_label(value) -> str:
     if split is None:
         return text
     method, scale = split
-    label = _method_labels(handler.query_upsampler_def()).get(method)
+    label = _method_labels(_handler_def(handler)).get(method)
     if label:
         label = _handler_method_label(handler, label, method)
-    return format_method_scale_label(label, scale) if label else text
+    return (format_method_scale_label(label, scale) if method_multipliers(method) else label) if label else text
 
 
-def normalize_upsampling_state(method, scale) -> tuple[list[tuple[str, float]], float, str]:
+def normalize_upsampling_state(method, scale) -> tuple[list[tuple[str, float]], float | None, str]:
     method = str(method or "").strip()
-    ratio_choices = ratio_choices_for_method(method) or ratio_choices_for_method("lanczos")
-    scale = normalize_multiplier_for_method(method or "lanczos", scale)
+    ratio_choices = ratio_choices_for_method(method)
+    if not method:
+        ratio_choices = ratio_choices_for_method("lanczos")
+    scale = normalize_multiplier_for_method(method or "lanczos", scale) if ratio_choices else None
     return ratio_choices, scale, "" if not method else build_upsampling_value(method, scale) or ""
 
 
@@ -481,14 +726,14 @@ def normalize_upsampling_value_for_method(method, current_value) -> tuple[list[t
 def _method_choice_sort_key(choice: tuple[str, str]) -> tuple[float, str, str]:
     label, method = choice
     handler = find_upsampler_by_method(method)
-    position = 1000 if handler is None else _method_pos(handler.query_upsampler_def(), method)
+    position = 1000 if handler is None else _method_pos(_handler_def(handler), method)
     return position, str(label or "").casefold(), str(method or "")
 
 
 def query_postprocessing_method_choices(image_outputs: bool = False, late_postprocessing: bool = False) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     video_post_choices, image_post_choices = [], []
     for handler in upsampler_handlers(UPSAMPLER_TYPE_POSTPROCESSING):
-        handler_def = handler.query_upsampler_def()
+        handler_def = _handler_def(handler)
         method_keys = [key for _, key in handler_def.get("methods", [])]
         if "lanczos" not in method_keys and not (late_postprocessing or handler_enabled(handler)):
             continue
@@ -507,6 +752,7 @@ def dropdown_state(spatial_upsampling, *, image_outputs: bool = False, late_post
     method, scale = split_upsampling_value(spatial_upsampling) or ("", 2.0)
     video_post_choices, image_post_choices = query_postprocessing_method_choices(image_outputs=image_outputs, late_postprocessing=late_postprocessing)
     excluded_methods = excluded_methods or set()
+    video_post_choices = [choice for choice in video_post_choices if choice[1] not in excluded_methods and not (exclude_method_fn and exclude_method_fn(choice[1]))]
     image_post_choices = [choice for choice in image_post_choices if choice[1] not in excluded_methods and not (exclude_method_fn and exclude_method_fn(choice[1]))]
     method_choices = [("None", "")] + sorted(video_post_choices + image_post_choices + list(vae_choices or []), key=_method_choice_sort_key)
     if method not in {value for _, value in method_choices}:
@@ -515,36 +761,188 @@ def dropdown_state(spatial_upsampling, *, image_outputs: bool = False, late_post
     return {"method": method, "scale": scale, "value": value, "method_choices": method_choices, "ratio_choices": ratio_choices}
 
 
-def create_generation_spatial_ui(gr, spatial_upsampling, *, image_outputs: bool = False, late_postprocessing: bool = False, vae_choices: list[tuple[str, str]] | None = None, excluded_methods: set[str] | None = None, exclude_method_fn=None, elem_classes=None, update_form: bool = False, field_help=None) -> dict[str, Any]:
+def late_postprocessing_ui_state(spatial_upsampling, *, image_outputs: bool, parameter_values=None) -> dict[str, Any]:
+    state = dropdown_state(spatial_upsampling, image_outputs=image_outputs, late_postprocessing=True)
+    state["parameters"] = parameter_ui_state(state["method"], PARAMETER_UI_LATE_POSTPROCESSING, parameter_values)
+    return state
+
+
+def ui_parameter_definitions(ui_context: str) -> list[dict[str, Any]]:
+    definitions = {}
+    for handler in upsampler_handlers():
+        for _label, method in _method_choices(_handler_def(handler)):
+            for parameter in method_parameters(method, ui_context=ui_context):
+                name = str(parameter["name"])
+                if not name.startswith(PARAMETER_PREFIX):
+                    raise ValueError(f"Spatial postprocessor UI parameter '{name}' must start with '{PARAMETER_PREFIX}'")
+                if name in definitions:
+                    previous = definitions[name]
+                    for key in ("type", "component", "multiple"):
+                        if key in previous and key in parameter and previous[key] != parameter[key]:
+                            raise ValueError(f"Spatial postprocessor UI parameter '{name}' has incompatible '{key}' declarations")
+                    continue
+                definitions[name] = parameter
+    return list(definitions.values())
+
+
+def parameter_component_type(parameter: dict[str, Any]) -> str:
+    component_type = str(parameter.get("component", "") or "").strip().lower()
+    return component_type or {"boolean": "checkbox", "integer": "number", "number": "number", "array": "images"}.get(str(parameter.get("type", "string")), "textbox")
+
+
+def parameter_default(parameter: dict[str, Any]):
+    value = parameter.get("default", [] if parameter_component_type(parameter) == "images" else None)
+    return list(value) if isinstance(value, list) else value
+
+
+def parameter_ui_state(method, ui_context: str, parameter_values=None) -> dict[str, Any]:
+    definitions = ui_parameter_definitions(ui_context)
+    selected = {str(parameter["name"]): parameter for parameter in method_parameters(method, ui_context=ui_context)}
+    definitions = [selected.get(parameter["name"], parameter) for parameter in definitions]
+    active = set(selected)
+    current = parameter_values if isinstance(parameter_values, dict) else {}
+    values = {}
+    for parameter in definitions:
+        name = str(parameter["name"])
+        value = current.get(name) if name in active else None
+        values[name] = parameter_default(parameter) if value is None else value
+    return {"definitions": definitions, "active": active, "values": values}
+
+
+def spatial_help_markdown(method_choices, *, media_profile: str, field_help=None) -> str:
+    intro = getattr(field_help, "SPATIAL_UPSAMPLER_HELP_INTRO", "Spatial upsamplers increase resolution. Visual refiners improve targeted decoded content without necessarily changing its dimensions.")
+    sections = [intro]
+    handler_choices = {}
+    for label, method in method_choices:
+        handler = find_upsampler_by_method(method)
+        if handler is not None:
+            handler_choices.setdefault(handler, []).append((label, method))
+    for handler, choices in handler_choices.items():
+        handler_def = _handler_def(handler)
+        name = str(handler_def.get("name", choices[0][0]))
+        category = "Visual Refiner" if str(handler_def.get("postprocessing_category", POSTPROCESSING_CATEGORY_UPSAMPLER)).lower() == POSTPROCESSING_CATEGORY_REFINER else "Spatial Upsampler"
+        description = str(handler_def.get("description", "") or "").strip()
+        media_descriptions = handler_def.get("media_descriptions", {})
+        media_description = str(media_descriptions.get(media_profile, "") or "").strip() if isinstance(media_descriptions, dict) else ""
+        lines = [f"### {name} — {category}"]
+        if description:
+            lines.append(description)
+        if media_description and media_description != description:
+            lines.append(media_description)
+        method_descriptions = handler_def.get("method_descriptions", {})
+        if isinstance(method_descriptions, dict):
+            details = [(str(label), str(method_descriptions.get(method, "") or "").strip()) for label, method in choices]
+            details = [(label, detail) for label, detail in details if detail and detail not in (description, media_description)]
+            lines += [f"- **{label}:** {detail}" for label, detail in details]
+        sections.append("\n\n".join(lines))
+    return "\n\n".join(sections)
+
+
+def spatial_help_popup(method_choices, *, media_profile: str, field_help=None) -> tuple[str, str]:
+    return "Spatial Upsampler / Visual Refiner", spatial_help_markdown(method_choices, media_profile=media_profile, field_help=field_help)
+
+
+def spatial_help_id(method_choices, *, media_profile: str) -> str:
+    signature = f"{media_profile}|" + "|".join(str(method) for _label, method in method_choices)
+    return f"spatial_upsampling_{hashlib.sha1(signature.encode('utf-8')).hexdigest()[:12]}"
+
+
+def create_generation_spatial_ui(gr, spatial_upsampling, *, image_outputs: bool = False, late_postprocessing: bool = False, vae_choices: list[tuple[str, str]] | None = None, excluded_methods: set[str] | None = None, exclude_method_fn=None, elem_classes=None, update_form: bool = False, field_help=None, help_target_id: str | None = None, parameter_values=None) -> dict[str, Any]:
     method, scale = split_upsampling_value(spatial_upsampling) or ("", 2.0)
     state = dropdown_state(build_upsampling_value(method, scale) or "", image_outputs=image_outputs, late_postprocessing=late_postprocessing, vae_choices=vae_choices, excluded_methods=excluded_methods, exclude_method_fn=exclude_method_fn)
+    media_profile = UPSAMPLER_PROFILE_IMAGE if image_outputs else UPSAMPLER_PROFILE_VIDEO
     with gr.Row():
-        method_component = gr.Dropdown(choices=state["method_choices"], value=state["method"], visible=True, scale=3, label="Spatial Upsampling", elem_classes=elem_classes)
+        method_component = gr.Dropdown(choices=state["method_choices"], value=state["method"], visible=True, scale=3, label="Spatial Upsampler / Visual Refiner", elem_id=help_target_id, elem_classes=elem_classes)
         if field_help is not None:
-            field_help.bind(method_component, "spatial_upsampling")
-        ratio_component = gr.Dropdown(choices=state["ratio_choices"], value=state["scale"], visible=state["method"] != "", scale=1, label="Scale", elem_classes=elem_classes)
+            help_title, help_markdown = spatial_help_popup(state["method_choices"], media_profile=media_profile, field_help=field_help)
+            help_id = spatial_help_id(state["method_choices"], media_profile=media_profile)
+            help_component = gr.update(value=field_help.render_marker(help_target_id, help_id, title=help_title, markdown=help_markdown)) if update_form else field_help.bind(method_component, help_id, title=help_title, markdown=help_markdown)
+        ratio_component = gr.Dropdown(choices=state["ratio_choices"], value=state["scale"] if state["ratio_choices"] else None, visible=bool(state["method"] and state["ratio_choices"]), scale=1, label="Scale", elem_classes=elem_classes)
     value_component = gr.Textbox(value=state["value"], visible=False, elem_classes=elem_classes)
+    if field_help is None:
+        help_component = gr.Markdown(value=spatial_help_markdown(state["method_choices"], media_profile=media_profile), visible=True, elem_classes=elem_classes)
 
-    def refresh_method(method, value):
+    ui_context = PARAMETER_UI_LATE_POSTPROCESSING if late_postprocessing else PARAMETER_UI_POSTPROCESSING
+    parameter_values = dict(parameter_values or {})
+    parameter_state = parameter_ui_state(state["method"], ui_context, parameter_values)
+    parameter_defs = parameter_state["definitions"]
+    parameter_components, parameter_rows, parameter_extras = {}, {}, []
+    for parameter in parameter_defs:
+        name = str(parameter["name"])
+        component_type = parameter_component_type(parameter)
+        visible = name in parameter_state["active"]
+        initial = parameter_state["values"][name]
+        label = str(parameter.get("label", name.removeprefix(PARAMETER_PREFIX).replace("_", " ").title()))
+        if not late_postprocessing:
+            label = parameter.get("label_long", label)
+        info = str(parameter.get("description", "") or "") or None
+        if component_type == "images":
+            from shared.gradio.gallery import AdvancedMediaGallery
+
+            with gr.Row(visible=visible) as row:
+                gallery = AdvancedMediaGallery(media_mode="image", height=int(parameter.get("height", 240)), columns=int(parameter.get("columns", 4)), label=label, initial=initial, single_image_mode=not bool(parameter.get("multiple", True)))
+                gallery.mount(update_form=update_form)
+            component = gallery.gallery
+            parameter_extras += [row] + gallery.get_toggable_elements()
+        else:
+            with gr.Row(visible=visible) as row:
+                if component_type == "slider":
+                    component = gr.Slider(parameter.get("minimum", 0), parameter.get("maximum", 1), value=initial, step=parameter.get("step", 1), label=label, info=info, elem_classes=elem_classes)
+                elif component_type == "dropdown":
+                    component = gr.Dropdown(choices=parameter.get("choices", parameter.get("enum", ())), value=initial, label=label, info=info, elem_classes=elem_classes)
+                elif component_type == "checkbox":
+                    component = gr.Checkbox(value=bool(initial), label=label, info=info, elem_classes=elem_classes)
+                elif component_type == "number":
+                    component = gr.Number(value=initial, label=label, info=info, elem_classes=elem_classes)
+                else:
+                    component = gr.Textbox(value=initial or "", label=label, info=info, lines=int(parameter.get("lines", 1)), elem_classes=elem_classes)
+            parameter_extras += [row, component]
+        parameter_components[name] = component
+        parameter_rows[name] = row
+
+    initial_parameters = parameter_state["values"]
+    parameters_component = initial_parameters if update_form else gr.State(initial_parameters)
+
+    def refresh_method(method, value, current_parameters):
         ratio_choices, scale, value = normalize_upsampling_value_for_method(method, value)
-        return gr.update(choices=ratio_choices, value=scale, visible=bool(method)), value
+        current_parameters = dict(current_parameters)
+        for name in ("spatial_upsampler_param", "spatial_upsampler_param2"):
+            current_parameters.pop(name, None)
+        method_parameter_state = parameter_ui_state(method, ui_context, current_parameters)
+        selected_defs = {parameter["name"]: parameter for parameter in method_parameter_state["definitions"]}
+
+        def update_parameter(name):
+            parameter = selected_defs[name]
+            changes = {"value": method_parameter_state["values"][name]}
+            if parameter_component_type(parameter) == "slider":
+                changes.update(label=parameter.get("label") if late_postprocessing else parameter.get("label_long", parameter.get("label")), info=parameter.get("description"), minimum=parameter.get("minimum", 0), maximum=parameter.get("maximum", 1), step=parameter.get("step", 1))
+            return gr.update(**changes)
+        return (gr.update(choices=ratio_choices, value=scale if ratio_choices else None, visible=bool(method and ratio_choices)), value,
+                *(gr.update(visible=name in method_parameter_state["active"]) for name in parameter_components),
+                *(update_parameter(name) for name in parameter_components), method_parameter_state["values"])
 
     def refresh_ratio(method, scale):
         _, scale, value = normalize_upsampling_state(method, scale)
-        return gr.update(value=scale, visible=bool(method)), value
+        return gr.update(value=scale, visible=bool(method and method_multipliers(method))), value
+
+    def collect_parameters(*values):
+        return dict(zip(parameter_components, values))
 
     if not update_form:
-        outputs = [ratio_component, value_component]
-        gr.on(triggers=[method_component.input], fn=refresh_method, inputs=[method_component, value_component], outputs=outputs, show_progress="hidden")
-        gr.on(triggers=[ratio_component.input], fn=refresh_ratio, inputs=[method_component, ratio_component], outputs=outputs, show_progress="hidden")
-    return {"value": value_component, "method": method_component, "ratio": ratio_component}
+        gr.on(triggers=[method_component.input], fn=refresh_method, inputs=[method_component, value_component, parameters_component], outputs=[ratio_component, value_component, *parameter_rows.values(), *parameter_components.values(), parameters_component], show_progress="hidden")
+        gr.on(triggers=[ratio_component.input], fn=refresh_ratio, inputs=[method_component, ratio_component], outputs=[ratio_component, value_component], show_progress="hidden")
+        if parameter_components:
+            gr.on(triggers=[component.change for component in parameter_components.values()], fn=collect_parameters, inputs=list(parameter_components.values()), outputs=parameters_component, show_progress="hidden")
+    return {"value": value_component, "method": method_component, "ratio": ratio_component, "parameters": parameters_component, "help": help_component, "help_target_id": help_target_id or method_component.elem_id,
+            "parameter_components": parameter_components, "parameter_rows": parameter_rows, "extra_components": [help_component, *parameter_extras, parameters_component],
+            "media_outputs": [help_component, *parameter_rows.values(), *parameter_components.values(), parameters_component]}
 
 
 def query_postprocessing_upsampling_choices(include_name: bool = True, enabled_only: bool = False, image_outputs: bool | None = None) -> list[tuple[str, str]]:
     """Flat (label, value) choices covering every method x multiplier of the post-processing upsamplers."""
     choices = []
     for handler in upsampler_handlers(UPSAMPLER_TYPE_POSTPROCESSING, enabled_only):
-        handler_def = handler.query_upsampler_def()
+        handler_def = _handler_def(handler)
         if image_outputs is not None:
             media = handler_def.get("media", ("video", "image"))
             if ("image" if image_outputs else "video") not in media:
@@ -553,15 +951,17 @@ def query_postprocessing_upsampling_choices(include_name: bool = True, enabled_o
         for label, method in handler_def.get("methods", []):
             if not _handler_method_available(handler, method):
                 continue
-            for scale in multipliers.get(method, ()):
+            declared_multipliers = tuple(multipliers.get(method, ()))
+            for scale in declared_multipliers or (1.0,):
                 value = handler.build_value(method, scale)
                 if value is not None:
-                    choices.append((_method_pos(handler_def, method), str(label or "").casefold(), float(scale), str(value or ""), format_method_scale_label(label, scale) if include_name else format_multiplier_label(scale), value))
+                    display_label = format_method_scale_label(label, scale) if declared_multipliers else str(label)
+                    choices.append((_method_pos(handler_def, method), str(label or "").casefold(), float(scale), str(value or ""), display_label if include_name else (format_multiplier_label(scale) if declared_multipliers else str(label)), value))
     return [(label, value) for _, _, _, _, label, value in sorted(choices)]
 
 
 def profile_type_for_handler(handler) -> str:
-    handler_def = handler.query_upsampler_def()
+    handler_def = _handler_def(handler)
     profile = str(handler_def.get("profile", "") or "").strip().lower()
     if profile in (UPSAMPLER_PROFILE_VIDEO, UPSAMPLER_PROFILE_IMAGE, UPSAMPLER_PROFILE_AUDIO):
         return profile
@@ -576,7 +976,7 @@ def profile_type_for_handler(handler) -> str:
 
 
 def config_key_for_handler(handler) -> str:
-    handler_def = handler.query_upsampler_def()
+    handler_def = _handler_def(handler)
     config_key = str(handler_def.get("config_key", "") or "").strip()
     if config_key:
         return config_key
@@ -687,7 +1087,7 @@ def config_for_method(method, server_config: dict[str, Any] | None = None) -> di
 
 
 def create_config_ui(gr, server_config: dict[str, Any], *, lock_config: bool = False) -> list[UpsamplerConfigBinding]:
-    shared_persistence = gr.Dropdown(choices=PERSISTENCE_CHOICES, value=write_persistence(server_config, persistence(server_config)), label="Spatial Upsampler Model Persistence", interactive=not lock_config)
+    shared_persistence = gr.Dropdown(choices=PERSISTENCE_CHOICES, value=write_persistence(server_config, persistence(server_config)), label="Spatial Upsampler / Visual Refiner Model Persistence", interactive=not lock_config)
     bindings = [UpsamplerConfigBinding(None, _SHARED_PERSISTENCE_BINDING_KEY, [(PERSISTENCE_CONFIG_KEY, shared_persistence)])]
     for handler in _upsampler_handlers:
         if not hasattr(handler, "create_config_ui"):
@@ -761,7 +1161,7 @@ def release_changed_config_upsamplers(old_config: dict[str, Any], new_config: di
 
 
 class SimpleScaleSuffixMixin:
-    """Value helpers for upsamplers encoding values as '<method><multiplier>' (e.g. 'lanczos2', 'coz4')."""
+    """Value helpers writing '<method>*<multiplier>' while accepting the legacy concatenated form."""
 
     def _method_keys(self):
         handler_def = self.query_upsampler_def()
@@ -769,15 +1169,14 @@ class SimpleScaleSuffixMixin:
 
     def split_value(self, value):
         text = str(value or "").strip().lower()
-        # longest prefix first so 'flashvsr2pass' wins over 'flashvsr'
         for method in sorted(self._method_keys(), key=len, reverse=True):
             if text.startswith(method):
-                try:
-                    # declared multipliers are UI capabilities; out-of-list scales are
-                    # still parsed and rejected by validate_upsampling when unsupported
-                    return method, float(text[len(method):] or 2.0)
-                except ValueError:
-                    return None
+                suffix = text[len(method):]
+                multipliers = tuple(self.query_upsampler_def().get("multipliers", {}).get(method, ()))
+                if not multipliers:
+                    return (method, 1.0) if not suffix else None
+                scale = parse_multiplier_suffix(text, method, 2.0)
+                return None if scale is None else (method, scale)
         return None
 
     def build_value(self, method, scale):
@@ -785,10 +1184,12 @@ class SimpleScaleSuffixMixin:
         if method not in self._method_keys():
             return None
         multipliers = self.query_upsampler_def().get("multipliers", {}).get(method, ())
+        if not multipliers:
+            return method
         scale = float(scale or 0)
         if scale not in multipliers:
             scale = _default_multiplier_from_def(self.query_upsampler_def(), method) or 0
-        return f"{method}{format_multiplier(scale)}"
+        return format_multiplier_value(method, scale)
 
     def is_upsampling(self, value) -> bool:
         return self.split_value(value) is not None
@@ -816,13 +1217,15 @@ class WanVaeUpsampler(SimpleScaleSuffixMixin):
             "method_pos": {"vae": 30},
             "methods": [],
             "vae_methods": [("VAE Upscaling", "vae")],
-            "multipliers": {"vae": (1.0, 2.0)},
-            "default_spatial_upsampling": "vae2",
+            "multipliers": {"vae": (1.0, 1.5, 2.0)},
+            "default_spatial_upsampling": "vae*2",
+            "postprocessing_category": POSTPROCESSING_CATEGORY_UPSAMPLER,
+            "description": "Runs through the compatible generation model's existing VAE path, so it adds no separate decoded-media pass and has little extra VRAM impact. It can create more detail than Lanczos.",
         }
 
     def validate_upsampling(self, spatial_upsampling, image_mode: int) -> str:
         split = self.split_value(spatial_upsampling)
-        return "" if split is not None and split[1] in self.query_upsampler_def()["multipliers"]["vae"] else "VAE Spatial Upsampling only supports x1.0 and x2.0"
+        return "" if split is not None and split[1] in self.query_upsampler_def()["multipliers"]["vae"] else "VAE Spatial Upsampling only supports x1, x1.5 and x2"
 
     def supports_model_vae_method(self, method, model_type, model_def, image_mode: int) -> bool:
         return method == "vae" and image_mode in model_def.get("vae_upsampler", [])
@@ -843,10 +1246,4 @@ class WanVaeUpsampler(SimpleScaleSuffixMixin):
         return {"VAE_upsampling": spatial_upsampling}
 
     def post_model_process_vae_upsampling(self, sample, spatial_upsampling):
-        split = self.split_value(spatial_upsampling)
-        if split is not None and split[1] == 1.0:
-            from PIL import Image
-            from postprocessing.lanczos import resize_lanczos_spatial
-
-            return resize_lanczos_spatial(sample, 0.5, method=Image.Resampling.BICUBIC)
-        return sample
+        return resize_x2_vae_output(sample, self.split_value(spatial_upsampling)[1])

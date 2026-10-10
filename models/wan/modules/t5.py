@@ -712,5 +712,7 @@ class T5EncoderModel:
         ids = ids.to(device)
         mask = mask.to(device)
         seq_lens = mask.gt(0).sum(dim=1).long()
-        context = self.model(ids, mask)
+        from shared.utils.phase_progress import text_encoding_progress
+        with text_encoding_progress(self.model.blocks, prompt_count=len(texts)):
+            context = self.model(ids, mask)
         return [u[:v] for u, v in zip(context, seq_lens)]

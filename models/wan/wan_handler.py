@@ -1,5 +1,4 @@
 
-import os
 import re
 import torch
 import numpy as np
@@ -115,58 +114,22 @@ class family_handler():
         return {"wan":(0, "Wan2.1"), "wan2_2":(1, "Wan2.2") }
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-i2v",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Wan i2v Loras (default: {os.path.join(lora_root, 'wan_i2v')})"
-        )
-        parser.add_argument(
-            "--lora-dir",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Wan t2v Loras (default: {os.path.join(lora_root, 'wan')})"
-        )
-        parser.add_argument(
-            "--lora-dir-wan-1-3b",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Wan 1.3B Loras (default: {os.path.join(lora_root, 'wan_1.3B')})"
-        )
-        parser.add_argument(
-            "--lora-dir-wan-5b",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Wan 5B Loras (default: {os.path.join(lora_root, 'wan_5B')})"
-        )
-        parser.add_argument(
-            "--lora-dir-wan-i2v",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Wan i2v Loras (default: {os.path.join(lora_root, 'wan_i2v')})"
-        )
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
+    def get_lora_dir(base_model_type):
         if test_shotplan(base_model_type):
-            return os.path.join(lora_root, "wan_shotplan_2_2" if base_model_type == "shotplan_t2v_2_2" else "wan_shotplan")
+            return "wan_shotplan_2_2" if base_model_type == "shotplan_t2v_2_2" else "wan_shotplan"
         i2v = test_class_i2v(base_model_type) and not test_i2v_2_2(base_model_type)
-        wan_dir = getattr(args, "lora_dir_wan", None) or getattr(args, "lora_dir", None) or os.path.join(lora_root, "wan")
-        wan_i2v_dir = getattr(args, "lora_dir_wan_i2v", None) or getattr(args, "lora_dir_i2v", None) or os.path.join(lora_root, "wan_i2v")
-        wan_1_3b_dir = getattr(args, "lora_dir_wan_1_3b", None) or os.path.join(lora_root, "wan_1.3B")
-        wan_5b_dir = getattr(args, "lora_dir_wan_5b", None) or os.path.join(lora_root, "wan_5B")
 
         if base_model_type == "animate2":
-            return os.path.join(lora_root, "wan_animate2")
+            return "wan_animate2"
         if test_scail2(base_model_type):
-            return wan_i2v_dir
+            return "wan_i2v"
         if i2v:
-            return wan_i2v_dir
+            return "wan_i2v"
         if "1.3B" in base_model_type:
-            return wan_1_3b_dir
+            return "wan_1.3B"
         if test_wan_5B(base_model_type) or base_model_type in ["ovi"]:
-            return wan_5b_dir
-        return wan_dir
+            return "wan_5B"
+        return "wan"
 
     @staticmethod
     def set_cache_parameters(cache_type, base_model_type, model_def, inputs, skip_steps_cache):
@@ -216,6 +179,8 @@ class family_handler():
     @staticmethod
     def query_model_def(base_model_type, model_def):
         extra_model_def = {}
+        extra_model_def["device_explicit"] = base_model_type in ["t2v", "t2v_1.3B", "t2v_2_2", "i2v", "i2v_2_2", "flf2v_720p", "fun_inp", "fun_inp_1.3B", "ti2v_2_2", "i2v_2_2_svi2pro", "bernini_1.3B", "kiwi_edit", "vace_14B_2_2", "bernini", "steadydancer", "scail", "scail2_14B", "wanmove",
+                                                                 "lynx", "standin", "vace_14B", "vace_ditto_14B", "vace_lynx_14B", "vace_standin_14B", "infinitetalk"]
         if base_model_type not in ["mocha", "recam_1.3B", "scail2_14B", "scail2_1.3B", "vista4d"]:
             extra_model_def["riflex"] = True
         override_text_encoder_urls = model_def.get("text_encoder_URLs", None)
@@ -234,8 +199,13 @@ class family_handler():
         extra_model_def["standin_class"] = standin = test_standin(base_model_type)
         extra_model_def["lynx_class"] = lynx = test_lynx(base_model_type)
         extra_model_def["alpha_class"] = alpha = test_alpha(base_model_type)
-        extra_model_def["wan_5B_class"] = wan_5B = test_wan_5B(base_model_type)        
+        if alpha:
+            extra_model_def["specialities"] = [{"name": "alpha output", "aliases": ["RGBA", "transparent video", "transparent background"], "description": "Generate foreground RGB and alpha together. Video saves a checkerboard preview plus RGBA PNG ZIP or ProRes 4444; image mode saves RGBA."}]
+        extra_model_def["wan_5B_class"] = wan_5B = test_wan_5B(base_model_type)
+        extra_model_def["tiny_vae_architecture"] = "ti2v_2_2" if wan_5B else "t2v"
         extra_model_def["vace_class"] = vace_class = test_vace(base_model_type)
+        # control videos and masks in uint8 (VACE / Animate 2: WanGP's preprocessing, SCAIL-2 / SteadyDancer: their own preprocessors)
+        extra_model_def["uint8_guides"] = vace_class or base_model_type in ["animate2", "steadydancer"] or test_scail2(base_model_type)
         extra_model_def["bernini_class"] = bernini = test_bernini(base_model_type)
         extra_model_def["shotplan"] = shotplan = test_shotplan(base_model_type)
         extra_model_def["scail2"] = scail2 = test_scail2(base_model_type)
@@ -518,7 +488,7 @@ class family_handler():
                         ("Crane Below Left", "crane_below_left"),
                     ],
                 },
-                "custom_guide": {"label": "Custom Camera Movement (.npz)", "required": False, "file_types": [".npz"]},
+                "custom_guide": {"id": "custom_guide", "name": "Custom Camera Movement", "label": "Custom Camera Movement (.npz)", "type": "file", "default": None, "required": False, "file_types": [".npz"]},
                 "mask_preprocessing": {"selection": [""], "visible": False},
                 "custom_settings": [
                     {"id": "vista4d_scene_scale", "name": "Scene scale", "label": "Vista4D scene scale", "type": "float", "default": 1.0},
@@ -536,7 +506,7 @@ class family_handler():
 
 
         if base_model_type in ["wanmove"]:
-            extra_model_def["custom_guide"] = { "label": "Trajectory File", "required": True, "file_types": [".npy"]}
+            extra_model_def["custom_guide"] = {"id": "custom_guide", "name": "Trajectory", "label": "Trajectory File (.npy)", "type": "file", "default": None, "required": True, "file_types": [".npy"]}
             extra_model_def["i2v_trajectory"] = True
 
         if base_model_type in ["steadydancer"]:
@@ -1059,13 +1029,10 @@ class family_handler():
 
                 download_def.append(magic_mask.query_download_def())
         elif base_model_type == "vista4d":
-            download_def += [
-                {
-                    "repoId": "DeepBeepMeep/Wan2.1",
-                    "sourceFolderList": ["depth", "sam3"],
-                    "fileList": [["depth_anything_v3_vitl_bf16.safetensors"], ["sam3.1_multiplex_bf16.safetensors", "bpe_simple_vocab_16e6.txt.gz"]],
-                }
-            ]
+            from preprocessing.depth_anything_v3.assets import query_download_def as query_depth_files
+            from preprocessing.sam3.assets import query_download_def as query_sam3_files
+
+            download_def += [query_depth_files(), query_sam3_files()]
 
         return download_def
 
@@ -1379,7 +1346,6 @@ class family_handler():
                 "force_fps": "control",
                 "alt_prompt": model_def["animate2_ref_prompt"],
                 "prompt_enhancer": "",
-                "custom_settings": {"animate2_kv_cache": "Disabled"},
             })
         elif base_model_type in ["vace_ditto_14B"]:
             ui_defaults.update({ 
@@ -1420,11 +1386,6 @@ class family_handler():
                 "flow_shift": 3,
                 "guidance_scale": 5.0,
                 "remove_background_images_ref": 0,
-                "custom_settings": {
-                    "scail2_animate_preprocessing": SCAIL2_ANIMATE_PREPROCESSING_RAW,
-                    "image_ref_keyword_content": "human character",
-                    SCAIL2_INJECT_REF_FRAMES_SETTING: SCAIL2_INJECT_REF_FRAMES_NO,
-                },
             })
 
         if test_svi2pro(base_model_type):

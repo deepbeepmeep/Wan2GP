@@ -2,8 +2,131 @@
     --wangp-ui-scale: 0.9;
 }
 
+/* Form refreshes change control heights; keep the page at the user's position. */
+html {
+    overflow-anchor: none;
+}
+
 gradio-app {
     width: 100%;
+}
+
+/* Keep actions at the bottom of their column, floating until their slot is in
+   view. Native sticky positioning also follows wrapping, tab and form updates. */
+.gradio-container:has(.wangp-settings-actions) {
+    /* Clip without creating an unscrolled ancestor that traps sticky bars. */
+    overflow: clip;
+}
+.wangp-actions-column {
+    align-self: flex-start;
+}
+.wangp-settings-actions {
+    position: sticky !important;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    z-index: 20;
+    flex: 0 0 auto !important;
+    padding: 8px;
+    box-sizing: border-box;
+    border: 1px solid transparent;
+    border-radius: 18px;
+    background: transparent;
+}
+.wangp-settings-actions.is-floating {
+    border-color: color-mix(in srgb, var(--studio-border, var(--border-color-primary)) 20%, transparent);
+    background: color-mix(in srgb, var(--studio-surface, var(--background-fill-primary)) 60%, transparent);
+    -webkit-backdrop-filter: blur(16px) saturate(130%);
+    backdrop-filter: blur(16px) saturate(130%);
+    box-shadow: 0 6px 22px rgb(0 0 0 / 8%);
+}
+.wangp-settings-actions button {
+    min-width: min(100%, 104px) !important;
+}
+/* Preview visibility still follows the same Gradio generation-state column,
+   although its contents now stay beside the gallery rather than in the bar. */
+.gradio-container:not(:has(#wangp-generate-current-actions:not(.hide))) .wangp-generation-details {
+    display: none;
+}
+
+.gallery-container .icon-button-wrapper.wangp-video-actions {
+    position: absolute;
+    right: auto;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    flex-direction: column;
+    gap: 0;
+    font-size: 13px;
+}
+/* Gradio also sets overflow on its outer block. Keep focus on the frame
+   icons from scrolling that wrapper and clipping the fullscreen control. */
+.block:has(.wangp-video-actions) {
+    overflow: clip !important;
+}
+.wangp-video-actions button[hidden],
+.wangp-video-actions [role="status"]:empty {
+    display: none;
+}
+.wangp-video-actions [role="status"]:not(:empty) {
+    position: absolute;
+    right: 32px;
+    top: 0;
+    width: 230px;
+    padding: 8px 10px;
+    color: var(--body-text-color);
+    background: var(--background-fill-primary);
+    border: 1px solid var(--border-color-primary);
+    border-radius: 4px;
+}
+
+/* Image inputs use a landscape icon, sized and colored by the native label. */
+.amg-image-gallery > [data-testid="block-label"] {
+    z-index: 30;
+}
+.amg-image-gallery:has(.preview) > [data-testid="block-label"] {
+    max-width: calc(100% - 100px);
+}
+.amg-image-gallery > [data-testid="block-label"] > span {
+    background: currentColor;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2'/%3E%3Ccircle cx='8.5' cy='8.5' r='1.5'/%3E%3Cpath d='m21 15-5-5L5 21'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.amg-image-gallery > [data-testid="block-label"] > span > svg {
+    visibility: hidden;
+}
+
+/* Input galleries remove the selected item; output galleries keep no cross. */
+.gallery-container > .preview button[aria-label="Close"] {
+    display: none;
+}
+.amg-remove-selected .gallery-container > .preview button[aria-label="Close"] {
+    display: flex;
+}
+
+/* The preview has its own thumbnail strip; no background grid or blur layer. */
+.gallery-container > .preview {
+    background: var(--background-fill-primary);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+/* The outer wrapper must not scroll when Chrome reveals a focused thumbnail. */
+.block:has(> .gallery-container) {
+    overflow: clip;
+}
+
+/* Chrome puts its buffering spinner beside the public controls enclosures.
+   Hide that inherited layer, then restore both enclosures so the native
+   playback, timeline, volume and fullscreen controls remain available. */
+.gallery-container video[data-testid="detailed-video"]::-webkit-media-controls {
+    visibility: hidden;
+}
+.gallery-container video[data-testid="detailed-video"]::-webkit-media-controls-enclosure,
+.gallery-container video[data-testid="detailed-video"]::-webkit-media-controls-overlay-enclosure {
+    visibility: visible;
+}
+
+.wangp-voice-prompt textarea:disabled {
+    background: var(--background-fill-secondary);
+    color: var(--body-text-color-subdued);
+    box-shadow: none;
+    cursor: not-allowed;
 }
 
 .postprocess div,
@@ -21,25 +144,36 @@ gradio-app {
     --layout-gap: 0px !important;
 }
 .postprocess span {margin-top:4px;margin-bottom:4px}
+.form:has(> #family_list) {
+    background: transparent;
+    border-radius: 14px;
+}
 #model_list, #family_list, #model_base_types_list {
-background-color:black;
-padding:1px}
+    --wangp-model-corners: 0;
+    background-color: #a9bfd0;
+    border-radius: var(--wangp-model-corners) !important;
+    padding: 1px;
+}
+
+.dark :is(#model_list, #family_list, #model_base_types_list) {
+    background-color: #526a80;
+}
 
 #model_list,#model_base_types_list { padding-left:0px}
 
 #model_list input, #family_list input, #model_base_types_list input {
 font-size: calc(25px * var(--wangp-ui-scale))}
 
-#family_list div div {
-border-radius: 4px 0px 0px 4px;
+#family_list {
+    --wangp-model-corners: 14px 0 0 14px;
 }
 
-#model_list div div {
-border-radius: 0px 4px 4px 0px;
+#model_list, #model_base_types_list:has(+ #model_list.hidden) {
+    --wangp-model-corners: 0 14px 14px 0;
 }
 
-#model_base_types_list div div {
-border-radius: 0px 0px 0px 0px;
+:is(#family_list, #model_base_types_list, #model_list) > .container > .wrap {
+    border-radius: var(--wangp-model-corners);
 }
 
 .title-with-lines {
@@ -80,15 +214,16 @@ h2 {
 #queue_html_container .pastel-row {
     background-color: hsl(var(--item-hue, 0), 80%, 92%);
 }
+#queue_html_container .pastel-row td,
+#queue_html_container .pastel-row td * {
+    color: #111827;
+}
 #queue_html_container .alternating-grey-row.even-row {
     background-color: #F8FAFC; /* Light mode grey */
 }
 @media (prefers-color-scheme: dark) {
     #queue_html_container tr:hover td {
          background-color: rgba(255, 255, 255, 0.1) !important;
-    }
-    #queue_html_container .pastel-row {
-        background-color: hsl(var(--item-hue, 0), 35%, 25%);
     }
     #queue_html_container .alternating-grey-row.even-row {
         background-color: #2a3748; /* Dark mode grey */
@@ -293,6 +428,24 @@ h2 {
     pointer-events: none;
 }
 
+.wangp-generation-info {color:var(--body-text-color);font-size:var(--text-md);line-height:1.55;}
+.wangp-generation-info .generation-table-wrap {max-width:100%;overflow-x:auto;border:1px solid var(--border-color-primary);border-radius:var(--block-radius,8px);background:var(--background-fill-primary);}
+.wangp-generation-info #PINFO {width:100%;margin:0;border:0;border-collapse:separate;border-spacing:0;table-layout:auto;color:inherit;font:inherit;}
+.wangp-generation-info #PINFO td {padding:12px 5px;border:0;vertical-align:middle;}
+.wangp-generation-info #PINFO td:last-child {padding-right:12px;}
+.wangp-generation-info #PINFO .generation-prompt-cell {width:100%;min-width:200px;padding:14px 16px;overflow-wrap:anywhere;}
+.wangp-generation-info .generation-label {margin-bottom:6px;font-size:var(--text-sm);font-weight:600;color:var(--body-text-color-subdued);}
+.wangp-generation-info .generation-note {margin-bottom:8px;color:var(--body-text-color-subdued);white-space:pre-wrap;}
+/* The mount/show event starts one layout check without a DOM observer. */
+@keyframes wangp-generation-references-ready {from {visibility:visible;} to {visibility:visible;}}
+.wangp-generation-info .generation-references {display:grid;grid-template-columns:120px;gap:10px;animation:wangp-generation-references-ready 0s;}
+.wangp-generation-info .generation-references.generation-references-two-columns {grid-template-columns:repeat(2,120px);}
+.wangp-generation-info .generation-reference {display:flex;flex-direction:column;gap:6px;width:120px;padding:6px;border:1px solid var(--border-color-primary);border-radius:var(--button-small-radius,6px);background:var(--background-fill-secondary);color:inherit;font:inherit;cursor:pointer;}
+.wangp-generation-info .generation-reference img {display:block;width:100%;height:101px;object-fit:contain;border-radius:4px;}
+.wangp-generation-info .generation-reference span {font-size:var(--text-sm);line-height:1.35;overflow-wrap:anywhere;text-align:center;}
+.wangp-generation-info .generation-reference:hover {border-color:var(--color-accent);}
+.wangp-generation-info .generation-reference:focus-visible {outline:2px solid var(--color-accent);outline-offset:2px;}
+
 .hover-image {
 cursor: pointer;
 position: relative;
@@ -346,6 +499,16 @@ transition: visibility 0s linear 1s, opacity 0.3s linear 1s; /* 1s delay before 
 .btn_centered {margin-top: calc(10px * var(--wangp-ui-scale)); text-wrap-mode: nowrap;}
 .cbx_centered label {margin-top: calc(8px * var(--wangp-ui-scale)); text-wrap-mode: nowrap;}
 .cbx_bottom label {padding-top: calc(48px * var(--wangp-ui-scale)); text-wrap-mode: nowrap;}
+/* Reserve the LoRA multiplier's actual width instead of a fixed 1% column. */
+#video_info table {
+    table-layout: auto !important;
+}
+#video_info .selected-media-prompt {
+    display: block;
+    max-height: 20lh;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+}
 .copy-swap {
 display: block;
 max-width: 100%;
@@ -380,12 +543,33 @@ overflow-wrap: anywhere;
 user-select: text;
 }
 .compact_text {padding: calc(1px * var(--wangp-ui-scale))}
-#video_input .video-container .container {
-    flex-direction: row !important;
-    display: flex !important;
+/* Keep the compact settings label beside the prompt without shrinking the drop target. */
+.wangp-settings-upload > button[aria-dropeffect] {
+    padding-left: 50%;
 }
-#video_input .video-container .container .controls {
-    overflow: visible !important;
+.wangp-settings-upload > button[aria-dropeffect] > .wrap {
+    margin-inline: 0;
+    max-width: 100%;
+    white-space: nowrap;
+}
+.wangp-settings-upload > label.float {
+    display: block;
+    max-width: calc(50% - var(--block-label-margin));
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.wangp-settings-upload > label.float > span {
+    display: inline-block;
+    vertical-align: middle;
+}
+/* Let the preview shrink inside fixed-height video inputs so the trim
+   timeline, duration, actions and source selector stay inside the block. */
+.video-container > .wrap {
+    min-height: 0;
+}
+.video-container > .wrap video {
+    object-fit: contain;
 }
 .tabitem {padding-top:0px}
 .rule-row { margin-bottom: calc(8px * var(--wangp-ui-scale)); align-items: center !important; display: flex; gap: calc(8px * var(--wangp-ui-scale)); }
@@ -420,6 +604,39 @@ user-select: text;
 .header-markdown-group .prose {
     margin-top: 0 !important;
     margin-bottom: 0 !important;
+}
+/* Keep the description and attention line steady while callbacks are pending. */
+.header-markdown-group div.html-container,
+.header-markdown-group div:has(> [data-testid="markdown"]) {
+    opacity: 1;
+    transition: none;
+}
+
+.wangp-transparent-group,
+.wangp-transparent-group > .styler,
+.wangp-transparent-group .form,
+.wangp-transparent-group .block {
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+}
+.wangp-transparent-group {
+    padding: 0 !important;
+}
+.wangp-bottom-aligned-row {
+    align-items: flex-end !important;
+}
+
+.deepy-prime-recommendation {
+    margin: 0 0 calc(8px * var(--wangp-ui-scale)) !important;
+    padding: calc(8px * var(--wangp-ui-scale)) calc(12px * var(--wangp-ui-scale)) !important;
+    border: 1px solid var(--color-accent) !important;
+    border-left-width: 4px !important;
+    border-radius: calc(6px * var(--wangp-ui-scale)) !important;
+    background: var(--color-accent-soft) !important;
+}
+.deepy-prime-recommendation .prose p {
+    margin: 0 !important;
 }
 
 .toast-wrap { max-width: min(920px, calc(100vw - 2rem)) !important; }

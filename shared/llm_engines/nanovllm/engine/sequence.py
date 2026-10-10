@@ -42,6 +42,8 @@ class Sequence:
         self.top_p = sampling_params.top_p
         self.min_p = sampling_params.min_p
         self.repetition_penalty = sampling_params.repetition_penalty
+        self.predictive_penalty = sampling_params.predictive_penalty
+        self.repetition_penalty_start = self.num_prompt_tokens
         # For CFG: mark if this is an unconditional sequence
         self.is_unconditional = is_unconditional
         # For CFG: reference to the corresponding conditional sequence (if this is unconditional)

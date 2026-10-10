@@ -1,3 +1,4 @@
+from shared.utils.media_control import current_control, inference_checkpoint
 from abc import ABC
 
 import torch
@@ -79,7 +80,11 @@ class BASECFM(torch.nn.Module, ABC):
         x[..., :prompt_len] = 0
         if self.zero_prompt_speech_token:
             mu[..., :prompt_len] = 0
+        control = current_control()
+        if control is not None:
+            control.send_cmd("progress", [(0, len(t_span) - 1), "SeedVC Denoising", len(t_span) - 1])
         for step in tqdm(range(1, len(t_span))):
+            inference_checkpoint()
             dt = t_span[step] - t_span[step - 1]
             if inference_cfg_rate > 0:
                 # Stack original and CFG (null) inputs for batched processing
@@ -108,6 +113,8 @@ class BASECFM(torch.nn.Module, ABC):
             if step < len(t_span) - 1:
                 dt = t_span[step + 1] - t
             x[:, :, :prompt_len] = 0
+            if control is not None:
+                control.send_cmd("progress", [(step, len(t_span) - 1), "SeedVC Denoising", len(t_span) - 1])
 
         return sol[-1]
     def forward(self, x1, x_lens, prompt_lens, mu, style):

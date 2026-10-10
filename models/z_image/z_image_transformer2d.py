@@ -13,6 +13,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from diffusers.models.normalization import RMSNorm
 
+from shared import attention_kit
 from shared.attention import pay_attention
 
 class ModuleWrapper:
@@ -35,6 +36,13 @@ def apply_rotary_emb_inplace(x_list: list, freqs_cis: torch.Tensor) -> torch.Ten
     x0.mul_(cos).addcmul_(x1, sin, value=-1)
     x1.mul_(cos).addcmul_(x0_orig, sin)
     return x.flatten(3).to(dtype)
+
+
+def _norm_rope_rows(x, norm, freqs_cis):
+    """norm then RoPE of rows of q or k (batch, tokens, heads, head_dim), as Attention.forward computes them."""
+    if norm is not None:
+        x = norm(x)
+    return x if freqs_cis is None else apply_rotary_emb_inplace([x], freqs_cis)
 
 
 ADALN_EMBED_DIM = 256
@@ -114,8 +122,18 @@ class Attention(nn.Module):
         self.norm_q = RMSNorm(self.head_dim, eps=1e-5) if qk_norm else None
         self.norm_k = RMSNorm(self.head_dim, eps=1e-5) if qk_norm else None
 
+    def _norm_rope_(self, query, key, freqs_cis):
+        """attention_kit callback: norm_q/norm_k and RoPE of q and/or k in place, by chunks of tokens."""
+        for tensor, norm in ((query, self.norm_q), (key, self.norm_k)):
+            if tensor is not None and (norm is not None or freqs_cis is not None):
+                attention_kit.rows_(tensor, lambda part, start, stop: _norm_rope_rows(part, norm, None if freqs_cis is None else freqs_cis[:, start:stop]))
+
     def forward(self, h_list: list, freqs_cis: torch.Tensor, NAG= None) -> torch.Tensor:
         """Compute self-attention with RoPE. h_list is cleared to free memory early."""
+        if NAG is None:
+            out = attention_kit.qkv_attention(h_list, self.to_q, self.to_k, self.to_v, self.n_heads, self.head_dim,
+                                              lambda query, key, group: self._norm_rope_(query, key, freqs_cis))
+            return self.to_out(out.flatten(2, 3))
         h = h_list.pop()
         query = self.to_q(h)
         key = self.to_k(h)
@@ -233,9 +251,9 @@ class ZImageTransformerBlock(nn.Module):
             scale_msa, gate_msa, scale_mlp, gate_mlp = self.adaLN_modulation(adaln_input).unsqueeze(1).chunk(4, dim=2)
             # In-place modulation for attention block
             scale_msa.add_(1.0)
-            normed = self.attention_norm1(x)
-            normed.mul_(scale_msa)
-            attn_out = self.attention_norm2(self.attention([normed], freqs_cis, NAG=NAG))
+            attn_in = [self.attention_norm1(x)]  # handed off: the attention releases it after the q/k/v projections
+            attn_in[0].mul_(scale_msa)
+            attn_out = self.attention_norm2(self.attention(attn_in, freqs_cis, NAG=NAG))
             attn_out.mul_(gate_msa.tanh_())
             x.add_(attn_out); attn_out = None
             # In-place modulation for FFN block (chunked)

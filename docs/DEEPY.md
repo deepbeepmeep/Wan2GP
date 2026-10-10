@@ -1,372 +1,308 @@
 # Deepy
 
-Deepy is WanGP's conversational media assistant. It can generate, inspect, edit, extract, transcribe, merge, and transform images, video, and audio while keeping conversation context.
+Deepy is WanGP's conversational media assistant. Tell it what you want to create or change, and it can generate, inspect, edit, extract, transcribe, merge, and transform images, video, and audio while keeping the context of your project.
 
-Deepy comes in two versions:
-
-- **Deepy Zero** is the lightweight, fast version for straightforward requests. It should spent less time thinking and is designed to work well with a smaller LLM (for instance Qwen3.5 4B or 9B).
-- **Deepy Prime** is the advanced version for ambitious, multi-step work. It can discover available models and capabilities, plan connected actions, combine several image, video, and audio assets, and use external MCP services when configured. It requires the Qwen3.8 VL 27B model.
-
-Both versions share the same chat, default deepy settings and templates, Gallery integration, VRAM policy, context window, compaction, and interruption handling.
-
-This guide covers:
-
-- general guidelines
-- enabling Deepy
-- configuring Deepy in the web UI
-- linking WanGP settings files to Deepy generation tools
-- using selected and previous media naturally
-- understanding which generation settings Deepy can override directly
-- asking Deepy about available LoRAs and current defaults
-- using Deepy from the CLI
+Use Deepy when you want to work toward an outcome instead of manually operating every generation and post-processing control. For example, you can ask it to turn a portrait and a voice recording into a talking video, compare several results, or build a sequence of related shots.
 
 **Deepy can make mistakes, so verify important results.**
 
-## General Guidelines
-Once enabled, open the Deepy chat window by clicking `Ask Deepy` in the left dock.
+## Choose Deepy Zero or Deepy Prime
 
-Both versions can generate images, video, and audio. Deepy Zero is best for focused requests using your selected tools and templates. Deepy Prime can plan longer workflows and combine several generated or existing media assets. Content produced by either version appears in the `Image / Video Gallery` or `Audio Gallery` at the top right of WanGP's `Media Generator` tab.
+- **Deepy Zero** is fast and lightweight. Use it for focused tasks such as generating one asset, editing selected media, extracting a clip, resizing a file, or producing a transcript. It works well with the smaller supported Qwen models.
+- **Deepy Prime** is for projects that need planning or several connected actions. Use it when Deepy must compare compatible models, combine multiple media assets, inspect intermediate results, manage project files, or work with external MCP services. Prime requires a local Qwen3.8 VL model (9B or 27B) or a configured remote LLM.
 
-Deepy can also work with User Imported Media:
-1) Expand the section  `Media Info / Late Post Processing / Import Media`
-2) Switch to the `Import Media to Galleries` tab
-3) Select files to Import
-4) Click `Import Videos / Images / Audio Files`
+Both versions share generation features, galleries, media references, and saved sessions. Both offer a dedicated video-with-references template. Choose the assistant in **Configuration > Prompt Enhancer / Deepy**.
 
-Once the media are in the galleries, you can refer to them using wording like `the last audio file`, `the selected video` or describe their content (Deepy will query the prompts stored in the generation metadata if they exist).
+## Enable Deepy
 
-Deepy relies on predefined Template Settings for its seven generation tasks (`Generate Image`, `Generate Video`, `Edit Image`, `Generate Video with Speaker`, `Generate Song`, `Generate Audio from Description`, and `Generate Audio from Sample`). Deepy Zero directly uses the curated template assigned to each tool. Deepy Prime starts from the corresponding default template when no model is named, but can discover and compare other compatible models when the request requires it.
+1. Start WanGP with `python wgp.py`.
+2. Open **Configuration > Prompt Enhancer / Deepy**.
+3. Choose **Deepy Zero** or **Deepy Prime**.
+4. Choose a supported local model or, for Prime, a configured remote LLM.
+5. Save the configuration.
 
-For Deepy Prime, every derived generation step follows the same rule. If a video workflow needs a master image and edited end frames, Prime uses the current default `Generate Image` and `Edit Image` templates directly instead of browsing models first. It performs model discovery only when the user asks to choose or compare models, names a model, or a required capability is demonstrably incompatible with the default template. Template settings already include model defaults, so fetching raw model defaults afterward is unnecessary.
-
-WanGP comes with builtin templates ready to use but you may as well link presaved settings. You can access Deepy settings by clicking the `Settings` control on the right of the Deepy chat window.
-
-In the web UI, Deepy settings changes take effect for the current Deepy session as soon as you make them. Click `Save Deepy Settings` at the bottom of the settings panel when you want to write those settings to disk for future WanGP sessions.
-
-You can also define default width, height, frame count, audio duration, and seed in the Deepy Settings window. Select `Use by Default Always Dimensions / Durations / Seed Below` to apply them instead of the corresponding template properties without editing the templates.
-
-You can also ask Deepy directly to override supported template settings such as width, height, frame count, audio duration, FPS, LoRAs, or inference steps.
-
-## Enabling Deepy
-
-Deepy is available only when these base conditions are met:
-
-1. `Deepy` is set to `Deepy Zero` or `Deepy Prime` rather than `Disabled`.
-2. Prompt Enhancer is set to a supported Qwen3.5VL mode.
-
-Deepy Prime additionally requires `Compaction Type When Cache is Full` to be set to `Summarize` and `Context Window Tokens` to be at least 32,000. Selecting Deepy Prime in the Configuration UI automatically raises a smaller context to 32,000 and selects Summarize. Configuration saving and runtime startup both reject an invalid Prime configuration.
-
-Open the Configuration plugin and go to the `Prompt Enhancer / Deepy` tab.
-
-Required Prompt Enhancer modes:
+Supported local choices are:
 
 - `Qwen3.5VL Abliterated 4B`
 - `Qwen3.5VL Abliterated 9B`
+- `Qwen3.8VL Uncensored 9B` (supports local Deepy Prime)
+- `Qwen3.8VL Uncensored 27B` (supports local Deepy Prime)
 
-Deepy settings in that tab:
+For a remote Prime engine, see [Remote LLMs](REMOTE_LLMS.md). Once Deepy is enabled, **Ask Deepy** appears in the Gradio left dock. The CLI and standalone Web app use the same saved configuration.
 
-- `Model used to power Prompt Enhancer / Deepy`: selects the shared language/vision model.
-- `Speculative Decoding`: `Auto` enables it for Qwen3.5 9B with at least 12 GB VRAM or Qwen3.8 27B with at least 24 GB VRAM. Explicit `Yes` and `No` remain available.
-- `Deepy`: selects `Disabled`, `Deepy Zero` for lightweight, straightforward work with curated WanGP tools and templates, or `Deepy Prime (requires Qwen3.8 VL 27B LLM)` for advanced planning, model discovery, multimedia workflows, and optional external MCP capabilities. Selecting Prime raises the context window to at least 32,000 tokens and selects Summarize compaction.
-- `Allow Deepy to Read the Filesystem`: disabled by default. When enabled, both Deepy Zero and Deepy Prime can list directories, inspect files, and use existing media paths in tool inputs. When disabled, Deepy must use Gallery/media ids and the filesystem tools are not exposed.
-- `Deepy VRAM Loading Mode`: controls whether Deepy stays in VRAM, unloads when idle, or unloads only when another WanGP component needs VRAM. The more Deepy stays in VRAM, the more responsive.
-- `Context Window Tokens`: how much conversation and tool history Deepy tries to keep live
-- `KV Cache Quantization`: `Auto` enables fast INT8 KV cache when GGUF kernels 1.0.11 or newer are installed; explicit BF16 and INT8 choices remain available.
-- `Compaction Type When Cache is Full`: either discard the oldest conversation entries at the limit or summarize older completed turns and completed action groups at the lower of 85% context usage and 4,096 tokens before the KV-cache limit. Summarize requires at least 32,000 context tokens and generates directly from synchronized KV memory, appending only a short internal instruction instead of replaying serialized history. The summary is durable working memory: it preserves goal-critical findings and decisions, clearly separates completed work from remaining work, and instructs Deepy to trust successful results instead of repeating completed actions. During a long active turn, summarization runs only at a safe boundary after a complete tool result and before the next model decode; it preserves the original user request and two newest assistant/tool action groups verbatim while summarizing older work. Unfinished decoded output is never summarized. During summarization or current-turn space recovery, the status bar is the only transient UI notification. Only a successfully committed summary creates a chat entry: an expandable `Context` block at its chronological position inside the active turn. Verbose level 2 also prints the complete summary to the console. In Summarize mode, reaching one decoder segment's `max_tokens` is never considered the end of the turn. If another complete segment fits, Deepy continues immediately from live KV without compaction, replay, or a summary entry, preserving the same unfinished Thought block. It shows `Making room to continue...` and rebuilds context only when another full segment cannot fit. If summarization genuinely fails, Deepy progressively removes older assistant/tool steps while retaining the newest two; dropping a whole turn is the final fallback. Whenever complete turns must be deleted, Deepy retains a compact system record of the five most recent removed user requests, truncating each to 256 characters and stating that their corresponding answers were removed. This record is discarded only if the active request otherwise cannot fit.
-- `Deepy Zero Prompt`: edits independent extra instructions for Deepy Zero.
-- `Deepy Prime Guidance`: edits standing user guidance directly. It is prefilled to prefer the highest-quality base or full model unless the user prioritizes speed or names another model, and is appended to Deepy Prime's trusted system instructions rather than replacing them.
-- `External MCP Servers (JSON)`: optional stdio, SSE, or Streamable HTTP MCP server definitions used only by Deepy Prime. External tool names are prefixed with their server name to avoid collisions.
+## Choose an interface
 
-When the requirement is met, the `Ask Deepy` launcher appears in the WanGP web UI.
+| Interface | Launch | Best for |
+|---|---|---|
+| **Gradio + Web** | `python wgp.py --listen --server-port 7860` | Full WanGP controls on the PC plus a synchronized, phone-friendly Deepy app at `/deepy/`. |
+| **CLI** | `python wgp.py --ask-deepy` | Terminal-based work without a browser or server. |
+| **Standalone Web** | `python wgp.py --deepy-server --listen --server-port 7860` | A focused browser app for chat, galleries, and basic Deepy settings without Gradio. |
 
-Deepy Prime always includes WanGP's in-process MCP server and automatically loads its trusted `wangp_agent` operating guide. Its WanGP generation calls use the active browser session's Gradio queue, so jobs and generated media remain visible in the normal queue and Galleries while Deepy stays unloaded from VRAM. External servers extend that tool set; their prompts are not loaded automatically.
+All interfaces use the same engine configuration, tool templates, and saved-session format. Use the same `--config FOLDER` and `--deepy-sessions-dir FOLDER` when you want separate launches to use the same configuration and sessions. `--config` names the folder containing `wgp_config.json`, not the JSON file itself.
 
-Because Deepy Prime runs inside the same WanGP process, its in-process MCP definition intentionally omits remote Gallery upload/download tools. It can reuse Gallery ids directly, and when filesystem access is enabled it can also use local paths. Gallery ids observed by the MCP session remain resolvable while their files exist after `Keep Previous Generations in Gallery` trims their visible UI rows; remembered records remain discoverable with `in_gallery: false` without being reinserted into Gradio. `List Files` optionally filters extensions and returns names, paths, and byte sizes. `Query File` accepts a Gallery/media id or path and returns resolution, frame count, FPS, duration and audio-track information for visual media; duration, sample rate, channels and track count for audio; or UTF-8 text up to 16,000 characters.
+### Use Gradio and Web together
 
-Deepy Prime receives the current `Deepy Settings > General Properties` precedence as system-level guidance at session startup. With `Use by Default Dimensions / Durations / Seed defined in Templates Settings Used`, inactive panel defaults are not injected or returned, and the template query keeps those template-owned fields in `settings`. With `Use by Default Always Dimensions / Durations / Seed Below`, the standing defaults relevant to the requested tool are injected and returned separately as `general_properties`, while conflicting resolution, frame-count, duration, and seed keys are removed from template `settings`. Explicit user overrides still take precedence. Changes to these General Properties change the system-prompt signature and are injected on the next turn.
+While Gradio is running, open:
 
-External server configuration example:
+- `http://<PC-address>:7860/` for Gradio
+- `http://<PC-address>:7860/deepy/` for the phone-friendly app
 
-```json
-{
-  "filesystem": {
-    "transport": "stdio",
-    "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\media"]
-  },
-  "remote": {
-    "transport": "streamable-http",
-    "url": "http://127.0.0.1:9000/mcp"
-  }
-}
+You can also follow **Web app ->** in Deepy's settings. Both views share the current conversation, galleries, selected media, settings, progress, and generation queue. Start a request on one device and follow, pause, stop, or inspect its result on the other.
+
+The Deepy Web app and all open Gradio pages are synchronized while connected to the same WanGP process. Gallery workspace changes and completed generations appear everywhere, while each Gradio page keeps its own unsent generation form and draft values.
+
+Closing every browser does not stop accepted work while WanGP remains running. Reopen the same address to recover the current view. Live sharing applies only to Gradio and Web clients connected to the same WanGP process.
+
+### Use standalone Web
+
+For the same computer:
+
+```powershell
+python wgp.py --deepy-server
 ```
 
-## Deepy Web Settings
+For a phone or another computer on the local network:
 
-Open `Ask Deepy`, then open the `Settings` panel.
-
-The settings panel contains two expanded sections:
-
-- `Generation Properties`
-- `Template Settings used by Tools`
-
-All changes in this panel are used immediately by the current Deepy web session. To keep them for future sessions, click `Save Deepy Settings` at the bottom of the panel.
-
-### Generation Properties
-
-- `Auto-abort or remove Deepy-started generation on Stop/Reset.`  
-  Controls whether Deepy-created queue work is cancelled or removed when you stop/reset Deepy.
-
-- `Default Dimensions / Durations / Seed`
-  Choose whether Deepy uses these properties from each selected template or always replaces them with the panel defaults below.
-
-- `Width` and `Height`  
-  Default size overrides used only when template properties are disabled.
-
-- `Default Number of Frames` and `Default Audio Duration`
-  Default video length in frames and audio/song duration in seconds when template properties are disabled. Audio duration defaults to 10 seconds.
-
-- `Number of Frames`  
-  Default frame-count override for `Generate Video`, used only when template properties are disabled.
-
-- `Seed (-1 for random)`  
-  Default seed override, used only when template properties are disabled. `-1` means random.
-
-Inference steps, FPS, LoRAs, and other model-specific values remain template-driven unless you ask for one of the supported per-request overrides described later in this guide.
-
-### Tool Templates
-
-Deepy has seven generation-tool template selectors:
-
-- `Media Generator`
-- `Video With Speech`
-- `Image Generator`
-- `Image Editor`
-- `Song Generator`
-- `Speech From Description`
-- `Speech From Sample`
-
-Each row has:
-
-- a dropdown that selects the current template for that tool
-- `+` to link that tool to the currently selected WanGP user settings file (in the dropdown in the upper left part of video gen tab )
-- `trash` to remove the current live link and go back to the previous or default template
-
-Changing a template selector updates the active Deepy web session immediately. Click `Save Deepy Settings` if you want to reuse the same selectors the next time you launch WanGP.
-
-Deepy shows the selected template in the chat transcript for generation tools, for example:
-
-```text
-Generate Image [Z Image Turbo]
-Generate Video [LTX-2 2.3 Distilled 1.0]
-Edit Image [Flux Klein 9B]
-```
-### Save Deepy Settings
-
-Click `Save Deepy Settings` at the bottom of the Deepy settings panel to persist the current web settings to disk.
-
-That save includes:
-
-- generation-property values such as auto-abort behavior, template-property usage, width, height, frame count, audio duration, and seed
-- the currently selected Deepy template for each generation tool
-
-
-## Linking WanGP Settings to Deepy Tools
-
-Deepy templates are either:
-
-- built-in Deepy templates shipped with WanGP
-- live links to WanGP user settings files
-
-### Link a tool from the UI
-
-Practical workflow:
-
-1. configure a normal WanGP generation the way you want
-2. save it as a WanGP user settings file
-3. select that user settings JSON in WanGP's `Lora / Settings` dropdown
-4. open Deepy settings
-5. click `+` next to the Deepy tool you want to link
-6. confirm the link
-
-When you use the tool later, Deepy reads the linked WanGP settings file directly, so changes to that file are picked up automatically.
-
-### Important behavior
-
-- Only WanGP user settings selected from the `Lora / Settings` dropdown can be linked this way.
-- System profiles and LoRA presets are rejected.
-- If the linked WanGP settings file changes later, Deepy sees the updated content automatically.
-- If the linked file disappears, Deepy falls back to that tool's default template.
-- If the linked file still exists but is no longer eligible for that tool, the tool returns an eligibility error.
-- Built-in templates cannot be deleted from the UI.
-- Linked templates are the right place for model-specific settings that Deepy does not expose directly. Deepy can still override width, height, frame count, audio duration, FPS, inference steps, and LoRAs on the supported tools.
-
-## How Deepy Interprets Media References
-
-Deepy is designed to let you refer to existing media naturally.
-
-In practice, Deepy will usually:
-
-- prefer the currently selected image, video, or audio item when you say `selected`, `current`, `this image`, `this video`, `this audio`, or `this frame`
-- use the selected video's current playback time when you refer to `the selected frame` or `the current frame`
-- resolve short references such as `last image`, `previous video`, or `last audio`
-- resolve older outputs when you describe a previous result
-- ask for clarification instead of inventing a result when a reference is ambiguous
-
-You can still use internal media ids such as `image_1` or `video_3`, but usually you do not need to.
-
-## Using Selected Media
-
-### In the web UI
-
-For an image:
-
-1. click the image you want
-2. ask Deepy something like:
-   - `edit this image so the sky is stormy`
-   - `inspect the selected image and tell me whether the hands look correct`
-   - `use the selected image as the start frame for a short video`
-   - `use this image and the last audio clip to make a talking video`
-
-For a video:
-
-1. select the video
-2. scrub the player to the moment you care about
-3. ask Deepy something like:
-   - `inspect this frame and tell me whether the face is sharp`
-   - `extract the selected frame as an image`
-   - `cut a 3 second clip starting at the selected time`
-   - `transcribe this video`
-   - `mute this video`
-   - `replace the audio of the selected video with the last extracted audio`
-
-For audio:
-
-1. select or import an audio file
-2. ask Deepy something like:
-   - `transcribe this audio`
-   - `transcribe this audio with word timestamps`
-   - `create speech from this sample saying: Welcome to WanGP`
-   - `use this audio with the selected image to make a talking video`
-
-If your voice sample is inside a video, Deepy can extract the audio first.
-
-### Previous outputs
-
-Deepy can also resolve references such as:
-
-- `last image`
-- `previous video`
-- `last audio`
-- `the robot dancing image`
-- `image_2`
-- `video_3`
-
-## What You Can Ask Deepy To Do
-
-Deepy Zero is intended for direct requests such as generating one asset with a selected template, editing or animating selected media, extracting a clip, resizing a file, or producing a transcript. Deepy Prime can perform the same work while also selecting among compatible models and coordinating several dependent actions across multiple media.
-
-- generate images, edit images, generate videos, generate talking videos from a still image plus speech audio, and create speech audio from a voice description or a voice sample
-- create solid-color frames for transitions, blank frames, or color cards
-- inspect images and video frames, and read local image, video, or audio details such as dimensions, duration, FPS, frame count, or audio track count
-- extract images, video clips, or audio clips; transcribe audio or video; mute videos; replace audio; resize/crop media; and merge videos
-- tell you which LoRAs are available for the current generation tool and which defaults a generation tool will use right now
-- answer WanGP-specific usage questions by searching the bundled docs
-
-
-## Audio Transcription
-
-Deepy can transcribe either audio or video.
-
-- Segment timestamps are returned by default.
-- Ask for word timestamps if you need more detailed timing.
-- If a source has multiple audio tracks, mention which track you want.
-
-Example requests:
-
-```text
-Transcribe the selected video.
+```powershell
+python wgp.py --deepy-server --listen --server-port 7860
 ```
 
+Open `http://<PC-address>:7860`, using the PC's LAN address, such as `192.168.1.50`. Do not enter `0.0.0.0`; that is only the listening address. If the page cannot connect, allow the selected port through the PC firewall.
 
-```text
-Transcribe audio track 2 from the selected video.
-```
+Standalone Web and CLI run as separate processes and do not attach to another running instance. To continue work in a different process, enable saved sessions, finish current work, stop the old process, and resume the session using the same configuration and session folder.
 
-```text
-Extract the video excerpt that starts with 'I will be back'.
-```
+## What Deepy can do
 
-## Example Requests
+You can ask Deepy to:
 
-```text
-Generate a cinematic image of a robot violinist on a rainy Paris rooftop at night.
-```
+- generate or edit images
+- generate video from a prompt, image, or compatible media inputs
+- create a talking video from a still image and speech audio
+- create speech from a description or voice sample, generate songs, and generate sound from a description
+- inspect images and video frames or compare several visuals
+- report useful media details such as dimensions, duration, FPS, frame count, and audio tracks
+- extract images, clips, or audio; transcribe audio or video; mute or replace a video soundtrack; resize or crop media; compose assets side by side; and merge videos
+- find available LoRAs, explain the active tool defaults, and answer WanGP usage questions
 
-```text
-Edit the selected image so the background becomes a neon alley while keeping the character identity, and use 8 inference steps.
-```
+Prime is especially useful for requests with dependencies. It can create an intermediate asset, inspect it, revise it if necessary, and use the accepted result in the next stage.
+Prime can use `remux_media` to mix stems into one audio stream, package separate selectable audio tracks, or add selectable subtitle tracks to a video. Subtitle files may be SRT, VTT, ASS, or SSA in an authorized workspace path; use `subtitle_tracks` with optional language, title, and default status. Existing video subtitle tracks are retained unless `include_video_subtitles=false`. With a video and subtitles but no audio inputs, compatible existing audio is copied; incompatible audio is converted only when the chosen container requires it. MP4/MOV subtitles use `mov_text`; MKV retains compatible subtitles or converts incompatible ones. Audio-only mixes follow the configured standalone WAV/MP3 format unless you request a supported output extension; separate audio-only tracks use M4A.
 
-```text
-Generate a short video of a paper boat floating through a glowing cave river at 24 fps with 97 frames and 8 inference steps.
-```
+## Everyday workflow
 
-```text
-Generate a video of a dog playing under the rain using the Lego lora
-```
+1. Select a suitable template for each generation tool.
+2. Import or select any source media.
+3. Describe the result you want and any details that must be preserved.
+4. Review the generated media and ask for refinements in the same conversation.
 
-```text
-Use the selected portrait and the last audio clip to make a talking video.
-```
+Deepy uses the configured template for each generation task. Zero uses the selected template directly. Prime also starts with the selected template and looks for another compatible model when you request model selection, name a model or family, request a declared speciality such as infographics, or the current template cannot perform the task.
 
-```text
-Create speech from this sample saying: Welcome to WanGP.
-```
+You can override supported values in a request, including width, height, frame count, audio duration, FPS, inference steps, seed, and LoRAs. Put model-specific choices that Deepy cannot override into a linked template.
 
-```text
-How do I use VACE for outpainting?
-```
+## Work with media
 
-Multi-step requests are where Deepy Prime is most useful:
+### Import and attach media
 
-```text
-1) Generate an image of a robot disco dancing on top of a horse in a nightclub.
-2) Edit the image so the setting stays the same, but the robot has gotten off the horse and the horse is standing next to the robot.
-3) Verify that the edited image matches the description; if it does not, generate another one.
-4) Generate a transition between the two images.
-```
+In Gradio, either use the chat **+** button or open **Media Info / Late Post Processing / Import Media > Import Media to Galleries**. In the Web app, use the chat **+** for media needed by the next request, or import files from a gallery.
 
-```text
-Create a high quality portrait that represents you well. Then create a speech sample in which you introduce your capabilities. When done generate a talking video from the portrait and the generated speech.
-```
+The attachment counter shows how many files are waiting for the next request. Sending the request consumes those attachments. Removing an attachment from the composer does not delete its workspace file.
 
-## Deepy CLI Mode
+### Select media and refer to it naturally
 
-Launch Deepy in CLI mode with:
+Select a gallery item, then use phrases such as:
 
-```bash
+- `edit this image`
+- `inspect the selected frame`
+- `transcribe the last audio`
+- `use the previous video`
+- `compare these images`
+
+Deepy normally prefers the selected item for words such as `selected`, `current`, `this image`, `this video`, or `this audio`. It can also resolve recent results and descriptions such as `the robot dancing image`. Internal IDs such as `image_2` and `video_3` remain available when you need precision.
+
+In Gradio, scrub a selected video before referring to `this frame` or `this time`. In the Web app, viewing or playing a video does not select a reference moment, so include the time or frame number in your request. Deepy asks for clarification when a reference is ambiguous.
+
+When generating video from an image, the image can have different roles. A **start image** anchors the opening scene and composition. A **reference image** guides a subject's identity or appearance without fixing the opening frame, according to the model's supported mode. For example, “animate this photo” and “put this character in a new scene” use the source differently. A model may support one role, both, or other roles such as inserting frames at specified positions.
+
+### Browse galleries
+
+The image/video and audio galleries let you select, inspect, play, and download media. Selecting a tile marks it for your next request; it does not submit anything. The information pane shows prompts, model settings, dimensions, and creation details when available.
+
+When the latest item is selected, new output is selected automatically. If you are reviewing an older item, Deepy preserves that selection and your position.
+
+## Control work in progress
+
+The chat and generation progress bars show what Deepy and WanGP are doing.
+
+- **Pause** suspends Deepy's current turn without losing it. Running media generation and postprocessing pause at their next processing checkpoint; other tools finish before Deepy pauses. The Generate panel reflects the same paused state. Postprocessing retains its GPU state while paused.
+- **Resume** continues the same turn and its paused media operation. You can resume from either chat or the Generate panel.
+- **Stop** ends Deepy's current turn. Depending on the **Auto-abort** setting, it may also cancel or remove generation work started by Deepy.
+- **Abort** cancels the active WanGP generation.
+
+You can send a new instruction while Deepy is working. Use this to steer the current task, or queue the instruction for afterward when the interface offers that choice.
+
+**Compacted View of Thoughts and Actions** keeps long turns readable. A collapsed turn shows its latest useful statement, generated media, and final answer; expand it to review individual thoughts and actions. The preference is shared between Gradio and Web.
+
+## Tool templates and defaults
+
+Open **Ask Deepy > Settings** in Gradio for the complete settings panel. The standalone Web app provides the commonly used generation defaults and existing template choices.
+
+### Prime model preferences
+
+At the top of **Templates Settings used by Tools**, Prime offers **Speed** and **Model Size**, also available in the Web app. They apply when Prime chooses beyond your configured templates; an explicit model or template request takes priority.
+
+- **Speed:** Fast (default) favors models with native acceleration or accelerator profiles. Standard favors ordinary generation without automatically adding an accelerator. No preference ignores speed.
+- **Model Size:** Smaller (default) favors declared lighter variants; Larger favors full variants. No preference ignores size. These labels compare variants, not absolute GB, VRAM use or quality.
+
+Prime first checks required inputs and the requested speciality, then prefers candidates matching both preferences over those matching only one. For example, an H3 request with a subject reference can select a compatible lighter Ref2VA variant and its recommended accelerator. An infographic request can find a model declaring that strength. If only some speciality terms match, Prime receives the missing terms and checks essential requirements before generating.
+
+Fast uses a model's recommended accelerator settings when available. Natively accelerated models already use accelerated defaults. Your configured templates keep their settings; these preferences do not replace them on ordinary requests. Changes reach Prime as a hidden runtime update on the next turn, including with a remote LLM; no conversation restart is needed. Deepy Zero has no model-preference controls or injection.
+
+### Generation defaults
+
+Choose whether each tool uses dimensions, durations, and seed from its template or replaces them with Deepy's defaults:
+
+- width and height
+- video frame count
+- audio duration
+- seed (`-1` means random)
+
+Choose **Use template defaults first** to prefer the selected template's values, or **Use the values below** to prefer your Deepy defaults. For Deepy Prime, if a generation request omits dimensions, duration, or seed, WanGP fills the missing values from your Deepy defaults before using the model's factory settings. Values already supplied in the request are preserved.
+
+Most changes apply immediately. Click **Save Deepy Settings** to reuse them after restarting WanGP.
+
+### Template choices
+
+Deepy has templates for:
+
+- Image Generator
+- Image Editor
+- Video Generator
+- Video With Speech
+- Video Generator with Ref.
+- Song Generator
+- Speech From Description
+- Speech From Sample
+
+Deepy uses **Video Generator with Ref.** when images or videos supply subject identity, appearance or motion. A start image instead fixes the opening scene and uses the regular video template. Available reference templates are MiniMax H3 Ref2VA Pruned with its eight-step accelerator (default), LTX-2 2.3 MSR V2 Distilled 1.1, and Vace Fusionix. H3 accepts image and video references; the other templates accept image references. Deepy checks model support when combining references with other inputs.
+
+WanGP includes built-in templates. To reuse your own model setup:
+
+1. Configure and save normal WanGP generation settings.
+2. Select that user settings file in WanGP's **Lora / Settings** dropdown.
+3. Open Deepy settings.
+4. Click **+** beside the Deepy tool that should use it.
+5. Confirm the link and save Deepy settings.
+
+The link follows later changes to that user settings file. The trash action removes the live link and returns to the previous or built-in template. If a linked file is deleted, Deepy returns to the tool's default template.
+
+## Sessions and workspaces
+
+Use saved sessions when you want to continue a conversation after restarting WanGP. Workspaces organize the media shown in the galleries.
+
+### Choose a session mode
+
+In **Ask Deepy > Settings > Sessions**, choose:
+
+- **Disabled**: one temporary conversation. Reset clears it. Use this for quick, disposable work.
+- **Multisessions with selectable Workspace**: save conversations while choosing which general gallery workspace each one uses. Use this when several projects share media collections.
+- **Multisessions with dedicated Workspace**: give every saved conversation its own gallery workspace. Use this for self-contained projects and the clearest separation between jobs.
+
+Save the setting and restart WanGP if Deepy has already started. In a dedicated workspace, the first request names the session and workspace. You may import media before that request; it is kept under **New Deepy session** until the first request supplies a name.
+
+Sessions save automatically. There is no separate Save Session action. A saved session includes its conversation, completed actions, displayed results, workspace association, and media references. When resuming a long session, the conversation may appear before Deepy finishes preparing it.
+
+In Gradio you can resume, rename, duplicate, export, import, or delete sessions. In Web, use the session selector in the top bar. In CLI, use `/sessions` and `/resume <ref>`. Wait for active or paused work to finish before switching sessions. If an automatic or manually entered session name is already used, Deepy adds an available number, such as **My video (2)**. Names differing only in capitalization count as duplicates.
+
+### Keep links or copy media
+
+The **Gallery Media** session setting controls portability:
+
+- **Keep links to Gallery files** saves disk space, but the original files must remain at their recorded locations.
+- **Copy Gallery files into each session** uses more disk space but makes the session independent of the original gallery files.
+
+### Organize workspaces
+
+A gallery workspace remembers gallery contents, media order, selected items, and the active gallery tab. It stores references to the original files rather than duplicating them. Ordinary workspaces use a folder icon; session-owned workspaces use a robot icon. Creating, renaming, or deleting a workspace changes its organization only; deleting a workspace does not delete its media files.
+
+In Gradio, the magnifier beside the workspace selector opens the full workspace viewer. Use it to:
+
+- inspect every item, including older media hidden by the gallery display limit
+- select multiple items with Ctrl/Cmd-click, Shift-click, or rectangle selection
+- reorder media or move a selection to the start or end
+- eject items from a workspace without deleting their files
+- copy items to another workspace
+- download selected items as a ZIP
+- import more media
+- permanently delete selected files after confirmation
+
+The lock protects a workspace from automatic archiving. The broom sets an inactivity period for archiving old, unlocked workspaces at WanGP startup. Archiving hides the workspace but leaves its media files in place. There is currently no restore button, so protect any workspace you expect to revisit.
+
+See [Gallery Workspaces](WORKSPACES.md) for the relationship between workspaces and galleries, the complete workspace-manager workflow, synchronization rules, dedicated Deepy workspaces, safe deletion, archiving, restoration, and backups.
+
+## Use Deepy on a phone
+
+The Web app has tabs for **Chat**, **Image/video**, **Audio**, and **Settings**. Replies, results, selections, and progress stay synchronized with Gradio when both connect to the same process.
+
+For an app-like view on iPhone, open the Deepy address in Safari and choose **Share > Add to Home Screen**. On Android, use **Install app** or **Add to home screen**. The connection overlay tells you when the phone loses contact with WanGP and disappears after reconnection.
+
+### Protect network access
+
+See [Authentication, HTTPS, and Reverse Proxies](AUTHENTICATION.md) for the shared Gradio/Deepy password login, session behavior, and network protection.
+
+### Set up HTTPS
+
+See [HTTPS certificates](AUTHENTICATION.md#https-certificates) and [reverse proxy setup](AUTHENTICATION.md#hosting-behind-a-reverse-proxy), including `--public-url` for RunPod, Nginx, Traefik, and Cloudflare.
+
+## Voice input and transcription
+
+In Gradio and desktop Web, press the microphone beside **Send**, speak, then press it again to transcribe. The text remains editable before you submit it. On smartphones, the standalone Web app uses the phone keyboard's native dictation instead.
+
+In **Configuration > General**, choose the microphone transcription mode:
+
+- **Auto** uses the GPU when it is available and the CPU while the GPU is busy.
+- **CUDA** waits for the GPU and is usually faster once it starts.
+- **CPU** avoids competing for GPU memory.
+- **Disabled** hides the microphone controls.
+
+Choose **Voice transcription language** to improve short recordings, or leave it on **Auto**. You can override the language for one launch with `--deepy-voice-language es`, `en`, or `auto`. Whisper files download on first use.
+
+Dictating a request is different from asking Deepy to transcribe an existing audio or video file. For media transcription, select or attach the file and ask for segment timestamps, word timestamps, or a particular audio track.
+
+## CLI mode
+
+Launch the terminal interface with:
+
+```powershell
 python wgp.py --ask-deepy
 ```
 
-At startup, the CLI prints the Deepy logo and preloads the prompt-enhancer runtime so Deepy is ready before the first prompt.
+Add `--config`, `--deepy-sessions-dir`, or `--output-dir` when you want to use custom locations. Do not combine `--ask-deepy` with `--deepy-server`.
 
-### Prompt entry
+Prompt entry:
 
-Interactive multiline entry:
+- `Enter`: send
+- `Alt+Enter` or `Ctrl+J`: insert a newline
+- `Ctrl+S`: stop the current turn
 
-- `Enter`: send the current prompt
-- `Ctrl+Enter`: insert a newline on terminals that expose it
-- `Alt+Enter`: insert a newline
-- `Ctrl+J`: newline fallback
-- `Ctrl+S`: stop the current Deepy turn while it is running
-- `Shift+Enter`: not available here because the console reports it as plain `Enter`
+Useful commands:
 
+| Command | Purpose |
+|---|---|
+| `/add <path>` | Add and select an image, video, or audio file. |
+| `/image <path>`, `/video <path>`, `/audio <path>` | Add and select a specific media type. |
+| `/list [all|image|video|audio]` | List known media. |
+| `/select <ref>` | Select media by ID, list number, or part of its name. |
+| `/selected` | Show the current selection. |
+| `/time <seconds>` | Choose a time in the selected video. |
+| `/frame <index>` | Choose a zero-based frame in the selected video. |
+| `/size <WxH>`, `/frames <count>`, `/duration <seconds>`, `/seed <value>` | Override generation defaults. |
+| `/templates [tool]` | List available templates. |
+| `/template <tool> <variant>` | Select a template. |
+| `/sessions`, `/resume <ref>`, `/new` | List, resume, or start saved sessions. |
+| `/reset` | Clear the temporary conversation or start a new saved session, according to the session mode. |
+| `/help` | Show the complete command summary. |
+| `/quit` | Exit. |
 
-### CLI media selection
-
-The CLI has its own virtual gallery. Add files to it, select one, and optionally set a playback time or frame for the selected video.
-
-Examples:
+For example:
 
 ```text
 /video E:\media\my_clip.mp4
@@ -374,72 +310,220 @@ Examples:
 inspect the selected frame and tell me whether the subject is centered
 ```
 
+## Important configuration choices
+
+The settings under **Configuration > Prompt Enhancer / Deepy** determine Deepy's capabilities, quality, speed, memory use, and access to your files. The recommendations below are starting points; change them when your hardware or workflow has a different priority.
+
+### Prompt Enhancer / Deepy LLM Engine
+
+This selects the language and vision model that understands requests, plans work, and writes responses.
+
+- **Qwen3.5VL Abliterated 4B** starts quickly and uses the least memory, but is less reliable with long instructions and multi-step decisions. **Recommended for:** Deepy Zero on limited hardware and simple, direct requests.
+- **Qwen3.5VL Abliterated 9B** understands more complex instructions and media better than 4B, with higher VRAM and RAM use. **Recommended for:** the best general Deepy Zero experience when it fits comfortably.
+- **Qwen3.8VL Uncensored 9B** runs local Deepy Prime in about 6.5 GB of VRAM with its default GGUF Q4_K_M, or about 11 GB with GGUF Q8_0, which stays closest to the full-precision model. It follows instructions and multi-step tool use about as well as the 27B and remembers earlier parts of long conversations reliably, but has less general knowledge, thinks longer before answering, and understands images less accurately than the 27B. **Recommended for:** local Prime on 8 to 12 GB GPUs.
+- **Qwen3.8VL Uncensored 27B** offers the strongest local planning, knowledge and image understanding for Deepy Prime, but needs considerably more memory and takes longer to load. **Recommended for:** local Prime and complex multimedia projects when it fits.
+- **A remote LLM** avoids loading the language model on the WanGP GPU and may provide stronger reasoning, but adds network latency and sends conversation content to the configured provider. Remote engines require Prime. **Recommended for:** Prime when local memory is insufficient or a supported remote engine is preferred. Review [Remote LLMs](REMOTE_LLMS.md) before using one with private media or instructions.
+
+Changing the engine can require new model downloads and a runtime reload.
+
+### Qwen LLM Quantization
+
+Quantization trades model quality for lower VRAM/RAM use. It is shown only for local Qwen engines.
+
+For Qwen3.5:
+
+- **Quanto Int8** uses more memory but generally preserves better quality. **Recommended for:** most systems that can run it comfortably.
+- **GGUF Q4** uses less memory and can be faster when compatible kernels are installed, with some quality loss. **Recommended for:** systems where Int8 does not leave enough memory for generation models.
+
+For Qwen3.8 27B:
+
+- **GGUF Q4** has the highest quality and memory use. **Recommended for:** quality-first work when it fits without forcing excessive unloading. Usually this will require a 24 GB VRAM GPU.
+- **GGUF IQ3_S** is the middle ground for quality and memory. **Recommended for:** most local Prime installations. You may run this version with a 16 GB VRAM GPU.
+- **GGUF Q2** has the lowest memory use and the largest quality loss. **Recommended for:** this version can be also used with a 16 GB VRAM GPU but the advantage over Q3 is that you will be able to expand the context window.
+
+If Deepy frequently unloads other models, runs out of memory, or leaves too little VRAM for media generation, select a smaller model or lower quantization before reducing the context window drastically.
+
+### Speculative Decoding
+
+Speculative decoding can generate Deepy's text faster by predicting several tokens ahead. More draft tokens can improve speed for some requests but use more VRAM, and the fastest setting varies by model and workload.
+
+Choose a method and **Number of Tokens** on the row above **KV Cache Quantization**. Only compatible methods appear; switching to an incompatible model, quantization, or decoder resets the method to **Auto**.
+
+- **Auto** enables MTP on supported models when WanGP detects enough VRAM: normally at least 12 GB for Qwen3.5 9B and 24 GB for Qwen3.8 27B. The token count is automatic.
+- **Disabled** adds no draft-model VRAM and disables the token control. Use it when memory is tight or prediction is slower for your workload.
+- **MTP** supports 1–8 draft tokens on Qwen3.5 9B and Qwen3.8/Bonsai 27B. Start with 2.
+- **DSpark** supports 1–7 draft tokens on Qwen3.8/Bonsai 27B with the vLLM decoder (including Auto decoder selection).
+- **DFlash2** supports 1–7 draft tokens on Qwen3.8 Q2, Q3 and Q4, and 1–5 on Bonsai PTQ1, with the vLLM decoder (including Auto decoder selection). WanGP selects the Qwen drafter for Q2/Q3/Q4 and the Bonsai-adapted drafter for PTQ1 automatically.
+
+Each method label includes its estimated additional VRAM: approximately 0.5–1 GiB for MTP and 4–5 GiB for DSpark or DFlash2 at roughly 32K context. Auto adds between zero and the MTP cost. Longer context, draft count, and model choice affect actual usage. Compare representative prompts before choosing a prediction method: Disabled can be fastest, especially with Bonsai.
+
+This setting changes response speed, not the quality or speed of image, video, or audio generation.
+
+### Prompt Enhancer usage and sampling
+
+These controls affect the shared local language model's output style. They are normally best left at their defaults.
+
+- **Prompt Enhancer Usage** chooses whether normal WanGP generations enhance prompts automatically or only when you click the enhancer button. The manual button is available in both modes when the enhancer is enabled. Automatic enhancement can add detail but can also reinterpret carefully written prompts. **Recommendation:** use **Manual Button Only** when prompt fidelity matters; use **Manual Button + Automatic on Generation** when you routinely start from short ideas.
+- **Sampling Temperature** controls creativity. Lower values are more consistent and literal; higher values are more varied but more likely to wander. **Recommendation:** keep the default `0.6`; try `0.3-0.5` for precise instructions or `0.7-0.9` for ideation.
+- **Sampling Top-p** controls how broad the model's word choices can be. Lower values narrow responses; higher values add variety. **Recommendation:** keep the default `0.9` and adjust temperature first.
+- **Randomize Prompt Enhancer Seed** allows different wording and ideas on repeated requests. Disabling it improves repeatability when the prompt and settings are unchanged. **Recommendation:** keep it enabled for creative work; disable it when comparing configuration changes.
+
+### Deepy
+
+This chooses the assistant level:
+
+- **Disabled** removes the conversational assistant while leaving ordinary WanGP generation available.
+- **Deepy Zero** prioritizes speed and direct execution with the selected templates.
+- **Deepy Prime** adds planning, model discovery, durable workspace files, and optional external services for multi-step work.
+
+**Recommendation:** use Zero for isolated operations and Prime when the request requires multiple dependent steps, model comparison, project files, or external tools. See [Choose Deepy Zero or Deepy Prime](#choose-deepy-zero-or-deepy-prime) for engine requirements.
+
+### Deepy VRAM Loading Mode
+
+This controls how long a local Deepy model stays in GPU memory. It is not shown for a remote engine.
+
+- **Unload from VRAM as soon as possible** frees memory after Deepy becomes idle, but the next request must reload the model and starts more slowly. **Recommended for:** GPUs that need nearly all available VRAM for image or video generation; this is the safest default.
+- **Unload if VRAM is requested by another WanGP component** keeps Deepy responsive between requests but gives its memory back when another operation needs it. **Recommended for:** most systems with enough VRAM to hold Deepy during normal browsing and light generation.
+- **Always loaded in VRAM** gives the fastest Deepy response times but permanently reduces the memory available to generation models. **Recommended for:** high-VRAM systems primarily used for Deepy, or remote/heavily offloaded generation workflows.
+
+If generations fail to fit after changing this setting, move one level toward earlier unloading.
+
+### Context Window Tokens
+
+The context window is how much recent conversation, tool output, and project state the local model can consider at once. A larger value helps Deepy follow long projects and retain more detail before summarization, but its KV cache consumes more VRAM and long context can take longer to prepare.
+
+- **8K-16K** is suitable for short Zero conversations and uses the least memory.
+- **32K** is the practical minimum for Prime with **Summarize**.
+- **48K or more** supports **Summarize with Thinking** and longer projects, with increasing memory cost.
+- **Very large windows** are useful only when the extra history materially improves the workflow and the displayed KV-cache estimate fits comfortably alongside your generation models.
+
+**Recommendation:** start around 16K for Zero, 32K for Prime, or 48K for Prime when using compaction thinking. Increase it only when Deepy summarizes too often or loses relevant recent detail.
+
+### KV Cache Quantization
+
+The KV cache holds the active conversation context in GPU memory. Quantizing it reduces that memory cost without changing the model checkpoint.
+
+- **Auto** uses fast INT8 caching when compatible GGUF kernels are installed and otherwise uses BF16. **Recommended for:** most users.
+- **Disabled (BF16)** uses more VRAM and avoids cache quantization. **Recommended for:** quality-sensitive troubleshooting, or systems where INT8 cache performance is worse.
+- **INT8** uses about half the KV-cache VRAM and makes larger context windows practical. **Recommended for:** long Prime sessions or tight VRAM, provided the installed kernels support it efficiently.
+
+The context-window label displays an estimated cache size. Treat that estimate as VRAM reserved before image or video model requirements.
+
+### Compaction Type When Context is Full
+
+Compaction decides what happens when the live conversation no longer fits in the context window.
+
+- **Discard Oldest Entries** simply removes the oldest context. It is fast but may lose goals, decisions, references, and unfinished plans. **Recommended for:** short, disposable Zero chats only.
+- **Summarize** condenses older work while preserving important goals, decisions, completed actions, file references, and next steps. It requires at least 32K context. **Recommended for:** most long sessions and all local Prime use.
+- **Summarize with Thinking** lets Deepy reason before creating the summary, improving preservation in complicated projects at the cost of more time and a minimum 48K context. **Recommended for:** long Prime workflows with many dependencies, not routine one-step requests.
+
+Summaries help but cannot guarantee perfect recall. Keep critical specifications in your request or in a workspace document when mistakes would be costly.
+
+### Repetition Penalty
+
+When enabled, this reduces rambling and repeated phrases across Deepy's responses and planning. It costs roughly 10% of local text-generation speed.
+
+- **Enabled** produces cleaner long responses and plans. **Recommended for:** normal use, especially Prime.
+- **Disabled** is slightly faster but can become repetitive. **Recommended for:** maximum-speed experiments or troubleshooting only.
+
+### Filesystem access
+
+Filesystem access determines which local files Deepy can inspect or create. Use the smallest scope that supports the task.
+
+For Zero:
+
+- **Disabled** prevents filesystem tools. **Recommended for:** generation-only use.
+- **Read Outputs + Selected Folders** lets Deepy inspect existing files without changing them. **Recommended for:** analysis, lookup, and media-selection workflows.
+- **Read / Write Outputs + Selected Folders** allows file creation and changes in the configured locations. **Recommended for:** tasks that explicitly require file editing or organization.
+
+For Prime, its session workspace always remains available for drafts and project files. The outside-workspace choices are:
+
+- **Outputs only (read)** keeps external access narrow. **Recommended for:** most users and projects that can keep working files in the session workspace.
+- **Read outputs + selected folders** adds read-only access to chosen source folders. **Recommended for:** projects that consume an existing media or document library.
+- **Read + create in outputs; read/write selected folders** allows new output files and full work in selected folders. Existing files under WanGP output folders remain protected from overwrite, rename, move, and deletion. **Recommended for:** only projects that need Deepy to maintain files outside its workspace.
+
+### Additional Filesystem Folders
+
+Add one folder per line to make specific project locations available. An optional alias gives Deepy a short, unambiguous name for the folder:
+
 ```text
-/audio E:\media\voice.wav
-transcribe the selected audio with word timestamps
+"D:\My Media" media
+E:\Projects\Current project
 ```
 
-When a Deepy tool generates media in CLI mode, the CLI prints the generated output path.
+**Impact:** broader folders expose more filenames and content and, with write access, allow more changes. **Recommendation:** add the narrowest project folder possible instead of a drive root, give it a clear alias, and remove it when the project is finished.
 
-### CLI commands
+### Read Everywhere
 
-Media:
+This allows Deepy to read absolute paths anywhere the WanGP process can access. It does not expand write access.
 
-- `/add <path>`: add and select an image, video, or audio file
-- `/image <path>`: add and select an image file
-- `/video <path>`: add and select a video file
-- `/audio <path>`: add and select an audio file
-- `/list [scope]`: list known media; `scope` can be `all`, `media`, `image`, `video`, or `audio`
-- `/media [scope]`: alias for `/list`
-- `/clear-media`: remove all virtual gallery media
+**Impact:** convenient references to arbitrary local files become possible, but Deepy can also read unrelated or sensitive files if asked. **Recommendation:** leave it disabled and use selected folders. Enable it temporarily only when read-only work genuinely spans many locations.
 
-Selection:
+### Deepy Zero Prompt and Deepy Prime Guidance
 
-- `/select <ref>`: select media by id, list index, or name fragment
-- `/select-video <media_id>`: select a video by media id
-- `/selected`: show the currently selected media
-- `/selected-video`: show the selected video media id
-- `/time <secs>`: set the selected video's playback time
-- `/frame [index]`: show or set the selected video frame, 0-based
+These fields provide standing instructions applied to future interactions:
 
-Deepy settings:
+- **Deepy Zero Custom System Prompt** is useful for a preferred response style or repeated direct-task rule.
+- **Deepy Prime User Guidance** is useful for durable project preferences such as quality priorities, approval points, naming conventions, or how to choose models.
 
-- `/settings`: show the current CLI Deepy settings
-- `/size [WxH]`: show or set default generation size and disable template properties
-- `/frames [count]`: show or set default `gen_video` frame count and disable template properties
-- `/duration [seconds]`: show or set default audio duration and disable template properties
-- `/seed [value]`: show or set the default generation seed and disable template properties
-- `/template <tool> <variant>`: set the template for any Deepy generation tool
-- `/templates [tool]`: list available template variants
-- `/template-props [on|off]`: show or toggle whether Deepy uses resolution, frame, audio-duration, and seed properties from templates
+**Impact:** broad or conflicting instructions affect every request and can make otherwise simple tasks less predictable. **Recommendation:** keep guidance short, specific, and reusable. Put one-off requirements in the request itself. Do not paste secrets into these fields, especially with a remote engine.
 
-Session:
+### External MCP Servers
 
-- `/help`: print the CLI command summary
-- `/reset`: clear the Deepy conversation but keep the virtual gallery media
-- `/quit`: exit the CLI session
+External MCP servers give Prime access to additional applications, data, or specialized tools.
 
-Examples:
+**Impact:** they can make cross-application workflows possible, but may send prompts or files to another process or service and may perform actions under that service's permissions. A broken server can also delay or prevent its tools from being used. **Recommendation:** configure only trusted services needed for a real workflow, review their permissions and privacy terms, and remove unused entries.
+
+### Allow Searching for Changed MCP Executable Paths
+
+Some locally installed MCP programs place each version in a different folder. When this option is enabled and the saved executable disappears, Deepy may look in sibling version folders for the newest executable with the same filename.
+
+**Impact:** local integrations survive routine upgrades more easily, but WanGP may run a newer version than the one originally configured. **Recommendation:** leave it disabled for tightly controlled environments; enable it for trusted local tools that update frequently and whose version-folder layout is stable.
+
+Use Prime's session workspace for plans, drafts, and other files that belong to a long project. It offers the safest default place for durable working material and remains useful after older conversation content is summarized.
+
+## Example requests
+
+Focused requests for Zero or Prime:
 
 ```text
-/template gen_image "Z Image Turbo"
-/template gen_video "LTX-2 2.3 Distilled 1.0"
-/size 1280x720
-/frames 97
-/seed -1
+Generate a cinematic image of a robot violinist on a rainy Paris rooftop at night.
 ```
 
-## Practical Tips
+```text
+Edit the selected image so the background becomes a neon alley while keeping the character identity. Use 8 inference steps.
+```
 
-- Deepy works best when your request clearly states the goal and how current media should be reused.
-- Use Deepy Zero for focused requests and Deepy Prime when the result requires planning, model selection, or several connected media operations.
-- Deepy Prime can infer a workflow from the requested outcome, but listing mandatory steps or constraints explicitly makes the result more predictable.
-- If you need a model-specific setting that Deepy cannot override directly, store it in the linked template.
-- Ask Deepy for available LoRAs or current defaults when you switch templates and want to confirm the setup.
-- For image and video requests, be explicit about any must-keep details such as subject identity, composition, or mood.
-- If you want Deepy to use the current video moment, scrub the selected video first, then refer to `this frame` or `the selected frame`.
-- For transcription, mention if you want word timestamps or a specific audio track.
-- If a tool fails, Deepy will tell you rather than inventing a result.
-- Stopping a turn immediately requests cancellation of any active Deepy Prime MCP generation job. Deepy preserves every fully completed message and assistant/tool group exactly, discards only an unfinished trailing decode fragment or incomplete tool group, and records that the request was interrupted so it is not resumed automatically. It retains the latest compatible safe KV boundary; messages completed after that boundary are appended on the next request. Normal summarization handles the preserved turn if it later approaches the context threshold, and selection or deletion occurs only when the complete state genuinely cannot fit.
-- For WanGP-specific questions, you can ask Deepy directly instead of searching the docs manually.
-- Install GGUF kernels for fast inference and low VRAM.
+```text
+Transcribe audio track 2 from the selected video with word timestamps.
+```
+
+```text
+Use the selected portrait and the last audio clip to make a talking video.
+```
+
+Multi-step requests suited to Prime:
+
+```text
+Generate a master image of a robot dancing beside a horse in a nightclub. Create a second image with the same subjects and setting but a different pose. Check identity and composition, revise if needed, then generate a transition between the two images.
+```
+
+```text
+Create a portrait for an introduction video, generate a short speech explaining WanGP's capabilities, then combine the portrait and speech into a talking video.
+```
+
+## Practical tips
+
+- State the final goal, the source media to reuse, and any details that must not change.
+- Use Zero for a direct task and Prime for planning, model comparison, validation, or a chain of dependent actions.
+- Ask Deepy which template, defaults, or LoRAs are active when you want to confirm the setup.
+- Put recurring model-specific choices in a linked template instead of repeating them in every prompt.
+- Specify a time, frame, or audio track when the source contains several possible references.
+- Ask for word timestamps when segment timestamps are not precise enough.
+- Use **Pause** to temporarily suspend work without abandoning the turn.
+- Use saved sessions and copied gallery media when a project must remain portable after source files move.
+- You can ask Deepy WanGP-specific questions instead of searching the manuals yourself.
+
+---
+
+> Applies to: Choosing, enabling, launching, configuring, and using Deepy Zero or Deepy Prime in Gradio, CLI, and the standalone Web app, including media, templates, sessions, workspaces, phone access, voice input, and network protection.

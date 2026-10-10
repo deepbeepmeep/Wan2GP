@@ -1,4 +1,3 @@
-import os
 
 import torch
 from PIL import Image
@@ -27,6 +26,7 @@ class family_handler:
         is_dev = base_model_type == "hidream_o1_dev"
         return {
             "image_outputs": True,
+            "device_explicit": True,
             "sample_solvers": [("Flash", "flash")] if is_dev else [("Default", "default")],
             "guidance_max_phases": 0 if is_dev else 1,
             "fit_into_canvas_image_refs": 0,
@@ -72,17 +72,8 @@ class family_handler:
         return {"hidream": (1130, "HiDream")}
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-hidream-o1",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains HiDream O1 LoRAs (default: {os.path.join(lora_root, 'hidream_o1')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_hidream_o1", None) or os.path.join(lora_root, "hidream_o1")
+    def get_lora_dir(base_model_type):
+        return "hidream_o1"
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

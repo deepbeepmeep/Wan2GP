@@ -101,7 +101,7 @@ class SeedVCProcessor:
         if method_metadata(method)["needs_voice_sample2"]:
             from preprocessing.speaker_separator.assets import download_speaker_separator
 
-            download_speaker_separator(send_cmd, "Downloading speaker separator model files...")
+            download_speaker_separator(send_cmd, process_files=process_files)
             downloaded = True
         return downloaded
 

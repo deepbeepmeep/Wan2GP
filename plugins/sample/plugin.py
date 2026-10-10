@@ -2,6 +2,7 @@ from datetime import datetime
 import time
 import json
 import gradio as gr
+from shared.gradio.progress import WangpProgress
 
 from shared.utils.plugins import WAN2GPPlugin
 from shared.utils.process_locks import acquire_GPU_ressources, any_GPU_process_running, release_GPU_ressources
@@ -54,7 +55,6 @@ class ConfigTabPlugin(WAN2GPPlugin):
         pass
 
     def on_model_change(self, state: dict, model_type) -> None:
-        # print(f"new model selected is {model_type}")
         pass
 
     def create_config_ui(self, api_session):
@@ -72,7 +72,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             release_GPU(state)
             return "42"
 
-        def generate_media(progress=gr.Progress(track_tqdm=False)):
+        def generate_media(state_value, progress=WangpProgress()):
             class DemoCallbacks:
                 ratio = 0.0
 
@@ -85,7 +85,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     self.ratio = max(0.0, min(1.0, float(getattr(update, "progress", 0)) / 100.0))
                     progress(self.ratio, desc=str(getattr(update, "status", "") or "Generating..."))
 
-            job = api_session.submit_task(self._demo_settings(self.state.value), callbacks=DemoCallbacks())
+            job = api_session.submit_task(self._demo_settings(state_value), callbacks=DemoCallbacks())
             active_job["job"] = job
             try:
                 result = job.result()
@@ -136,6 +136,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             gr.Markdown("---")
             start_btn = gr.Button("Generate a LTX 2.3 Video")
             output_video = gr.Video(label="Output")
+            demo_progress = WangpProgress.component()
             abort_btn = gr.Button("Abort Generation")
 
             write_finetune_btn = gr.Button("Generate a Random LTX 2 Finetune")
@@ -146,10 +147,11 @@ class ConfigTabPlugin(WAN2GPPlugin):
 
         self.on_tab_outputs = [sample_text]
 
-        update_btn.click(fn=update_prompt, inputs=[state, sample_text], outputs=[self.refresh_form_trigger])
+        # This edits the current browser's generation draft, not shared config.
+        update_btn.click(update_prompt, inputs=[state, sample_text], outputs=[self.refresh_form_trigger])
         process_btn.click(fn=big_process, inputs=[state], outputs=[process_output])
         goto_btn.click(fn=self.goto_media_tab, inputs=[state], outputs=[self.main_tabs])
-        start_btn.click(fn=generate_media, outputs=[output_video], queue=False)
+        WangpProgress.bind(start_btn.click, generate_media, inputs=[state], outputs=[output_video], component=demo_progress)
         abort_btn.click(fn=cancel_demo, queue=False)
         write_finetune_btn.click(fn=write_finetune)
         switch_wan21_t2v_btn.click(fn=lambda open_tab: self.switch_to_model("t2v", open_tab), inputs=[open_media_tab], outputs=[self.model_choice_target, self.main_tabs], show_progress="hidden")

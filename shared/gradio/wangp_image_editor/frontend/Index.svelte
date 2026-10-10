@@ -171,6 +171,10 @@
 
 	$: install_gradio_connection_loss_patch(gradio?.client);
 
+	export function get_metadata(): { background: string | null } {
+		return editor_instance.get_metadata();
+	}
+
 	export async function get_value(): Promise<ImageBlobs | { id: string }> {
 		return editor_instance.get_data();
 	}

@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import set_phase_status
 import torch
 import einops
 import numpy as np
@@ -308,6 +309,7 @@ def generate_image(
                 "image_grid_thw": proc_image_grid_thw.to(device),
             })
 
+        set_phase_status("Encoding Image Features")
         for sample in samples:
             with torch.autocast(device.type, dtype=dtype, cache_enabled=False):
                 pixel_values = sample.pop("pixel_values_cpu").to(device, dtype)
@@ -317,6 +319,7 @@ def generate_image(
                 sample["image_embeds"] = torch.cat(image_embeds, dim=0).to(device, dtype)
                 del pixel_values, image_embeds
 
+    set_phase_status("Preparing Denoising")
     noise = torch.empty((batch_size, 3, height, width), device="cpu", dtype=torch.float32)
     for batch_idx in range(batch_size):
         noise[batch_idx].normal_(generator=torch.Generator("cpu").manual_seed(seed + batch_idx + 1))

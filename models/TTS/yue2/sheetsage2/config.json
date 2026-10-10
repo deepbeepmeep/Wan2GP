@@ -1,0 +1,69 @@
+{
+  "architectures": [
+    "SheetSage2Model"
+  ],
+  "backbone_config": {
+    "architectures": [
+      "MERT2Model"
+    ],
+    "context_seconds": 360.0,
+    "conv_depthwise_kernel_size": 31,
+    "frame_rate": 25.0,
+    "hidden_size": 1024,
+    "hop_length": 240,
+    "initializer_range": 0.02,
+    "inputs_to_logits_ratio": 960,
+    "intermediate_size": 4096,
+    "layer_norm_eps": 1e-05,
+    "minimum_input_samples": 1025,
+    "model_type": "mert2",
+    "n_fft": 2048,
+    "num_attention_heads": 16,
+    "num_hidden_layers": 24,
+    "num_mel_bins": 128,
+    "rotary_embedding_base": 10000,
+    "sampling_rate": 24000,
+    "subsampling_channels": [
+      128,
+      512,
+      1024
+    ],
+    "subsampling_depths": [
+      3,
+      4,
+      5
+    ],
+    "subsampling_layer_norm_eps": 1e-06,
+    "torch_dtype": "float32",
+    "transformers_version": "4.53.2",
+    "variant": "fs",
+    "win_length": 2048
+  },
+  "base_model_name_or_path": "m-a-p/MERT-v2-FullSong",
+  "base_model_revision": "d8ba1c745e733b3908ce6ad16ebeb17ac7600a42",
+  "base_model_sha256": "e6dd2ab187d6dd62b6521cd7d8f932e237acf0c5757745a7232082e28391350d",
+  "bos_token_id": 1,
+  "decoder_dropout": 0.1,
+  "decoder_layers": 6,
+  "decoder_start_token_id": 1,
+  "encoder_attn_implementation": "sdpa",
+  "eos_token_id": 2,
+  "hidden_size": 512,
+  "input_audio_length": 300.0,
+  "intermediate_size": 2048,
+  "is_encoder_decoder": true,
+  "lora_alpha": 128.0,
+  "lora_rank": 64,
+  "max_output_seq_len": 5120,
+  "model_type": "sheetsage2",
+  "num_attention_heads": 8,
+  "pad_token_id": 0,
+  "sampling_rate": 24000,
+  "time_hz": 100,
+  "tokenizer_fingerprint": "5ba3325af0344c7f",
+  "tokenizer_schema_version": "v1",
+  "transformers_version": "4.45.2",
+  "use_cache": true,
+  "vocab_size": 31678,
+  "weights_format": "merged"
+}

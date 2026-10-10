@@ -6,7 +6,7 @@ Loras (Low-Rank Adaptations) allow you to customize video generation models by a
 
 Loras are organized in different folders based on the model they're designed for:
 
-All loras now live under the single `loras/` root:
+By default, loras live under the single `loras/` root. The following are common examples:
 
 ### Wan Models
 - `loras/wan/`    - Wan t2v (14B / general) loras
@@ -16,25 +16,49 @@ All loras now live under the single `loras/` root:
 
 ### Other Models
 - `loras/hunyuan/` - Hunyuan Video t2v loras
-- `loras/hunyuan/1.5/` - Loras specifically for Hunyuan 1.5 models
+- `loras/hunyuan_1_5/` - Loras specifically for Hunyuan 1.5 models
 - `loras/hunyuan_i2v/` - Hunyuan Video i2v loras
 - `loras/ltxv/` - LTX Video loras
+- `loras/ltx2/` - LTX-2 loras
 - `loras/flux/` and `loras/flux2/` - Flux loras
+- `loras/flux2_klein_4b/` and `loras/flux2_klein_9b/` - Flux2 Klein loras, separated by architecture
 - `loras/qwen/` - Qwen loras
 - `loras/z_image/` - Z-Image loras
-- `loras/tts/` - Chatterbox / TTS presets
+- `loras/chatterbox/` - Chatterbox loras and presets
 
-## Custom Lora Directory
+## Custom Lora Directories
 
-You can specify custom lora directories when launching the app:
+Use one optional JSON file to keep LoRAs on another drive or reuse existing collections. Launch WanGP with:
 
 ```bash
-# Use shared lora directory for Wan t2v and i2v
-python wgp.py --lora-dir /path/to/loras/wan --lora-dir-i2v /path/to/loras/wan_i2v
-
-# Specify different directories for different models
-python wgp.py --lora-dir-hunyuan /path/to/loras/hunyuan --lora-dir-ltxv /path/to/loras/ltxv
+python wgp.py --lora-config lora_paths.json
 ```
+
+Save this sample as `lora_paths.json` and edit the paths for your machine:
+
+```json
+{
+  "wan": "D:/LoRAs/Wan",
+  "wan_i2v": "D:/LoRAs/Wan-I2V",
+  "wan_5B": "D:/LoRAs/Wan-5B",
+  "hunyuan_1_5": "D:/LoRAs/Hunyuan-1.5",
+  "flux2_klein_4b": "D:/LoRAs/Flux2-Klein-4B",
+  "ltx2": "D:/LoRAs/LTX2",
+  "z_image": "./collections/z-image"
+}
+```
+
+**To find a key, reuse the exact model subfolder name created inside the default `loras/` folder.** For example, `loras/wan_5B/` means the key is `wan_5B`. Keep its spelling, underscores, dots and capitalization. These are folder identifiers; several model variants can share one folder. The value is the complete directory containing that collection's LoRAs and presets; WanGP does not append the key to it.
+
+Include only the keys you want to override. Unlisted keys keep using their subfolders under `--loras PATH`, the configured `loras_root` in `wgp_config.json`, or `loras/` by default, in that order. To move the whole root without individual overrides, use:
+
+```bash
+python wgp.py --loras D:/LoRAs
+```
+
+You can combine `--loras` and `--lora-config`; JSON entries take precedence. Relative paths inside the JSON resolve beside that JSON file. On Windows, use forward slashes as above, or double each backslash. Missing directories are created when used. Restart WanGP after editing the JSON. This option selects directories; move your existing collections yourself if needed.
+
+**Change:** the model-specific `--lora-dir` / `--lora-dir-*` launch options have been removed. Replace them in launch scripts with `--lora-config FILE`. If you use the default folders, no change is needed.
 
 ## Using Loras
 
@@ -155,7 +179,7 @@ A Lora Preset is a text file of only of few kilobytes and can be easily shared b
 A ohnvx character is driving a car through the city
 ```
 
-Using a macro (check the doc below), the user will just have to enter two words and the Prompt will be generated for him:
+Using a macro (see the [Prompts guide](PROMPTS.md#macro-system)), the user will just have to enter two words and the Prompt will be generated for him:
 ```
 ! {Person}="man" : {Object}="car"
 This {Person} is cleaning his {Object}.
@@ -218,7 +242,7 @@ If you need just one Lora accelerator use this one. It is a combination of multi
    - Set Guidance Scale = 1
    - Set Shift Scale = 2
 4. In Advanced Lora Tab:
-   - Select CausVid Lora
+   - Select the matching FusioniX Lora
    - Set multiplier to 1
 5. Set generation steps from 8-10
 6. Generate!
@@ -287,7 +311,7 @@ You need to select these two loras and set the following Loras multipliers:
 Don't forget to set guidance to 1 !
 ## Qwen Image Lightning 4 steps / Lightning 8 steps
 Very powerful lora that you can use to reduce the number of steps from 30 to only 4 !
-Just install the lora in *lora_qwen* folder, select the lora and set Guidance to 1 and the number of steps to 4 or 8
+Install the matching LoRA in `loras/qwen/` (or the configured Qwen LoRA directory), select it, and use its accelerator profile's guidance and step count. For the named Lightning variants, this is commonly guidance 1 and 4 or 8 steps.
 
 
 
@@ -341,20 +365,12 @@ https://huggingface.co/Kijai/WanVideo_comfy/blob/main/Wan21_T2V_14B_lightx2v_cfg
 ## Command Line Options
 
 ```bash
-# Lora-related command line options
---lora-dir path                   # Path to Wan t2v loras (default loras/wan)
---lora-dir-wan-5b path            # Path to Wan 5B loras (default loras/wan_5B)
---lora-dir-wan-1-3b path          # Path to Wan 1.3B loras (default loras/wan_1.3B)
---lora-dir-i2v path               # Path to Wan i2v loras (default loras/wan_i2v)
---lora-dir-wan-i2v path           # Alias for Wan i2v loras
---lora-dir-hunyuan path           # Path to Hunyuan t2v loras (default loras/hunyuan)
---lora-dir-hunyuan-i2v path       # Path to Hunyuan i2v loras (default loras/hunyuan_i2v)
---lora-dir-ltxv path              # Path to LTX Video loras (default loras/ltxv)
---lora-dir-flux path              # Path to Flux loras (default loras/flux)
---lora-dir-flux2 path             # Path to Flux2 loras (default loras/flux2)
---lora-dir-qwen path              # Path to Qwen loras (default loras/qwen)
---lora-dir-z-image path           # Path to Z-Image loras (default loras/z_image)
---lora-dir-tts path               # Path to TTS presets (default loras/tts)
---lora-preset preset              # Load preset on startup
---check-loras                     # Filter incompatible loras
+--loras PATH                 # Root folder for default LoRA subfolders
+--lora-config FILE           # Optional JSON with per-folder path overrides
+--lora-preset PRESET         # Load preset on startup
+--check-loras                # Filter incompatible loras
 ``` 
+
+---
+
+> Applies to: LoRA installation, directory configuration, selection, multiplier syntax and presets. Accelerator examples are specific to the named architecture; each model's available profiles define the corresponding settings.

@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import generation_progress, set_phase_status
 import os
 import json
 import types
@@ -179,6 +180,7 @@ class model_factory:
         if save_quantized:
             save_quantized_transformer(self.transformer, transformer_filename, dtype, config_path)
 
+    @generation_progress
     def generate(
         self,
         input_prompt="",
@@ -196,8 +198,10 @@ class model_factory:
         joint_pass=True,
         original_input_ref_images=None,
         custom_settings=None,
+        set_progress_status=None,
         **kwargs
     ):
+        set_phase_status("Preparing Image Conditioning")
         self._set_interrupt(False)
         is_dev = self.base_model_type == "hidream_o1_dev"
         custom_settings = custom_settings or {}

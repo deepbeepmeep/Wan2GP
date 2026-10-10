@@ -1,3 +1,5 @@
+from shared.utils.phase_progress import control_video_encoding
+from shared.utils.tiled_fusion import TiledFusionPlan
 import logging
 import os
 import time
@@ -31,6 +33,7 @@ from .utils.constants import (
     LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS,
     STAGE_2_DISTILLED_SIGMA_VALUES,
 )
+from .utils.spatial_tiling import spatially_tiled_denoising_func
 from .utils.helpers import (
     assert_resolution,
     bind_interrupt_check,
@@ -50,6 +53,7 @@ from .utils.helpers import (
     video_conditionings_by_frozen_video,
     video_conditionings_by_control_video,
 )
+from .utils.tiled_fusion import tiled_fusion_denoising_func
 from .utils.types import PipelineComponents
 from ..editanything import build_editanything_reference_conditioning
 from shared.utils.loras_mutipliers import update_loras_slists
@@ -59,6 +63,25 @@ from shared.utils.text_encoder_cache import TextEncoderCache
 device = get_device()
 _BENCH_TRANSFORMER_ENV = "WAN2GP_LTX2_BENCH_TRANSFORMER"
 LTX25_UPSAMPLER_INJECT_FIRST_FRAME = False
+# Tiles evaluated per transformer call (joint pass): each block's weights are streamed once per group.
+# The group only adds one hidden state per tile, bounded by this share of free VRAM; outputs are identical.
+REFINE_TILE_BATCH_MAX_BYTES = 2 << 30
+REFINE_TILE_BATCH_FREE_RATIO = 0.25
+# Canvas, blend buffer and window references stay in VRAM only while they need less than this share of free VRAM.
+REFINE_CANVAS_FREE_RATIO = 0.1
+# Carried Media Flow overlap latents are VAE round trips (softer): half strength lets the model refine them
+# again, which removes the detail overshoot after the join while keeping chunks continuous.
+REFINE_CARRY_STRENGTH = 0.5
+
+
+def _pad_frames_to_canvas(frames: torch.Tensor, height: int, width: int) -> torch.Tensor:
+    """uint8 ``(F, h, w, 3)`` frames to ``(1, 3, F, height, width)`` with replicated bottom / right edges."""
+    count, frame_height, frame_width, _ = frames.shape
+    canvas = frames.new_empty((1, 3, count, height, width))
+    canvas[0, :, :, :frame_height, :frame_width] = frames.permute(3, 0, 1, 2)
+    canvas[0, :, :, frame_height:, :frame_width] = canvas[0, :, :, frame_height - 1 : frame_height, :frame_width]
+    canvas[0, :, :, :, frame_width:] = canvas[0, :, :, :, frame_width - 1 : frame_width]
+    return canvas
 
 
 class _FixedNoiseNoiser:
@@ -288,7 +311,8 @@ class DistilledPipeline:
         if set_progress_status is not None:
             set_progress_status("VAE encoding")
         video_encoder = self._get_model("video_encoder")
-        source_latent = vae_encode_video(source_video, video_encoder, tiling_config).to(device=self.device, dtype=dtype)
+        with control_video_encoding():
+            source_latent = vae_encode_video(source_video, video_encoder, tiling_config).to(device=self.device, dtype=dtype)
 
         if interrupt_check is not None and interrupt_check():
             return None
@@ -350,6 +374,8 @@ class DistilledPipeline:
         ancestral_noise_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 10000) if use_ancestral_sampler else None
 
         def denoising_loop(sigmas, video_state, audio_state, stepper, preview_tools=None):
+            if callback is not None:
+                callback(-1, None, True, override_num_inference_steps=len(sigmas) - 1)
             return euler_denoising_loop(
                 sigmas=sigmas,
                 video_state=video_state,
@@ -401,6 +427,138 @@ class DistilledPipeline:
             interrupt_check=interrupt_check,
         )
 
+    @torch.inference_mode()
+    def refine_video(
+        self,
+        load_window: Callable[[int, int], torch.Tensor],
+        frame_count: int,
+        height: int,
+        width: int,
+        output_frames: int,
+        output_height: int,
+        output_width: int,
+        prompt: str,
+        seed: int,
+        frame_rate: float,
+        window_frames: int,
+        tile_height: int,
+        tile_width: int,
+        gentle: bool,
+        tiles_per_call: int = 0,
+        conditioning_latent: torch.Tensor | None = None,
+        carry_frames: int = 0,
+        fusion_previous: torch.Tensor | None = None,
+        fusion_export: slice | None = None,
+        latent_frame_offset: int = 0,
+        tiling_config: TilingConfig | None = None,
+        callback: Callable[..., None] | None = None,
+        set_progress_status: Callable[[str], None] | None = None,
+        interrupt_check: Callable[[], bool] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None] | None:
+        """Refine Details IC-LoRA with per-step tiled fusion on a ``frame_count`` x ``height`` x ``width`` canvas.
+
+        ``load_window(start, count)`` returns uint8 ``(1, 3, count, height, width)`` source frames already
+        resized to the canvas; every temporal window is encoded as its own fresh reference clip.
+        ``tiles_per_call`` 0 sizes transformer tile groups from free VRAM. ``conditioning_latent``
+        ``(1, C, k, H, W)`` conditions the first latent frames (previous Media Flow chunk). Returns
+        the decoded uint8 frames and, when ``carry_frames`` > 0, CPU latents of the last ``carry_frames``
+        refined frames (next chunk) and of the ``carry_frames`` before them (resumed run), each re-encoded
+        as a fresh clip. Cross-chunk fusion instead blends ``fusion_previous`` ``(steps, n, H, W, C)`` into latents
+        ``1..n`` at every step and returns this canvas' per-step predictions for the ``fusion_export`` latents.
+        """
+        dtype = torch.bfloat16
+        components = self.pipeline_components
+        if set_progress_status is not None:
+            set_progress_status("Encoding Text Prompt")
+        text_encoder = self._get_model("text_encoder")
+        feature_extractor, video_connector, audio_connector = resolve_text_connectors(text_encoder, None)
+        encode_fn = lambda prompts: postprocess_text_embeddings(encode_text(text_encoder, prompts=prompts), feature_extractor, video_connector, audio_connector)
+        video_context, _ = self.text_encoder_cache.encode(encode_fn, [prompt.strip()], device=self.device, parallel=True)[0]
+        del text_encoder
+        cleanup_memory()
+
+        scale = components.video_scale_factors
+        build_plan = lambda device: TiledFusionPlan.build((frame_count - 1) // scale.time + 1, height // scale.height, width // scale.width, tile_height // scale.height, tile_width // scale.width, (window_frames - 1) // scale.time + 1, device=device)
+        plan = build_plan(self.device)
+        channels = components.video_latent_channels
+        storage_bytes = plan.frames * plan.height * plan.width * channels * 6 + len(plan.windows) * plan.tile_frames * plan.height * plan.width * channels * 2
+        if storage_bytes > torch.cuda.mem_get_info(self.device)[0] * REFINE_CANVAS_FREE_RATIO:
+            plan = build_plan(torch.device("cpu"))
+        storage = plan.weights.device
+        video_encoder = self._get_model("video_encoder")
+        references = []
+        for window, t0 in enumerate(plan.windows, start=1):
+            if interrupt_check is not None and interrupt_check():
+                return None
+            if set_progress_status is not None:
+                set_progress_status(f"Encoding Reference Video {window}/{len(plan.windows)}" if len(plan.windows) > 1 else "Encoding Reference Video")
+            pixels = load_window(t0 * scale.time, (plan.tile_frames - 1) * scale.time + 1)
+            with control_video_encoding():
+                latent = vae_encode_video(pixels, video_encoder, tiling_config, device=self.device, dtype=dtype)
+            pixels = None
+            references.append(latent.to(device=storage, dtype=dtype).permute(0, 2, 3, 4, 1).contiguous())
+            latent = None
+        del video_encoder
+        initial_latent = None
+        if gentle:
+            initial_latent = references[0] if len(references) == 1 else plan.blend_windows(references).to(dtype)
+            initial_latent = initial_latent.permute(0, 4, 1, 2, 3).contiguous()
+        conditionings = [] if conditioning_latent is None else latent_conditionings_by_latent_sequence(conditioning_latent.to(device=storage, dtype=dtype), strength=REFINE_CARRY_STRENGTH, start_index=0)
+        sigmas = torch.tensor(STAGE_2_DISTILLED_SIGMA_VALUES if gentle else DISTILLED_SIGMA_VALUES, device=storage, dtype=torch.float32)
+        if fusion_previous is not None and fusion_previous.shape[0] != len(sigmas) - 1:
+            print("[LTX 2.5 Detail Refiner] Continuation data was refined with another step count: refining this chunk without it.")
+            fusion_previous = None
+        exported = [] if fusion_export is not None else None
+        latent_shape = (1, channels, plan.frames, plan.height, plan.width)
+        noiser = _FixedNoiseNoiser(_indexed_noise_tokens(latent_shape, seed, latent_frame_offset, dtype))
+        transformer = self._get_model("transformer")
+        bind_interrupt_check(transformer, interrupt_check)
+        if tiles_per_call <= 0:
+            tile_bytes = 2 * plan.tile_frames * plan.tile_height * plan.tile_width * transformer.velocity_model.inner_dim * torch.finfo(dtype).bits // 8
+            tiles_per_call = int(min(REFINE_TILE_BATCH_MAX_BYTES, torch.cuda.mem_get_info(self.device)[0] * REFINE_TILE_BATCH_FREE_RATIO) // tile_bytes)
+        tiles_per_call = max(1, min(plan.tiles_per_step, tiles_per_call))
+
+        denoise_fn = tiled_fusion_denoising_func(transformer=transformer, video_context=video_context, plan=plan, references=references, patchifier=components.video_patchifier, scale_factors=scale, fps=frame_rate, device=self.device, tiles_per_call=tiles_per_call, callback=callback, previous_x0=fusion_previous, export_x0=exported, export_latents=fusion_export)
+
+        def denoising_loop(sigmas, video_state, audio_state, stepper):
+            return euler_denoising_loop(sigmas=sigmas, video_state=video_state, audio_state=audio_state, stepper=stepper, denoise_fn=denoise_fn, interrupt_check=interrupt_check, transformer=transformer)
+
+        if set_progress_status is not None:
+            set_progress_status("Detail Refinement")
+        video_state, _ = denoise_audio_video(
+            output_shape=VideoPixelShape(batch=1, frames=frame_count, height=height, width=width, fps=float(frame_rate)),
+            conditionings=conditionings,
+            noiser=noiser,
+            sigmas=sigmas,
+            stepper=EulerDiffusionStep(),
+            denoising_loop_fn=denoising_loop,
+            components=components,
+            dtype=dtype,
+            device=storage,
+            noise_scale=float(sigmas[0]),
+            initial_video_latent=initial_latent,
+            skip_audio=True,
+        )
+        references = initial_latent = noiser = denoise_fn = conditionings = None
+        if video_state is None or interrupt_check is not None and interrupt_check():
+            return None
+        del transformer, video_context
+        cleanup_memory()
+
+        if set_progress_status is not None:
+            set_progress_status("VAE Decoding")
+        latent = [video_state.latent.to(self.device)]
+        video_state = None
+        decoded = vae_decode_video_to_tensor(latent, self._get_model("video_decoder"), tiling_config, expected_frames=output_frames, expected_height=output_height, expected_width=output_width, interrupt_check=interrupt_check)
+        if decoded is None:
+            return None
+        carry_latents = None if exported is None else torch.stack(exported)
+        if carry_frames > 0:
+            if set_progress_status is not None:
+                set_progress_status("Encoding Overlap Frames")
+            carry_latents = tuple(vae_encode_video(_pad_frames_to_canvas(frames, height, width), self._get_model("video_encoder"), tiling_config, device=self.device, dtype=dtype).cpu() for frames in (decoded[-carry_frames:], decoded[-2 * carry_frames : -carry_frames]))
+        return decoded, carry_latents
+
     def __call__(
         self,
         prompt: str,
@@ -443,6 +601,7 @@ class DistilledPipeline:
         skip_audio: bool = False,
         continuous_conditioning_and_guide: bool = False,
         skip_stage_2: bool = False,
+        tiled_stage_2: bool = False,
         frozen_video_conditioning: torch.Tensor | None = None,
         frozen_output_video: torch.Tensor | None = None,
         self_refiner_setting: int = 0,
@@ -453,10 +612,11 @@ class DistilledPipeline:
         editanything_ref_images=None,
         ltx2_22B_class: bool = False,
         use_ancestral_sampler: bool = False,
+        layout_to_render: bool = False,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
         joyai_echo = self._joyai_echo or {}
         return_joyai_memory = bool(joyai_echo.get("return_latents"))
-        assert_resolution(height=height, width=width, is_two_stage=True)
+        assert_resolution(height=height, width=width, is_two_stage=not skip_stage_2)
         alt_guidance_scale = 1.0
         negative_prompt = negative_prompt or DEFAULT_NEGATIVE_PROMPT
 
@@ -814,8 +974,8 @@ class DistilledPipeline:
                 return decoded_video, decoded_audio, latent_slice
             return decoded_video, decoded_audio
 
-        stepper = EulerDiffusionStep()
-        stage_2_sigma_values = DISTILLED_8_STEPS_STAGE_2_SIGMA_VALUES if LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS and ltx2_22B_class else STAGE_2_DISTILLED_SIGMA_VALUES
+        stepper = EulerAncestralDiffusionStep() if layout_to_render else EulerDiffusionStep()
+        stage_2_sigma_values = DISTILLED_8_STEPS_STAGE_2_SIGMA_VALUES if not layout_to_render and LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS and ltx2_22B_class else STAGE_2_DISTILLED_SIGMA_VALUES
         stage_2_sigmas = torch.Tensor(stage_2_sigma_values).to(self.device)
         upscaled_video_latent = upsample_video(
             latent=video_state.latent[:1],
@@ -851,25 +1011,28 @@ class DistilledPipeline:
             preview_tools: VideoLatentTools | None = None,
             mask_context=None,
         ) -> tuple[LatentState, LatentState]:
+            denoise_fn = simple_denoising_func(
+                video_context=video_context,
+                audio_context=audio_context,
+                transformer=transformer,  # noqa: F821
+                video_nag=video_NAG,
+                audio_nag=audio_NAG,
+                alt_guidance_scale=alt_guidance_scale,
+                skip_audio_to_video=frozen_video_conditioning is not None,
+                ref_context=stage_2_ref_context,
+                ref_adaln=stage_2_ref_adaln,
+                video_context_mask_builder=video_context_mask_builder,
+                audio_context_mask_builder=audio_context_mask_builder,
+                cross_attention_mask_builder=stage_2_cross_attention_mask_builder,
+            )
+            if tiled_stage_2:
+                denoise_fn = spatially_tiled_denoising_func(denoise_fn, stage_2_output_shape, self.pipeline_components, interrupt_check, callback)
             return euler_denoising_loop(
                 sigmas=sigmas,
                 video_state=video_state,
                 audio_state=audio_state,
                 stepper=stepper,
-                denoise_fn=simple_denoising_func(
-                    video_context=video_context,
-                    audio_context=audio_context,
-                    transformer=transformer,  # noqa: F821
-                    video_nag=video_NAG,
-                    audio_nag=audio_NAG,
-                    alt_guidance_scale=alt_guidance_scale,
-                    skip_audio_to_video=frozen_video_conditioning is not None,
-                    ref_context=stage_2_ref_context,
-                    ref_adaln=stage_2_ref_adaln,
-                    video_context_mask_builder=video_context_mask_builder,
-                    audio_context_mask_builder=audio_context_mask_builder,
-                    cross_attention_mask_builder=stage_2_cross_attention_mask_builder,
-                ),
+                denoise_fn=denoise_fn,
                 mask_context=mask_context,
                 interrupt_check=interrupt_check,
                 callback=callback,
@@ -879,6 +1042,7 @@ class DistilledPipeline:
                 self_refiner_handler=self_refiner_handler_stage2,
                 self_refiner_handler_audio=self_refiner_handler_audio_stage2,
                 self_refiner_generator=generator,
+                ancestral_noise_generator=ancestral_noise_generator if layout_to_render else None,
             )
 
         stage_2_output_shape = VideoPixelShape(

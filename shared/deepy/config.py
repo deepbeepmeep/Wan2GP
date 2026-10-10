@@ -1,33 +1,61 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
 from packaging.version import InvalidVersion, Version
+from shared.utils.config_store import config_lock, read_config
 
 
 DEEPY_ENABLED_KEY = "deepy_enabled"
 DEEPY_TYPE_KEY = "deepy_type"
 DEEPY_VRAM_MODE_KEY = "deepy_vram_mode"
+DEEPY_VOICE_LANGUAGE_KEY = "deepy_voice_language"
+DEEPY_MODEL_SPEED_KEY = "deepy_model_speed"
+DEEPY_MODEL_SIZE_KEY = "deepy_model_size"
 DEEPY_TOOL_GEN_IMAGE_KEY = "deepy_tool_gen_image"
 DEEPY_TOOL_EDIT_IMAGE_KEY = "deepy_tool_edit_image"
 DEEPY_TOOL_GEN_VIDEO_KEY = "deepy_tool_gen_video"
 DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY = "deepy_tool_gen_video_with_speech"
 DEEPY_TOOL_GEN_SONG_KEY = "deepy_tool_gen_song"
+DEEPY_TOOL_GEN_VIDEO_WITH_REFS_KEY = "deepy_tool_gen_video_with_refs"
 DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY = "deepy_tool_gen_speech_from_description"
 DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY = "deepy_tool_gen_speech_from_sample"
 DEEPY_CONTEXT_TOKENS_KEY = "deepy_context_tokens"
 DEEPY_KV_CACHE_QUANTIZATION_KEY = "deepy_kv_cache_quantization"
 DEEPY_COMPACTION_TYPE_KEY = "deepy_compaction_type"
+DEEPY_COMPACTION_THINKING_KEY = "deepy_compaction_thinking"
+DEEPY_REPETITION_PENALTY_KEY = "deepy_repetition_penalty"
 DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_zero_custom_system_prompt"
 DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY = "deepy_prime_custom_system_prompt"
 DEEPY_PRIME_MCP_SERVERS_KEY = "deepy_prime_mcp_servers"
+DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY = "deepy_mcp_auto_discover_paths"
 DEEPY_ALLOW_READ_FILE_SYSTEM_KEY = "deepy_allow_read_file_system"
+DEEPY_FILE_SYSTEM_PATHS_KEY = "deepy_file_system_paths"
+DEEPY_READ_EVERYWHERE_KEY = "deepy_read_everywhere"
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY = "deepy_auto_cancel_queue_tasks"
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY = "deepy_separate_requests_with_empty_line"
+DEEPY_SESSION_RESET_MODE_KEY = "deepy_session_reset_mode"
+DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY = "deepy_session_gallery_media_mode"
+DEEPY_MULTI_SESSION_KEY = "deepy_multi_session"
+DEEPY_TEMPLATE_CONFIG_MIGRATIONS = {
+    DEEPY_TOOL_GEN_IMAGE_KEY: {
+        "Qwen Image 2.1 Viggle Turbo 8 Steps": "Qwen Image 2.1 Viggle Turbo v0.2.1 6 Steps",
+    },
+    DEEPY_TOOL_EDIT_IMAGE_KEY: {
+        "Qwen Image 2.1 Viggle Turbo 8 Steps": "Qwen Image 2.1 Viggle Turbo v0.2.1 6 Steps",
+    },
+    DEEPY_TOOL_GEN_VIDEO_KEY: {
+        "MiniMax H3 FL2VA Turbo Lightx2v 8 Steps": "MiniMax H3 FL2VA Pruned Turbo Lightx2v 8 Steps",
+    },
+    DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY: {
+        "MiniMax H3 FL2VA Turbo Lightx2v 8 Steps With Sound": "MiniMax H3 FL2VA Pruned Turbo Lightx2v 8 Steps With Sound",
+    },
+}
 
 DEEPY_VRAM_MODE_UNLOAD = "unload"
 DEEPY_VRAM_MODE_ALWAYS_LOADED = "always_loaded"
@@ -36,45 +64,96 @@ DEEPY_TYPE_ZERO = "zero"
 DEEPY_TYPE_PRIME = "prime"
 DEEPY_TYPE_DISABLED = "disabled"
 DEEPY_TYPE_DEFAULT = DEEPY_TYPE_ZERO
-DEEPY_PRIME_GUIDANCE_DEFAULT = "When several models can satisfy the request, prefer the highest-quality base or full model unless the user explicitly prioritizes speed or names another model."
+DEEPY_PRIME_GUIDANCE_DEFAULT = "Use the current Speed and Model Size preferences for choices left unspecified by the user when selecting beyond configured templates."
+_DEEPY_PRIME_GUIDANCE_OLD_DEFAULT = "When several models can satisfy the request, prefer the highest-quality base or full model unless the user explicitly prioritizes speed or names another model."
 DEEPY_COMPACTION_TYPE_DISCARD = "discard"
 DEEPY_COMPACTION_TYPE_SUMMARIZE = "summarize"
+DEEPY_COMPACTION_CHOICE_THINKING = "summarize_thinking"
 DEEPY_DEFAULT_GEN_IMAGE = "Krea 2 Turbo (8 Steps)"
 DEEPY_DEFAULT_EDIT_IMAGE = "Flux Klein 9B"
 DEEPY_DEFAULT_GEN_VIDEO = "LTX-2 2.5 Distilled"
 DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH = "LTX-2.5 Distilled With Sound"
 DEEPY_DEFAULT_GEN_SONG = "ACE-Step 1.5 Turbo LM 1.7B"
+DEEPY_DEFAULT_GEN_VIDEO_WITH_REFS = "MiniMax H3 Ref2VA Pruned Turbo Lightx2v 8 Steps"
 DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION = "Qwen3 1.7B"
 DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE = "Index TTS 2"
 DEEPY_CONTEXT_TOKENS_MIN = 8192
 DEEPY_CONTEXT_TOKENS_MAX = 256000
 DEEPY_CONTEXT_TOKENS_DEFAULT = 16386
 DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS = 32000
+DEEPY_COMPACTION_THINKING_MIN_TOKENS = 48000
 DEEPY_COMPACTION_TYPE_DEFAULT = DEEPY_COMPACTION_TYPE_DISCARD
+DEEPY_COMPACTION_THINKING_DEFAULT = False
+DEEPY_REPETITION_PENALTY_DEFAULT = True
 DEEPY_KV_CACHE_QUANTIZATION_AUTO = "auto"
 DEEPY_KV_CACHE_QUANTIZATION_DEFAULT = DEEPY_KV_CACHE_QUANTIZATION_AUTO
-DEEPY_KV_CACHE_QUANTIZATION_MIN_GGUF_KERNELS_VERSION = "1.0.11"
+DEEPY_KV_CACHE_QUANTIZATION_MIN_GGUF_KERNELS_VERSION = "1.0.13"
 DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT = False
+DEEPY_FILE_SYSTEM_ACCESS_DISABLED = "disabled"
+DEEPY_FILE_SYSTEM_ACCESS_READ = "read"
+DEEPY_FILE_SYSTEM_ACCESS_READ_WRITE = "read_write"
+DEEPY_FILE_SYSTEM_ACCESS_DEFAULT = DEEPY_FILE_SYSTEM_ACCESS_DISABLED
+DEEPY_FILE_SYSTEM_PATHS_DEFAULT: list[str] = []
+DEEPY_READ_EVERYWHERE_DEFAULT = False
+DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT = False
 DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT = True
 DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT = True
+DEEPY_SESSION_RESET_MODE_DEFAULT = "new_session"
+DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT = "link"
+DEEPY_MULTI_SESSION_DISABLED = "disabled"
+DEEPY_MULTI_SESSION_SELECTABLE = "selectable"
+DEEPY_MULTI_SESSION_DEDICATED = "dedicated"
+DEEPY_MULTI_SESSION_DEFAULT = DEEPY_MULTI_SESSION_DISABLED
+DEEPY_MULTI_SESSION_CHOICES = [
+    ("Disabled", DEEPY_MULTI_SESSION_DISABLED),
+    ("Multisessions with dedicated Workspace", DEEPY_MULTI_SESSION_DEDICATED),
+    ("Multisessions with selectable Workspace", DEEPY_MULTI_SESSION_SELECTABLE),
+]
 DEEPY_CONFIG_FILENAME = "wgp_config.json"
 
-DEEPY_QWEN_ENHANCER_IDS = {3, 4, 5}
-_DEEPY_QWEN_VARIANT_LABELS = {3: "Qwen3.5-4B", 4: "Qwen3.5-9B", 5: "Qwen3.8-27B"}
+# Experimental, intentionally not user-configurable yet. The tools remain gated by
+# Deepy's existing read/write filesystem permission in addition to this switch.
+DEEPY_LONG_TEXT_TOOLS_EXPERIMENT = True
+
+DEEPY_QWEN_ENHANCER_IDS = {3, 4, 5, 6}
+_DEEPY_QWEN_VARIANT_LABELS = {3: "Qwen3.5-4B", 4: "Qwen3.5-9B", 5: "Qwen3.8-27B", 6: "Qwen3.8-9B"}
 _DEEPY_QWEN_KV_CACHE_SPECS = {
     3: {"num_kv_cache_layers": 8, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
     4: {"num_kv_cache_layers": 8, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
     5: {"num_kv_cache_layers": 16, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
+    6: {"num_kv_cache_layers": 8, "num_key_value_heads": 4, "head_dim": 256, "dtype_bytes": 2, "kvcache_block_size": 256},
 }
-_DEEPY_DEFAULT_GEN_IMAGE_ALIASES = {"Z_Image_Turbo": "Z Image Turbo"}
-_DEEPY_DEFAULT_EDIT_IMAGE_ALIASES = {"Qwen_Edit": DEEPY_DEFAULT_EDIT_IMAGE}
+_DEEPY_DEFAULT_GEN_IMAGE_ALIASES = {"Z_Image_Turbo": "Z Image Turbo", **DEEPY_TEMPLATE_CONFIG_MIGRATIONS[DEEPY_TOOL_GEN_IMAGE_KEY]}
+_DEEPY_DEFAULT_EDIT_IMAGE_ALIASES = {"Qwen_Edit": DEEPY_DEFAULT_EDIT_IMAGE, **DEEPY_TEMPLATE_CONFIG_MIGRATIONS[DEEPY_TOOL_EDIT_IMAGE_KEY]}
 _DEEPY_DEFAULT_GEN_VIDEO_ALIASES = {
     "ltx2_22B_distilled": "LTX-2 2.3 Distilled 1.0",
     "LTX-2 2.3 Distilled": "LTX-2 2.3 Distilled 1.0",
+    **DEEPY_TEMPLATE_CONFIG_MIGRATIONS[DEEPY_TOOL_GEN_VIDEO_KEY],
 }
-_DEEPY_GEN_VIDEO_WITH_SPEECH_ALIASES = {"LTX-2.3 Distilled With Sound": "LTX-2.3 Distilled 1.0 With Sound"}
+_DEEPY_GEN_VIDEO_WITH_SPEECH_ALIASES = {
+    "LTX-2.3 Distilled With Sound": "LTX-2.3 Distilled 1.0 With Sound",
+    **DEEPY_TEMPLATE_CONFIG_MIGRATIONS[DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY],
+}
 _DEEPY_RUNTIME_CONFIG: dict[str, Any] | None = None
 _DEEPY_RUNTIME_CONFIG_FILENAME = ""
+
+
+def normalize_deepy_voice_language(value: Any) -> str:
+    language = str(value or "auto").strip().lower()
+    if language == "auto":
+        return language
+    from whisper.tokenizer import LANGUAGES, TO_LANGUAGE_CODE
+
+    language = TO_LANGUAGE_CODE.get(language, language)
+    if language not in LANGUAGES:
+        raise ValueError(f"Unsupported Whisper language: {value}")
+    return language
+
+
+def deepy_voice_language_choices() -> list[tuple[str, str]]:
+    from whisper.tokenizer import LANGUAGES
+
+    return [("Auto", "auto"), *sorted((name.title(), code) for code, name in LANGUAGES.items())]
 
 
 def normalize_deepy_enabled(value: Any) -> int:
@@ -126,6 +205,10 @@ def normalize_deepy_tool_gen_video(value: Any) -> str:
 
 def normalize_deepy_tool_gen_video_with_speech(value: Any) -> str:
     return _normalize_deepy_variant(value, _DEEPY_GEN_VIDEO_WITH_SPEECH_ALIASES, DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH)
+
+
+def normalize_deepy_tool_gen_video_with_refs(value: Any) -> str:
+    return _normalize_deepy_variant(value, {}, DEEPY_DEFAULT_GEN_VIDEO_WITH_REFS)
 
 
 def normalize_deepy_tool_gen_song(value: Any) -> str:
@@ -181,18 +264,37 @@ def resolve_deepy_kv_cache_quantization(value: Any) -> tuple[str, str]:
 
 
 def normalize_deepy_compaction_type(value: Any) -> str:
-    return DEEPY_COMPACTION_TYPE_SUMMARIZE if str(value or "").strip().lower() == DEEPY_COMPACTION_TYPE_SUMMARIZE else DEEPY_COMPACTION_TYPE_DISCARD
+    return DEEPY_COMPACTION_TYPE_SUMMARIZE if str(value or "").strip().lower() in {DEEPY_COMPACTION_TYPE_SUMMARIZE, DEEPY_COMPACTION_CHOICE_THINKING} else DEEPY_COMPACTION_TYPE_DISCARD
 
 
-def validate_deepy_compaction_config(compaction_type: Any, context_tokens: Any) -> str:
+def normalize_deepy_compaction_thinking(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "on", "yes"}
+    return bool(value)
+
+
+def normalize_deepy_repetition_penalty(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    return bool(value)
+
+
+def deepy_compaction_min_tokens(compaction_type: Any, compaction_thinking: Any = False) -> int:
+    thinking = str(compaction_type or "").strip().lower() == DEEPY_COMPACTION_CHOICE_THINKING or normalize_deepy_compaction_thinking(compaction_thinking)
+    return DEEPY_COMPACTION_THINKING_MIN_TOKENS if thinking else DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS
+
+
+def validate_deepy_compaction_config(compaction_type: Any, context_tokens: Any, *, compaction_thinking: Any = False) -> str:
     normalized_type = normalize_deepy_compaction_type(compaction_type)
     normalized_tokens = normalize_deepy_context_tokens(context_tokens)
-    if normalized_type == DEEPY_COMPACTION_TYPE_SUMMARIZE and normalized_tokens < DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:
-        raise ValueError(f"Deepy Summarize compaction requires at least {DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:,} context tokens.")
+    minimum_tokens = deepy_compaction_min_tokens(compaction_type, compaction_thinking)
+    if normalized_type == DEEPY_COMPACTION_TYPE_SUMMARIZE and normalized_tokens < minimum_tokens:
+        mode = "Summarize with Thinking" if minimum_tokens == DEEPY_COMPACTION_THINKING_MIN_TOKENS else "Summarize"
+        raise ValueError(f"Deepy {mode} compaction requires at least {minimum_tokens:,} context tokens.")
     return normalized_type
 
 
-def validate_deepy_version_config(deepy_type: Any, compaction_type: Any, context_tokens: Any, enhancer_enabled: Any) -> tuple[str, str, int]:
+def validate_deepy_version_config(deepy_type: Any, compaction_type: Any, context_tokens: Any, enhancer_enabled: Any, *, compaction_thinking: Any = False) -> tuple[str, str, int]:
     normalized_type = normalize_deepy_type(deepy_type)
     normalized_compaction = normalize_deepy_compaction_type(compaction_type)
     normalized_tokens = normalize_deepy_context_tokens(context_tokens)
@@ -201,10 +303,11 @@ def validate_deepy_version_config(deepy_type: Any, compaction_type: Any, context
     except (TypeError, ValueError):
         enhancer_no = 0
     if normalized_type == DEEPY_TYPE_PRIME:
-        if enhancer_no != 5:
-            raise ValueError("Deepy Prime requires the Qwen3.8 VL 27B model.")
-        if normalized_compaction != DEEPY_COMPACTION_TYPE_SUMMARIZE or normalized_tokens < DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:
-            raise ValueError(f"Deepy Prime requires Summarize compaction and at least {DEEPY_COMPACTION_SUMMARIZE_MIN_TOKENS:,} context tokens.")
+        if enhancer_no not in (5, 6):
+            raise ValueError("Deepy Prime requires a Qwen3.8 VL model.")
+        if normalized_compaction != DEEPY_COMPACTION_TYPE_SUMMARIZE:
+            raise ValueError("Deepy Prime requires Summarize compaction.")
+    validate_deepy_compaction_config(compaction_type, normalized_tokens, compaction_thinking=compaction_thinking)
     return normalized_type, normalized_compaction, normalized_tokens
 
 
@@ -214,7 +317,8 @@ def normalize_deepy_custom_system_prompt(value: Any) -> str:
 
 
 def normalize_deepy_prime_guidance(value: Any) -> str:
-    return normalize_deepy_custom_system_prompt(value) or DEEPY_PRIME_GUIDANCE_DEFAULT
+    text = normalize_deepy_custom_system_prompt(value)
+    return DEEPY_PRIME_GUIDANCE_DEFAULT if not text or text == _DEEPY_PRIME_GUIDANCE_OLD_DEFAULT else text
 
 
 def normalize_deepy_prime_mcp_servers(value: Any) -> dict[str, dict[str, Any]]:
@@ -252,7 +356,78 @@ def normalize_deepy_auto_cancel_queue_tasks(value: Any) -> bool:
     return bool(value)
 
 
+def normalize_deepy_file_system_access(value: Any) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized in {DEEPY_FILE_SYSTEM_ACCESS_DISABLED, "", "0", "false", "off", "no"}:
+            return DEEPY_FILE_SYSTEM_ACCESS_DISABLED
+        if normalized in {DEEPY_FILE_SYSTEM_ACCESS_READ_WRITE, "readwrite", "write", "rw", "2"}:
+            return DEEPY_FILE_SYSTEM_ACCESS_READ_WRITE
+        if normalized in {DEEPY_FILE_SYSTEM_ACCESS_READ, "1", "true", "on", "yes"}:
+            return DEEPY_FILE_SYSTEM_ACCESS_READ
+        return DEEPY_FILE_SYSTEM_ACCESS_DISABLED
+    return DEEPY_FILE_SYSTEM_ACCESS_READ if bool(value) else DEEPY_FILE_SYSTEM_ACCESS_DISABLED
+
+
 def normalize_deepy_allow_read_file_system(value: Any) -> bool:
+    return normalize_deepy_file_system_access(value) != DEEPY_FILE_SYSTEM_ACCESS_DISABLED
+
+
+def normalize_deepy_file_system_paths(value: Any) -> list[str]:
+    values = value.splitlines() if isinstance(value, str) else value if isinstance(value, (list, tuple)) else []
+    paths = []
+    seen = set()
+    for item in values:
+        path = str(item or "").strip()
+        key = path.replace("\\", "/").casefold()
+        if not path or key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
+
+
+def parse_deepy_file_system_paths(value: Any) -> list[tuple[str, str]]:
+    parsed = []
+    aliases = set()
+    for entry in normalize_deepy_file_system_paths(value):
+        if entry[0] in {'"', "'"}:
+            quote = entry[0]
+            end = entry.find(quote, 1)
+            if end < 0:
+                raise ValueError(f"Additional filesystem folder has an unterminated quote: {entry}")
+            tail = entry[end + 1:]
+            if tail and not tail[0].isspace():
+                raise ValueError(f"Filesystem alias must be separated from its quoted path by a space: {entry}")
+            path, remainder = entry[1:end].strip(), tail.strip()
+            if remainder and any(character.isspace() for character in remainder):
+                raise ValueError(f"Filesystem alias must be one word: {remainder}")
+            alias = remainder
+        else:
+            parts = entry.rsplit(None, 1)
+            path, alias = (parts[0], parts[1]) if len(parts) == 2 else (entry, "")
+        if not path:
+            raise ValueError("Additional filesystem folder path is empty.")
+        if alias:
+            if re.fullmatch(r"[A-Za-z0-9_-]+", alias) is None:
+                raise ValueError(f"Filesystem alias may contain only letters, numbers, '_' and '-': {alias}")
+            key = alias.casefold()
+            if re.fullmatch(r"outputs\d*", key):
+                raise ValueError(f"Filesystem alias is reserved for WanGP output folders: {alias}")
+            if key in aliases:
+                raise ValueError(f"Filesystem alias is used more than once: {alias}")
+            aliases.add(key)
+        parsed.append((path, alias))
+    return parsed
+
+
+def normalize_deepy_read_everywhere(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "on", "yes"}
+    return bool(value)
+
+
+def normalize_deepy_mcp_auto_discover_paths(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "on", "yes"}
     return bool(value)
@@ -266,6 +441,27 @@ def normalize_deepy_separate_requests_with_empty_line(value: Any) -> bool:
         if text in {"1", "true", "on", "yes"}:
             return True
     return bool(value)
+
+
+def normalize_deepy_session_reset_mode(value: Any) -> str:
+    return "reset_session" if str(value or "").strip().lower() == "reset_session" else "new_session"
+
+
+def normalize_deepy_session_gallery_media_mode(value: Any) -> str:
+    return "copy" if str(value or "").strip().lower() == "copy" else "link"
+
+
+def normalize_deepy_multi_session(value: Any) -> bool:
+    return normalize_deepy_session_mode(value) != DEEPY_MULTI_SESSION_DISABLED
+
+
+def normalize_deepy_session_mode(value: Any) -> str:
+    if isinstance(value, str):
+        value = value.strip().lower()
+        if value in {DEEPY_MULTI_SESSION_DISABLED, DEEPY_MULTI_SESSION_SELECTABLE, DEEPY_MULTI_SESSION_DEDICATED}:
+            return value
+        value = value in {"1", "true", "on", "yes"}
+    return DEEPY_MULTI_SESSION_SELECTABLE if value else DEEPY_MULTI_SESSION_DISABLED
 
 
 def estimate_deepy_kv_cache_mb(enhancer_enabled: Any, context_tokens: Any, kv_cache_quantization: Any = "") -> tuple[str | None, int | None]:
@@ -296,26 +492,46 @@ def format_deepy_context_tokens_label(enhancer_enabled: Any, context_tokens: Any
 
 
 def normalize_deepy_runtime_config(server_config: dict[str, Any] | None) -> dict[str, Any]:
-    runtime_config = dict(server_config or {})
+    from shared.remote_llm.config import is_remote_engine, local_enhancer_id, resolve_role_engine
+
+    runtime_config = {**get_deepy_default_runtime_config(), **(server_config or {})}
     runtime_config[DEEPY_ENABLED_KEY] = normalize_deepy_enabled(runtime_config.get(DEEPY_ENABLED_KEY, 0))
+    runtime_config[DEEPY_VOICE_LANGUAGE_KEY] = normalize_deepy_voice_language(runtime_config.get(DEEPY_VOICE_LANGUAGE_KEY, "auto"))
     runtime_config[DEEPY_TYPE_KEY] = normalize_deepy_type(runtime_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT))
-    runtime_config[DEEPY_VRAM_MODE_KEY] = normalize_deepy_vram_mode(runtime_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD))
     runtime_config[DEEPY_TOOL_GEN_IMAGE_KEY] = normalize_deepy_tool_gen_image(runtime_config.get(DEEPY_TOOL_GEN_IMAGE_KEY, DEEPY_DEFAULT_GEN_IMAGE))
     runtime_config[DEEPY_TOOL_EDIT_IMAGE_KEY] = normalize_deepy_tool_edit_image(runtime_config.get(DEEPY_TOOL_EDIT_IMAGE_KEY, DEEPY_DEFAULT_EDIT_IMAGE))
     runtime_config[DEEPY_TOOL_GEN_VIDEO_KEY] = normalize_deepy_tool_gen_video(runtime_config.get(DEEPY_TOOL_GEN_VIDEO_KEY, DEEPY_DEFAULT_GEN_VIDEO))
     runtime_config[DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY] = normalize_deepy_tool_gen_video_with_speech(runtime_config.get(DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY, DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH))
     runtime_config[DEEPY_TOOL_GEN_SONG_KEY] = normalize_deepy_tool_gen_song(runtime_config.get(DEEPY_TOOL_GEN_SONG_KEY, DEEPY_DEFAULT_GEN_SONG))
+    runtime_config[DEEPY_TOOL_GEN_VIDEO_WITH_REFS_KEY] = normalize_deepy_tool_gen_video_with_refs(runtime_config.get(DEEPY_TOOL_GEN_VIDEO_WITH_REFS_KEY, DEEPY_DEFAULT_GEN_VIDEO_WITH_REFS))
     runtime_config[DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY] = normalize_deepy_tool_gen_speech_from_description(runtime_config.get(DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION))
     runtime_config[DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY] = normalize_deepy_tool_gen_speech_from_sample(runtime_config.get(DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY, DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE))
-    runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = normalize_deepy_context_tokens(runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
-    runtime_config[DEEPY_KV_CACHE_QUANTIZATION_KEY] = normalize_deepy_kv_cache_quantization(runtime_config.get(DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_KV_CACHE_QUANTIZATION_DEFAULT))
-    runtime_config[DEEPY_COMPACTION_TYPE_KEY] = normalize_deepy_compaction_type(runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT))
-    runtime_config[DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(runtime_config.get(DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, ""))
-    runtime_config[DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_prime_guidance(runtime_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
-    runtime_config[DEEPY_PRIME_MCP_SERVERS_KEY] = normalize_deepy_prime_mcp_servers(runtime_config.get(DEEPY_PRIME_MCP_SERVERS_KEY, {}))
-    runtime_config[DEEPY_ALLOW_READ_FILE_SYSTEM_KEY] = normalize_deepy_allow_read_file_system(runtime_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT))
     runtime_config[DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY] = normalize_deepy_auto_cancel_queue_tasks(runtime_config.get(DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY, DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT))
     runtime_config[DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY] = normalize_deepy_separate_requests_with_empty_line(runtime_config.get(DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY, DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT))
+    runtime_config[DEEPY_SESSION_RESET_MODE_KEY] = normalize_deepy_session_reset_mode(runtime_config.get(DEEPY_SESSION_RESET_MODE_KEY, DEEPY_SESSION_RESET_MODE_DEFAULT))
+    runtime_config[DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY] = normalize_deepy_session_gallery_media_mode(runtime_config.get(DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY, DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT))
+    runtime_config[DEEPY_MULTI_SESSION_KEY] = normalize_deepy_session_mode(runtime_config.get(DEEPY_MULTI_SESSION_KEY, DEEPY_MULTI_SESSION_DEFAULT))
+    engine = resolve_role_engine(runtime_config, "deepy")
+    remote = is_remote_engine(engine)
+    qwen_local = not remote and local_enhancer_id(engine) in DEEPY_QWEN_ENHANCER_IDS
+    if qwen_local:
+        runtime_config[DEEPY_REPETITION_PENALTY_KEY] = normalize_deepy_repetition_penalty(runtime_config.get(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT))
+        runtime_config[DEEPY_KV_CACHE_QUANTIZATION_KEY] = normalize_deepy_kv_cache_quantization(runtime_config.get(DEEPY_KV_CACHE_QUANTIZATION_KEY, DEEPY_KV_CACHE_QUANTIZATION_DEFAULT))
+    if runtime_config[DEEPY_ENABLED_KEY] and (qwen_local or remote):
+        runtime_config[DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_custom_system_prompt(runtime_config.get(DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY, ""))
+        runtime_config[DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY] = normalize_deepy_prime_guidance(runtime_config.get(DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY, DEEPY_PRIME_GUIDANCE_DEFAULT))
+        runtime_config[DEEPY_PRIME_MCP_SERVERS_KEY] = normalize_deepy_prime_mcp_servers(runtime_config.get(DEEPY_PRIME_MCP_SERVERS_KEY, {}))
+        runtime_config[DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY] = normalize_deepy_mcp_auto_discover_paths(runtime_config.get(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT))
+        runtime_config[DEEPY_ALLOW_READ_FILE_SYSTEM_KEY] = normalize_deepy_file_system_access(runtime_config.get(DEEPY_ALLOW_READ_FILE_SYSTEM_KEY, DEEPY_FILE_SYSTEM_ACCESS_DEFAULT))
+        if not remote:
+            runtime_config[DEEPY_VRAM_MODE_KEY] = normalize_deepy_vram_mode(runtime_config.get(DEEPY_VRAM_MODE_KEY, DEEPY_VRAM_MODE_UNLOAD))
+        if qwen_local:
+            runtime_config[DEEPY_CONTEXT_TOKENS_KEY] = normalize_deepy_context_tokens(runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT))
+            runtime_config[DEEPY_COMPACTION_TYPE_KEY] = normalize_deepy_compaction_type(runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT))
+            runtime_config[DEEPY_COMPACTION_THINKING_KEY] = normalize_deepy_compaction_thinking(runtime_config.get(DEEPY_COMPACTION_THINKING_KEY, DEEPY_COMPACTION_THINKING_DEFAULT))
+        if runtime_config[DEEPY_ALLOW_READ_FILE_SYSTEM_KEY] != DEEPY_FILE_SYSTEM_ACCESS_DISABLED:
+            runtime_config[DEEPY_FILE_SYSTEM_PATHS_KEY] = normalize_deepy_file_system_paths(runtime_config.get(DEEPY_FILE_SYSTEM_PATHS_KEY, DEEPY_FILE_SYSTEM_PATHS_DEFAULT))
+            runtime_config[DEEPY_READ_EVERYWHERE_KEY] = normalize_deepy_read_everywhere(runtime_config.get(DEEPY_READ_EVERYWHERE_KEY, DEEPY_READ_EVERYWHERE_DEFAULT))
     return runtime_config
 
 
@@ -324,33 +540,46 @@ def get_deepy_default_runtime_config() -> dict[str, Any]:
         DEEPY_ENABLED_KEY: 0,
         DEEPY_TYPE_KEY: DEEPY_TYPE_DEFAULT,
         DEEPY_VRAM_MODE_KEY: DEEPY_VRAM_MODE_UNLOAD,
+        DEEPY_VOICE_LANGUAGE_KEY: "auto",
         DEEPY_TOOL_EDIT_IMAGE_KEY: DEEPY_DEFAULT_EDIT_IMAGE,
         DEEPY_TOOL_GEN_IMAGE_KEY: DEEPY_DEFAULT_GEN_IMAGE,
         DEEPY_TOOL_GEN_VIDEO_KEY: DEEPY_DEFAULT_GEN_VIDEO,
         DEEPY_TOOL_GEN_VIDEO_WITH_SPEECH_KEY: DEEPY_DEFAULT_GEN_VIDEO_WITH_SPEECH,
         DEEPY_TOOL_GEN_SONG_KEY: DEEPY_DEFAULT_GEN_SONG,
+        DEEPY_TOOL_GEN_VIDEO_WITH_REFS_KEY: DEEPY_DEFAULT_GEN_VIDEO_WITH_REFS,
         DEEPY_TOOL_GEN_SPEECH_FROM_DESCRIPTION_KEY: DEEPY_DEFAULT_GEN_SPEECH_FROM_DESCRIPTION,
         DEEPY_TOOL_GEN_SPEECH_FROM_SAMPLE_KEY: DEEPY_DEFAULT_GEN_SPEECH_FROM_SAMPLE,
         DEEPY_CONTEXT_TOKENS_KEY: DEEPY_CONTEXT_TOKENS_DEFAULT,
         DEEPY_KV_CACHE_QUANTIZATION_KEY: DEEPY_KV_CACHE_QUANTIZATION_DEFAULT,
         DEEPY_COMPACTION_TYPE_KEY: DEEPY_COMPACTION_TYPE_DEFAULT,
+        DEEPY_COMPACTION_THINKING_KEY: DEEPY_COMPACTION_THINKING_DEFAULT,
+        DEEPY_REPETITION_PENALTY_KEY: DEEPY_REPETITION_PENALTY_DEFAULT,
         DEEPY_ZERO_CUSTOM_SYSTEM_PROMPT_KEY: "",
         DEEPY_PRIME_CUSTOM_SYSTEM_PROMPT_KEY: DEEPY_PRIME_GUIDANCE_DEFAULT,
+        DEEPY_MODEL_SPEED_KEY: "fast",
+        DEEPY_MODEL_SIZE_KEY: "smaller",
         DEEPY_PRIME_MCP_SERVERS_KEY: {},
+        DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY: DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT,
         DEEPY_ALLOW_READ_FILE_SYSTEM_KEY: DEEPY_ALLOW_READ_FILE_SYSTEM_DEFAULT,
+        DEEPY_FILE_SYSTEM_PATHS_KEY: list(DEEPY_FILE_SYSTEM_PATHS_DEFAULT),
+        DEEPY_READ_EVERYWHERE_KEY: DEEPY_READ_EVERYWHERE_DEFAULT,
         DEEPY_AUTO_CANCEL_QUEUE_TASKS_KEY: DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
         DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_KEY: DEEPY_SEPARATE_REQUESTS_WITH_EMPTY_LINE_DEFAULT,
+        DEEPY_SESSION_RESET_MODE_KEY: DEEPY_SESSION_RESET_MODE_DEFAULT,
+        DEEPY_SESSION_GALLERY_MEDIA_MODE_KEY: DEEPY_SESSION_GALLERY_MEDIA_MODE_DEFAULT,
+        DEEPY_MULTI_SESSION_KEY: DEEPY_MULTI_SESSION_DEFAULT,
     }
 
 
 def set_deepy_runtime_config(server_config: dict[str, Any] | None, server_config_filename: str = "") -> dict[str, Any]:
     global _DEEPY_RUNTIME_CONFIG, _DEEPY_RUNTIME_CONFIG_FILENAME
-    normalized = normalize_deepy_runtime_config(server_config)
-    if isinstance(server_config, dict):
-        server_config.update(normalized)
-    _DEEPY_RUNTIME_CONFIG = normalized
-    _DEEPY_RUNTIME_CONFIG_FILENAME = str(server_config_filename or "").strip()
-    return normalized
+    with config_lock:
+        normalized = normalize_deepy_runtime_config(server_config)
+        if isinstance(server_config, dict):
+            server_config.update(normalized)
+        _DEEPY_RUNTIME_CONFIG = normalized
+        _DEEPY_RUNTIME_CONFIG_FILENAME = str(server_config_filename or "").strip()
+        return normalized
 
 
 def get_deepy_runtime_config() -> dict[str, Any]:
@@ -365,8 +594,7 @@ def get_deepy_runtime_config() -> dict[str, Any]:
         if not path.is_file():
             continue
         try:
-            with path.open("r", encoding="utf-8") as reader:
-                loaded = json.load(reader)
+            loaded = read_config(path)
         except Exception:
             continue
         if isinstance(loaded, dict):
@@ -385,14 +613,21 @@ def deepy_requirement_met(server_config: dict[str, Any] | None) -> bool:
 
 def deepy_requirement_error(server_config: dict[str, Any] | None) -> str:
     runtime_config = server_config or {}
+    from shared.remote_llm.config import is_remote_engine, local_enhancer_id, resolve_role_engine
+
+    deepy_engine = resolve_role_engine(runtime_config, "deepy")
+    if is_remote_engine(deepy_engine):
+        if normalize_deepy_type(runtime_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT)) != DEEPY_TYPE_PRIME:
+            return "External LLM engines require Deepy Prime because only Deepy Prime exposes WanGP's MCP tools."
+        return ""
     try:
-        enhancer_enabled = int(runtime_config.get("enhancer_enabled", 0) or 0)
+        enhancer_enabled = local_enhancer_id(deepy_engine, runtime_config.get("enhancer_enabled", 0))
     except Exception:
         enhancer_enabled = 0
     if enhancer_enabled not in DEEPY_QWEN_ENHANCER_IDS:
         return "Deepy requires Prompt Enhancer to be set to a Qwen3.5VL Abliterated or Qwen3.8VL Uncensored mode in the Extensions tab."
     try:
-        validate_deepy_version_config(runtime_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT), runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT), runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT), runtime_config.get("enhancer_enabled", 0))
+        validate_deepy_version_config(runtime_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT), runtime_config.get(DEEPY_COMPACTION_TYPE_KEY, DEEPY_COMPACTION_TYPE_DEFAULT), runtime_config.get(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT), enhancer_enabled, compaction_thinking=runtime_config.get(DEEPY_COMPACTION_THINKING_KEY, DEEPY_COMPACTION_THINKING_DEFAULT))
     except ValueError as exc:
         return str(exc)
     return ""
@@ -411,10 +646,14 @@ def deepy_requirement_message(server_config: dict[str, Any] | None) -> str:
     runtime_config = server_config or {}
     requirement_error = deepy_requirement_error(runtime_config)
     if len(requirement_error) == 0:
+        from shared.remote_llm.config import ENGINE_LABELS, is_remote_engine, resolve_role_engine
+
         version = "Deepy Prime" if normalize_deepy_type(runtime_config.get(DEEPY_TYPE_KEY, DEEPY_TYPE_DEFAULT)) == DEEPY_TYPE_PRIME else "Deepy Zero"
+        engine = resolve_role_engine(runtime_config, "deepy")
+        detail = f" using {ENGINE_LABELS.get(engine, engine.title())} externally" if is_remote_engine(engine) else " with the current Prompt Enhancer and context configuration"
         return (
             "<div style='color:#1b6d44; font-weight:600;'>"
-            f"{version} is available with the current Prompt Enhancer and context configuration."
+            f"{version} is available{detail}."
             "</div>"
         )
     return (

@@ -4,6 +4,7 @@ import hashlib
 import json
 import uuid
 from collections import OrderedDict
+from io import BytesIO
 from threading import RLock
 
 from gradio.components.base import server
@@ -28,7 +29,7 @@ _wangp_last_value_by_instance = {}
 class WanGPImageEditor(ImageEditor):
     TEMPLATE_DIR = "templates/"
     FRONTEND_DIR = "frontend/"
-    WANGP_FRONTEND_BUILD_ID = "20260701-connection-loss-export-log-34"
+    WANGP_FRONTEND_BUILD_ID = "20260916-mask-source-42"
     _wangp_magic_mask_patch_enabled = True
 
     @classmethod
@@ -85,7 +86,14 @@ def _wangp_accept_blobs(self, data: AcceptBlobs):
 
 
 def _wangp_convert_cached_image(self, file):
-    return self.convert_and_format_image(file)
+    if file is None or self.type != "pil":
+        return self.convert_and_format_image(file)
+    # The native PIL path only opens and converts the image. Keep the decoded
+    # source alive for validation instead of decoding the same PNG twice.
+    with Image.open(BytesIO(file) if isinstance(file, (bytes, bytearray, memoryview)) else file.path) as original:
+        image = original.convert(self.image_mode)
+        gradio_save_image_cache_patch.remember_source_image(image, file, self.GRADIO_CACHE, self.format, decoded_source=original)
+        return image
 
 
 def _wangp_remember_value(value_id, value, instance_id=None):
@@ -222,15 +230,12 @@ def _wangp_image_size(image):
 def _wangp_normalize_mask_layer(layer):
     if not isinstance(layer, Image.Image) or layer.mode != "RGBA":
         return layer
-    red, green, blue, alpha = layer.split()
-    red_extrema = red.getextrema()
-    green_extrema = green.getextrema()
-    blue_extrema = blue.getextrema()
-    alpha_extrema = alpha.getextrema()
+    red_extrema, green_extrema, blue_extrema, alpha_extrema = layer.getextrema()
     if red_extrema != (255, 255) or green_extrema != (255, 255) or blue_extrema != (255, 255):
         return layer
     if alpha_extrema[0] == 255:
         return layer
+    alpha = layer.getchannel("A")
     return Image.merge("RGBA", (alpha, alpha, alpha, alpha))
 
 
@@ -291,7 +296,7 @@ def _wangp_same_editor_value(left, right):
 
 
 def _wangp_image_debug_part(image):
-    if image is None:
+    if not gradio_save_image_cache_patch.WANGP_GRADIO_IMAGE_DEBUG or image is None:
         return "None"
     mode = getattr(image, "mode", None)
     size = getattr(image, "size", None)

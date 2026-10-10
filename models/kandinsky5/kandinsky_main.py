@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import generation_progress
 import os
 import json
 import torch
@@ -156,7 +157,7 @@ class model_factory:
 
         vae = offload.fast_load_transformers_model(
             vae_filename,
-            writable_tensors=True,
+            writable_tensors=False,
             modelClass=AutoencoderKLCausal3D,
             defaultConfigPath=vae_config,
             default_dtype=VAE_dtype,
@@ -179,6 +180,7 @@ class model_factory:
         self.text_embedder = text_embedder
         self.vae = vae
 
+    @generation_progress
     def generate(
         self,
         seed: int | None = None,
@@ -196,6 +198,7 @@ class model_factory:
         progress: bool | None = None,
         joint_pass: bool = False,
         VAE_tile_size: dict | None = None,
+        set_progress_status=None,
         **kwargs,
     ):
         if seed is not None and seed < 0:

@@ -1,0 +1,27 @@
+/* Amethyst palette; shared studio rules preserve layout and controls. */
+.wangp-studio-scope {
+    --studio-surface: #ffffff;
+    --studio-input: #ffffff;
+    --studio-border: #c6b1e8;
+    --studio-label: #694098;
+    --studio-accent: #8856bd;
+    --studio-soft: #f0e8fb;
+    --studio-button: #e8dcf7;
+    --studio-button-hover: #d8c5ef;
+    --studio-button-text: #59377f;
+    --studio-disabled: #efedf2;
+    --studio-disabled-text: #7d7587;
+}
+.dark .wangp-studio-scope {
+    --studio-surface: #292039;
+    --studio-input: #1e172b;
+    --studio-border: #77579e;
+    --studio-label: #d6b5ff;
+    --studio-accent: #bd91f2;
+    --studio-soft: #44305e;
+    --studio-button: #533774;
+    --studio-button-hover: #67458b;
+    --studio-button-text: #f2e7ff;
+    --studio-disabled: #332d3d;
+    --studio-disabled-text: #a59aaf;
+}

@@ -77,6 +77,10 @@ class NLFPoseExtractor:
         self.detect_resolution = detect_resolution
 
         # Locate model files
+        from preprocessing.dwpose.assets import query_download_def
+        from shared.utils.download import process_files_def_if_needed
+
+        process_files_def_if_needed(query_download_def())
         self.det_model_path = fl.locate_file("pose/yolox_l.onnx")
         self.pose_model_path = fl.locate_file("pose/dw-ll_ucoco_384.onnx")
 

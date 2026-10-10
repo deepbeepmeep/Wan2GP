@@ -9,7 +9,7 @@ from gradio.events import Dependency
 class WanGPImageEditor(ImageEditor):
     TEMPLATE_DIR = "templates/"
     FRONTEND_DIR = "frontend/"
-    WANGP_FRONTEND_BUILD_ID = "20260701-connection-loss-export-log-34"
+    WANGP_FRONTEND_BUILD_ID = "20260916-mask-source-42"
     _wangp_magic_mask_patch_enabled = True
 
     @classmethod

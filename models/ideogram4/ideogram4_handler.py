@@ -1,4 +1,3 @@
-import os
 
 import torch
 
@@ -169,7 +168,9 @@ class family_handler:
         text_encoder_filename = "Qwen3-VL-8B-Instruct_nf4.safetensors" if _model_uses_nf4(model_def) else "Qwen3-VL-8B-Instruct_fp8.safetensors"
         model_def_update = {
             "image_outputs": True,
+            "device_explicit": True,
             "flux2": True,
+            "tiny_vae_architecture": "flux2_klein_4b",
             "vae_upsamplers": {"flux2_vae_pid": [1]},
             "excluded_spatial_upsamplers": ["flux2_pid"],
             "guidance_max_phases": 3,
@@ -182,6 +183,7 @@ class family_handler:
             "flow_shift": True,
             "custom_settings": [one.copy() for one in _CUSTOM_SETTINGS],
             "infos": IDEOGRAM4_INFOS,
+            "specialities": [{"name": name} for name in ("logos", "posters", "typography", "graphic design", "text rendering")],
             "no_negative_prompt": True,
             "no_background_removal": True,
             "skip_prompt_template": True,
@@ -207,6 +209,7 @@ class family_handler:
         if conditional_only:
             model_def_update.update({
                 "conditional_transformer_only": True,
+                "accelerated": "native",
                 "guidance_max_phases": 0,
                 "lora_multiplier_phases": 1,
                 "preset_profiles_dir": [],
@@ -256,17 +259,8 @@ class family_handler:
         return get_rgb_factors("flux", sub_family="flux2")
 
     @staticmethod
-    def register_lora_cli_args(parser, lora_root):
-        parser.add_argument(
-            "--lora-dir-ideogram4",
-            type=str,
-            default=None,
-            help=f"Path to a directory that contains Ideogram 4 LoRAs (default: {os.path.join(lora_root, 'ideogram4')})",
-        )
-
-    @staticmethod
-    def get_lora_dir(base_model_type, args, lora_root):
-        return getattr(args, "lora_dir_ideogram4", None) or os.path.join(lora_root, "ideogram4")
+    def get_lora_dir(base_model_type):
+        return "ideogram4"
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

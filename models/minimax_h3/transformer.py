@@ -1,3 +1,4 @@
+from shared.utils.media_control import inference_checkpoint
 # Copyright 2025 The MiniMax Team and The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,9 +23,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from shared import attention_kit
 from shared.attention import pay_attention
 
 from .interrupt import GenerationInterrupted
+from . import denoiser_kernels
+from shared.kernels import int8_backend
+from .pdd import MiniMaxH3ParallelHead
 from .sol_attention import MiniMaxH3SolAttention
 from .components.packing import (
     MINIMAX_H3_AUDIO_TAG,
@@ -43,6 +48,7 @@ from .components.packing import (
 
 VISUAL_COND_TIMESTEP = MINIMAX_H3_KEYFRAME_NOISE_AUG
 AUDIO_COND_TIMESTEP = 1.0
+CONTROL_ROW_CHUNK = 4096
 
 
 def patchify_video(latent, patch_size=(1, 2, 2)):
@@ -51,6 +57,36 @@ def patchify_video(latent, patch_size=(1, 2, 2)):
 
 def unpatchify_video(rows, t, h, w, c=24, patch_size=(1, 2, 2)):
     return unpatchify_video_tokens(rows, t, h * patch_size[1], w * patch_size[2], c, patch_size)
+
+
+def _grouped_video_timestep_rows(timestep, timestep_indices, video_start, target_video_rows, fixed_rows, active):
+    current_row = int(timestep_indices[video_start])
+    if not active or not fixed_rows:
+        return timestep, timestep_indices, current_row, [(video_start, video_start + target_video_rows,
+                                                          current_row * 3 + MINIMAX_H3_VIDEO_TAG)]
+    timestep_count = timestep.shape[0]
+    timestep, remap = torch.unique(torch.cat((timestep, timestep.new_tensor([VISUAL_COND_TIMESTEP]))), sorted=True, return_inverse=True)
+    timestep_indices = remap[:timestep_count][timestep_indices]
+    current_row, fixed_row = int(timestep_indices[video_start]), int(remap[-1])
+    head_rows = [(0, fixed_rows, fixed_row)]
+    block_rows = [(video_start, video_start + fixed_rows, fixed_row * 3 + MINIMAX_H3_VIDEO_TAG)]
+    if fixed_rows < target_video_rows:
+        head_rows.append((fixed_rows, target_video_rows, current_row))
+        block_rows.append((video_start + fixed_rows, video_start + target_video_rows,
+                           current_row * 3 + MINIMAX_H3_VIDEO_TAG))
+    return timestep, timestep_indices, head_rows, block_rows
+
+
+def _frame_video_timestep_rows(timestep, timestep_indices, sigma_video, target_video_rows):
+    # Embed one timestep per latent frame and broadcast it over that frame's spatial rows.
+    timestep_count = timestep.shape[0]
+    frame_timesteps = 1.0 - sigma_video.to(device=timestep.device, dtype=torch.float32).flatten()
+    timestep, remap = torch.unique(torch.cat((timestep, frame_timesteps)), sorted=True, return_inverse=True)
+    timestep_indices = remap[:timestep_count][timestep_indices]
+    frame_rows = remap[-frame_timesteps.numel():]
+    rows_per_frame = target_video_rows // frame_timesteps.numel()
+    head_rows = [(index * rows_per_frame, (index + 1) * rows_per_frame, int(row)) for index, row in enumerate(frame_rows)]
+    return timestep, timestep_indices, head_rows, frame_rows
 
 
 def pack_audio(latent):
@@ -68,16 +104,41 @@ def _split_interleaved_qkv(src, dim, split_sizes, context):
     return [grouped[:, index].reshape(split_sizes[index], *src.shape[1:]).contiguous() for index in range(3)]
 
 
-def get_linear_split_map(inner_size, num_attention_heads=56, attention_head_dim=128):
-    return {"qkv_proj": {"mapped_modules": ["q_proj", "k_proj", "v_proj"], "split_sizes": [inner_size] * 3,
-                         "num_attention_heads": num_attention_heads, "attention_head_dim": attention_head_dim,
-                         "split_handlers": {"weight": _split_interleaved_qkv}}}
+def get_linear_split_map(inner_size, num_attention_heads=56, attention_head_dim=128, qkv_layout="interleaved"):
+    if qkv_layout not in ("interleaved", "grouped"):
+        raise ValueError(f"Unsupported MiniMax H3 QKV layout {qkv_layout!r}")
+    split = {"mapped_modules": ["q_proj", "k_proj", "v_proj"], "split_sizes": [inner_size] * 3,
+             "num_attention_heads": num_attention_heads, "attention_head_dim": attention_head_dim}
+    if qkv_layout == "interleaved":
+        split["split_handlers"] = {"weight": _split_interleaved_qkv}
+    return {"qkv_proj": split}
 
 
 def _take(x_list):
     x = x_list[0]
     x_list.clear()
     return x
+
+
+def _rms_norm_(norm, tensor, chunk_bytes=256 << 20):
+    """norm(tensor) written back into tensor by chunks of tokens: the same values, without nn.RMSNorm's full-size output and temporary."""
+    rows = max(1, chunk_bytes // (tensor[0, 0].numel() * tensor.element_size()))
+    for start in range(0, tensor.shape[1], rows):
+        part = tensor[:, start:start + rows]
+        part.copy_(norm(part))
+    return tensor
+
+
+def _rope_(tensors, rope):
+    """Split-half RoPE applied in place to each tensor, with one scratch buffer."""
+    pairs = rope.shape[-2]
+    cosine, sine = rope[..., 0], rope[..., 1]
+    scratch = torch.empty_like(tensors[0][..., :pairs])
+    for tensor in tensors:
+        first, second = tensor[..., :pairs], tensor[..., pairs:2 * pairs]
+        scratch.copy_(first)
+        first.mul_(cosine).addcmul_(second, sine, value=-1)
+        second.mul_(cosine).addcmul_(scratch, sine)
 
 
 def _to_dtype(x_list, dtype):
@@ -125,20 +186,48 @@ class MLP(nn.Module):
         self.fc1 = nn.Linear(hidden, 2 * ffn, bias=False, dtype=dtype, device=device)
         self.fc2 = nn.Linear(ffn, hidden, bias=False, dtype=dtype, device=device)
 
-    def _project(self, x_list):
+    def _project(self, x_list, residual=None, residual_scale=None):
         x = _take(x_list)
         expanded = self.fc1(x)
         del x
+        return self._finish(expanded, residual, residual_scale)
+
+    def _finish(self, expanded, residual=None, residual_scale=None):
+        if denoiser_kernels.can_linear(self.fc2, expanded):
+            return int8_backend.linear_with_fusion(self.fc2, expanded, input_act="swiglu",
+                                                   residual=residual, residual_scale=residual_scale,
+                                                   out=residual if denoiser_kernels.DEEP_FUSIONS else None)
         gate, value = expanded.chunk(2, dim=-1)
         F.silu(gate, inplace=True).mul_(value)
         del expanded, value
-        return self.fc2(gate)
+        output = self.fc2(gate)
+        if residual is not None:
+            output.mul_(residual_scale).add_(residual)
+        return output
 
-    def forward(self, x_list):
+    def forward(self, x_list, residual=None, gate=None, segments=None):
         x = _take(x_list)
         chunk_size = self.chunk_size
         if chunk_size > 0:
             chunk_size = max(1, x.shape[0] * self.hidden // (2 * self.ffn))
+        if residual is not None:
+            if denoiser_kernels.DEEP_FUSIONS:
+                for offset in range(0, x.shape[0], chunk_size or x.shape[0]):
+                    end = min(x.shape[0], offset + (chunk_size or x.shape[0]))
+                    expanded = self.fc1(x[offset:end])
+                    for start, stop, row in segments:
+                        lo, hi = max(start, offset), min(stop, end)
+                        if hi > lo:
+                            output = self._finish(expanded[lo-offset:hi-offset], residual[lo:hi], gate[row].to(x.dtype))
+                            residual[lo:hi].copy_(output)
+                    del expanded
+            else:
+                for start, stop, row in segments:
+                    for offset in range(start, stop, chunk_size or max(1, stop-start)):
+                        end = min(stop, offset + (chunk_size or stop-start))
+                        output = self._project([x[offset:end]], residual[offset:end], gate[row].to(x.dtype))
+                        residual[offset:end].copy_(output)
+            return residual
         if chunk_size <= 0 or x.shape[0] <= chunk_size:
             return self._project([x])
         for start in range(0, x.shape[0], chunk_size):
@@ -149,7 +238,7 @@ class MLP(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, hidden, heads, head_dim, eps, sol_attention=None, dtype=None, device=None):
+    def __init__(self, hidden, heads, head_dim, eps, sol_attention=None, vdn=False, dtype=None, device=None):
         super().__init__()
         self.heads = heads
         self.head_dim = head_dim
@@ -159,22 +248,72 @@ class Attention(nn.Module):
         self.q_norm = nn.RMSNorm(head_dim, eps=eps, dtype=dtype, device=device)
         self.k_norm = nn.RMSNorm(head_dim, eps=eps, dtype=dtype, device=device)
         self.out_proj = nn.Linear(inner, hidden, bias=False, dtype=dtype, device=device)
+        if vdn:
+            from .vdn_attention import VDNHybridAttention
+            self.vdn = VDNHybridAttention(hidden, heads, head_dim, dtype=dtype, device=device)
 
-    def forward(self, x_list, rope=None, transformer_options=None):
+    def _norm_qk(self, query, key):
+        return _rms_norm_(self.q_norm, query), _rms_norm_(self.k_norm, key)
+
+    def _norm_rope_(self, query, key, rope, packed_rope, fused_rms):
+        """RMSNorm + RoPE in place of q and/or k (attention_kit callback, per head)."""
+        if fused_rms:
+            if query is not None and key is not None:
+                denoiser_kernels.rms_rope(query, key, rope, packed_rope, self.q_norm, self.k_norm)
+            else:  # the paired kernels normalize each (token, head) row on its own: the two halves of the heads form the pair
+                tensor, norm = (query, self.q_norm) if key is None else (key, self.k_norm)
+                half = tensor.shape[2] // 2
+                denoiser_kernels.rms_rope(tensor[:, :, :half], tensor[:, :, half:], rope, packed_rope, norm, norm)
+            return
+        tensors = [(tensor, norm) for tensor, norm in ((query, self.q_norm), (key, self.k_norm)) if tensor is not None]
+        for tensor, norm in tensors:
+            _rms_norm_(norm, tensor)
+        if rope is not None:
+            _rope_([tensor for tensor, _ in tensors], rope)
+
+    def _out_projection(self, attention, seq_len, residual, gate, segments):
+        output = attention.reshape(seq_len, -1)
+        if residual is not None:
+            return denoiser_kernels.gated_linear(self.out_proj, output, residual, gate, segments)
+        return self.out_proj(output)
+
+    def forward(self, x_list, rope=None, transformer_options=None, residual=None, gate=None, segments=None, input_again=None):
         x = _take(x_list)
+        vdn_input = x if hasattr(self, "vdn") else None
         seq_len = x.shape[0]
-        use_sol = self.sol_attention is not None and self.sol_attention.use_for_layer(seq_len)
+        use_sol = not hasattr(self, "vdn") and self.sol_attention is not None and self.sol_attention.use_for_layer(seq_len)
+        packed_rope = None
+        if isinstance(rope, tuple):
+            rope, packed_rope = rope
+        fused_rms = rope is not None and not use_sol and not hasattr(self, "vdn") and denoiser_kernels.can_rms(x, packed_rope, self.q_norm, self.k_norm)
         split_qkv = hasattr(self, "q_proj")
+        if split_qkv and not use_sol and not hasattr(self, "vdn"):
+            x_list, x = [x], None
+            attention = attention_kit.qkv_attention(x_list, self.q_proj, self.k_proj, self.v_proj, self.heads, self.head_dim,
+                                                    lambda query, key, group: self._norm_rope_(query, key, rope, packed_rope, fused_rms))
+            return self._out_projection(attention, seq_len, residual, gate, segments)
+        if split_qkv and hasattr(self, "vdn"):  # VDN projects q, k and v when it needs them: its linear branch reads them raw
+            x_list, x, vdn_input = [x], None, None
+            return self.vdn(x_list, (self.q_proj, self.k_proj, self.v_proj), lambda query, key: self._norm_rope_(query, key, rope, packed_rope, False),
+                            self.out_proj, input_again)
+        if split_qkv and use_sol and self.sol_attention.staged(x, (self.q_proj, self.k_proj, self.v_proj)):
+            x_list, x = [x], None
+            attention = self.sol_attention.attention(x_list, (self.q_proj, self.k_proj, self.v_proj), (self.q_norm, self.k_norm), rope,
+                                                     self.q_norm.eps, self.heads, self.head_dim)
+            return self._out_projection(attention, seq_len, residual, gate, segments)
         if split_qkv:
-            query = self.q_proj(x).view(1, seq_len, self.heads, self.head_dim)
-            if not use_sol:
-                query = self.q_norm(query)
-            key = self.k_proj(x).view(1, seq_len, self.heads, self.head_dim)
-            if not use_sol:
-                key = self.k_norm(key)
-            value = self.v_proj(x).view(1, seq_len, self.heads, self.head_dim)
+            projections = (self.q_proj, self.k_proj, self.v_proj)
+            if denoiser_kernels.DEEP_FUSIONS and all(denoiser_kernels.can_linear(layer, x) for layer in projections):
+                query, key, value = int8_backend.linear_multi(projections, x)
+            else:
+                query, key, value = (layer(x) for layer in projections)
+            x = None  # only the projections read it: released before the norms, at the peak of the block
+            query = query.view(1, seq_len, self.heads, self.head_dim)
+            key = key.view(1, seq_len, self.heads, self.head_dim)
+            value = value.view(1, seq_len, self.heads, self.head_dim)
         else:
             qkv = self.qkv_proj(x)
+            x = None
             query, key, value = qkv.split(self.heads * self.head_dim, dim=-1)
             query = query.view(seq_len, self.heads, self.head_dim)
             key = key.view(seq_len, self.heads, self.head_dim)
@@ -183,28 +322,23 @@ class Attention(nn.Module):
             if not use_sol:
                 value = value.clone()
             del qkv
-        del x
+        if hasattr(self, "vdn"):  # fused q/k/v projection: k gets storage of its own, normalized in place
+            x_handoff, qkv = [vdn_input], [query, key.contiguous(), value]
+            vdn_input = query = key = value = None
+            return self.vdn(x_handoff, qkv, lambda query, key: self._norm_rope_(query, key, rope, packed_rope, False), self.out_proj)
         if use_sol:
             from shared.sol_attn import qk_rms_norm_rope_
             qk_rms_norm_rope_(query, key, self.q_norm.weight, self.k_norm.weight, rope, self.q_norm.eps)
-        elif not split_qkv:
-            query, key = self.q_norm(query), self.k_norm(key)
+        elif fused_rms:
+            query, key = denoiser_kernels.rms_rope(query, key, rope, packed_rope, self.q_norm, self.k_norm)
+        else:
+            query, key = self._norm_qk(query, key)
         qkv_list = [query, key, value]
         del query, key, value
-        if rope is not None and not use_sol:
-            pairs = rope.shape[-2]
-            cosine, sine = rope[..., 0], rope[..., 1]
-            scratch = torch.empty_like(qkv_list[0][..., :pairs])
-            for index in range(2):
-                tensor = qkv_list[index]
-                first, second = tensor[..., :pairs], tensor[..., pairs:2 * pairs]
-                scratch.copy_(first)
-                first.mul_(cosine).addcmul_(second, sine, value=-1)
-                second.mul_(cosine).addcmul_(scratch, sine)
-            del scratch, tensor, first, second
+        if rope is not None and not use_sol and not fused_rms:
+            _rope_(qkv_list[:2], rope)
         attention = pay_attention(qkv_list, recycle_q=True) if self.sol_attention is None else self.sol_attention(qkv_list, use_sol)
-        output = attention.reshape(seq_len, -1)
-        return self.out_proj(output)
+        return self._out_projection(attention, seq_len, residual, gate, segments)
 
 
 class RefinerBlock(nn.Module):
@@ -269,6 +403,11 @@ def _modulate(hidden, shift_scale_list, segments):
     return hidden
 
 
+def _norm_modulate(norm, hidden, shift_scale, segments):
+    output = denoiser_kernels.norm_modulate(hidden, norm, *shift_scale, segments)
+    return _modulate(norm(hidden), shift_scale, segments) if output is None else output
+
+
 def _gated_residual(hidden_list, gate_list, branch_list, segments):
     hidden = _take(hidden_list)
     gate, branch = gate_list[0].to(hidden.dtype), _take(branch_list)
@@ -281,10 +420,10 @@ def _gated_residual(hidden_list, gate_list, branch_list, segments):
 
 class DiTBlock(nn.Module):
     def __init__(self, hidden, heads, head_dim, ffn, time_dim, eps, qk_eps, apply_silu=True,
-                 adaln_dtype=None, ffn_chunk_size=2048, sol_attention=None, dtype=None, device=None):
+                 adaln_dtype=None, ffn_chunk_size=2048, sol_attention=None, vdn=False, dtype=None, device=None):
         super().__init__()
         self.norm1 = nn.RMSNorm(hidden, eps=eps, dtype=dtype, device=device)
-        self.attn = Attention(hidden, heads, head_dim, qk_eps, sol_attention=sol_attention, dtype=dtype, device=device)
+        self.attn = Attention(hidden, heads, head_dim, qk_eps, sol_attention=sol_attention, vdn=vdn, dtype=dtype, device=device)
         self.norm2 = nn.RMSNorm(hidden, eps=eps, dtype=dtype, device=device)
         self.mlp = MLP(hidden, ffn, ffn_chunk_size, dtype=dtype, device=device)
         self.adaln_proj = AdalnProj(time_dim, hidden, 6, apply_silu=apply_silu,
@@ -310,36 +449,66 @@ class DiTBlock(nn.Module):
     def forward(self, x_list, temb, segments, rope, residual_signature_elements=0):
         residual_list = [_take(x_list)]
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
-        h_list = [_modulate(self.norm1(residual_list[0]), [shift_msa, scale_msa], segments)]
-        if not residual_signature_elements:
-            residual_list = [_gated_residual(residual_list, [gate_msa], [self.attn(h_list, rope=rope)], segments)]
-            h_list = [_modulate(self.norm2(residual_list[0]), [shift_mlp, scale_mlp], segments)]
+        h_list = [_norm_modulate(self.norm1, residual_list[0], [shift_msa, scale_msa], segments)]
+        if (not residual_signature_elements and not hasattr(self.attn, 'vdn')
+                and denoiser_kernels.can_linear(self.attn.out_proj, residual_list[0])
+                and denoiser_kernels.can_linear(self.mlp.fc2, residual_list[0])):
+            hidden = self.attn(h_list, rope=rope, residual=residual_list[0], gate=gate_msa, segments=segments)
+            h_list = [_norm_modulate(self.norm2, hidden, [shift_mlp, scale_mlp], segments)]
+            return self.mlp(h_list, residual=hidden, gate=gate_mlp, segments=segments)
+        if not residual_signature_elements:  # VDN computes its input again rather than keeping it (input_again)
+            input_again = (lambda: _norm_modulate(self.norm1, residual_list[0], [shift_msa, scale_msa], segments)) if hasattr(self.attn, 'vdn') else None
+            residual_list = [_gated_residual(residual_list, [gate_msa], [self.attn(h_list, rope=rope, input_again=input_again)], segments)]
+            h_list = [_norm_modulate(self.norm2, residual_list[0], [shift_mlp, scale_mlp], segments)]
             return _gated_residual(residual_list, [gate_mlp], [self.mlp(h_list)], segments)
 
         hidden = _take(residual_list)
         signature_stride = max(1, math.ceil(hidden.numel() / residual_signature_elements))
-        branch = self.attn(h_list, rope=rope)
+        input_again = (lambda: _norm_modulate(self.norm1, hidden, [shift_msa, scale_msa], segments)) if hasattr(self.attn, 'vdn') else None
+        branch = self.attn(h_list, rope=rope, input_again=input_again)
         hidden, signature = self._gated_branch(hidden, gate_msa.to(hidden.dtype), branch, segments, signature_stride)
         del branch
-        h_list = [_modulate(self.norm2(hidden), [shift_mlp, scale_mlp], segments)]
+        h_list = [_norm_modulate(self.norm2, hidden, [shift_mlp, scale_mlp], segments)]
         branch = self.mlp(h_list)
         hidden, signature = self._gated_branch(hidden, gate_mlp.to(hidden.dtype), branch, segments, signature_stride, signature)
         return hidden, signature
 
 
+class ControlBlock(DiTBlock):
+    """VideoX-Fun ControlNet-Union block attached to the main block it feeds (only one control stream is kept alive)."""
+
+    def __init__(self, hidden, *args, first=False, dtype=None, device=None, **kwargs):
+        super().__init__(hidden, *args, dtype=dtype, device=device, **kwargs)
+        if first:
+            self.before_proj = nn.Linear(hidden, hidden, bias=True, dtype=dtype, device=device)
+        self.after_proj = nn.Linear(hidden, hidden, bias=True, dtype=dtype, device=device)
+
+
+def _chunk_rows(start, stop, chunk=CONTROL_ROW_CHUNK):
+    return ((offset, min(stop, offset + chunk)) for offset in range(start, stop, chunk))
+
+
 class FinalLayer(nn.Module):
     def __init__(self, hidden, time_dim, video_dim, audio_dim, eps, apply_silu=True,
-                 adaln_dtype=None, dtype=None, device=None):
+                 adaln_dtype=None, pdd_num_steps=None, dtype=None, device=None):
         super().__init__()
         self.norm = nn.RMSNorm(hidden, eps=eps, dtype=dtype, device=device)
         self.adaln_proj = AdalnProj(time_dim, hidden, 2, modalities=1, apply_silu=apply_silu,
                                     dtype=adaln_dtype or dtype, device=device)
-        self.video_out = nn.Linear(hidden, video_dim, bias=True, dtype=torch.float32, device=device)
-        self.audio_out = nn.Linear(hidden, audio_dim, bias=True, dtype=torch.float32, device=device)
+        if pdd_num_steps is None:
+            self.video_out = nn.Linear(hidden, video_dim, bias=True, dtype=torch.float32, device=device)
+            self.audio_out = nn.Linear(hidden, audio_dim, bias=True, dtype=torch.float32, device=device)
+        else:
+            self.video_out = MiniMaxH3ParallelHead(hidden, video_dim, pdd_num_steps, device=device)
+            self.audio_out = MiniMaxH3ParallelHead(hidden, audio_dim, pdd_num_steps, device=device)
 
     def _head(self, h_list, shift, scale, row, output):
         value = self.norm(_take(h_list)).to(scale.dtype)
-        value.mul_(1.0 + scale[row]).add_(shift[row])
+        if isinstance(row, list):
+            for start, stop, index in row:
+                value[start:stop].mul_(1.0 + scale[index]).add_(shift[index])
+        else:
+            value.mul_(1.0 + scale[row]).add_(shift[row])
         value = value.to(output.weight.dtype)
         return output(value)
 
@@ -382,9 +551,12 @@ class MiniMaxH3Model(nn.Module):
                                for key in state_dict)
         converted = {}
         for key, value in state_dict.items():
+            key = key.replace(".lora_A.turbo.weight", ".lora_A.weight").replace(".lora_B.turbo.weight", ".lora_B.weight")
             if key.startswith("lora_unet_"):
                 path, suffix = key[len("lora_unet_"):].split(".", 1)
                 key = path.replace("blocks_", "blocks.", 1).replace("_attn_", ".attn.").replace("_mlp_", ".mlp.") + "." + suffix
+            if key.startswith("token_refiner_blocks."):
+                key = "token_refiner.blocks." + key[len("token_refiner_blocks."):]
             if diffusers_format:
                 diffusers_fc1 = ".ff.net.0.proj." in key
                 for source, target in (("token_refiner.refiner_blocks.", "token_refiner.blocks."),
@@ -400,6 +572,8 @@ class MiniMaxH3Model(nn.Module):
                         key = target + key[len(source):]
                         break
                 for source, target in ((".attn.norm_q.", ".attn.q_norm."), (".attn.norm_k.", ".attn.k_norm."),
+                                       (".attn.orig.to_out.0.", ".attn.out_proj."), (".attn.orig.to_q.", ".attn.q_proj."),
+                                       (".attn.orig.to_k.", ".attn.k_proj."), (".attn.orig.to_v.", ".attn.v_proj."),
                                        (".attn.to_out.0.", ".attn.out_proj."), (".attn.to_q.", ".attn.q_proj."),
                                        (".attn.to_k.", ".attn.k_proj."), (".attn.to_v.", ".attn.v_proj."),
                                        (".ff.net.0.proj.", ".mlp.fc1."), (".ff.net.2.", ".mlp.fc2.")):
@@ -411,12 +585,21 @@ class MiniMaxH3Model(nn.Module):
             converted[key] = value
         from .lora_affine import convert_adaln_loras
 
+        if self.use_adaln_curves:
+            ignored = sorted(key for key in converted if key.startswith("time_embedder."))
+            for key in ignored:
+                converted.pop(key)
+            if ignored:
+                print("MiniMax H3 LoRA: ignored unsupported pruned timestep tensors: " + ", ".join(ignored))
+
         start = time.perf_counter()
         count, architecture, source_width, target_width = convert_adaln_loras(
-            model_type, converted, self.adaln_t_table if self.use_adaln_curves else None)
+            model_type, converted, self.adaln_t_table if self.use_adaln_curves else None,
+            self.hybrid_ref2va_blocks, self.ref2va_adaln_t_table if self.hybrid_ref2va_blocks is not None else None)
         if count:
             source = f"full AdaLN width {source_width}" if source_width == 2688 else f"{architecture.upper()} pruned AdaLN width {source_width}"
-            target = f"full AdaLN width {target_width}" if target_width == 2688 else f"{architecture.upper()} pruned AdaLN width {target_width}"
+            target_architecture = "hybrid FL2VA/REF2VA" if self.hybrid_ref2va_blocks is not None else architecture.upper()
+            target = f"full AdaLN width {target_width}" if target_width == 2688 else f"{target_architecture} pruned AdaLN width {target_width}"
             print(f"MiniMax H3 LoRA: converted {count} AdaLN adapters from {source} to {target} in {time.perf_counter() - start:.2f}s")
         if hasattr(self.blocks[0].attn, "q_proj"):
             return converted
@@ -445,8 +628,9 @@ class MiniMaxH3Model(nn.Module):
                  timestep_input_dim=256, time_embed_hidden_size=5376, time_embed_dim=2688,
                  rope_inv_freq_len=16, rope_theta=10000.0, norm_eps=1e-5, qk_norm_eps=1e-5,
                  final_norm_eps=1e-5, sigma_shift_video=12.0, sigma_shift_audio=3.0,
-                 ffn_chunk_size=2048, adaln_curve_grid=None, image_model=None,
-                 dtype=None, device=None, **kwargs):
+                 ffn_chunk_size=2048, adaln_curve_grid=None, adaln_dtype=torch.float32, image_model=None,
+                 hybrid_ref2va_blocks=None, pdd_num_steps=None, pdd_block_size=None, vdn=False,
+                 control_layers=(), control_in_dim=0, dtype=None, device=None, **kwargs):
         super().__init__()
         self._interrupt = False
         self.cache = None
@@ -457,12 +641,17 @@ class MiniMaxH3Model(nn.Module):
         self.latents_dim = latents_dim
         self.audio_latents_dim = audio_latents_dim
         self.use_adaln_curves = adaln_curve_grid is not None
+        self.hybrid_ref2va_blocks = hybrid_ref2va_blocks
+        self.pdd_num_steps = pdd_num_steps
+        self.pdd_block_size = pdd_block_size
         video_dim = latents_dim * math.prod(self.patch_size)
         self.video_patch_proj = nn.Linear(video_dim, hidden_size, bias=True, dtype=torch.float32, device=device)
         self.audio_patch_proj = nn.Linear(audio_latents_dim, hidden_size, bias=True, dtype=torch.float32, device=device)
         self.condition_proj = nn.Linear(text_dim, hidden_size, bias=True, dtype=dtype, device=device)
         if self.use_adaln_curves:
-            self.register_buffer("adaln_t_table", torch.empty(adaln_curve_grid, time_embed_dim, dtype=torch.float32, device=device))
+            self.register_buffer("adaln_t_table", torch.empty(adaln_curve_grid, time_embed_dim, dtype=adaln_dtype, device=device))
+            if hybrid_ref2va_blocks is not None:
+                self.register_buffer("ref2va_adaln_t_table", torch.empty(adaln_curve_grid, time_embed_dim, dtype=adaln_dtype, device=device))
         else:
             self.time_embedder = TimeEmbedder(timestep_input_dim, time_embed_hidden_size, time_embed_dim,
                                               dtype=torch.float32, device=device)
@@ -472,17 +661,27 @@ class MiniMaxH3Model(nn.Module):
                                           final_norm_eps, dtype=dtype, device=device)
         self.sol_attention = MiniMaxH3SolAttention()
         curve = {"apply_silu": not self.use_adaln_curves,
-                 "adaln_dtype": torch.float32 if self.use_adaln_curves else dtype}
+                 "adaln_dtype": adaln_dtype if self.use_adaln_curves else dtype}
         self.blocks = nn.ModuleList([DiTBlock(hidden_size, num_attention_heads, attention_head_dim, ffn_hidden_size,
                                                time_embed_dim, norm_eps, qk_norm_eps, **curve,
-                                               ffn_chunk_size=ffn_chunk_size, sol_attention=self.sol_attention,
+                                               ffn_chunk_size=ffn_chunk_size, sol_attention=self.sol_attention, vdn=vdn,
                                                dtype=dtype, device=device) for _ in range(num_layers)])
         self.final_layer = FinalLayer(hidden_size, time_embed_dim, video_dim, audio_latents_dim,
-                                      final_norm_eps, **curve, dtype=dtype, device=device)
+                                      final_norm_eps, **curve, pdd_num_steps=pdd_num_steps, dtype=dtype, device=device)
+        self.control_layers = tuple(control_layers)
+        for index, layer in enumerate(self.control_layers):
+            self.blocks[layer].control = ControlBlock(hidden_size, num_attention_heads, attention_head_dim, ffn_hidden_size,
+                                                      time_embed_dim, norm_eps, qk_norm_eps, **curve, first=index == 0,
+                                                      ffn_chunk_size=ffn_chunk_size, sol_attention=self.sol_attention,
+                                                      dtype=dtype, device=device)
         fp32_modules = [self.video_patch_proj, self.audio_patch_proj, self.final_layer.video_out, self.final_layer.audio_out]
+        if self.control_layers:
+            self.control_patch_proj = nn.Linear(control_in_dim * math.prod(self.patch_size), hidden_size, bias=True, dtype=torch.float32, device=device)
+            fp32_modules.append(self.control_patch_proj)
         if self.use_adaln_curves:
-            fp32_modules.extend(block.adaln_proj.linear for block in self.blocks)
-            fp32_modules.append(self.final_layer.adaln_proj.linear)
+            adaln_modules = [block.adaln_proj.linear for block in self.blocks] + [self.blocks[layer].control.adaln_proj.linear for layer in self.control_layers]
+            for module in (*adaln_modules, self.final_layer.adaln_proj.linear):
+                module._lock_dtype = adaln_dtype
         else:
             fp32_modules.extend((self.time_embedder.proj_in, self.time_embedder.proj_out))
         for module in fp32_modules:
@@ -495,12 +694,15 @@ class MiniMaxH3Model(nn.Module):
         return self.token_refiner([self.condition_proj(text_states[0])]).unsqueeze(0)
 
     def _check_interrupt(self):
+        inference_checkpoint()
         if self._interrupt:
             raise GenerationInterrupted
 
     def _layout(self, text_tags, latent_t, latent_h, latent_w, audio_t, payload):
+        target_spatial_context = payload.get("target_spatial_context")
         signature = (text_tags.numel(), latent_t, latent_h, latent_w, audio_t,
                      payload["fps"],
+                     target_spatial_context,
                      payload.get("target_audio_condition_latents", 0),
                      payload.get("target_video_condition_frames", 0),
                      tuple((k["anchor"], k["latent_frame_count"], k.get("frame_index")) for k in payload.get("keyframes") or ()),
@@ -522,59 +724,106 @@ class MiniMaxH3Model(nn.Module):
                                                       latent_h, latent_w, audio_t, self.patch_size, video_time_scale,
                                                       keyframe_anchors=anchors, audio_condition_anchors=audio_anchors,
                                                       target_condition_audio_latents=target_audio_condition_latents,
-                                                      target_condition_video_frames=target_video_condition_frames)
+                                                      target_condition_video_frames=target_video_condition_frames,
+                                                      target_spatial_context=target_spatial_context)
             else:
                 layout = build_packed_sequence(text_tags, latent_t, latent_h, latent_w, audio_t, self.patch_size,
                                                anchors, video_time_scale, audio_condition_anchors=audio_anchors,
                                                target_condition_audio_latents=target_audio_condition_latents,
-                                               target_condition_video_frames=target_video_condition_frames)
+                                               target_condition_video_frames=target_video_condition_frames,
+                                               target_spatial_context=target_spatial_context)
         payload["layout_signature"], payload["layout"] = signature, layout
         return layout
 
-    def _time_embedding(self, timesteps):
+    def _control_stream(self, hidden, control_rows, video_indices):
+        # The control stream is the packed sequence with the control embeddings on the video rows, re-based on the main input.
+        if control_rows.shape[0] != video_indices.numel():
+            raise ValueError(f"MiniMax H3 control rows ({control_rows.shape[0]}) must match the packed video rows ({video_indices.numel()})")
+        stream = hidden.clone()
+        for start, stop in _chunk_rows(0, video_indices.numel()):
+            rows = control_rows[start:stop].to(device=hidden.device, dtype=torch.float32)
+            stream.index_copy_(0, video_indices[start:stop], self.control_patch_proj(rows).to(hidden.dtype))
+        before_proj = self.blocks[self.control_layers[0]].control.before_proj
+        for start, stop in _chunk_rows(0, stream.shape[0]):
+            stream[start:stop] = before_proj(stream[start:stop]).add_(hidden[start:stop])
+        return stream
+
+    @staticmethod
+    def _add_control_skip(hidden, stream, after_proj, row_ranges, scale):
+        # Skips are applied in row chunks so no full-sequence skip tensor is ever materialized.
+        for first, last in row_ranges:
+            for start, stop in _chunk_rows(first, last):
+                hidden[start:stop].add_(after_proj(stream[start:stop]), alpha=scale)
+
+    def _time_embedding(self, timesteps, table=None):
         if not self.use_adaln_curves:
             return self.time_embedder(timesteps)
-        table = self.adaln_t_table
+        table = self.adaln_t_table if table is None else table
         position = timesteps.clamp(0.0, 1.0) * (table.shape[0] - 1)
         lower = position.floor().long().clamp(max=table.shape[0] - 2)
-        return torch.lerp(table[lower], table[lower + 1], (position - lower).unsqueeze(1))
+        return torch.lerp(table[lower], table[lower + 1], (position - lower).unsqueeze(1).to(table.dtype))
 
     def forward(self, video_x, audio_x, sigma_video, sigma_audio, context, payload, spectrum=None, first_block_cache=None):
         device, dtype = video_x.device, self.dtype or next(self.blocks.parameters()).dtype
         video_dtype, audio_dtype = video_x.dtype, audio_x.dtype
         _, _, latent_t, latent_h, latent_w = video_x.shape
+        sigma_video = sigma_video.flatten()
+        if sigma_video.numel() not in (1, latent_t):
+            raise ValueError(f"MiniMax H3 received {sigma_video.numel()} video sigmas for {latent_t} latent frames")
+        if not self.control_layers and sigma_video.numel() > 1 and not bool((sigma_video == sigma_video[0]).all()):
+            raise ValueError("MiniMax H3 requires one uniform video sigma")
+        # A clean first-frame ControlNet anchor must not set the text/audio prefix's noise level.
+        base_video_sigma = sigma_video.max() if self.control_layers else sigma_video[0]
         audio_t = audio_x.shape[-1]
         text_tags = payload["text_token_tags"].view(-1).cpu()
         layout = self._layout(text_tags, latent_t, latent_h, latent_w, audio_t, payload)
+        target_video_order = payload.get("target_video_order")
+        target_video_inverse_order = payload.get("target_video_inverse_order")
+        target_video_fixed_rows = payload.get("target_video_fixed_rows", 0)
+        target_video_mask_active = payload.get("target_video_mask_active", False)
 
         if spectrum is not None and spectrum.forecasting:
             timestep, timestep_indices = build_row_timesteps(
                 layout,
-                float(1.0 - sigma_video.flatten()[0]),
+                float(1.0 - base_video_sigma),
                 float(1.0 - sigma_audio.flatten()[0]),
-                max(float(1.0 - sigma_video.flatten()[0]), VISUAL_COND_TIMESTEP),
+                max(float(1.0 - base_video_sigma), VISUAL_COND_TIMESTEP),
                 AUDIO_COND_TIMESTEP,
             )
             timestep, timestep_indices = timestep.to(device), timestep_indices.to(device)
-            temb = self._time_embedding(timestep)
             target_video_rows = latent_t * (latent_h // self.patch_size[1]) * (latent_w // self.patch_size[2])
             target_audio_rows = audio_t * 2
             video_start = layout.sequence_length - target_video_rows
             audio_start = video_start - target_audio_rows
-            video_row = int(timestep_indices[video_start])
+            if target_video_order is None:
+                video_row = int(timestep_indices[video_start])
+            else:
+                timestep, timestep_indices, video_row, _ = _grouped_video_timestep_rows(
+                    timestep, timestep_indices, video_start, target_video_rows,
+                    target_video_fixed_rows, target_video_mask_active)
+            if self.control_layers and target_video_order is None and sigma_video.numel() > 1:
+                timestep, timestep_indices, video_row, _ = _frame_video_timestep_rows(timestep, timestep_indices, sigma_video, target_video_rows)
+            temb = self._time_embedding(timestep)
             audio_row = int(timestep_indices[audio_start + min(layout.num_target_condition_audio_latents,
                                                                max(audio_t - 1, 0))])
             hidden = spectrum.predict(device, dtype, self._check_interrupt)
             video, audio = self.final_layer([hidden], temb, (target_audio_rows, target_audio_rows + target_video_rows, video_row),
                                             (0, target_audio_rows, audio_row))
             del temb, timestep_indices
+            if target_video_inverse_order is not None:
+                video = video.index_select(0, target_video_inverse_order)
             video = _to_dtype([video], video_dtype)
             audio = _to_dtype([audio], audio_dtype)
             return (unpatchify_video_tokens(video, latent_t, latent_h, latent_w, self.latents_dim, self.patch_size),
                     unpack_audio(audio))
-
-        video_rows = patchify_video(video_x.to(torch.float32), self.patch_size)
-        audio_rows = pack_audio(audio_x.to(torch.float32))
+        video_x = video_x.to(torch.float32)
+        video_rows = patchify_video(video_x, self.patch_size)
+        video_x= None
+        if target_video_order is not None:
+            video_rows = video_rows.index_select(0, target_video_order)
+        audio_x = audio_x.to(torch.float32)
+        audio_rows = pack_audio(audio_x)
+        audio_x = None
         cond_video, cond_audio = payload.get("cond_video_rows"), payload.get("cond_audio_rows")
         if cond_video is not None:
             video_rows = torch.cat((cond_video.to(device), video_rows))
@@ -596,61 +845,124 @@ class MiniMaxH3Model(nn.Module):
 
         timestep, timestep_indices = build_row_timesteps(
             layout,
-            float(1.0 - sigma_video.flatten()[0]),
+            float(1.0 - base_video_sigma),
             float(1.0 - sigma_audio.flatten()[0]),
-            max(float(1.0 - sigma_video.flatten()[0]), VISUAL_COND_TIMESTEP),
+            max(float(1.0 - base_video_sigma), VISUAL_COND_TIMESTEP),
             AUDIO_COND_TIMESTEP,
         )
         timestep, timestep_indices = timestep.to(device), timestep_indices.to(device)
+        target_video_rows = latent_t * (latent_h // self.patch_size[1]) * (latent_w // self.patch_size[2])
+        video_start = layout.sequence_length - target_video_rows
+        video_head_row = int(timestep_indices[video_start])
+        frame_rows = grouped_segments = None
+        if target_video_order is not None:
+            timestep, timestep_indices, video_head_row, grouped_segments = _grouped_video_timestep_rows(
+                timestep, timestep_indices, video_start, target_video_rows,
+                target_video_fixed_rows, target_video_mask_active)
+        elif sigma_video.numel() == latent_t:
+            timestep, timestep_indices, video_head_row, frame_rows = _frame_video_timestep_rows(timestep, timestep_indices, sigma_video, target_video_rows)
         adaln_indices = timestep_indices * 3 + layout.token_tags.to(device).clamp_min(0)
         changes = torch.cat((torch.ones(1, dtype=torch.bool, device=device), adaln_indices[1:] != adaln_indices[:-1],
                              torch.ones(1, dtype=torch.bool, device=device))).nonzero().flatten()
         segments = [(int(changes[index]), int(changes[index + 1]), int(adaln_indices[changes[index]]))
                     for index in range(changes.numel() - 1)]
+        if frame_rows is not None:
+            segments = [segment for segment in segments if segment[0] < video_start]
+            rows_per_frame = target_video_rows // latent_t
+            segments.extend((video_start + index * rows_per_frame, video_start + (index + 1) * rows_per_frame,
+                             int(row) * 3 + MINIMAX_H3_VIDEO_TAG) for index, row in enumerate(frame_rows))
+        elif grouped_segments is not None:
+            segments = [segment for segment in segments if segment[0] < video_start]
+            segments.extend(grouped_segments)
         temb = self._time_embedding(timestep)
+        ref2va_temb = self._time_embedding(timestep, self.ref2va_adaln_t_table) if self.hybrid_ref2va_blocks is not None else None
         rope = payload.get("rope")
         if rope is None:
             positions = layout.position_ids.to(torch.float32)
             frequencies = positions.unsqueeze(-1) * self.rope.inv_freq.detach().cpu().view(1, 1, -1)
             rope = _rope_table(torch.cat(frequencies.unbind(dim=1), dim=-1), dtype).to(device)
+            if target_video_order is not None:
+                target_rope = rope[:, video_start:].index_select(1, target_video_order)
+                rope[:, video_start:].copy_(target_rope)
+                del target_rope
             payload["rope"] = rope
             del positions, frequencies
         del adaln_indices, changes
-        target_video_rows = latent_t * (latent_h // self.patch_size[1]) * (latent_w // self.patch_size[2])
         target_audio_rows = audio_t * 2
-        video_start = layout.sequence_length - target_video_rows
         audio_start = video_start - target_audio_rows
-        self.sol_attention.begin_forward(layout, device, dtype, payload["attention_sparsity"])
+        self.sol_attention.begin_forward(layout, device, dtype, payload["attention_sparsity"], target_video_order is not None)
+        if not self.sol_attention.enabled and not hasattr(self.blocks[0].attn, "vdn"):
+            rope = denoiser_kernels.prepare_rope(rope)
+        if vdn := getattr(self.blocks[0].attn, "vdn", None):
+            for block in self.blocks:
+                block.attn.vdn.begin_forward(layout, latent_t, latent_h, latent_w, self.patch_size)
+
+        control_rows = payload.get("control_rows")
+        control_list = None
+        if control_rows is not None:
+            control_scale = float(payload["control_scale"])
+            # Keep appended conditions, audio, and anchored target frames free of direct control skips. Restoring anchors
+            # between denoising steps cannot undo pose features already shared with adjacent frames inside the transformer.
+            # The encoder prefix can also contain supplied image/audio embeddings.
+            # Apply prefix skips only to text, while retaining the full sequence in control attention.
+            control_row_ranges = [(start, stop) for start, stop, row in segments
+                                  if start < text_tags.numel() and row % 3 == MINIMAX_H3_TEXT_TAG]
+            rows_per_frame, first_frame = target_video_rows // latent_t, 0
+            for frame in payload.get("control_anchor_frames", ()):
+                if first_frame < frame:
+                    control_row_ranges.append((video_start + first_frame * rows_per_frame, video_start + frame * rows_per_frame))
+                first_frame = frame + 1
+            if first_frame < latent_t:
+                control_row_ranges.append((video_start + first_frame * rows_per_frame, layout.sequence_length))
+            control_list = [self._control_stream(hidden, control_rows, layout.video_indices.to(device))]
+
+        def run_block(block_index, h_list, residual_signature_elements=0):
+            nonlocal control_list
+            block = self.blocks[block_index]
+            block_temb = ref2va_temb if ref2va_temb is not None and self.hybrid_ref2va_blocks[0] <= block_index <= self.hybrid_ref2va_blocks[1] else temb
+            control = block.control if control_list is not None and hasattr(block, "control") else None
+            if control is not None:
+                control_list = [control(control_list, block_temb, segments, rope)]
+                self._check_interrupt()
+            output = block(h_list, block_temb, segments, rope, residual_signature_elements) if residual_signature_elements else block(h_list, block_temb, segments, rope)
+            if control is not None:
+                self._add_control_skip(output[0] if residual_signature_elements else output, control_list[0], control.after_proj, control_row_ranges, control_scale)
+                if block_index == self.control_layers[-1]:
+                    control_list = None
+            return output
 
         if first_block_cache is None:
-            for block in self.blocks:
+            for block_index in range(len(self.blocks)):
                 self._check_interrupt()
                 h_list = [hidden]
                 hidden = None
-                hidden = block(h_list, temb, segments, rope)
+                hidden = run_block(block_index, h_list)
         else:
             self._check_interrupt()
-            hidden, signature = self.blocks[0]([hidden], temb, segments, rope,
-                                                residual_signature_elements=first_block_cache.MAX_SIGNATURE_ELEMENTS)
+            hidden, signature = run_block(0, [hidden], first_block_cache.MAX_SIGNATURE_ELEMENTS)
             if first_block_cache.should_compute(signature):
                 head_output = first_block_cache.capture_head_output(hidden[audio_start:])
                 for block_index in range(1, len(self.blocks)):
                     self._check_interrupt()
-                    hidden = self.blocks[block_index]([hidden], temb, segments, rope)
+                    h_list = [hidden]
+                    hidden = None
+                    hidden = run_block(block_index, h_list)
                 first_block_cache.store_tail_residual(hidden[audio_start:], head_output)
             else:
                 first_block_cache.apply_tail_residual(hidden[audio_start:])
+            control_list = None
 
-        video_row = int(timestep_indices[video_start])
         audio_row = int(timestep_indices[audio_start + min(layout.num_target_condition_audio_latents,
                                                            max(audio_t - 1, 0))])
         if spectrum is not None:
             spectrum.observe(hidden[audio_start:], target_audio_rows, self._check_interrupt)
         h_list = [hidden]
         hidden = None
-        video, audio = self.final_layer(h_list, temb, (video_start, layout.sequence_length, video_row),
+        video, audio = self.final_layer(h_list, temb, (video_start, layout.sequence_length, video_head_row),
                                         (audio_start, video_start, audio_row))
-        del temb, rope, timestep_indices
+        del temb, ref2va_temb, rope, timestep_indices
+        if target_video_inverse_order is not None:
+            video = video.index_select(0, target_video_inverse_order)
         video = _to_dtype([video], video_dtype)
         audio = _to_dtype([audio], audio_dtype)
         return (unpatchify_video_tokens(video, latent_t, latent_h, latent_w, self.latents_dim, self.patch_size),

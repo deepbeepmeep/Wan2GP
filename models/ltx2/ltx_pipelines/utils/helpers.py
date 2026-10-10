@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import control_video_encoding
 import gc
 import inspect
 import logging
@@ -104,8 +105,9 @@ def image_conditionings_by_adding_guiding_latent(
 ) -> list[ConditioningItem]:
     conditionings = []
     for image_entry in images:
-        if len(image_entry) == 4:
-            image_path, frame_idx, strength, resample = image_entry
+        literal_frame_index = len(image_entry) == 5 and image_entry[4]
+        if len(image_entry) >= 4:
+            image_path, frame_idx, strength, resample = image_entry[:4]
         else:
             image_path, frame_idx, strength = image_entry
             resample = None
@@ -119,7 +121,7 @@ def image_conditionings_by_adding_guiding_latent(
         )
         encoded_image = vae_encode_video(image, video_encoder, tiling_config)
         conditionings.append(
-            VideoConditionByKeyframeIndex(keyframes=encoded_image, frame_idx=frame_idx, strength=strength)
+            VideoConditionByKeyframeIndex(keyframes=encoded_image, frame_idx=frame_idx, strength=strength, num_pixel_frames=1 if literal_frame_index else None, literal_frame_index=literal_frame_index)
         )
     return conditionings
 
@@ -163,7 +165,7 @@ def video_conditionings_by_keyframe(
         # else:
         #     encoded_video = vae_encode_video(video, video_encoder, tiling_config)
 
-        encoded_video = vae_encode_video(video, video_encoder, tiling_config)
+        encoded_video = vae_encode_video(video, video_encoder, tiling_config, device=device)
         if continuous_conditioning_and_guide and frame_idx < 0:
             split_frame = -int(frame_idx)
             latent_stride = int(getattr(getattr(video_encoder, "video_downscale_factors", None), "time", 8))
@@ -225,7 +227,7 @@ def video_conditionings_by_reference_latent(
             dtype=dtype,
             device=device,
         )
-        encoded_video = vae_encode_video(video, video_encoder, tiling_config)
+        encoded_video = vae_encode_video(video, video_encoder, tiling_config, device=device)
         conditionings.append(
             VideoConditionByReferenceLatent(
                 latent=encoded_video,
@@ -255,7 +257,7 @@ def video_conditionings_by_frozen_video(
         dtype=dtype,
         device=device,
     )
-    encoded_video = vae_encode_video(video, video_encoder, tiling_config)
+    encoded_video = vae_encode_video(video, video_encoder, tiling_config, device=device)
     return latent_conditionings_by_latent_sequence(encoded_video, strength=1.0, start_index=0)
 
 
@@ -271,8 +273,24 @@ def video_conditionings_by_control_video(
     tiling_config: TilingConfig | None = None,
     continuous_conditioning_and_guide: bool = False,
 ) -> list[ConditioningItem]:
-    if int(downscale_factor or 1) > 1:
-        return video_conditionings_by_reference_latent(
+    from ...msr import MSRReferenceImages
+
+    if isinstance(video_conditioning, MSRReferenceImages):
+        return video_conditioning.encode(height, width, video_encoder, dtype, device, tiling_config)
+    with control_video_encoding():
+        if int(downscale_factor or 1) > 1:
+            return video_conditionings_by_reference_latent(
+                video_conditioning=video_conditioning,
+                height=height,
+                width=width,
+                num_frames=num_frames,
+                video_encoder=video_encoder,
+                dtype=dtype,
+                device=device,
+                downscale_factor=downscale_factor,
+                tiling_config=tiling_config,
+            )
+        return video_conditionings_by_keyframe(
             video_conditioning=video_conditioning,
             height=height,
             width=width,
@@ -280,20 +298,9 @@ def video_conditionings_by_control_video(
             video_encoder=video_encoder,
             dtype=dtype,
             device=device,
-            downscale_factor=downscale_factor,
             tiling_config=tiling_config,
+            continuous_conditioning_and_guide=continuous_conditioning_and_guide,
         )
-    return video_conditionings_by_keyframe(
-        video_conditioning=video_conditioning,
-        height=height,
-        width=width,
-        num_frames=num_frames,
-        video_encoder=video_encoder,
-        dtype=dtype,
-        device=device,
-        tiling_config=tiling_config,
-        continuous_conditioning_and_guide=continuous_conditioning_and_guide,
-    )
 
 
 def latent_conditionings_by_latent_sequence(
@@ -607,7 +614,7 @@ def prepare_mask_injection(  # noqa: PLR0913
     if video_tensor.shape[2] == 0 or mask_tensor.shape[2] == 0:
         return None
 
-    source_latents = vae_encode_video(video_tensor, video_encoder, tiling_config).to(device=device, dtype=dtype)
+    source_latents = vae_encode_video(video_tensor, video_encoder, tiling_config, device=device).to(device=device, dtype=dtype)
     try:
         mask_latents = _mask_to_latents(
             mask_tensor, source_latents.shape[2], source_latents.shape[3], source_latents.shape[4]
@@ -874,7 +881,9 @@ def euler_denoising_loop(
 
             if mask_context is not None:
                 _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
-            _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
+            preview_state = replace(video_state, latent=denoised_video) if getattr(callback, "tiny_vae", False) else video_state
+            _invoke_callback(callback, step_idx, pass_no, preview_state, preview_tools)
+            del preview_state
 
         return video_state, audio_state
     finally:
@@ -959,7 +968,9 @@ def gradient_estimating_euler_denoising_loop(
             audio_state = replace(audio_state, latent=stepper.step(audio_state.latent, denoised_audio, sigmas, step_idx))
             if mask_context is not None:
                 _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
-            _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
+            preview_state = replace(video_state, latent=denoised_video) if getattr(callback, "tiny_vae", False) else video_state
+            _invoke_callback(callback, step_idx, pass_no, preview_state, preview_tools)
+            del preview_state
 
         return video_state, audio_state
     finally:
@@ -2378,7 +2389,9 @@ def res2s_audio_video_denoising_loop(
             audio_state = replace(audio_state, latent=x_next_audio.to(audio_state.latent.dtype))
             if mask_context is not None:
                 _apply_mask_injection(video_state, sigmas, step_idx, mask_context)
-            _invoke_callback(callback, step_idx, pass_no, video_state, preview_tools)
+            preview_state = replace(video_state, latent=denoised_video_2) if getattr(callback, "tiny_vae", False) else video_state
+            _invoke_callback(callback, step_idx, pass_no, preview_state, preview_tools)
+            del preview_state
 
         if sigmas[-1] == 0:
             if interrupt_check is not None and interrupt_check():

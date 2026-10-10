@@ -5,6 +5,8 @@ import struct
 import sys
 import numpy as np
 from dataclasses import dataclass
+from enum import IntEnum
+from typing import List, Optional
 
 import torch
 from torch.utils import _pytree as pytree
@@ -17,6 +19,19 @@ from mmgp.offload import QEmbedding as BaseQEmbedding
 
 
 HANDLER_NAME = "gguf"
+
+
+class PrismQuantizationType(IntEnum):
+    """Prism's extension IDs, without modifying the upstream gguf package."""
+    PTQ1_0 = 143
+
+
+def _quantization_type(value):
+    return PrismQuantizationType(value) if value == 143 else gguf.GGMLQuantizationType(value)
+
+
+def _quantization_sizes(value):
+    return (128, 28) if value == PrismQuantizationType.PTQ1_0 else gguf.GGML_QUANT_SIZES[value]
 
 try:
     import gguf
@@ -41,6 +56,7 @@ _GGUF_LABEL_CACHE = {}
 _GGUF_METADATA_CACHE = {}
 _GGUF_INDEX_CACHE = {}
 _GGUF_RUNTIME_LOGGED = set()
+_GGUF_DEQUANTIZE_BLOCK_CHUNK = 65536  # At most 16M decoded values per standard K/IQ chunk.
 _GGUF_CUDA_KERNELS_ENV = "WGP_GGUF_LLAMACPP_CUDA"
 _GGUF_CUDA_KERNELS_ENABLED_CACHE = None
 _GGUF_CUDA_MODULE = None
@@ -82,6 +98,16 @@ _GGUF_TYPED_TENSOR_DTYPES = {
     None if gguf is None else gguf.GGMLQuantizationType.I32: np.int32,
     None if gguf is None else gguf.GGMLQuantizationType.I64: np.int64,
 }
+_GGUF_TYPED_TENSOR_TORCH_DTYPES = {
+    None if gguf is None else gguf.GGMLQuantizationType.F16: torch.float16,
+    None if gguf is None else gguf.GGMLQuantizationType.BF16: torch.bfloat16,
+    None if gguf is None else gguf.GGMLQuantizationType.F32: torch.float32,
+    None if gguf is None else gguf.GGMLQuantizationType.F64: torch.float64,
+    None if gguf is None else gguf.GGMLQuantizationType.I8: torch.int8,
+    None if gguf is None else gguf.GGMLQuantizationType.I16: torch.int16,
+    None if gguf is None else gguf.GGMLQuantizationType.I32: torch.int32,
+    None if gguf is None else gguf.GGMLQuantizationType.I64: torch.int64,
+}
 
 
 @dataclass(frozen=True)
@@ -102,6 +128,7 @@ class _GGUFParsedIndex:
     tensor_infos: tuple[_GGUFTensorInfo, ...]
     config: object | None
     orig_shapes: tuple[tuple[str, tuple[int, ...]], ...]
+    prism_metadata: tuple = ()
 
 
 def _normalize_gguf_path(file_path):
@@ -227,9 +254,6 @@ def set_gguf_cuda_kernels_enabled(enabled=None):
     return _probe_gguf_cuda_runtime(force=True)
 
 
-_probe_gguf_cuda_runtime()
-
-
 def _gguf_read_array(data, offset, dtype, byte_order):
     dtype = np.dtype(dtype).newbyteorder(byte_order)
     value = np.frombuffer(data, dtype=dtype, count=1, offset=offset)
@@ -333,7 +357,7 @@ def _gguf_skip_value_stream(reader, raw_type, byte_order):
 def _gguf_quant_byte_shape(shape, tensor_type):
     if len(shape) == 0:
         return tuple(shape)
-    block_size, type_size = gguf.GGML_QUANT_SIZES[tensor_type]
+    block_size, type_size = _quantization_sizes(tensor_type)
     last_dim = int(shape[-1])
     if block_size <= 0 or last_dim % block_size != 0:
         raise ValueError(f"Invalid GGUF tensor shape {tuple(shape)} for tensor type {getattr(tensor_type, 'name', tensor_type)}")
@@ -362,6 +386,7 @@ def _gguf_parse_index(file_path):
         data_alignment = int(getattr(gguf, "GGUF_DEFAULT_ALIGNMENT", 32))
         config = None
         orig_shapes = {}
+        prism_metadata = {}
         for _ in range(kv_count):
             key = _gguf_read_string_stream(reader, byte_order)
             raw_type = int(_gguf_stream_unpack(reader, byte_order + "I")[0])
@@ -370,6 +395,9 @@ def _gguf_parse_index(file_path):
                 continue
             if key == "config":
                 config = _gguf_decode_value_stream(reader, raw_type, byte_order)
+                continue
+            if key.startswith("prism.hadamard."):
+                prism_metadata[key] = _gguf_decode_value_stream(reader, raw_type, byte_order)
                 continue
             if key.startswith(_GGUF_ORIG_SHAPE_PREFIX):
                 value = _gguf_decode_value_stream(reader, raw_type, byte_order)
@@ -384,12 +412,12 @@ def _gguf_parse_index(file_path):
             name = _gguf_read_string_stream(reader, byte_order)
             n_dims = int(_gguf_stream_unpack(reader, byte_order + "I")[0])
             raw_shape = tuple(int(_gguf_stream_unpack(reader, byte_order + "Q")[0]) for _ in range(n_dims))
-            tensor_type = gguf.GGMLQuantizationType(int(_gguf_stream_unpack(reader, byte_order + "I")[0]))
+            tensor_type = _quantization_type(int(_gguf_stream_unpack(reader, byte_order + "I")[0]))
             rel_offset = int(_gguf_stream_unpack(reader, byte_order + "Q")[0])
             n_elements = 1
             for dim in raw_shape:
                 n_elements *= int(dim)
-            block_size, type_size = gguf.GGML_QUANT_SIZES[tensor_type]
+            block_size, type_size = _quantization_sizes(tensor_type)
             n_bytes = int(n_elements * type_size // block_size)
             tensor_infos.append(
                 _GGUFTensorInfo(
@@ -424,6 +452,7 @@ def _gguf_parse_index(file_path):
             tensor_infos=tensor_infos,
             config=config,
             orig_shapes=tuple((name, shape) for name, shape in orig_shapes.items()),
+            prism_metadata=tuple(prism_metadata.items()),
         )
 
 
@@ -485,7 +514,9 @@ def get_file_metadata(file_path):
     from mmgp.safetensors2 import tensor_stub
     parsed = _gguf_get_index(file_path)
     orig_shapes = dict(parsed.orig_shapes)
-    state_dict = OrderedDict((tensor.name, tensor_stub(torch.uint8, orig_shapes.get(tensor.name, tuple(reversed(tensor.raw_shape))))) for tensor in parsed.tensor_infos)
+    state_dict = OrderedDict((tensor.name, tensor_stub(_GGUF_TYPED_TENSOR_TORCH_DTYPES.get(tensor.tensor_type, torch.uint8),
+                                                       orig_shapes.get(tensor.name, tuple(reversed(tensor.raw_shape)))))
+                             for tensor in parsed.tensor_infos)
     metadata = {"config": parsed.config} if parsed.config is not None else {}
     result = (state_dict, metadata)
     _GGUF_METADATA_CACHE[cache_key] = (OrderedDict(result[0]), dict(result[1]))
@@ -527,7 +558,7 @@ def load_gguf_state_dict(
     file_path,
     filters=None,
     keep_prefixes=False,
-    writable_tensors=True,
+    writable_tensors=False,
     verboseLevel=1,
     default_dtype=None,
     pin_to_memory=False,
@@ -536,6 +567,7 @@ def load_gguf_state_dict(
         raise RuntimeError("GGUF support requires the 'gguf' package.")
     if pin_to_memory:
         raise Exception("Pinning to memory while loading GGUF files is not supported")
+    _gguf_cuda_kernels_enabled() # probes the llama.cpp CUDA kernels on first GGUF use, before any forward or graph capture
 
     import warnings
 
@@ -622,7 +654,7 @@ def load_gguf_state_dict(
             new_sd.update(_filter_state_dict_basic(state_dict, one_filter, keep_prefixes))
         state_dict = new_sd
 
-    if state_dict:
+    if state_dict and not parsed.prism_metadata:
         for name, bias in list(state_dict.items()):
             if not name.endswith(".bias") or not torch.is_tensor(bias):
                 continue
@@ -864,7 +896,7 @@ def _may_try_llamacpp_cuda_linear(weight_tensor, input_tensor):
     qtype_name = _gguf_qtype_name(getattr(weight_tensor, "_tensor_type", None))
     try:
         gguf_llamacpp_cuda = _gguf_cuda_module()
-        return gguf_llamacpp_cuda is not None and gguf_llamacpp_cuda.may_support_linear_qtype_name(qtype_name)
+        return callable(getattr(gguf_llamacpp_cuda, "linear", None)) and gguf_llamacpp_cuda.may_support_linear_qtype_name(qtype_name)
     except Exception:
         return False
 
@@ -880,14 +912,14 @@ def _may_try_llamacpp_cuda_embedding(weight_tensor, index_tensor):
     qtype_name = _gguf_qtype_name(getattr(weight_tensor, "_tensor_type", None))
     try:
         gguf_llamacpp_cuda = _gguf_cuda_module()
-        return gguf_llamacpp_cuda is not None and gguf_llamacpp_cuda.may_support_embedding_qtype_name(qtype_name)
+        return callable(getattr(gguf_llamacpp_cuda, "embedding", None)) and gguf_llamacpp_cuda.may_support_embedding_qtype_name(qtype_name)
     except Exception:
         return False
 
 
 def _guess_variant_from_filename(filename):
     base = os.path.basename(str(filename))
-    match = re.search(r"(?i)(?:^|[_-])(Q\d+_K|Q\d+_\d|Q\d+|IQ\d+_\w+)(?:$|[_.-])", base)
+    match = re.search(r"(?i)(?:^|[_-])(PTQ1_0|Q\d+_K|Q\d+_\d|Q\d+|IQ\d+_\w+)(?:$|[_.-])", base)
     if match:
         return match.group(1).upper()
     return None
@@ -970,14 +1002,32 @@ def _gguf_dequantize_tensor(raw, qtype_obj, oshape, dtype=None):
     if qtype_obj not in _DEQUANTIZE_FUNCTIONS:
         out = gguf.quants.dequantize(raw.cpu().numpy(), qtype_obj)
         out = torch.from_numpy(out)
-        return out.to(dtype) if dtype is not None else out
-    block_size, type_size = gguf.GGML_QUANT_SIZES[qtype_obj]
+        return out.to(device=raw.device, dtype=dtype).reshape(oshape)
+    block_size, type_size = _quantization_sizes(qtype_obj)
     dequantize_blocks = _DEQUANTIZE_FUNCTIONS[qtype_obj]
     rows = raw.reshape((-1, raw.shape[-1])).view(torch.uint8)
     n_blocks = rows.numel() // type_size
     blocks = rows.reshape((n_blocks, type_size))
-    blocks = dequantize_blocks(blocks, block_size, type_size, dtype)
-    return blocks.reshape(oshape)
+    if n_blocks > _GGUF_DEQUANTIZE_BLOCK_CHUNK:
+        output = torch.empty((n_blocks, block_size), device=raw.device, dtype=dtype or torch.float32)
+        for start in range(0, n_blocks, _GGUF_DEQUANTIZE_BLOCK_CHUNK):
+            end = min(start + _GGUF_DEQUANTIZE_BLOCK_CHUNK, n_blocks)
+            output[start:end].copy_(dequantize_blocks(blocks[start:end], block_size, type_size, torch.float32))
+        return output.reshape(oshape)
+    blocks = dequantize_blocks(blocks, block_size, type_size, torch.float32)
+    return blocks.reshape(oshape).to(dtype)
+
+
+def _dequantize_blocks_PTQ1_0(blocks, block_size, type_size, dtype):
+    # Prism's reference base-3 codec, including the four-trit tail bytes.
+    scale = blocks[:, 26:28].contiguous().view(torch.float16).to(dtype)
+    pieces = []
+    for offset, width, count in ((0, 16, 5), (16, 8, 5), (24, 2, 4)):
+        packed = blocks[:, offset:offset + width].to(torch.int32)
+        for n in range(count):
+            trit = (((packed * (3 ** n)) & 255) * 3 >> 8) - 1
+            pieces.append(trit.to(dtype) * scale)
+    return torch.cat(pieces, dim=1)
 
 
 def _maybe_cast_bias(bias, target_dtype):
@@ -1169,8 +1219,114 @@ def _dequantize_blocks_Q2_K(blocks, block_size, type_size, dtype=None):
     return qs.reshape((n_blocks, -1))
 
 
+def _iq_grid(quant, blocks):
+    quant.init_grid()
+    # gguf owns the immutable CPU table for the lifetime of captured H2D copies.
+    return torch.from_numpy(quant.grid).to(device=blocks.device, non_blocking=True).reshape(quant.grid_shape)
+
+
+def _iq_signs(indices):
+    bits = (indices.unsqueeze(-1) >> torch.arange(8, device=indices.device)) & 1
+    bits[..., 7] = bits[..., :7].sum(-1) & 1
+    return 1 - 2 * bits.float()
+
+
+def _dequantize_blocks_IQ2_XXS(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs = _split_block_dims(blocks, 2)
+    words = _to_uint32(qs.reshape(-1, 4)).reshape(n, 8, 2)
+    db = (d.view(torch.float16).float() * (.5 + ((words[..., 1] >> 28) & 15).float()) * .25).reshape(n, 8, 1, 1)
+    signs = _iq_signs((words[..., 1, None] >> (torch.arange(4, device=blocks.device) * 7)) & 127)
+    indices = qs.reshape(n, 8, 8)[..., :4].long()
+    values = _iq_grid(gguf.quants.IQ2_XXS, blocks).index_select(0, indices.reshape(-1)).reshape(n, 8, 4, 8)
+    return (db * values * signs).reshape(n, block_size).to(dtype)
+
+
+def _dequantize_blocks_IQ2_XS(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs, scales = _split_block_dims(blocks, 2, 64)
+    words = _to_uint16(qs.reshape(-1, 2)).reshape(n, 32)
+    scales = ((scales.unsqueeze(-1) >> (torch.arange(2, device=blocks.device) * 4)) & 15).reshape(n, 16)
+    db = (d.view(torch.float16).float() * (.5 + scales.float()) * .25).reshape(n, 16, 1, 1)
+    signs = _iq_signs(words >> 9).reshape(n, 16, 2, 8)
+    values = _iq_grid(gguf.quants.IQ2_XS, blocks).index_select(0, (words & 511).reshape(-1).long()).reshape(n, 16, 2, 8)
+    return (db * values * signs).reshape(n, block_size).to(dtype)
+
+
+def _dequantize_blocks_IQ2_S(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs, signs, qh, scales = _split_block_dims(blocks, 2, 32, 32, 8)
+    shifts = torch.arange(8, device=blocks.device, dtype=torch.uint8)
+    scales = (scales.unsqueeze(-1) >> (shifts[:2] * 4) & 15).reshape(n, 16)
+    db = (d.view(torch.float16).float() * (scales.float() + .5) * .25).reshape(n, 16, 1, 1)
+    signs = (1 - 2 * ((signs.unsqueeze(-1) >> shifts) & 1).float()).reshape(n, 16, 2, 8)
+    qh = ((qh.unsqueeze(-1) >> (shifts[:4] * 2)) & 3).reshape(n, 32).int()
+    indices = qs.int() | (qh << 8)
+    values = _iq_grid(gguf.quants.IQ2_S, blocks).index_select(0, indices.reshape(-1).long()).reshape(n, 16, 2, 8)
+    return (db * values * signs).reshape(n, block_size).to(dtype)
+
+
+def _dequantize_blocks_IQ3_XXS(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs, scales = _split_block_dims(blocks, 2, 64)
+    words = _to_uint32(scales.reshape(-1, 4)).reshape(n, 8)
+    db = (d.view(torch.float16).float() * (.5 + ((words >> 28) & 15).float()) * .5).reshape(n, 8, 1, 1)
+    signs = _iq_signs((words.unsqueeze(-1) >> (torch.arange(4, device=blocks.device) * 7)) & 127)
+    values = _iq_grid(gguf.quants.IQ3_XXS, blocks).index_select(0, qs.reshape(-1).long()).reshape(n, 8, 4, 8)
+    return (db * values * signs).reshape(n, block_size).to(dtype)
+
+
+def _dequantize_blocks_IQ3_S(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs, qh, signs, scales = _split_block_dims(blocks, 2, 64, 8, 32)
+    shifts = torch.arange(8, device=blocks.device, dtype=torch.uint8)
+    scales = (scales.unsqueeze(-1) >> (shifts[:2] * 4) & 15).reshape(n, 8)
+    db = (d.view(torch.float16).float() * (1 + 2 * scales)).reshape(n, 8, 1, 1)
+    signs = (1 - 2 * ((signs.unsqueeze(-1) >> shifts) & 1).float()).reshape(n, 8, 4, 8)
+    qh = ((qh.unsqueeze(-1) >> shifts) & 1).reshape(n, 64).int()
+    indices = qs.int() | (qh << 8)
+    values = _iq_grid(gguf.quants.IQ3_S, blocks).index_select(0, indices.reshape(-1).long()).reshape(n, 8, 4, 8)
+    return (db * values * signs).reshape(n, block_size).to(dtype)
+
+
+def _dequantize_blocks_IQ1_S(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs, qh = _split_block_dims(blocks, 2, 32)
+    words = _to_uint16(qh.reshape(-1, 2)).reshape(n, 8)
+    dl = (d.view(torch.float16).float() * (2 * ((words >> 12) & 7) + 1)).reshape(n, 8, 1, 1)
+    delta = torch.where((words & 32768) == 0, .125, -.125).reshape(n, 8, 1, 1)
+    high = ((words.unsqueeze(-1) >> (torch.arange(4, device=blocks.device) * 3)) & 7).reshape(n, 32)
+    indices = qs.int() | (high << 8)
+    values = _iq_grid(gguf.quants.IQ1_S, blocks).index_select(0, indices.reshape(-1).long()).reshape(n, 8, 4, 8)
+    return (dl * (values + delta)).reshape(n, block_size).to(dtype)
+
+
+def _iq4_values(indices):
+    values = _IQ4_VALUES.to(device=indices.device, non_blocking=True)
+    return values[indices.long()]
+
+
+def _dequantize_blocks_IQ4_NL(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, qs = _split_block_dims(blocks, 2)
+    qs = (qs.reshape(n, 1, 16) >> (torch.arange(2, device=blocks.device) * 4).reshape(1, 2, 1)) & 15
+    return (d.view(torch.float16).float() * _iq4_values(qs).reshape(n, 32)).to(dtype)
+
+
+def _dequantize_blocks_IQ4_XS(blocks, block_size, type_size, dtype=None):
+    n = blocks.shape[0]
+    d, scales_h, scales_l, qs = _split_block_dims(blocks, 2, 2, 4)
+    low = ((scales_l.unsqueeze(-1) >> (torch.arange(2, device=blocks.device) * 4)) & 15).reshape(n, 8)
+    high = (_to_uint16(scales_h) >> (torch.arange(8, device=blocks.device) * 2)) & 3
+    dl = (d.view(torch.float16).float() * ((low | (high << 4)) - 32)).reshape(n, 8, 1)
+    qs = (qs.reshape(n, 8, 1, 16) >> (torch.arange(2, device=blocks.device) * 4).reshape(1, 1, 2, 1)) & 15
+    return (dl * _iq4_values(qs).reshape(n, 8, 32)).reshape(n, block_size).to(dtype)
+
+
 if gguf is not None:
+    _IQ4_VALUES = torch.tensor(gguf.quants.IQ4_NL.kvalues, device="cpu", dtype=torch.float32)
     _DEQUANTIZE_FUNCTIONS = {
+        PrismQuantizationType.PTQ1_0: _dequantize_blocks_PTQ1_0,
         gguf.GGMLQuantizationType.Q8_0: _dequantize_blocks_Q8_0,
         gguf.GGMLQuantizationType.Q5_1: _dequantize_blocks_Q5_1,
         gguf.GGMLQuantizationType.Q5_0: _dequantize_blocks_Q5_0,
@@ -1181,6 +1337,14 @@ if gguf is not None:
         gguf.GGMLQuantizationType.Q4_K: _dequantize_blocks_Q4_K,
         gguf.GGMLQuantizationType.Q3_K: _dequantize_blocks_Q3_K,
         gguf.GGMLQuantizationType.Q2_K: _dequantize_blocks_Q2_K,
+        gguf.GGMLQuantizationType.IQ2_S: _dequantize_blocks_IQ2_S,
+        gguf.GGMLQuantizationType.IQ3_S: _dequantize_blocks_IQ3_S,
+        gguf.GGMLQuantizationType.IQ1_S: _dequantize_blocks_IQ1_S,
+        gguf.GGMLQuantizationType.IQ2_XS: _dequantize_blocks_IQ2_XS,
+        gguf.GGMLQuantizationType.IQ2_XXS: _dequantize_blocks_IQ2_XXS,
+        gguf.GGMLQuantizationType.IQ3_XXS: _dequantize_blocks_IQ3_XXS,
+        gguf.GGMLQuantizationType.IQ4_NL: _dequantize_blocks_IQ4_NL,
+        gguf.GGMLQuantizationType.IQ4_XS: _dequantize_blocks_IQ4_XS,
     }
 else:
     _DEQUANTIZE_FUNCTIONS = {}
@@ -1258,6 +1422,38 @@ class GGUFWeightTensor(QTensor):
         raw = self._data if self._data.device == device else self._data.to(device)
         return _gguf_dequantize_tensor(raw, self._tensor_type, self._tensor_shape, dtype=dtype)
 
+    def embedding(self, input, dtype=None):
+        if dtype is None:
+            dtype = self.dtype
+        if len(self._tensor_shape) != 2:
+            return None
+
+        num_embeddings, embedding_dim = self._tensor_shape
+        _gguf_log_once(f"torch_embedding_{self._tensor_type.name}", f"[GGUF] embedding backend=PyTorch packed-row dequantization for {self._tensor_type.name}.")
+        raw = self._data.reshape(num_embeddings, -1)
+        flat_input = input.reshape(-1)
+        if flat_input.numel() == 0:
+            return torch.empty((*input.shape, embedding_dim), dtype=dtype, device=input.device)
+
+        # GGUF blocks are row-aligned, so gather each requested packed row before dequantizing it.
+        source_input = flat_input if flat_input.device == raw.device else flat_input.to(raw.device)
+        raw_rows = raw.index_select(0, source_input)
+        del source_input
+
+        if raw_rows.device != input.device:
+            raw_rows = raw_rows.to(input.device)
+        dense_rows = _gguf_dequantize_tensor(
+            raw_rows,
+            self._tensor_type,
+            (flat_input.numel(), embedding_dim),
+            dtype=dtype,
+        )
+        del raw_rows
+        if dense_rows.device != input.device:
+            dense_rows = dense_rows.to(input.device)
+
+        return dense_rows.reshape(*input.shape, embedding_dim)
+
     def linear(self, input, bias=None):
         if torch.is_tensor(input):
             target_dtype = _resolve_default_dtype(self._gguf_default_dtype, fallback=input.dtype)
@@ -1265,10 +1461,14 @@ class GGUFWeightTensor(QTensor):
         else:
             target_dtype = _resolve_default_dtype(self._gguf_default_dtype, fallback=self.dtype)
             target_device = self.device
+        if self._tensor_type == PrismQuantizationType.PTQ1_0 and target_device.type == "cuda":
+            from .prism import ptq_linear
+            return ptq_linear(input, self._data, list(self._tensor_shape), bias, target_dtype)
         if _may_try_llamacpp_cuda_linear(self, input):
             fast_out = _try_llamacpp_cuda_linear(self, input, bias, target_dtype)
             if fast_out is not None:
                 return fast_out
+        _gguf_log_once(f"torch_linear_{self._tensor_type.name}", f"[GGUF] linear backend=PyTorch dense weight materialization for {self._tensor_type.name}.")
         weight = self.dequantize(dtype=target_dtype, device=target_device)
         if torch.is_tensor(input) and input.dtype != weight.dtype:
             input = input.to(weight.dtype)
@@ -1332,7 +1532,7 @@ class GGUFWeightTensor(QTensor):
         tensor_shape = ast.literal_eval(meta.get("tensor_shape", str(list(size))))
         tensor_type = None
         if gguf is not None and meta.get("tensor_type"):
-            tensor_type = getattr(gguf.GGMLQuantizationType, meta["tensor_type"], None)
+            tensor_type = getattr(PrismQuantizationType, meta["tensor_type"], None) or getattr(gguf.GGMLQuantizationType, meta["tensor_type"], None)
         return GGUFWeightTensor(
             qtype=qtype,
             axis=axis,
@@ -1422,11 +1622,21 @@ class GGUFFirstRowsLinear(torch.nn.Module):
         source_raw = source_weight._data
         if self._cached_raw is not source_raw:
             row_bytes = source_raw.numel() // full_rows
-            raw = source_raw[:self.row_count * row_bytes]
+            raw = source_raw.reshape(-1)[:self.row_count * row_bytes]
             weight = GGUFWeightTensor.create(raw, (self.row_count, in_features), (in_features, 1), source_weight.dtype, tensor_type=source_weight._tensor_type, tensor_shape=(self.row_count, in_features))
             object.__setattr__(self, "_cached_raw", source_raw)
             object.__setattr__(self, "_cached_weight", weight)
         return self._cached_weight.linear(input)
+
+
+@torch.library.custom_op("wangp_gguf::linear_fused", mutates_args=())
+def linear_fused(x: torch.Tensor, raw: torch.Tensor, qtype: str, shape: List[int], bias: Optional[torch.Tensor], dtype: torch.dtype, silu_mul: bool) -> torch.Tensor:
+    return _gguf_cuda_module().linear(raw, qtype, shape, x, bias, dtype, fused_output=True, silu_mul=silu_mul)
+
+
+@linear_fused.register_fake
+def _linear_fake(x, raw, qtype, shape, bias, dtype, silu_mul):
+    return x.new_empty((*x.shape[:-1], shape[0]), dtype=dtype)
 
 
 class QLinearGGUF(QModuleMixin, torch.nn.Linear):
@@ -1484,8 +1694,28 @@ class QLinearGGUF(QModuleMixin, torch.nn.Linear):
             return self.weight
         return super().qweight
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor | list[torch.Tensor]) -> torch.Tensor:
+        # The existing list handoff carries pre-activation FFN input. Keep the
+        # normal module call so MMGP loads this projection before using weights.
+        silu_mul = isinstance(input, list)
+        if silu_mul:
+            handoff = input
+            input = handoff[0]
+            handoff.clear()
         qweight = self.qweight
+        optimized = getattr(self, "_use_optimized_kernels", False)
+        # Decode and short speculative batches (up to 8 rows): typed outputs and
+        # fused SiLU-multiply avoid separate conversion and activation kernels
+        # (bit-identical results). Prefill keeps the established kernels.
+        if optimized and input.numel() <= 8 * input.shape[-1] and input.is_cuda and torch.version.hip is None and isinstance(qweight, GGUFWeightTensor):
+            native = _gguf_cuda_module()
+            supports = getattr(native, "supports_linear_fusions", None)
+            if callable(supports) and supports(qweight._tensor_type.name, input.numel() // input.shape[-1], input.device.index):
+                dtype = _resolve_default_dtype(qweight._gguf_default_dtype, fallback=input.dtype)
+                return linear_fused(input, qweight._data, qweight._tensor_type.name, list(qweight._tensor_shape), self.bias, dtype, silu_mul)
+        if silu_mul:
+            from shared.llm_engines.nanovllm.layers.activation import silu_mul as apply_silu_mul
+            input = apply_silu_mul(input, use_triton=optimized)
         if isinstance(qweight, GGUFWeightTensor):
             return qweight.linear(input, bias=self.bias)
         return torch.nn.functional.linear(input, qweight, bias=self.bias)
@@ -1781,6 +2011,9 @@ class QEmbedding(BaseQEmbedding):
                     fast_out = _try_llamacpp_cuda_embedding(qweight, input, target_dtype)
                     if fast_out is not None:
                         return self._apply_embed_scale(fast_out)
+                output = qweight.embedding(input, dtype=target_dtype)
+                if output is not None:
+                    return self._apply_embed_scale(output)
             weight = qweight.dequantize(dtype=target_dtype, device=input.device)
             output = torch.nn.functional.embedding(
                 input,

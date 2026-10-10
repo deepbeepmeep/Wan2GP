@@ -1,3 +1,5 @@
+from shared.utils.media_control import checkpoint_modules
+from shared.utils.media_control import controlled_model_loading, loading_callback
 import gc
 import os
 from contextlib import nullcontext
@@ -23,13 +25,13 @@ PID_FLUX2_POST_UPSAMPLING_METHOD = "flux2_pid"
 PID_FLUX_POST_UPSAMPLING_METHOD_V15 = "flux_pid(1.5)"
 PID_FLUX2_POST_UPSAMPLING_METHOD_V15 = "flux2_pid(1.5)"
 PID_QWEN_POST_UPSAMPLING_METHOD = "qwen_pid(1.5)"
-PID_QWEN_VAE_UPSAMPLING_VALUE = f"{PID_QWEN_VAE_UPSAMPLING_METHOD}4"
-PID_LEGACY_UPSAMPLING_VALUE = "pid4"
-PID_FLUX_VAE_UPSAMPLING_VALUE = f"{PID_FLUX_VAE_UPSAMPLING_METHOD}4"
-PID_FLUX2_VAE_UPSAMPLING_VALUE = f"{PID_FLUX2_VAE_UPSAMPLING_METHOD}4"
-PID_FLUX_POST_UPSAMPLING_VALUE = f"{PID_FLUX_POST_UPSAMPLING_METHOD}4"
-PID_FLUX2_POST_UPSAMPLING_VALUE = f"{PID_FLUX2_POST_UPSAMPLING_METHOD}4"
-PID_QWEN_POST_UPSAMPLING_VALUE = f"{PID_QWEN_POST_UPSAMPLING_METHOD}4"
+PID_QWEN_VAE_UPSAMPLING_VALUE = f"{PID_QWEN_VAE_UPSAMPLING_METHOD}*4"
+PID_LEGACY_UPSAMPLING_VALUE = "pid*4"
+PID_FLUX_VAE_UPSAMPLING_VALUE = f"{PID_FLUX_VAE_UPSAMPLING_METHOD}*4"
+PID_FLUX2_VAE_UPSAMPLING_VALUE = f"{PID_FLUX2_VAE_UPSAMPLING_METHOD}*4"
+PID_FLUX_POST_UPSAMPLING_VALUE = f"{PID_FLUX_POST_UPSAMPLING_METHOD}*4"
+PID_FLUX2_POST_UPSAMPLING_VALUE = f"{PID_FLUX2_POST_UPSAMPLING_METHOD}*4"
+PID_QWEN_POST_UPSAMPLING_VALUE = f"{PID_QWEN_POST_UPSAMPLING_METHOD}*4"
 PID_VAE_UPSAMPLING_METHODS = (PID_FLUX_VAE_UPSAMPLING_METHOD, PID_FLUX2_VAE_UPSAMPLING_METHOD, PID_FLUX_VAE_UPSAMPLING_METHOD_V15, PID_FLUX2_VAE_UPSAMPLING_METHOD_V15, PID_QWEN_VAE_UPSAMPLING_METHOD, PID_LEGACY_UPSAMPLING_METHOD)
 PID_POST_UPSAMPLING_METHODS = (PID_FLUX_POST_UPSAMPLING_METHOD, PID_FLUX2_POST_UPSAMPLING_METHOD, PID_FLUX_POST_UPSAMPLING_METHOD_V15, PID_FLUX2_POST_UPSAMPLING_METHOD_V15, PID_QWEN_POST_UPSAMPLING_METHOD)
 PID_UPSAMPLING_METHODS = PID_VAE_UPSAMPLING_METHODS + PID_POST_UPSAMPLING_METHODS
@@ -87,8 +89,15 @@ def split_pid_upsampling(spatial_upsampling):
         if text == method:
             return method, 4.0
         if text.startswith(method):
+            suffix = text[len(method):]
+            if suffix.startswith("*"):
+                suffix = suffix[1:]
+                if not suffix:
+                    return None
+            elif "*" in suffix:
+                return None
             try:
-                scale = float(text[len(method):] or 4.0)
+                scale = float(suffix or 4.0)
             except ValueError:
                 return None
             return (method, scale) if scale == 4.0 else None
@@ -226,7 +235,7 @@ def select_pid_checkpoint_type(width, height):
     return "2kto4k" if max(int(width), int(height)) > 512 else "2k"
 
 
-def _pid_latent_downscale(backbone):
+def pid_spatial_block_size(backbone):
     return 16 if normalize_pid_backbone(backbone) == "flux2" else 8
 
 
@@ -469,7 +478,8 @@ class PiDUpsampler:
         input_ids = caption_token["input_ids"].to(device)
         attention_mask = caption_token["attention_mask"].to(device)
         caption_token = None
-        caption_embs = self.text_encoder(input_ids, attention_mask)[0]
+        with checkpoint_modules(self.text_encoder.layers):
+            caption_embs = self.text_encoder(input_ids, attention_mask)[0]
         select_index = [0] + list(range(-_MODEL_MAX_LENGTH + 1, 0))
         caption_embs = caption_embs[:, select_index].to(dtype=self.dtype)
         del input_ids, attention_mask
@@ -493,7 +503,7 @@ class PiDUpsampler:
 
     def encode_lq_image(self, lq_image):
         autocast_ctx = torch.autocast(device_type="cuda", dtype=self.dtype) if lq_image.device.type == "cuda" else nullcontext()
-        with autocast_ctx:
+        with autocast_ctx, checkpoint_modules(module for module in self.vae.modules() if not module._modules):
             lq_image = lq_image.to(dtype=self.dtype)
             if self.backbone == "qwen":
                 latent = self.vae.encode(lq_image.unsqueeze(2)).latent_dist.mode()
@@ -635,7 +645,7 @@ class PiDUpsampler:
     def _decode_tiled(self, lq_image, lq_latent, caption_embs, degrade_sigma, seed, num_steps, tile_plan, abort_callback=None, progress_callback=None):
         device = lq_image.device
         batch_size, _, lq_h, lq_w = lq_image.shape
-        latent_scale = _pid_latent_downscale(self.backbone)
+        latent_scale = pid_spatial_block_size(self.backbone)
         rows = tile_plan["rows"]
         cols = tile_plan["cols"]
         tile_ckpt_type = tile_plan["ckpt_type"]
@@ -690,7 +700,7 @@ class PiDUpsampler:
         variant_label = normalize_pid_backbone(self.backbone)
         encode_label = "VAE Encode" if vae_encode or lq_latent is None else "No VAE Encode"
         tiled = self._should_tile(lq_image, resolved_threshold)
-        tile_plan = self._tile_plan(lq_image.shape[-2], lq_image.shape[-1], _pid_latent_downscale(self.backbone), resolved_threshold) if tiled else None
+        tile_plan = self._tile_plan(lq_image.shape[-2], lq_image.shape[-1], pid_spatial_block_size(self.backbone), resolved_threshold) if tiled else None
         ckpt_type = tile_plan["ckpt_type"] if tiled else self._direct_ckpt_type(lq_image, ckpt_type, resolved_threshold)
         threshold_label = pid_tiling_threshold_label(resolved_threshold)
         print(f"[PiD] variant={variant_label}, res={ckpt_type}, tiling_threshold={threshold_label}, conditioning={encode_label}, batch={batch_size}, input={int(lq_image.shape[-1])}x{int(lq_image.shape[-2])}, output={int(lq_image.shape[-1] * 4)}x{int(lq_image.shape[-2] * 4)}, tiled={tiled}")
@@ -740,6 +750,7 @@ class PiDUpsamplerSession:
         self.persistent_models = bool(persistent_models)
         self.attention_mode = attention_mode
 
+    @controlled_model_loading
     def ensure_loaded(self):
         self._runtime.load(self.backbone, init_pipe=self.init_pipe, profile=self.profile, dtype=self.dtype, ckpt_types=self.ckpt_types, version=self.version)
 
@@ -796,7 +807,7 @@ class PiDRuntime:
         profile_no = init_pipe(pipe, kwargs, profile)
         _apply_pid_offload_budgets(pipe, kwargs)
         kwargs["pinnedMemory"] = False
-        self.offloadobj = offload.profile(pipe, profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=dtype, verboseLevel=-1, **kwargs)
+        self.offloadobj = offload.profile(pipe, loading_callback=loading_callback(), profile_no=profile_no, quantizeTransformer=False, convertWeightsFloatTo=dtype, verboseLevel=-1, **kwargs)
         offload_registry.register_offloadobj("PiD", self.offloadobj, self.release)
         self.backbone = backbone
         self.profile = profile

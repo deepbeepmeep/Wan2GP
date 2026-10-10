@@ -5,6 +5,6 @@
   "media_type": "image",
   "image_mode": 1,
   "spatial_upsampling_method": "seedvr2",
-  "target_ratio": "seedvr22",
+  "target_ratio": "seedvr2*2",
   "prompt": ""
 }

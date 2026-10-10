@@ -108,6 +108,10 @@
 
 	let get_data_inflight: Promise<ImageBlobs | { id: string }> | null = null;
 
+	export function get_metadata(): { background: string | null } {
+		return { background: background_image || background ? "present" : null };
+	}
+
 	export async function get_data(): Promise<ImageBlobs | { id: string }> {
 		while (get_data_inflight) {
 			try {
@@ -166,6 +170,11 @@
 	}
 
 	async function read_data(): Promise<ImageBlobs | { id: string }> {
+		const dirty = editor.get_dirty_state();
+		// The saved value is already available while its canvas is still restoring.
+		if (last_value_id && !dirty.background && !dirty.layers && !dirty.composite && cached_value_survived_connection()) {
+			return { id: last_value_id };
+		}
 		if (editor?.is_empty?.()) {
 			last_data = empty_data();
 			last_value_id = null;
@@ -173,7 +182,6 @@
 			return last_data;
 		}
 		if (editor?.is_export_deferred?.()) return last_data;
-		const dirty = editor.get_dirty_state();
 		const force_full_value = Boolean(last_value_id) && !dirty.background && !dirty.layers && !dirty.composite && !cached_value_survived_connection();
 		if (!dirty.background && !dirty.layers && !dirty.composite && !force_full_value) {
 			if (last_value_id) return { id: last_value_id };

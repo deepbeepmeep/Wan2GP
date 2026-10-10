@@ -1,0 +1,27 @@
+/* Rose palette; shared studio rules preserve layout and controls. */
+.wangp-studio-scope {
+    --studio-surface: #ffffff;
+    --studio-input: #ffffff;
+    --studio-border: #e3b0bf;
+    --studio-label: #943e5c;
+    --studio-accent: #be5777;
+    --studio-soft: #fbe8ee;
+    --studio-button: #f6dce5;
+    --studio-button-hover: #efc4d3;
+    --studio-button-text: #84334f;
+    --studio-disabled: #f2edef;
+    --studio-disabled-text: #88767d;
+}
+.dark .wangp-studio-scope {
+    --studio-surface: #35212a;
+    --studio-input: #271820;
+    --studio-border: #98516b;
+    --studio-label: #f6b4cd;
+    --studio-accent: #ef8eb1;
+    --studio-soft: #582c40;
+    --studio-button: #6b354c;
+    --studio-button-hover: #83415d;
+    --studio-button-text: #ffe5ef;
+    --studio-disabled: #3c2d33;
+    --studio-disabled-text: #b09ba3;
+}

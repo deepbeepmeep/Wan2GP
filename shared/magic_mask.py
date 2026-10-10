@@ -16,9 +16,6 @@ from shared.utils.virtual_media import get_virtual_image, strip_virtual_media_su
 
 PROCESS_ID = "magic_mask"
 PROCESS_NAME = "Magic Mask"
-DOWNLOAD_REPO_ID = "DeepBeepMeep/Wan2.1"
-DOWNLOAD_FOLDER = "sam3"
-DOWNLOAD_FILES = ["sam3.1_multiplex_bf16.safetensors", "bpe_simple_vocab_16e6.txt.gz"]
 DEFAULT_FILL_HOLE_AREA = 2
 DEFAULT_POSTPROCESS_BATCH_SIZE = 1
 OUTPUT_DIR = "mask_outputs"
@@ -33,7 +30,9 @@ def parse_keywords(keyword_text: str | Iterable[str]) -> list[str]:
 
 
 def query_download_def():
-    return {"repoId": DOWNLOAD_REPO_ID, "sourceFolderList": [DOWNLOAD_FOLDER], "fileList": [list(DOWNLOAD_FILES)]}
+    from preprocessing.sam3.assets import query_download_def as query_sam3_download_def
+
+    return query_sam3_download_def()
 
 
 def _fill_hole_area(no_hole):

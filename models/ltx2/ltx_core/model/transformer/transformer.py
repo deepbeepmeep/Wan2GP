@@ -12,6 +12,7 @@ from .feed_forward import FeedForward
 from .rope import LTXRopeType
 from .transformer_args import TransformerArgs
 from ...utils import rms_norm
+from ....denoiser_kernels import scale_shift
 
 
 def _reshape_hidden_states(hidden_states: torch.Tensor, frames: int) -> torch.Tensor:
@@ -23,6 +24,9 @@ def _restore_hidden_states_shape(hidden_states: torch.Tensor) -> torch.Tensor:
 
 
 def _apply_scale_shift(hidden_states: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor, in_place: bool = True) -> torch.Tensor:
+    fused = scale_shift(hidden_states, scale, shift, in_place)
+    if fused is not None:
+        return fused
     if scale.shape[1] == hidden_states.shape[1]:
         if in_place:
             hidden_states.mul_(1 + scale).add_(shift)
@@ -407,6 +411,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                     scale_ca_video_hidden_states_v2a,
                     shift_ca_video_hidden_states_v2a,
                 )
+                vx_norm3 = ax_norm3 = None  # scaled in place: the attention releases its context after the projections
                 v2a_mask = perturbations.mask_like(PerturbationType.SKIP_V2A_CROSS_ATTN, self.idx, ax)
                 x_list, context_list = [ax_scaled], [vx_scaled]
                 del ax_scaled, vx_scaled
@@ -422,6 +427,7 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 ax.add_(attn_out)
                 attn_out = ax_scaled = vx_scaled = None
 
+            vx_norm3 = ax_norm3 = None  # not needed by the feed-forward
             del gate_out_a2v, gate_out_v2a
             del (
                 scale_ca_video_hidden_states_a2v,
@@ -490,6 +496,6 @@ def apply_cross_attention_adaln(
         ).unbind(dim=2)
         # Context is reused across blocks in LTX 2.3 prompt AdaLN, so this call must stay out-of-place.
         context = _apply_scale_shift(context, scale_kv, shift_kv, in_place=False)
-    attn_input = _apply_scale_shift(rms_norm(x, eps=norm_eps), q_scale.squeeze(2), q_shift.squeeze(2))
-    out = attn([attn_input], context_list=[context], mask=context_mask, NAG=nag)
+    # handed off: the attention releases its normalized input after the q projection
+    out = attn([_apply_scale_shift(rms_norm(x, eps=norm_eps), q_scale.squeeze(2), q_shift.squeeze(2))], context_list=[context], mask=context_mask, NAG=nag)
     return _apply_gate(out, q_gate.squeeze(2))

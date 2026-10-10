@@ -1,3 +1,4 @@
+from shared.utils.phase_progress import text_encoding_progress, generation_progress
 import json
 import math
 import os
@@ -193,6 +194,10 @@ class LongCatModel:
                 self.audio_encoder.eval().requires_grad_(False)
                 self.audio_feature_extractor = AutoFeatureExtractor.from_pretrained(whisper_folder, local_files_only=True)
             else:
+                from models.wan.multitalk.assets import query_download_def
+                from shared.utils.download import process_files_def_if_needed
+
+                process_files_def_if_needed(query_download_def())
                 wav2vec_folder = fl.locate_folder("chinese-wav2vec2-base")
                 self.audio_encoder_name = "wav2vec2"
                 self.audio_encoder = Wav2Vec2ModelWrapper(wav2vec_folder)
@@ -313,15 +318,16 @@ class LongCatModel:
             )
             ids = ids.to(device)
             mask = mask.to(device)
-            prompt_embeds = self.text_encoder.model(ids, mask).to(dtype)
+            with text_encoding_progress(self.text_encoder.model.blocks, prompt_count=len(prompts)):
+                prompt_embeds = self.text_encoder.model(ids, mask).to(dtype)
             return list(zip(prompt_embeds, mask))
         prompt_list = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompt_list)
-        prompt_contexts = self.text_encoder_cache.encode(
-            encode_fn,
-            prompt_list,
-            device=device,
-        )
+        neg_list = [] if negative_prompt is None else [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
+        if len(neg_list) == 1 and batch_size > 1:
+            neg_list = neg_list * batch_size
+        contexts = self.text_encoder_cache.encode(encode_fn, prompt_list + neg_list, device=device)
+        prompt_contexts, negative_contexts = contexts[:batch_size], contexts[batch_size:]
         prompt_embeds = torch.stack([ctx[0] for ctx in prompt_contexts], dim=0)
         mask = torch.stack([ctx[1] for ctx in prompt_contexts], dim=0)
         seq_len = prompt_embeds.shape[1]
@@ -337,11 +343,7 @@ class LongCatModel:
             neg_list = [negative_prompt] if isinstance(negative_prompt, str) else negative_prompt
             if len(neg_list) == 1 and batch_size > 1:
                 neg_list = neg_list * batch_size
-            neg_contexts = self.text_encoder_cache.encode(
-                encode_fn,
-                neg_list,
-                device=device,
-            )
+            neg_contexts = negative_contexts
             neg_embeds = torch.stack([ctx[0] for ctx in neg_contexts], dim=0)
             neg_mask = torch.stack([ctx[1] for ctx in neg_contexts], dim=0)
             neg_embeds = neg_embeds.unsqueeze(1)
@@ -402,12 +404,12 @@ class LongCatModel:
 
     def normalize_latents(self, latents):
         latents_mean = (
-            torch.tensor(self.vae.config.latents_mean)
+            torch.tensor(self.vae.config.latents_mean, device=latents.device)
             .view(1, self.vae.config.z_dim, 1, 1, 1)
             .to(latents.device, latents.dtype)
         )
         latents_std = (
-            torch.tensor(self.vae.config.latents_std)
+            torch.tensor(self.vae.config.latents_std, device=latents.device)
             .view(1, self.vae.config.z_dim, 1, 1, 1)
             .to(latents.device, latents.dtype)
         )
@@ -415,12 +417,12 @@ class LongCatModel:
 
     def denormalize_latents(self, latents):
         latents_mean = (
-            torch.tensor(self.vae.config.latents_mean)
+            torch.tensor(self.vae.config.latents_mean, device=latents.device)
             .view(1, self.vae.config.z_dim, 1, 1, 1)
             .to(latents.device, latents.dtype)
         )
         latents_std = (
-            torch.tensor(self.vae.config.latents_std)
+            torch.tensor(self.vae.config.latents_std, device=latents.device)
             .view(1, self.vae.config.z_dim, 1, 1, 1)
             .to(latents.device, latents.dtype)
         )
@@ -551,7 +553,7 @@ class LongCatModel:
         if not speakers_bboxes:
             speakers_bboxes = {"person1": [5, 10, 45, 90], "person2": [55, 10, 95, 90]}
         human_masks = []
-        background_mask = torch.zeros([height, width])
+        background_mask = torch.zeros([height, width], device="cpu")
         for _, person_bbox in speakers_bboxes.items():
             y_min, x_min, y_max, x_max = person_bbox
             x_min, y_min, x_max, y_max = max(x_min, 5), max(y_min, 5), min(x_max, 95), min(y_max, 95)
@@ -561,21 +563,21 @@ class LongCatModel:
                 int(height * x_max / 100),
                 int(width * y_max / 100),
             )
-            human_mask = torch.zeros([height, width])
+            human_mask = torch.zeros([height, width], device="cpu")
             human_mask[int(x_min) : int(x_max), int(y_min) : int(y_max)] = 1
             background_mask += human_mask
             human_masks.append(human_mask)
-        background_mask = torch.where(background_mask > 0, torch.tensor(0), torch.tensor(1))
+        background_mask = torch.where(background_mask > 0, torch.tensor(0, device="cpu"), torch.tensor(1, device="cpu"))
         human_masks.append(background_mask)
         return torch.stack(human_masks, dim=0)
 
     def get_timesteps_sigmas(self, sampling_steps, use_distill=False):
         if use_distill:
-            distill_indices = torch.arange(1, self.num_distill_sample_steps + 1, dtype=torch.float32)
+            distill_indices = torch.arange(1, self.num_distill_sample_steps + 1, dtype=torch.float32, device=self.device)
             distill_indices = (distill_indices * (self.num_timesteps // self.num_distill_sample_steps)).round().long()
             if self.is_avatar_v1_5:
                 distill_indices = self.num_timesteps - distill_indices
-                sigmas = torch.flip(torch.linspace(0, 1, self.num_timesteps), [0])
+                sigmas = torch.flip(torch.linspace(0, 1, self.num_timesteps, device=self.device), [0])
                 sigmas = torch.flip(sigmas[distill_indices], [0]).float()
                 if sampling_steps != self.num_distill_sample_steps:
                     inference_indices = np.linspace(0, self.num_distill_sample_steps, num=sampling_steps, endpoint=False)
@@ -585,10 +587,11 @@ class LongCatModel:
                 inference_indices = np.floor(inference_indices).astype(np.int64)
                 sigmas = torch.flip(distill_indices, [0])[inference_indices].float() / self.num_timesteps
         else:
-            sigmas = torch.linspace(1, 0.001, sampling_steps, dtype=torch.float32)
+            sigmas = torch.linspace(1, 0.001, sampling_steps, dtype=torch.float32, device=self.device)
         return sigmas.to(dtype=torch.float32, device="cpu")
 
     @torch.no_grad()
+    @generation_progress
     def generate(
         self,
         seed=None,
@@ -622,6 +625,7 @@ class LongCatModel:
         speakers_bboxes=None,
         window_no=None,
         offloadobj=None,
+        set_progress_status=None,
         **kwargs,
     ):
         if self._interrupt:
@@ -1026,7 +1030,7 @@ class LongCatModel:
                     latents = self.scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
                 if callback is not None:
-                    callback(i, latents.squeeze(0))
+                    callback(i, latents[0, :, num_ref_latents:])
                 progress_bar.update()
 
         if num_ref_latents > 0:

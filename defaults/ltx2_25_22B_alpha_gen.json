@@ -1,0 +1,29 @@
+{
+    "model": {
+        "name": "LTX-2 2.5 Alpha Gen 22B",
+        "architecture": "ltx2_25_22B_alpha_gen",
+        "description": "Extract a soft grayscale alpha matte from a source video, optionally restrict it with a selection mask, and export the original RGB with alpha as PNG ZIP or ProRes 4444.",
+        "URLs": "ltx2_25_22B_distilled",
+        "loras": [
+            "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/loras/ltx-2.5-22b-ic-lora-alpha-gen-0.9.safetensors"
+        ],
+        "loras_multipliers": [
+            1
+        ],
+        "ltx2_pipeline": "distilled",
+        "ltx2_alpha_gen": true
+    },
+    "prompt": "Generate Alpha Matte",
+    "video_prompt_type": "VG",
+    "num_inference_steps": 8,
+    "guidance_phases": 1,
+    "video_length": 121,
+    "resolution": "1280x704",
+    "denoising_strength": 1.0,
+    "masking_strength": 0.0,
+    "input_video_strength": 1.0,
+    "remove_background_images_ref": 0,
+    "prompt_enhancer": "",
+    "force_fps": "control",
+    "seed": -1
+}

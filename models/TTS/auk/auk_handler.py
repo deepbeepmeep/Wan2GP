@@ -39,7 +39,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         flash = model_def.get('auk_flash', False)
         return {
-            'group': 'tts', 'audio_only': True, 'image_outputs': False, 'sliding_window': False,
+            'group': 'tts', 'audio_only': True, 'image_outputs': False, 'sliding_window': False, 'device_explicit': True,
             'image_prompt_types_allowed': '', 'no_negative_prompt': True, 'guidance_max_phases': 0 if flash else 1, 'embedded_guidance': False,
             'inference_steps': not flash, 'temperature': False, 'supports_early_stop': True,
             'profiles_dir': ['auk'], 'compile': False,

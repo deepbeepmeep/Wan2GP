@@ -172,6 +172,20 @@ Common postprocessing jobs:
 
 Late postprocessing is useful when you want to improve existing media without regenerating the original scene.
 
+### Detail Refinement Up To 8K
+
+**LTX 2.5 Detail Refiner** rebuilds fine texture, edges and natural grain in videos that look soft: compressed web video, clips upscaled with a basic resizer, or generated videos that lost detail in the VAE. Framing, motion, exposure and color stay those of the source.
+
+- **Scale:** x1 only restores detail, x1.5 and x2 also enlarge the video. The best results come from 1080p sources refined to 4K. The refiner accepts at most x2 of the source; to reach 8K, refine to 4K first and then refine the 4K result again.
+- **Speed:** the video is processed in overlapping 1024x576 areas that are refined together at every step, so there are no seams, but the work grows with the output size: FullHD needs 9 areas per step, 4K needs 49 and 8K 196. Expect minutes for FullHD and much longer for 4K or 8K.
+- **Style prompt:** describe the rendering only, for example sharpness, texture, grain or lighting. Every area of the frame receives the whole prompt, so naming a subject can paint it where it does not belong.
+- **Gentle Mode** (enabled by default in *Configuration / Extensions*) starts from the source video and runs three steps: it is faster and stays closer to the source. Disable it to rebuild detail from scratch in eight steps when the source is very soft.
+- **Temporal Window** (97 frames by default) is the number of frames refined together. Shorter windows use less VRAM.
+- **Tiles per Model Call** (*Auto* by default) is how many areas are refined in one pass of the model. Lower it to cap VRAM usage; the result is identical, only the speed changes. Very large or long outputs are also kept in system RAM automatically instead of VRAM.
+- **Media Flow:** the *LTX 2.5 Detail Refiner* process offers the same x1, x1.5 and x2 *Upsampling* choices. Outputs larger than 4320p (8K) are refused with the largest multiplier that fits. Each chunk starts from the refined end of the previous chunk, so content stays continuous across chunk boundaries; on very fine texture such as grass or foliage, a slight change of texture can remain visible at a boundary. A small `.ltx25_refine_cache.safetensors` file is kept next to an unfinished output so a stopped run resumes just as smoothly; it is removed when the output completes. Keep it with the video if you move a partial output you plan to resume.
+
+Limitations: text and logos that are heavily degraded may become shapes that only resemble letters; foam, fireworks or wind-blown foliage can look over-sharpened; archive footage becomes cleaner but can lose some mid-level texture. Save 4K and 8K results with a high-quality video codec setting, otherwise compression hides the added detail.
+
 ## Checklists
 
 Before generation:

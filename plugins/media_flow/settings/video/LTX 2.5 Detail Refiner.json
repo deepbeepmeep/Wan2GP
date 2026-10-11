@@ -1,0 +1,9 @@
+{
+  "model_type": "__system_flashvsr",
+  "model_label": "WanGP System Video Postprocessing",
+  "system_handler": "ltx2_refiner",
+  "spatial_upsampling_method": "ltx25_refine",
+  "target_ratio": "ltx25_refine*2",
+  "chunk_size_seconds": 4.0,
+  "prompt": "sharp photographic detail, crisp natural texture, fine surface detail, clean edges, natural film grain, high resolution footage"
+}

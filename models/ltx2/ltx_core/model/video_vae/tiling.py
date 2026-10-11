@@ -10,6 +10,8 @@ def compute_trapezoidal_mask_1d(
     ramp_left: int,
     ramp_right: int,
     left_starts_from_0: bool = False,
+    *,
+    device: torch.device,
 ) -> torch.Tensor:
     """
     Generate a 1D trapezoidal blending mask with linear ramps.
@@ -19,6 +21,7 @@ def compute_trapezoidal_mask_1d(
         ramp_right: Fade-out length on the right.
         left_starts_from_0: Whether the ramp starts from 0 or first non-zero value.
             Useful for temporal tiles where the first tile is causal.
+        device: Device on which the mask is created.
     Returns:
         A 1D tensor of shape `(length,)` with values in [0, 1].
     """
@@ -28,17 +31,17 @@ def compute_trapezoidal_mask_1d(
     ramp_left = max(0, min(ramp_left, length))
     ramp_right = max(0, min(ramp_right, length))
 
-    mask = torch.ones(length)
+    mask = torch.ones(length, device=device)
 
     if ramp_left > 0:
         interval_length = ramp_left + 1 if left_starts_from_0 else ramp_left + 2
-        fade_in = torch.linspace(0.0, 1.0, interval_length)[:-1]
+        fade_in = torch.linspace(0.0, 1.0, interval_length, device=device)[:-1]
         if not left_starts_from_0:
             fade_in = fade_in[1:]
         mask[:ramp_left] *= fade_in
 
     if ramp_right > 0:
-        fade_out = torch.linspace(1.0, 0.0, steps=ramp_right + 2)[1:-1]
+        fade_out = torch.linspace(1.0, 0.0, steps=ramp_right + 2, device=device)[1:-1]
         mask[-ramp_right:] *= fade_out
 
     return mask.clamp_(0, 1)

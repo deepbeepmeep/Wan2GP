@@ -69,7 +69,14 @@ class LatentTools(Protocol):
         """
         Clear the conditioning from the latent state. This method removes extra tokens from the end of the latent.
         Therefore, conditioning items should add extra tokens ONLY to the end of the latent.
+        Generated keyframe slots are output rather than conditioning: their denoised content is kept in ``generated_keyframes``.
         """
+        layout = latent_state.generated_keyframe_layout
+        generated_keyframes = None
+        if layout is not None:
+            frame_shape = self.target_shape._replace(frames=1)
+            tokens = latent_state.latent[:, layout.token_slice].split(layout.tokens_per_keyframe, dim=1)
+            generated_keyframes = torch.cat([self.patchifier.unpatchify(frame_tokens, output_shape=frame_shape) for frame_tokens in tokens], dim=2)
         latent_state = latent_state.clone()
 
         num_tokens = self.patchifier.get_token_count(self.target_shape)
@@ -83,7 +90,7 @@ class LatentTools(Protocol):
             attention_mask = latent_state.attention_mask[:, :num_tokens, :num_tokens]
         keyframes_mask = latent_state.keyframes_mask[:, :num_tokens] if latent_state.keyframes_mask is not None else None
 
-        return LatentState(latent=latent, denoise_mask=denoise_mask, positions=positions, clean_latent=clean_latent, attention_mask=attention_mask, keyframes_mask=keyframes_mask)
+        return LatentState(latent=latent, denoise_mask=denoise_mask, positions=positions, clean_latent=clean_latent, attention_mask=attention_mask, keyframes_mask=keyframes_mask, generated_keyframe_layout=layout, generated_keyframes=generated_keyframes)
 
 
 @dataclass(frozen=True)

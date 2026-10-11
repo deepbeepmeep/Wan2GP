@@ -383,9 +383,11 @@ class family_handler:
             }
             if _ace_step15_has_lm_definition(model_def):
                 extra_model_def["model_modes"] = ACE_STEP15_MODEL_MODES.copy()
+            extra_model_def["device_explicit"] = True
             return extra_model_def
         return {
             "group": "music",
+            "device_explicit": True,
             "audio_only": True,
             "image_outputs": False,
             "sliding_window": False,

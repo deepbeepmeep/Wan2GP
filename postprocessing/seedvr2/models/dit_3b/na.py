@@ -622,24 +622,15 @@ def window_idx(
     window_fn: Callable[[torch.Tensor], List[torch.Tensor]],
 ):
     """
-    Create index-based windowing functions.
-    
-    Pre-computes indices for efficient windowing and reverse operations.
-    
+    Index-based windowing.
+
     Args:
         hid_shape: Shape metadata (b, n)
         window_fn: Function that splits a tensor into windows
-    
+
     Returns:
-        Tuple of (window_fn, reverse_fn, window_shapes, window_counts)
+        Tuple of (rows of the flattened tokens in window order, window_shapes, window_counts); the windows partition the tokens
     """
     hid_idx = torch.arange(hid_shape.prod(-1).sum(), device=hid_shape.device).unsqueeze(-1)
     tgt_idx, tgt_shape, tgt_windows = window(hid_idx, hid_shape, window_fn)
-    tgt_idx = tgt_idx.squeeze(-1)
-    src_idx = torch.argsort(tgt_idx)
-    return (
-        lambda hid_list: torch.index_select(hid_list.pop(), 0, tgt_idx),
-        lambda hid_list: torch.index_select(hid_list.pop(), 0, src_idx),
-        tgt_shape,
-        tgt_windows,
-    )
+    return tgt_idx.squeeze(-1), tgt_shape, tgt_windows

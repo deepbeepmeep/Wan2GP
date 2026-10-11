@@ -347,7 +347,8 @@ class WebUIQueueProbe:
                     self._logged_admitted_client_ids.add(client_id)
         if self._job.cancel_requested:
             self._request_cancel()
-        if self._queue_wait_suspended and any(client_id in self._admitted_client_ids for client_id in self._client_ids):
+        # Historical admissions do not mean the remaining requests have resumed.
+        if self._queue_wait_suspended and any(client_id in self._client_ids for client_id in queue_client_ids):
             print("WanGP back in focus API queue resumed")
             self._queue_wait_suspended = False
         self._check_queue_errors()

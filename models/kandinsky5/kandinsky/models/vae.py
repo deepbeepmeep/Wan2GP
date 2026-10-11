@@ -1,5 +1,4 @@
 from shared.utils.phase_progress import vae_decoding_progress, set_phase_status
-import os
 import json
 from math import sqrt, floor, ceil
 from typing import Optional, Tuple, Union, List
@@ -19,11 +18,8 @@ from diffusers.models.autoencoders.vae import (
     DiagonalGaussianDistribution,
 )
 
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.benchmark = True
 
 
 def prepare_causal_attention_mask(
@@ -1305,7 +1301,7 @@ def build_vae(conf):
             from mmgp import offload
             return offload.fast_load_transformers_model(
                 checkpoint_path,
-                writable_tensors=True,
+                writable_tensors=False,
                 modelClass=model_class,
                 defaultConfigPath=config_path,
                 default_dtype=torch.float16,

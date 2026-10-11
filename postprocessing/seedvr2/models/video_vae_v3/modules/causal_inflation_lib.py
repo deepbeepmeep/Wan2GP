@@ -25,7 +25,6 @@ from torch.nn import Conv3d
 from .context_parallel_lib import cache_send_recv, get_cache_size
 from .global_config import get_norm_limit
 from .types import MemoryState, _inflation_mode_t, _memory_device_t
-from ....common.half_precision_fixes import safe_pad_operation
 from ....optimization.memory_manager import retry_on_oom
 
 # Single GPU inference - no distributed processing needed
@@ -63,103 +62,72 @@ class InflatedCausalConv3d(Conv3d):
     def set_memory_device(self, memory_device: _memory_device_t):
         self.memory_device = memory_device
     
-    def memory_limit_conv(
-        self,
-        x,
-        *,
-        split_dim=3,
-        padding=(0, 0, 0, 0, 0, 0),
-        prev_cache=None,
-    ):
+    def memory_limit_conv(self, x, *, padding, prev_cache=None):
         # Compatible with no limit.
         if math.isinf(self.memory_limit):
             if prev_cache is not None:
-                x = torch.cat([prev_cache, x], dim=split_dim - 1)
+                x = torch.cat([prev_cache, x], dim=2)
             return super().forward(x)
 
-        # Compute tensor shape after concat & padding.
-        shape = torch.tensor(x.size())
-        if prev_cache is not None:
-            shape[split_dim - 1] += prev_cache.size(split_dim - 1)
-        shape[-3:] += torch.tensor(padding).view(3, 2).sum(-1).flip(0)
-        memory_occupy = shape.prod() * x.element_size() / 1024**3  # GiB
-        if memory_occupy < self.memory_limit or split_dim == x.ndim:
-            x_concat = x
-            if prev_cache is not None:
-                x_concat = torch.cat([prev_cache, x], dim=split_dim - 1)
-            
-            def pad_and_forward():
-                padded = safe_pad_operation(x_concat, padding, mode='constant', value=0.0)
+        # The blocks of upstream's recursion (rows, then columns of a row block, until a padded block fits in the memory limit; each block
+        # with the overlap of the previous one), so the same convolutions; but each block is assembled once from x and prev_cache (the
+        # preceding frames) with its zero padding, and its output written into the output tensor: no concatenated, padded or output copies.
+        t_cache = 0 if prev_cache is None else prev_cache.size(2)
+        rows = self._split_blocks(list(x.size()), 3, padding, t_cache, x.element_size())
+        out, top = None, 0
+        for h0, h1, h_overlap, row_padding in rows or [(0, x.size(3), 0, padding)]:
+            cols = None if rows is None else self._split_blocks([x.size(0), x.size(1), x.size(2) + t_cache, h1 - h0, x.size(4)], 4, row_padding, h_overlap, x.element_size())
+            left = 0
+            for w0, w1, w_overlap, block_padding in cols or [(0, x.size(4), 0, row_padding)]:
+                block = self._padded_block(x, prev_cache, (h0 - h_overlap, h1), (w0 - w_overlap, w1), block_padding)
                 with ignore_padding(self):
-                    return Conv3d.forward(self, padded)
-            
-            return retry_on_oom(
-                pad_and_forward,
-                debug=getattr(self, 'debug', None),
-                operation_name="InflatedCausalConv3d.pad_and_forward"
-            )
+                    block = Conv3d.forward(self, block)
+                if out is None:
+                    size = [x.size(3) + padding[2] + padding[3], x.size(4) + padding[0] + padding[1]]
+                    size = [(n - self.dilation[d] * (self.kernel_size[d] - 1) - 1) // self.stride[d] + 1 for d, n in zip((1, 2), size)]
+                    out = block.new_empty((*block.shape[:3], *size))
+                out[:, :, :, top:top + block.size(3), left:left + block.size(4)] = block
+                left += block.size(4)
+            top += block.size(3)
+            block = None
+        return out
 
-        # Exceed memory limit, splitting tensor
-
-        # Split input (& prev_cache).
+    def _split_blocks(self, shape, split_dim, padding, cache_len, element_size):
+        """Upstream's split of a block along split_dim (3: rows, 4: columns) when its padded size, with the cache_len overlap of the previous
+        level along split_dim - 1, exceeds the memory limit: (start, stop, overlap with the previous block, padding) of each part, else None."""
+        size = torch.tensor(shape)
+        size[split_dim - 1] += cache_len
+        size[-3:] += torch.tensor(padding).view(3, 2).sum(-1).flip(0)
+        memory_occupy = size.prod() * element_size / 1024**3  # GiB
+        if memory_occupy < self.memory_limit:
+            return None
         num_splits = math.ceil(memory_occupy / self.memory_limit)
-        size_per_split = x.size(split_dim) // num_splits
-        split_sizes = [size_per_split] * (num_splits - 1)
-        split_sizes += [x.size(split_dim) - sum(split_sizes)]
+        size_per_split = shape[split_dim] // num_splits
+        split_sizes = [size_per_split] * (num_splits - 1) + [shape[split_dim] - size_per_split * (num_splits - 1)]
+        lpad_dim = (len(shape) - split_dim - 1) * 2
+        parts, start, overlap = [], 0, 0
+        for idx, length in enumerate(split_sizes):
+            part_padding = list(padding)
+            part_padding[lpad_dim] = self.padding[split_dim - 2] if idx == 0 else 0
+            part_padding[lpad_dim + 1] = self.padding[split_dim - 2] if idx == len(split_sizes) - 1 else 0
+            parts.append((start, start + length, overlap, tuple(part_padding)))
+            overlap = get_cache_size(conv_module=self, input_len=length + overlap, pad_len=part_padding[lpad_dim] + part_padding[lpad_dim + 1], dim=split_dim - 2)
+            assert overlap <= length
+            start += length
+        return parts
 
-        x = list(x.split(split_sizes, dim=split_dim))
+    @staticmethod
+    def _padded_block(x, prev_cache, rows, cols, padding):
+        """F.pad(torch.cat([prev_cache, x], 2)[..., rows, cols], padding) built in one tensor."""
+        t_cache = 0 if prev_cache is None else prev_cache.size(2)
+        pw0, pw1, ph0, ph1, pt0, pt1 = padding
+        h, w = rows[1] - rows[0], cols[1] - cols[0]
+        block = x.new_zeros((x.size(0), x.size(1), t_cache + x.size(2) + pt0 + pt1, h + ph0 + ph1, w + pw0 + pw1))
+        inner = block[:, :, pt0:pt0 + t_cache + x.size(2), ph0:ph0 + h, pw0:pw0 + w]
         if prev_cache is not None:
-            prev_cache = list(prev_cache.split(split_sizes, dim=split_dim))
-        # Loop Fwd.
-        cache = None
-        for idx in range(len(x)):
-            # Concat prev cache from last dim
-            if prev_cache is not None:
-                x[idx] = torch.cat([prev_cache[idx], x[idx]], dim=split_dim - 1)
-
-            # Get padding pattern.
-            lpad_dim = (x[idx].ndim - split_dim - 1) * 2
-            rpad_dim = lpad_dim + 1
-            padding = list(padding)
-            padding[lpad_dim] = self.padding[split_dim - 2] if idx == 0 else 0
-            padding[rpad_dim] = self.padding[split_dim - 2] if idx == len(x) - 1 else 0
-            pad_len = padding[lpad_dim] + padding[rpad_dim]
-            padding = tuple(padding)
-
-            # Prepare cache for next slice (this dim).
-            next_cache = None
-            cache_len = cache.size(split_dim) if cache is not None else 0
-            next_catch_size = get_cache_size(
-                conv_module=self,
-                input_len=x[idx].size(split_dim) + cache_len,
-                pad_len=pad_len,
-                dim=split_dim - 2,
-            )
-            if next_catch_size != 0:
-                assert next_catch_size <= x[idx].size(split_dim)
-                next_cache = (
-                    x[idx].transpose(0, split_dim)[-next_catch_size:].transpose(0, split_dim)
-                )
-
-            # Recursive.
-            x[idx] = self.memory_limit_conv(
-                x[idx],
-                split_dim=split_dim + 1,
-                padding=padding,
-                prev_cache=cache
-            )
-
-            # Update cache.
-            cache = next_cache
-
-        output = retry_on_oom(
-            torch.cat,
-            x,
-            split_dim,
-            debug=getattr(self, 'debug', None),
-            operation_name="InflatedCausalConv3d.concat_splits"
-        )
-        return output
+            inner[:, :, :t_cache] = prev_cache[:, :, :, rows[0]:rows[1], cols[0]:cols[1]]
+        inner[:, :, t_cache:] = x[:, :, :, rows[0]:rows[1], cols[0]:cols[1]]
+        return block
 
     def forward(
         self,

@@ -95,7 +95,7 @@ def resolve_injected_positions(positions, image_count, *, windows, source_frames
     return result[:image_count]
 
 
-def window_contexts(windows, image_start, image_end, image_refs, *, fps, window_size, positions="", source_frames=0, reset_alignment=False, extract_from_window_start=False, discard_frames=0, reuse_frames=0, main_reference=False, control_image=None, continuation_image=None):
+def window_contexts(windows, image_start, image_end, image_refs, *, fps, window_size, positions="", source_frames=0, reset_alignment=False, extract_from_window_start=False, discard_frames=0, reuse_frames=0, main_reference=False, control_image=None, continuation_image=None, picture_labels=False):
     references, ends = image_list(image_refs), image_list(image_end)
     if image_start is not None and windows[0].get("new_shot", False):
         source_frames = 0
@@ -119,6 +119,29 @@ def window_contexts(windows, image_start, image_end, image_refs, *, fps, window_
             end = ends[end_index]
             end_index += 1
         images, labels = ([control_image], ["Control Image"]) if control_image is not None else ([], [])
+        if picture_labels:
+            # Label every image with the <Picture N> the model receives, in its order: start / continuation frame, end image,
+            # injected frames by time, reference images. Frames inside the overlap belong to the continuation and are dropped.
+            time_origin, middle = start_frame + max(overlap - 1, 0), []
+            injected = sorted(((position, image) for ref_no, (image, position) in enumerate(zip(references, positions), 1)
+                               if last_injection[position] == ref_no - 1 and guide_start <= position <= end_frame), key=lambda item: item[0])
+            for position, image in injected:
+                if position == start_frame:  # a start image already owns frame 0
+                    start = image if start is None else start
+                elif position in (kept_end, end_frame) and end is None:
+                    end = image
+                else:
+                    middle.append((image, f"injected frame at {(position - time_origin) / fps:g}s"))
+            entries = ([(start, "start image")] if start is not None else []) + ([(end, "end image")] if end is not None else []) + middle
+            entries += [(image, reference_name(ref_no, main_reference)) for ref_no, image in enumerate(references[len(positions):], len(positions) + 1)]
+            # without a visible start image, <Picture 1> is still the frame continued from the previous window (or source video)
+            first = 2 if start is None and not window.get("new_shot", False) and (index > 0 or source_overlap > 0) else 1
+            images += [image for image, _ in entries]
+            labels += [f"<Picture {first + number}>: {label}" for number, (_, label) in enumerate(entries)]
+            contexts.append(ImageContext(images, labels, window["frame_num"] / fps))
+            previous_end = end
+            guide_start += window["frame_num"] - overlap - window["discard_last_frames"] - window["trim_last_frames"]
+            continue
         first_injected = start_frame if extract_from_window_start else guide_start
         for ref_no, (image, position) in enumerate(zip(references, positions), 1):
             if last_injection[position] != ref_no - 1 or not first_injected <= position <= end_frame:
@@ -153,12 +176,12 @@ def window_contexts(windows, image_start, image_end, image_refs, *, fps, window_
 
 def prepare_auto(prompts, image_start, image_end, image_refs, *, windows, fps, window_size, positions, source_frames, reset_alignment, model_def, discard_frames, reuse_frames, multi_prompt_output, video=True, video_prompt_type="", control_image=None, continuation_image=None):
     if model_def.get("sliding_window", False) and video and not multi_prompt_output:
-        contexts = window_contexts(windows, image_start, image_end, image_refs, fps=fps, window_size=window_size, positions=positions, source_frames=source_frames, reset_alignment=reset_alignment, extract_from_window_start=model_def.get("extract_guide_from_window_start", False), discard_frames=discard_frames, reuse_frames=reuse_frames, main_reference="K" in video_prompt_type, control_image=control_image, continuation_image=continuation_image)
+        contexts = window_contexts(windows, image_start, image_end, image_refs, fps=fps, window_size=window_size, positions=positions, source_frames=source_frames, reset_alignment=reset_alignment, extract_from_window_start=model_def.get("extract_guide_from_window_start", False), discard_frames=discard_frames, reuse_frames=reuse_frames, main_reference="K" in video_prompt_type, control_image=control_image, continuation_image=continuation_image, picture_labels=model_def.get("prompt_enhancer_picture_labels", False))
         # Repeated prompt text still needs the distinct anchors of each window.
         prompts = [prompts[index] if index < len(prompts) else strip_window_commands([prompts[-1]])[0][0] for index in range(len(windows))]
     else:
         first_window = [windows[0]]
-        contexts = window_contexts(first_window, image_start, image_end, image_refs, fps=fps, window_size=window_size, positions=positions, source_frames=source_frames, reset_alignment=reset_alignment, extract_from_window_start=model_def.get("extract_guide_from_window_start", False), discard_frames=discard_frames, reuse_frames=reuse_frames, main_reference="K" in video_prompt_type, control_image=control_image, continuation_image=continuation_image) * len(prompts)
+        contexts = window_contexts(first_window, image_start, image_end, image_refs, fps=fps, window_size=window_size, positions=positions, source_frames=source_frames, reset_alignment=reset_alignment, extract_from_window_start=model_def.get("extract_guide_from_window_start", False), discard_frames=discard_frames, reuse_frames=reuse_frames, main_reference="K" in video_prompt_type, control_image=control_image, continuation_image=continuation_image, picture_labels=model_def.get("prompt_enhancer_picture_labels", False)) * len(prompts)
     if not video:
         for context in contexts:
             context.duration_seconds = None
@@ -218,7 +241,7 @@ def prepare_manual(prompts, inputs, model_def, *, fps, source_frames, open_image
         expanded = prompts
     positions = inputs["frames_positions"] if "F" in inputs["video_prompt_type"] else ""
     control_image = control_image_input(inputs)
-    common = dict(fps=fps, window_size=window_size, positions=positions, source_frames=source_frames, reset_alignment="T" in inputs["video_prompt_type"], extract_from_window_start=model_def.get("extract_guide_from_window_start", False), discard_frames=discard, reuse_frames=default_overlap, main_reference="K" in inputs["video_prompt_type"], control_image=open_image(control_image) if control_image is not None else None, continuation_image=continuation_image)
+    common = dict(fps=fps, window_size=window_size, positions=positions, source_frames=source_frames, reset_alignment="T" in inputs["video_prompt_type"], extract_from_window_start=model_def.get("extract_guide_from_window_start", False), discard_frames=discard, reuse_frames=default_overlap, main_reference="K" in inputs["video_prompt_type"], control_image=open_image(control_image) if control_image is not None else None, continuation_image=continuation_image, picture_labels=model_def.get("prompt_enhancer_picture_labels", False))
     if sliding:
         contexts = window_contexts(windows, start, ends, references, **common)
         if multi_prompt_output or not window_mode:

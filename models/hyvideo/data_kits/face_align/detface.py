@@ -249,9 +249,9 @@ class DetFace():
             for scale in [8,16,32]:
                 ny = h1//scale
                 nx = w1//scale
-                yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)], indexing="ij")
+                yv, xv = torch.meshgrid([torch.arange(ny, device=self.test_device), torch.arange(nx, device=self.test_device)], indexing="ij")
                 grid = torch.stack((xv, yv), 2).view((1,1,ny, nx, 2)).float()
-                grids.append(grid.to(self.test_device))
+                grids.append(grid)
             self.grids = grids
             self.last_w = w1
             self.last_h = h1

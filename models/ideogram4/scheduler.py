@@ -39,9 +39,9 @@ def get_schedule_for_resolution(
   return LogitNormalSchedule(mean=mean, std=std)
 
 
-def make_step_intervals(num_steps: int) -> torch.Tensor:
+def make_step_intervals(num_steps: int, device: torch.device) -> torch.Tensor:
   """Default linear step schedule used by the v4 eval config."""
-  return torch.linspace(0.0, 1.0, num_steps + 1, dtype=torch.float32)
+  return torch.linspace(0.0, 1.0, num_steps + 1, dtype=torch.float32, device=device)
 
 
 @dataclass(frozen=True, kw_only=True)

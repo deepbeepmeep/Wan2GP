@@ -43,8 +43,8 @@ def preprocess_sd(state_dict):
     return {key[prefix_len:] if key.startswith(_TRANSFORMER_STATE_DICT_PREFIX) else key: value for key, value in state_dict.items()}
 
 
-def _timesteps(seq_len, steps, x1, x2, y1=0.5, y2=1.15, sigma=1.0, mu=None):
-    ts = torch.linspace(1, 0, steps + 1)
+def _timesteps(seq_len, steps, x1, x2, device, y1=0.5, y2=1.15, sigma=1.0, mu=None):
+    ts = torch.linspace(1, 0, steps + 1, device=device)
     if mu is None:
         slope = (y2 - y1) / (x2 - x1)
         mu = slope * seq_len + (y1 - slope * x1)
@@ -197,8 +197,8 @@ class Krea2Pipeline:
 
     def _decode_latents_to_cpu_uint8(self, latents):
         latents = rearrange(latents, "b c h w -> b c 1 h w").to(self.vae.dtype)
-        latents_mean = torch.tensor(self.vae.config.latents_mean).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
-        latents_std = torch.tensor(self.vae.config.latents_std).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_mean = torch.tensor(self.vae.config.latents_mean, device=latents.device).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_std = torch.tensor(self.vae.config.latents_std, device=latents.device).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
         latents = (latents * latents_std) + latents_mean
         return self.vae.decode_to_cpu_uint8(latents)[:, :, 0]
 
@@ -225,8 +225,8 @@ class Krea2Pipeline:
             image = image.resize((width, height), resample=Image.Resampling.LANCZOS)
         tensor = convert_image_to_tensor(image).unsqueeze(0).unsqueeze(2).to(device=device, dtype=self.vae.dtype)
         latents = self.vae.encode(tensor).latent_dist.mode()
-        latents_mean = torch.tensor(self.vae.config.latents_mean).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
-        latents_std = torch.tensor(self.vae.config.latents_std).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_mean = torch.tensor(self.vae.config.latents_mean, device=latents.device).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
+        latents_std = torch.tensor(self.vae.config.latents_std, device=latents.device).view(1, self.channels, 1, 1, 1).to(latents.device, latents.dtype)
         latents = (latents - latents_mean) / latents_std
         return latents[:, :, 0].to(device=device, dtype=dtype)
 
@@ -353,7 +353,7 @@ class Krea2Pipeline:
                 _, unpos, unmask = _prepare(noise, untxt.shape[1], patch, untxtmask)
         x1 = (256 // align) ** 2
         x2 = (1280 // align) ** 2
-        ts = _timesteps(x.shape[1], steps, x1, x2, y1=y1, y2=y2, mu=mu)
+        ts = _timesteps(x.shape[1], steps, x1, x2, x.device, y1=y1, y2=y2, mu=mu)
         img = x
         reference_tokens = []
         if edit:

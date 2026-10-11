@@ -3,7 +3,7 @@
 	{
 		"name": "Wan2.1 Alpha v1.0 Lightning 14B",
 		"architecture" : "alpha",
-		"description": "This model is accelerated by the Lightning / SelfForcing process. It successfully generates various scenes with accurate and clearly rendered transparency. Notably, it can synthesize diverse semi-transparent objects, glowing effects, and fine-grained details such as hair. For each video generated you will find a Zip file with the same name that will contain the corresponding RGBA images.",
+		"description": "This Lightning / SelfForcing model generates transparent scenes with semi-transparent objects, glowing effects, and fine details such as hair. A checkerboard video previews the result. Choose RGBA PNG frames in a ZIP (default) or a ProRes 4444 MOV companion in Configuration / Outputs / RGBA Video Output.",
 		"URLs": "t2v_sf",
 		"preload_URLs": "alpha",
 		"loras": "alpha",		

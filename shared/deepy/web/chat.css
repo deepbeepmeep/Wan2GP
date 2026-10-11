@@ -2038,18 +2038,27 @@
     min-width: 0 !important;
 }
 
-#assistant_chat_settings_panel .chat__template-tool-row > .form,
-#assistant_chat_settings_panel .chat__template-tool-dropdown,
-#assistant_chat_settings_panel .chat__template-tool-dropdown .wrap {
+#assistant_chat_settings_panel .form,
+#assistant_chat_settings_panel .block:has(ul.options[role="listbox"]),
+#assistant_chat_settings_panel .wrap:has(> ul.options[role="listbox"]) {
     overflow: visible !important;
 }
 
-#assistant_chat_settings_panel .chat__template-tool-dropdown .wrap > ul.options[role="listbox"] {
+/* Gradio's viewport coordinates are invalid inside the transformed dock. */
+#assistant_chat_settings_panel .wrap > ul.options[role="listbox"] {
     position: absolute !important;
-    inset: calc(100% - 8px) auto auto 0 !important;
+    inset: var(--chat-options-top, 100%) auto var(--chat-options-bottom, auto) 0 !important;
     width: 100% !important;
-    max-height: min(280px, 40vh) !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    max-height: var(--chat-options-height, min(280px, 40vh)) !important;
+    box-sizing: border-box;
     z-index: 2147483647 !important;
+}
+
+#assistant_chat_settings_panel ul.options[role="listbox"] > li {
+    width: 100% !important;
+    box-sizing: border-box;
 }
 
 #assistant_chat_settings_panel .chat__template-tool-actions {

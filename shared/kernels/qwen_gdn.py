@@ -86,6 +86,10 @@ def install_gdn_decode(model):
                 block.ssm_conv1d.__class__ = GDNShortConvolution
             block._gdn_prepare_decode = prepare_decode if validated_launches else prepare_decode_checked
             block._gdn_recurrent_raw = recurrent_raw_gates if validated_launches else recurrent_raw_gates_checked
+            # Speculative verification keeps one state per layer and replays accepted prefixes with this kernel
+            # instead of storing a snapshot per draft token; checked launches first verify that it is exact.
+            block._gdn_replay_verification = validated_launches
+            block._gdn_replay_probe = None if validated_launches else probe_replay_verification
             count += 1
     if count:
         mode = "Validated SM120 Launches" if validated_launches else "Numerical Checks Before Capture"
@@ -98,7 +102,8 @@ from fla.ops.utils.op import exp
 
 
 @triton.jit
-def _recurrent_raw_kernel(Q, K, V, A, BETA_IN, SSM_A, DT, STATE, OUT, SNAPSHOTS,
+def _recurrent_raw_kernel(Q, K, V, A, BETA_IN, SSM_A, DT, STATE, STATE_OUT, OUT, SNAPSHOTS,
+                          PRE, K_SAVE, V_SAVE, A_SAVE, B_SAVE,
                           T: tl.constexpr, H: tl.constexpr, HV: tl.constexpr,
                           DK: tl.constexpr, DV: tl.constexpr,
                           QS0: tl.constexpr, QS1: tl.constexpr, QS2: tl.constexpr,
@@ -107,7 +112,7 @@ def _recurrent_raw_kernel(Q, K, V, A, BETA_IN, SSM_A, DT, STATE, OUT, SNAPSHOTS,
                           AS0: tl.constexpr, AS1: tl.constexpr,
                           BS0: tl.constexpr, BS1: tl.constexpr,
                           BATCH: tl.constexpr, BK: tl.constexpr, BV: tl.constexpr,
-                          SAVE_PREFIX: tl.constexpr,
+                          SAVE_PREFIX: tl.constexpr, SAVE_INPUTS: tl.constexpr, SAVE_TOKENS: tl.constexpr,
                           V_HEADS_TILED: tl.constexpr, SSM_PARAMS_TILED: tl.constexpr,
                           INTERLEAVE_AB: tl.constexpr):
     vb, bh = tl.program_id(0), tl.program_id(1)
@@ -122,20 +127,34 @@ def _recurrent_raw_kernel(Q, K, V, A, BETA_IN, SSM_A, DT, STATE, OUT, SNAPSHOTS,
     values = vb * BV + tl.arange(0, BV)
     state_index = bh * DK * DV + keys[:, None] * DV + values[None, :]
     mask = (keys[:, None] < DK) & (values[None, :] < DV)
-    state = tl.load(STATE + state_index, mask, 0).to(tl.float32)
+    raw_state = tl.load(STATE + state_index, mask, 0)
+    state = raw_state.to(tl.float32)
+    if SAVE_INPUTS:  # what a replay of any accepted prefix needs: the state before verification and every input as read
+        tl.store(PRE + state_index, raw_state, mask)
     sa = tl.load(SSM_A + param_head).to(tl.float32)
     dt = tl.load(DT + param_head).to(tl.float32)
     for token in range(T):
         q = tl.load(Q + batch * QS0 + token * QS1 + kh * QS2 + keys, keys < DK, 0).to(tl.float32)
-        k = tl.load(K + batch * KS0 + token * KS1 + kh * KS2 + keys, keys < DK, 0).to(tl.float32)
-        v = tl.load(V + batch * VS0 + token * VS1 + value_head * VS2 + values, values < DV, 0).to(tl.float32)
+        raw_k = tl.load(K + batch * KS0 + token * KS1 + kh * KS2 + keys, keys < DK, 0)
+        raw_v = tl.load(V + batch * VS0 + token * VS1 + value_head * VS2 + values, values < DV, 0)
+        raw_a = tl.load(A + batch * AS0 + token * AS1 + gate_head)
+        raw_beta = tl.load(BETA_IN + batch * BS0 + token * BS1 + gate_head)
+        if SAVE_INPUTS:  # stored at the indices read, so a replay reads them back through the same head mapping
+            saved = batch * SAVE_TOKENS + token
+            tl.store(V_SAVE + (saved * HV + value_head) * DV + values, raw_v, values < DV)
+            if vb == 0:
+                tl.store(A_SAVE + saved * HV + gate_head, raw_a)
+                tl.store(B_SAVE + saved * HV + gate_head, raw_beta)
+                if head % (HV // H) == 0:
+                    tl.store(K_SAVE + (saved * H + kh) * DK + keys, raw_k, keys < DK)
+        k = raw_k.to(tl.float32)
+        v = raw_v.to(tl.float32)
         q = q / tl.sqrt(tl.sum(q * q) + 1e-6)
         k = k / tl.sqrt(tl.sum(k * k) + 1e-6)
         q *= DK ** -0.5
-        a = tl.load(A + batch * AS0 + token * AS1 + gate_head).to(tl.float32) + dt
+        a = raw_a.to(tl.float32) + dt
         softplus = tl.where(a > 20., a, libdevice.log1p(tl.exp(a)))
         g = sa * softplus
-        raw_beta = tl.load(BETA_IN + batch * BS0 + token * BS1 + gate_head)
         # Preserve the checkpoint compute dtype's sigmoid rounding before
         # FP32 recurrence, matching the existing materialized beta tensor.
         beta = tl.sigmoid(raw_beta.to(tl.float32)).to(BETA_IN.dtype.element_ty).to(tl.float32)
@@ -149,25 +168,63 @@ def _recurrent_raw_kernel(Q, K, V, A, BETA_IN, SSM_A, DT, STATE, OUT, SNAPSHOTS,
         if SAVE_PREFIX:
             if token + 1 < T:
                 tl.store(SNAPSHOTS + token * BATCH * HV * DK * DV + state_index, state, mask)
-    tl.store(STATE + state_index, state, mask)
+    tl.store(STATE_OUT + state_index, state, mask)
 
 
-def recurrent_raw_gates(q, k, v, a, b, ssm_a, ssm_dt, initial, snapshots=None,
+class RecurrentReplay:
+    """State before a speculative verification and the inputs the verification read. The state after any accepted prefix is
+    replayed from them by the verification kernel itself, with the same arithmetic, instead of keeping one state snapshot per draft
+    token: one extra state per layer instead of one per draft."""
+
+    def __init__(self, state, heads, dim_k, tokens, input_dtype, gate_dtype):
+        batch, value_heads, _, dim_v = state.shape
+        self.tokens = tokens
+        self.pre = torch.empty_like(state)
+        self.k = state.new_empty((batch, tokens, heads, dim_k), dtype=input_dtype)
+        self.v = state.new_empty((batch, tokens, value_heads, dim_v), dtype=input_dtype)
+        self.a = state.new_empty((batch, tokens, value_heads), dtype=gate_dtype)
+        self.b = state.new_empty((batch, tokens, value_heads), dtype=gate_dtype)
+        self.out = torch.empty_like(self.v)  # replay outputs are not used
+
+    def fits(self, state, tokens, input_dtype, gate_dtype):
+        return (self.tokens >= tokens and self.pre.shape == state.shape and self.pre.dtype == state.dtype and self.pre.device == state.device
+                and self.k.dtype == input_dtype and self.a.dtype == gate_dtype)
+
+
+def recurrent_raw_gates(q, k, v, a, b, ssm_a, ssm_dt, initial, snapshots=None, replay=None,
                         *, v_heads_tiled=False, ssm_params_tiled=False, interleave_ab=False):
     """Read projection layouts directly; keep state and snapshots in grouped order."""
     batch, tokens, heads, dim_k = q.shape
     hv, dim_v = v.shape[-2:]
     output = torch.empty(v.shape, device=v.device, dtype=v.dtype)
+    if replay is not None and (replay.tokens < tokens or replay.k.dtype != k.dtype or replay.v.dtype != v.dtype or replay.a.dtype != a.dtype or replay.b.dtype != b.dtype):
+        raise RuntimeError(f"Speculative replay buffers ({replay.tokens} tokens, {replay.k.dtype}/{replay.a.dtype}) do not match a {tokens}-token verification ({k.dtype}/{a.dtype}).")
+    saving = (replay.pre, replay.k, replay.v, replay.a, replay.b) if replay is not None else (None,) * 5
     _recurrent_raw_kernel[(triton.cdiv(dim_v, 8), batch * hv)](
-        q, k, v, a, b, ssm_a, ssm_dt, initial, output, snapshots,
+        q, k, v, a, b, ssm_a, ssm_dt, initial, initial, output, snapshots, *saving,
         tokens, heads, hv, dim_k, dim_v,
         *q.stride()[:3], *k.stride()[:3], *v.stride()[:3],
         *a.stride()[:2], *b.stride()[:2], batch,
-        triton.next_power_of_2(dim_k), 8, snapshots is not None,
+        triton.next_power_of_2(dim_k), 8, snapshots is not None, replay is not None, replay.tokens if replay is not None else 0,
         v_heads_tiled, ssm_params_tiled, interleave_ab,
         num_warps=1, num_stages=3,
     )
     return output, initial
+
+
+def recurrent_raw_replay(replay, ssm_a, ssm_dt, tokens, state, *, v_heads_tiled=False, ssm_params_tiled=False, interleave_ab=False):
+    """Writes into `state` the state the last verification held after its first `tokens` inputs."""
+    batch, _, heads, dim_k = replay.k.shape
+    hv, dim_v = replay.v.shape[-2:]
+    _recurrent_raw_kernel[(triton.cdiv(dim_v, 8), batch * hv)](
+        replay.k, replay.k, replay.v, replay.a, replay.b, ssm_a, ssm_dt, replay.pre, state, replay.out, None, None, None, None, None, None,
+        tokens, heads, hv, dim_k, dim_v,
+        *replay.k.stride()[:3], *replay.k.stride()[:3], *replay.v.stride()[:3],
+        *replay.a.stride()[:2], *replay.b.stride()[:2], batch,
+        triton.next_power_of_2(dim_k), 8, False, False, 0,
+        v_heads_tiled, ssm_params_tiled, interleave_ab,
+        num_warps=1, num_stages=3,
+    )
 
 
 _portable_choices = {}
@@ -256,8 +313,11 @@ def _recurrent_reference(q, k, v, a, b, ssm_a, ssm_dt, initial, snapshots,
     return output, state
 
 
-def recurrent_raw_gates_checked(q, k, v, a, b, ssm_a, ssm_dt, initial, snapshots=None,
+def recurrent_raw_gates_checked(q, k, v, a, b, ssm_a, ssm_dt, initial, snapshots=None, replay=None,
                                 *, v_heads_tiled=False, ssm_params_tiled=False, interleave_ab=False):
+    if replay is not None:  # the layer passed probe_replay_verification: replays need the direct kernel's arithmetic
+        return recurrent_raw_gates(q, k, v, a, b, ssm_a, ssm_dt, initial, snapshots, replay,
+                                   v_heads_tiled=v_heads_tiled, ssm_params_tiled=ssm_params_tiled, interleave_ab=interleave_ab)
     args = (q, k, v, a, b, ssm_a, ssm_dt, initial, snapshots)
     layout = dict(v_heads_tiled=v_heads_tiled, ssm_params_tiled=ssm_params_tiled, interleave_ab=interleave_ab)
     if _is_tracing(q):
@@ -281,7 +341,9 @@ def recurrent_raw_gates_checked(q, k, v, a, b, ssm_a, ssm_dt, initial, snapshots
     try:
         probe_state = initial.clone()
         probe_prefix = torch.empty_like(prefix) if prefix is not None else None
-    except torch.OutOfMemoryError:
+    except RuntimeError as exc:  # torch.OutOfMemoryError, or the RuntimeError of the mmgp VRAM allocator (same message)
+        if "CUDA out of memory" not in str(exc):
+            raise
         probe_state = probe_prefix = None
         _record_choice(signature, False, 'Probe Allocation Limit')
         return _recurrent_reference(*args, **layout)
@@ -305,6 +367,68 @@ def recurrent_raw_gates_checked(q, k, v, a, b, ssm_a, ssm_dt, initial, snapshots
     else:
         _record_choice(signature, True)
     return expected, state
+
+
+_replay_choices = {}
+
+
+def probe_replay_verification(block, max_verify_tokens):
+    """Checked launches: whether a layer's speculative verification may use the direct kernel and replay accepted prefixes.
+    Checked once per configuration, outside capture, with the verification's tensor layouts: the direct kernel must pass the
+    numerical check of recurrent_raw_gates_checked against the established path, and replays must equal its snapshots exactly."""
+    state = block.recurrent_state_buffer
+    if block.ssm_a.device != state.device or block.ssm_dt.device != state.device:
+        return False  # weights not resident yet: decided once the warm-up before graph capture has loaded them
+    direct = getattr(block, "_gdn_direct_layout", True)
+    layout = block._recurrence_layout(direct)
+    projection = "qkv_gate" if block.attn_qkv_gate is not None else ("separate" if block.attn_gate_ab is None else "gate_ab")
+    key = (state.device, state.dtype, int(max_verify_tokens), block.num_k_heads, block.head_k_dim, block.num_v_heads, block.head_v_dim, projection, tuple(layout.values()))
+    if key not in _replay_choices:
+        _replay_choices[key] = _probe_replay(block, int(max_verify_tokens), direct, layout, projection)
+        print(f"[Qwen][GDN] Speculative State Replay: {'Enabled' if _replay_choices[key] else 'Snapshots Kept'} (Numerical Check).")
+    return _replay_choices[key]
+
+
+def _probe_replay(block, max_verify_tokens, direct, layout, projection):
+    from triton.runtime.errors import OutOfResources
+    from triton.compiler.errors import CompilationError
+    heads, dim_k, value_heads, dim_v, value_dim = block.num_k_heads, block.head_k_dim, block.num_v_heads, block.head_v_dim, block.value_dim
+    state = block.recurrent_state_buffer[:1]
+    device, dtype = state.device, state.dtype
+    ssm_a, ssm_dt = block._recurrence_ssm_parameters(direct)
+    generator = torch.Generator(device=device).manual_seed(0)
+    replay = RecurrentReplay(state, heads, dim_k, max_verify_tokens, dtype, dtype)
+    try:
+        for tokens in range(2, max_verify_tokens + 1):
+            # the verification's layouts: q/k/v split from the convolution output, gates from their projection
+            mixed = torch.randn((1, tokens, 2 * heads * dim_k + value_heads * dim_v), device=device, dtype=dtype, generator=generator)
+            q, k, v = torch.split(mixed, [heads * dim_k, heads * dim_k, value_heads * dim_v], dim=-1)
+            q, k, v = q.reshape(1, tokens, heads, dim_k), k.reshape(1, tokens, heads, dim_k), v.reshape(1, tokens, value_heads, dim_v)
+            if projection == "qkv_gate":
+                a, b = (torch.randn((1, tokens, 2 * value_heads), device=device, dtype=dtype, generator=generator) * 2).chunk(2, dim=-1)
+            elif projection == "gate_ab":
+                _, a, b = torch.split(torch.randn((1, tokens, value_dim + 2 * value_heads), device=device, dtype=dtype, generator=generator) * 2, [value_dim, value_heads, value_heads], dim=-1)
+            else:
+                a, b = (torch.randn((1, tokens, value_heads), device=device, dtype=dtype, generator=generator) * 2 for _ in range(2))
+            initial = (torch.randn(state.shape, device=device, dtype=torch.float32, generator=generator) * 0.3).to(dtype)
+            expected_state, expected_prefix = initial.clone(), initial.new_empty((tokens - 1, *initial.shape))
+            expected, _ = _recurrent_reference(q, k, v, a, b, ssm_a, ssm_dt, expected_state, expected_prefix, **layout)
+            direct_state, prefix = initial.clone(), torch.empty_like(expected_prefix)
+            actual, _ = recurrent_raw_gates(q, k, v, a, b, ssm_a, ssm_dt, direct_state, prefix, **layout)
+            for result, reference in ((actual, expected), (direct_state, expected_state), (prefix, expected_prefix)):
+                torch.testing.assert_close(result, reference, atol=2e-5, rtol=torch.finfo(reference.dtype).eps * 1.1)
+            replayed = initial.clone()
+            recurrent_raw_gates(q, k, v, a, b, ssm_a, ssm_dt, replayed, None, replay, **layout)
+            if not torch.equal(replayed, direct_state):
+                return False
+            for accepted in range(1, tokens):
+                target = torch.empty_like(initial)
+                recurrent_raw_replay(replay, ssm_a, ssm_dt, accepted, target, **layout)
+                if not torch.equal(target, prefix[accepted - 1]):
+                    return False
+    except (AssertionError, OutOfResources, CompilationError):
+        return False
+    return True
 
 
 from shared.kernels.triton_compilation_log import install_triton_compilation_logger

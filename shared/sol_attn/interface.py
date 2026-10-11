@@ -89,4 +89,27 @@ def sol_attn(q, k, v, *, scale=None, tau=1.0, thresh_type="diag", sink_tokens=0,
                            sink_tokens=sink_tokens, sink_start=sink_start, query_start=query_start, recycle_q=recycle_q)
 
 
-__all__ = ["sol_attn", "validate_runtime"]
+def staged_supported(device, tokens, thresh_type="diag"):
+    """True when sol_attn(q, k, v, int8_qk=True) can be split into prepare_kv and sol_attn_prepared on this device: K/V are
+    prepared and k released before q is computed, and the output can be written into q (same results)."""
+    from .saganaki.fwd import inline_q_path
+
+    return inline_q_path(torch.cuda.get_device_capability(device), tokens, thresh_type)
+
+
+def prepare_kv(k, v):
+    """The K/V side of the INT8 path (see staged_supported): k is not read afterwards."""
+    from .saganaki.preprocess import prepare_int8_kv
+
+    return prepare_int8_kv(k, v)
+
+
+def sol_attn_prepared(q, v, prepared, *, scale=None, tau=1.0, sink_tokens=0, sink_start=None, out=None):
+    """sol_attn(q, k, v, int8_qk=True, thresh_type="diag") from prepared = prepare_kv(k, v); out may be q itself."""
+    from .saganaki.fwd import sol_attn_prepared as prepared_attention
+
+    return prepared_attention(q, v, prepared, scale=scale, tau=tau, sink_blocks=_sink_block_range(q.shape[1], sink_start, sink_tokens),
+                              out=out)
+
+
+__all__ = ["prepare_kv", "sol_attn", "sol_attn_prepared", "staged_supported", "validate_runtime"]

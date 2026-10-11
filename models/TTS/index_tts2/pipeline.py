@@ -502,7 +502,7 @@ class IndexTTS2Pipeline:
         if not isinstance(output, tuple) or len(output) != 2:
             raise RuntimeError("IndexTTS2 inference returned an unexpected output format.")
         sample_rate, wav_data = output
-        wav = torch.as_tensor(np.asarray(wav_data))
+        wav = torch.as_tensor(np.asarray(wav_data), device="cpu")
         if wav.ndim == 2:
             if wav.shape[1] == 1:
                 wav = wav[:, 0]

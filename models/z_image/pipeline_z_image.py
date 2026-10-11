@@ -679,6 +679,7 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                 1.0 - rfba_gap_steps[1],
                 num_steps,
                 dtype=torch.float64,
+                device=latents.device,
             ).to(latents)
             if (rfba_gap_steps[1] - 0.0) == 0.0:
                 t_steps = t_steps[:-1]
@@ -822,9 +823,9 @@ class ZImagePipeline(DiffusionPipeline, FromSingleFileMixin):
                             / sampler.alpha_in(t_next)
                         )
                         stochast_ratio = torch.clamp(stochast_ratio ** (1 / 0.50), min=0, max=1)
-                        noi = torch.randn(x_cur.size()).to(x_cur)
+                        noi = torch.randn(x_cur.size(), device=x_cur.device).to(x_cur)
                     else:
-                        noi = torch.randn(x_cur.size()).to(x_cur) if stochast_ratio > 0 else 0.0
+                        noi = torch.randn(x_cur.size(), device=x_cur.device).to(x_cur) if stochast_ratio > 0 else 0.0
                     x_next = sampler.gamma_in(t_next) * x_hat + sampler.alpha_in(t_next) * (
                         z_hat * ((1 - stochast_ratio) ** 0.5) + noi * (stochast_ratio**0.5)
                     )

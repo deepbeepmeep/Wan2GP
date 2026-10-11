@@ -51,18 +51,69 @@ class LogC3:
         return torch.where(logc >= cut_log, lin_from_log, lin_from_lin).clamp_(min=0.0)
 
 
-def hdr_linear_to_vae_range(frames: torch.Tensor, *, transform: str = "logc3") -> torch.Tensor:
+class ACEScct:
+    """ACEScct log encoding of linear ACEScg (AP1 primaries), as used by the LTX-2.5 SDR-to-HDR IC-LoRA."""
+
+    A = 10.5402377416545
+    B = 0.0729055341958355
+    X_BREAK = 0.0078125
+    Y_BREAK = 0.155251141552511
+    LOG_SCALE = 17.52
+    LOG_OFFSET = 9.72
+
+    def compress(self, linear_ap1: torch.Tensor) -> torch.Tensor:
+        x = torch.clamp(linear_ap1, min=0.0)
+        log_part = (torch.log2(torch.clamp(x, min=1e-12)) + self.LOG_OFFSET) / self.LOG_SCALE
+        return torch.where(x > self.X_BREAK, log_part, self.A * x + self.B).clamp_(0.0, 1.0)
+
+    def decompress(self, acescct: torch.Tensor) -> torch.Tensor:
+        ct = torch.clamp(acescct, 0.0, 1.0)
+        return torch.where(ct > self.Y_BREAK, torch.pow(2.0, ct * self.LOG_SCALE - self.LOG_OFFSET), (ct - self.B) / self.A)
+
+
+# Linear AP1 (ACEScg) <-> Rec.709 primaries with a Bradford CAT: colour-science values, as in the LTX-2.5 reference pipeline.
+_AP1_TO_REC709 = ((1.7050509452819824, -0.6217921376228333, -0.08325887471437454), (-0.13025641441345215, 1.1408047676086426, -0.010548318736255169), (-0.02400335669517517, -0.1289689689874649, 1.1529723405838013))
+_REC709_TO_AP1 = ((0.6130974292755127, 0.33952316641807556, 0.04737945273518562), (0.07019372284412384, 0.9163538813591003, 0.013452397659420967), (0.0206155925989151, 0.10956976562738419, 0.8698146343231201))
+
+
+def _apply_primaries(frames: torch.Tensor, matrix: tuple, channel_dim: int) -> torch.Tensor:
+    matrix = torch.tensor(matrix, dtype=frames.dtype, device=frames.device)
+    return torch.tensordot(matrix, frames.movedim(channel_dim, 0), dims=1).movedim(0, channel_dim)
+
+
+def srgb_eotf(srgb: torch.Tensor) -> torch.Tensor:
+    x = torch.clamp(srgb, 0.0, 1.0)
+    return torch.where(x <= 0.04045, x / 12.92, torch.pow((x + 0.055) / 1.055, 2.4))
+
+
+def hdr_linear_to_vae_range(frames: torch.Tensor, *, transform: str = "logc3", channel_dim: int) -> torch.Tensor:
+    """Scene-linear Rec.709 frames to the [-1, 1] VAE range of the HDR working space."""
     frames = frames.to(dtype=torch.float32)
-    if transform != "logc3":
-        raise ValueError(f"Unsupported HDR transform: {transform}")
-    return LogC3().compress(frames).mul_(2.0).sub_(1.0)
+    if transform == "logc3":
+        return LogC3().compress(frames).mul_(2.0).sub_(1.0)
+    if transform == "acescct":
+        return ACEScct().compress(_apply_primaries(frames, _REC709_TO_AP1, channel_dim)).mul_(2.0).sub_(1.0)
+    raise ValueError(f"Unsupported HDR transform: {transform}")
 
 
-def vae_range_to_hdr_linear(frames: torch.Tensor, *, transform: str = "logc3") -> torch.Tensor:
+def sdr_to_vae_range(frames: torch.Tensor, *, transform: str, channel_dim: int) -> torch.Tensor:
+    """sRGB-encoded SDR frames in [-1, 1] to the [-1, 1] VAE range of the HDR working space."""
+    frames = frames.to(dtype=torch.float32).add(1.0).mul_(0.5)
+    if transform == "logc3":
+        return LogC3().compress_ldr(frames).mul_(2.0).sub_(1.0)
+    if transform == "acescct":
+        return hdr_linear_to_vae_range(srgb_eotf(frames), transform=transform, channel_dim=channel_dim)
+    raise ValueError(f"Unsupported HDR transform: {transform}")
+
+
+def vae_range_to_hdr_linear(frames: torch.Tensor, *, transform: str = "logc3", channel_dim: int) -> torch.Tensor:
+    """[-1, 1] VAE output of the HDR working space to scene-linear Rec.709 frames."""
     frames = frames.to(dtype=torch.float32).add_(1.0).mul_(0.5).clamp_(0.0, 1.0)
-    if transform != "logc3":
-        raise ValueError(f"Unsupported HDR transform: {transform}")
-    return LogC3().decompress(frames)
+    if transform == "logc3":
+        return LogC3().decompress(frames)
+    if transform == "acescct":
+        return _apply_primaries(ACEScct().decompress(frames), _AP1_TO_REC709, channel_dim).clamp_(min=0.0)
+    raise ValueError(f"Unsupported HDR transform: {transform}")
 
 
 def linear_to_srgb(linear: torch.Tensor) -> torch.Tensor:

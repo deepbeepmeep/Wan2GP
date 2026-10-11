@@ -31,7 +31,7 @@ class LCMScheduler(SchedulerMixin):
             
         # RectifiedFlow (LTX) approach: Use rectified flow dynamics for better sampling
         # This creates a more optimal path through the probability flow ODE
-        t = torch.linspace(0, 1, self.num_inference_steps + 1, dtype=torch.float32)
+        t = torch.linspace(0, 1, self.num_inference_steps + 1, dtype=torch.float32, device=device)
         
         # Apply rectified flow transformation for better dynamics
         # This is the key LTX component - rectified flow scheduling

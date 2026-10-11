@@ -2392,16 +2392,17 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
     @torch.inference_mode()
     def extract_speaker_embedding(self, audio, sr):
         assert sr == 24000, "Only support 24kHz audio"
-        mels = mel_spectrogram(
-            torch.from_numpy(audio).unsqueeze(0), 
-            n_fft=1024, 
-            num_mels=128, 
-            sampling_rate=24000,
-            hop_size=256, 
-            win_size=1024, 
-            fmin=0, 
-            fmax=12000
-        ).transpose(1, 2)
+        with torch.device("cuda" if torch.cuda.is_available() else "cpu"):  # its window is built on the GPU then moved, as with the legacy default device
+            mels = mel_spectrogram(
+                torch.from_numpy(audio).unsqueeze(0), 
+                n_fft=1024, 
+                num_mels=128, 
+                sampling_rate=24000,
+                hop_size=256, 
+                win_size=1024, 
+                fmin=0, 
+                fmax=12000
+            ).transpose(1, 2)
         speaker_embedding = self.speaker_encoder(mels.to(self.device).to(self.dtype))[0]
         return speaker_embedding
     
@@ -2706,7 +2707,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             talker_input_embeds[index] = torch.cat([item for item in talker_input_embed if item is not None], dim=1)
 
         # for batch inferquence
-        original_lengths = torch.tensor([t.shape[1] for t in talker_input_embeds])
+        original_lengths = torch.tensor([t.shape[1] for t in talker_input_embeds], device=talker_input_embeds[0].device)
         # left padding for talker input embeds
         sequences = [t.squeeze(0) for t in talker_input_embeds]
         sequences_reversed = [t.flip(dims=[0]) for t in sequences]
@@ -2718,7 +2719,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         talker_input_embeds = padded_reversed.flip(dims=[1])
         # generate mask
         batch_size, max_len = talker_input_embeds.shape[0], talker_input_embeds.shape[1]
-        indices = torch.arange(max_len).expand(batch_size, -1)
+        indices = torch.arange(max_len, device=talker_input_embeds.device).expand(batch_size, -1)
         num_pads = max_len - original_lengths
         talker_attention_mask = (indices >= num_pads.unsqueeze(1)).long().to(talker_input_embeds.device)
         # padding trailing text hiddens

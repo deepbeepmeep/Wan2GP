@@ -50,9 +50,9 @@ def restore_interleaved_h3_qkv(state_dict):
         return state_dict
     if not any(key.endswith(".qkv_proj.weight") for key in state_dict):
         return state_dict
-    norm_key = next(key for key in state_dict if key.endswith("blocks.0.attn.q_norm.weight"))
+    norm_key = next(key for key in state_dict if key.endswith(".attn.q_norm.weight"))  # control modules have no blocks.0.attn
     head_dim = state_dict[norm_key].shape[0]
-    qkv_key = next(key for key in state_dict if key.endswith("blocks.0.attn.qkv_proj.weight"))
+    qkv_key = next(key for key in state_dict if key.endswith(".attn.qkv_proj.weight"))
     heads = state_dict[qkv_key].shape[0] // (3 * head_dim)
     for key in [key for key in state_dict if key.endswith(".qkv_proj.weight")]:
         base = key[:-len(".weight")]

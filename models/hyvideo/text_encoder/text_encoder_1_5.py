@@ -98,7 +98,7 @@ def load_text_encoder(
 
     from mmgp import offload
     # text_encoder = offload.fast_load_transformers_model(text_encoder_path, forcedConfigPath=  os.path.join(os.path.dirname(text_encoder_path), "config.json"))
-    text_encoder = offload.fast_load_transformers_model(text_encoder_path,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration,  defaultConfigPath= fl.locate_file(os.path.join("Qwen2.5-VL-7B-Instruct", "config.json")) )
+    text_encoder = offload.fast_load_transformers_model(text_encoder_path,  writable_tensors= False , modelClass=Qwen2_5_VLForConditionalGeneration,  defaultConfigPath= fl.locate_file(os.path.join("Qwen2.5-VL-7B-Instruct", "config.json")) )
 
     # text_encoder = AutoModel.from_pretrained(text_encoder_path, low_cpu_mem_usage=True)
     

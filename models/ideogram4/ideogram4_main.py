@@ -193,23 +193,23 @@ class Ideogram4WanPipeline:
         max_text_tokens = max(num_text for _, num_text in tokenized)
         total_seq_len = max_text_tokens + num_image_tokens
 
-        h_idx = torch.arange(grid_h).view(-1, 1).expand(grid_h, grid_w).reshape(-1)
-        w_idx = torch.arange(grid_w).view(1, -1).expand(grid_h, grid_w).reshape(-1)
+        h_idx = torch.arange(grid_h, device="cpu").view(-1, 1).expand(grid_h, grid_w).reshape(-1)
+        w_idx = torch.arange(grid_w, device="cpu").view(1, -1).expand(grid_h, grid_w).reshape(-1)
         t_idx = torch.zeros_like(h_idx)
         image_pos = torch.stack([t_idx, h_idx, w_idx], dim=1) + IMAGE_POSITION_OFFSET
 
-        token_ids = torch.zeros(batch_size, max_text_tokens, dtype=torch.long)
-        text_position_ids = torch.zeros(batch_size, max_text_tokens, 3, dtype=torch.long)
-        position_ids = torch.zeros(batch_size, total_seq_len, 3, dtype=torch.long)
-        segment_ids = torch.full((batch_size, total_seq_len), SEQUENCE_PADDING_INDICATOR, dtype=torch.long)
-        indicator = torch.zeros(batch_size, total_seq_len, dtype=torch.long)
+        token_ids = torch.zeros(batch_size, max_text_tokens, dtype=torch.long, device="cpu")
+        text_position_ids = torch.zeros(batch_size, max_text_tokens, 3, dtype=torch.long, device="cpu")
+        position_ids = torch.zeros(batch_size, total_seq_len, 3, dtype=torch.long, device="cpu")
+        segment_ids = torch.full((batch_size, total_seq_len), SEQUENCE_PADDING_INDICATOR, dtype=torch.long, device="cpu")
+        indicator = torch.zeros(batch_size, total_seq_len, dtype=torch.long, device="cpu")
 
         for batch_idx, (tokens, num_text) in enumerate(tokenized):
             pad_len = max_text_tokens - num_text
             total_unpadded = num_text + num_image_tokens
             offset = pad_len
             token_ids[batch_idx, offset:offset + num_text] = tokens
-            text_pos = torch.arange(num_text)
+            text_pos = torch.arange(num_text, device="cpu")
             text_pos_3d = torch.stack([text_pos, text_pos, text_pos], dim=1)
             text_position_ids[batch_idx, offset:offset + num_text] = text_pos_3d
             position_ids[batch_idx, offset:offset + num_text] = text_pos_3d
@@ -347,7 +347,7 @@ class Ideogram4WanPipeline:
             raise ValueError(f"Unsupported Ideogram 4 sampler '{sample_solver}'.")
         device = self.runtime_device
         schedule = get_schedule_for_resolution((height, width), known_mean=mu, std=std)
-        step_intervals = make_step_intervals(num_steps).to(device)
+        step_intervals = make_step_intervals(num_steps, device)
         time_points = schedule(step_intervals).to(device)
         sigma_points = 1.0 - time_points
         phase_switch_step = num_steps

@@ -9,7 +9,7 @@ from shared.deepy.config import DEEPY_ENABLED_KEY, DEEPY_TEMPLATE_CONFIG_MIGRATI
 
 LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
 EXTENSIONS_DEFAULTS_VERSION_KEY = "extensions_defaults_version"
-EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.23")
+EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.25")
 EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT = str(EXTENSIONS_DEFAULTS_TARGET_VERSION)
 INSTALLED_REMOTE_PLUGINS_KEY = "installed_remote_plugins"
 
@@ -287,6 +287,14 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
         from shared.prompt_enhancer.config import PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT, split_speculative_decoding, speculative_decoding_config
         key = PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY
         server_config[key] = speculative_decoding_config(*split_speculative_decoding(server_config.get(key, PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT)))
+        changed = True
+
+    if version < Decimal("1.25"): # a VRAM preload per kind of output, Default (0) or Manual (a value set), Dynamic chosen later
+        preload = server_config.pop("preload_in_VRAM", 0)
+        server_config.pop("auto_preload_in_VRAM", None)
+        for output_type in ("video", "image", "audio"):
+            value = _to_int(server_config.setdefault(f"{output_type}_preload_in_VRAM", preload))
+            server_config[f"{output_type}_preload_mode"] = "manual" if value > 0 else "default"
         changed = True
 
     changed = _migrate_audio_processors_config(server_config, version) or changed

@@ -195,11 +195,10 @@ class NaSwinAttention(NaMMAttention):
             window_slices = self.window_op((t, h, w), self.window)
             return [x[st, sh, sw] for (st, sh, sw) in window_slices]
 
-        window_partition, window_reverse, window_shape, window_count = cache_win(
-            "win_transform",
-            lambda: na.window_idx(vid_shape, make_window),
-        )
-        vid_win = window_partition(vid_list)
+        window_rows, window_shape, window_count = cache_win("win_transform", lambda: na.window_idx(vid_shape, make_window))
+        # Each window batch gathers its rows and writes its projected attention output back into them (the windows partition the tokens):
+        # the same values as a windowed copy followed by its reverse permutation, without these two full-size tensors.
+        vid = vid_list.pop()
         txt_qkv = self.proj_qkv.forward_txt_disposable(txt_list)
         txt_qkv = rearrange(txt_qkv, "l (o h d) -> l o h d", o=3, d=self.head_dim)
         txt_q, txt_k, txt_v = txt_qkv.unbind(1)
@@ -231,7 +230,8 @@ class NaSwinAttention(NaMMAttention):
             chunk_vid_lens = vid_lens[start:stop]
             chunk_all_lens = [length + txt_len_py for length in chunk_vid_lens]
             vid_start, vid_stop = offsets[start], offsets[stop]
-            vid_qkv = self.proj_qkv.forward_vid_disposable([vid_win[vid_start:vid_stop]])
+            rows = window_rows[vid_start:vid_stop]
+            vid_qkv = self.proj_qkv.forward_vid_disposable([vid.index_select(0, rows)])
             vid_qkv = rearrange(vid_qkv, "l (o h d) -> l o h d", o=3, d=self.head_dim)
             vid_q, vid_k, vid_v = vid_qkv.unbind(1)
             vid_v = vid_v.clone()
@@ -269,7 +269,7 @@ class NaSwinAttention(NaMMAttention):
             vid_attn_list = [vid_attn.flatten(1)]
             vid_attn = None
             vid_projected = self.proj_out.forward_vid_disposable(vid_attn_list)
-            vid_win[vid_start:vid_stop].copy_(vid_projected)
+            vid.index_copy_(0, rows, vid_projected)
             vid_projected = None
 
         txt_q = txt_k = txt_v = None
@@ -278,6 +278,4 @@ class NaSwinAttention(NaMMAttention):
         txt_out_list = [txt_out]
         txt_out = None
         txt_out = self.proj_out.forward_txt_disposable(txt_out_list)
-        vid_win_list = [vid_win]
-        vid_win = None
-        return window_reverse(vid_win_list), txt_out
+        return vid, txt_out

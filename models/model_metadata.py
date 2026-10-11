@@ -191,6 +191,8 @@ def infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs):
         "video_continuation": video_inputs["continue"],
         "sliding_window": bool(model_def.get("sliding_window", False)),
         "lora": not bool(model_def.get("no_lora", False)),
+        # Specialized workflows can narrow capabilities inferred from shared controls.
+        **model_def.get("capability_overrides", {}),
     }
 
 

@@ -100,7 +100,7 @@ def _to_tuple(x, dim=2):
         raise ValueError(f"Expected length {dim} or int, but got {x}")
 
 
-def get_meshgrid_nd(start, *args, dim=2):
+def get_meshgrid_nd(start, *args, dim=2, device=None):
     """
     Get n-D meshgrid with start, stop and num.
 
@@ -137,7 +137,7 @@ def get_meshgrid_nd(start, *args, dim=2):
     axis_grid = []
     for i in range(dim):
         a, b, n = start[i], stop[i], num[i]
-        g = torch.linspace(a, b, n + 1, dtype=torch.float32)[:n]
+        g = torch.linspace(a, b, n + 1, dtype=torch.float32, device=device)[:n]
         axis_grid.append(g)
     grid = torch.meshgrid(*axis_grid, indexing="ij")  # dim x [W, H, D]
     grid = torch.stack(grid, dim=0)  # [dim, W, H, D]
@@ -362,7 +362,8 @@ def get_nd_rotary_pos_embed(
     interpolation_factor: Union[float, List[float]] = 1.0,
     k = 4,
     L_test = 66,
-    enable_riflex = True
+    enable_riflex = True,
+    device = None,
 ):
     """
     This is a n-d version of precompute_freqs_cis, which is a RoPE for tokens with n-d structure.
@@ -384,7 +385,7 @@ def get_nd_rotary_pos_embed(
     """
 
     grid = get_meshgrid_nd(
-        start, *args, dim=len(rope_dim_list)
+        start, *args, dim=len(rope_dim_list), device=device
     )  # [3, W, H, D] / [2, W, H]
 
     if isinstance(theta_rescale_factor, int) or isinstance(theta_rescale_factor, float):
@@ -471,7 +472,7 @@ def get_1d_rotary_pos_embed(
         theta *= theta_rescale_factor ** (dim / (dim - 2))
 
     freqs = 1.0 / (
-        theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim)
+        theta ** (torch.arange(0, dim, 2, device=pos.device)[: (dim // 2)].float() / dim)
     )  # [D/2]
     # assert interpolation_factor == 1.0, f"interpolation_factor: {interpolation_factor}"
     freqs = torch.outer(pos * interpolation_factor, freqs)  # [S, D/2]

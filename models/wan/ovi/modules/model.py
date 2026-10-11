@@ -21,7 +21,7 @@ def sinusoidal_embedding_1d(dim, position):
 
     # calculation
     sinusoid = torch.outer(
-        position, torch.pow(10000, -torch.arange(half).to(position).div(half)))
+        position, torch.pow(10000, -torch.arange(half, device=position.device).to(position).div(half)))
     x = torch.cat([torch.cos(sinusoid), torch.sin(sinusoid)], dim=1)
     return x
 
@@ -44,11 +44,11 @@ def rope_params(max_seq_len, dim, theta=10000, freqs_scaling=1.0):
 
 
 @amp.autocast('cuda', enabled=False)
-def rope_params_audio_real(max_seq_len, head_dim, rotary_dim, theta=10000, freqs_scaling=1.0):
+def rope_params_audio_real(max_seq_len, head_dim, rotary_dim, theta=10000, freqs_scaling=1.0, device=None):
     assert rotary_dim % 2 == 0
     assert rotary_dim <= head_dim
-    pos = torch.arange(max_seq_len, dtype=torch.float32)
-    base = torch.arange(0, rotary_dim, 2, dtype=torch.float32) / rotary_dim
+    pos = torch.arange(max_seq_len, dtype=torch.float32, device=device)
+    base = torch.arange(0, rotary_dim, 2, dtype=torch.float32, device=device) / rotary_dim
     inv_freq = freqs_scaling * torch.pow(theta, -base)
     angles = torch.outer(pos, inv_freq)
     cos = angles.cos().repeat_interleave(2, dim=1)
@@ -611,13 +611,13 @@ class WanModel(ModelMixin, ConfigMixin):
         self.init_weights()
 
 
-    def get_audio_rope_params(self):
+    def get_audio_rope_params(self, device):
         dim = self.dim
         num_heads = self.num_heads
         assert (dim % num_heads) == 0 and (dim // num_heads) % 2 == 0
         d = dim // num_heads
         rotary_dim = d - 4 * (d // 6)
-        return rope_params_audio_real(1024, d, rotary_dim, freqs_scaling=self.temporal_rope_scaling_factor)
+        return rope_params_audio_real(1024, d, rotary_dim, freqs_scaling=self.temporal_rope_scaling_factor, device=device)
 
     def set_rope_params(self):
         # buffers (don't use register_buffer otherwise dtype will be changed in to())
@@ -666,15 +666,15 @@ class WanModel(ModelMixin, ConfigMixin):
         if self.is_audio_type:
             # [B, 1]
             grid_sizes = torch.stack(
-                [torch.tensor(u.shape[1:2], dtype=torch.long) for u in x]
+                [torch.tensor(u.shape[1:2], dtype=torch.long, device=u.device) for u in x]
             )
         else:
             # [B, 3]
             grid_sizes = torch.stack(
-                [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
+                [torch.tensor(u.shape[2:], dtype=torch.long, device=u.device) for u in x])
             x = [u.flatten(2).transpose(1, 2) for u in x] # [B C F H W] -> [B (F H W) C] -> [B L C]
 
-        seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long)
+        seq_lens = torch.tensor([u.size(1) for u in x], dtype=torch.long, device=x[0].device)
         assert seq_lens.max() <= seq_len, f"Sequence length {seq_lens.max()} exceeds maximum {seq_len}."
         x = torch.cat([
             torch.cat([u, u.new_zeros(1, seq_len - u.size(1), u.size(2))],

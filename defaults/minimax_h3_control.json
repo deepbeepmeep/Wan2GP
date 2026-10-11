@@ -1,0 +1,15 @@
+{
+    "model": {
+        "name": "MiniMax H3 FL2VA ControlNet-Union 33B",
+        "architecture": "minimax_h3_control",
+        "description": "FL2VA with the VideoX-Fun ControlNet-Union 2.0 branch: generate synchronized video and stereo audio that follow the pose, depth, edges, shapes or gray levels of a control video, or inpaint a masked area.",
+        "URLs": "minimax_h3_fl2va",
+        "modules": [
+            [
+                "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-Fun-Control-Union-2.0_bf16.safetensors",
+                "https://huggingface.co/DeepBeepMeep/MiniMax-H3/resolve/main/MiniMax-H3-Fun-Control-Union-2.0_int8_convrot.safetensors"
+            ]
+        ]
+    },
+    "prompt": "integrated_multimodal_description: [Shot 1] A five-second sunny single take on a bright sandy beach, with an endless turquoise sea and a cloudless sky behind. A young woman in a navy strap swimsuit and a light white skirt that flutters in the breeze dances playfully toward the camera, her long softly curled hair catching the sunlight and small pearl earrings swaying. She smiles warmly, looks straight into the lens and laughs with carefree joy. The camera stays steady at medium-full framing.\noverall_soundscape: Gentle waves rolling onto the sand, a light sea breeze, distant seagulls, and her soft laughter.\nnon_diegetic_music: A breezy acoustic guitar summer groove."
+}

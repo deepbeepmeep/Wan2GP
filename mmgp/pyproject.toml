@@ -1,0 +1,26 @@
+# Copyright (c) 2024-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mmgp"
+version = "4.0.0"
+authors = [
+  { name = "deepbeepmeep", email = "deepbeepmeep@yahoo.com" },
+]
+description = "Memory Management for the GPU Poor"
+readme = "README.md"
+requires-python = ">=3.10"
+license-files = ["LICENSE.md"]
+dependencies = [
+  "torch >= 2.1.0",
+  "optimum-quanto",
+  "accelerate",
+  "safetensors",
+  "psutil"
+]
+
+[tool.setuptools.package-data]
+# prebuilt VRAM allocator libraries (Windows x64, Linux x86_64) and their source
+mmgp = ["allocator/*.cpp", "allocator/*.dll", "allocator/*.so"]

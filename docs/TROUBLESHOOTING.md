@@ -73,6 +73,7 @@ python wgp.py --preload 0
 2. Lower resolution in advanced settings
 3. Use lower batch size
 4. Clear GPU cache between generations
+5. In *Configuration / Performance*, set **Attention Head Split** to *Low*, *Medium* or *High*. For long or high-resolution videos, models that support it compute attention one group of heads at a time, which lowers the VRAM peak of denoising: with MiniMax H3 at 1920x1088 and 362 frames, about 1 GB less with *Low* and about 2 GB less with *Medium* or *High*, for up to about 3% slower denoising steps. It also applies to MiniMax H3 with *Sol* sparse attention and to the H3 VDN models: with *Medium* at 1920x1088 and 362 frames, about 4 GB less with *Sol* and about 2.5 GB less with VDN. The gain depends on the model and is largest when attention dominates its memory use. The result is of the same quality but not identical to *Off*: details, and sometimes the motion, can differ. The setting applies to the next generation without reloading the model.
 
 ### System RAM Issues
 
@@ -88,6 +89,7 @@ python wgp.py --profile 5
 
 # Enable swap file (OS level)
 ```
+To use less reserved RAM while keeping most of the speed of profile 4, lower *Configuration / RAM/VRAM Management / Reserved RAM for Pinning* and keep *Smart Memory Pinning* On: what no longer fits still reaches the GPU almost as fast (see [Smart Memory Pinning](CLI.md#smart-memory-pinning)).
 
 ## Performance Issues
 

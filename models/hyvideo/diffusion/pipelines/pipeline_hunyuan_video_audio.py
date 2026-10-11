@@ -1416,7 +1416,7 @@ class HunyuanVideoAudioPipeline(DiffusionPipeline):
                 latents_all = pred_latents     
 
                 if callback is not None:
-                    callback(i, latents_all.squeeze(0), False)
+                    callback(i, latents_all[0, :, :video_length], False)
 
         latents = latents_all.float()[:, :, :video_length] 
 

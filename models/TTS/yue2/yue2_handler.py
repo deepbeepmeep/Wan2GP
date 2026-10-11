@@ -256,7 +256,7 @@ class family_handler:
     @staticmethod
     def query_model_def(base_model_type, model_def):
         definition = {
-            "group": "music", "audio_only": True, "image_outputs": False, "sliding_window": False, "supports_early_stop": True,
+            "group": "music", "audio_only": True, "image_outputs": False, "sliding_window": False, "supports_early_stop": True, "device_explicit": True,
             "enabled_audio_lora": True,
             "guidance_max_phases": 1, "no_negative_prompt": True, "inference_steps": True,
             "temperature": True, "top_k_slider": True, "top_p_slider": True, "embedded_guidance": False,

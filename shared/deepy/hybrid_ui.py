@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 import gradio as gr
 
@@ -65,6 +66,8 @@ def bind_gallery_sync(service, state, render_gallery, outputs, *, gallery, main)
     def select(payload, state_value):
         payload = json.loads(payload)
         with service._mutation_lock:
+            if payload['session'] != state_value.get('gallery_interaction_id'):
+                return
             if payload['sequence'] <= state_value.get('gallery_interaction_sequence', 0):
                 return
             state_value['gallery_interaction_sequence'] = payload['sequence']
@@ -73,11 +76,16 @@ def bind_gallery_sync(service, state, render_gallery, outputs, *, gallery, main)
     interaction.input(select, inputs=[interaction, state], outputs=None, queue=False, show_progress='hidden', trigger_mode='always_last')
 
     def refresh(state_value, seen, previous_restoration, previous_view):
-        current = service.gallery_revision
-        restoration = json.dumps(service._restoration)
-        if seen == current and previous_restoration == restoration:
-            return *((gr.update(),) * len(outputs)), current, restoration, gr.update()
         with service._mutation_lock:
+            # A page can outlive its Gradio state after a server restart. Its
+            # previous revision and gesture counter then belong to another session.
+            session = state_value.setdefault('gallery_interaction_id', uuid.uuid4().hex)
+            previous = json.loads(previous_view) if previous_view else {}
+            same_session = previous.get('session') == session
+            current = service.gallery_revision
+            restoration = json.dumps(service._restoration)
+            if same_session and seen == current and previous_restoration == restoration:
+                return *((gr.update(),) * len(outputs)), current, restoration, gr.update()
             updates = list(render_gallery(state_value))
             gen = state_value['gen']
             limit = service._deps.get_server_config()['clear_file_list']
@@ -85,10 +93,9 @@ def bind_gallery_sync(service, state, render_gallery, outputs, *, gallery, main)
             if video_offset != gallery_offset(len(gen['file_list']), limit):
                 updates[outputs.index(gallery)] = gr.update(value=video, selected_index=selected)
             audio, _, audio_offset = gallery_window(gen['audio_file_list'], gen['audio_selected'], limit)
-            gallery_view = {'workspace': service.workspace_id, 'video': video, 'audio': audio, 'video_offset': video_offset, 'audio_offset': audio_offset, 'selected': selected, 'audio_selected': gen['audio_selected']}
+            gallery_view = {'session': session, 'workspace': service.workspace_id, 'video': video, 'audio': audio, 'video_offset': video_offset, 'audio_offset': audio_offset, 'selected': selected, 'audio_selected': gen['audio_selected']}
             gallery_view['gallery_sequence'] = state_value.get('gallery_interaction_sequence', 0)
-            previous = json.loads(previous_view) if previous_view else {}
-            if previous.get('workspace') == gallery_view['workspace']:
+            if same_session and previous.get('workspace') == gallery_view['workspace']:
                 # Selection does not change the files. Avoid Gallery.postprocess
                 # and an audio render on every visual thumbnail click.
                 if previous.get('video') == video:

@@ -25,6 +25,7 @@ from transformers.utils import TransformersKwargs, can_return_tuple
 from transformers.utils.deprecation import deprecate_kwarg
 from transformers import Qwen3Config
 
+from shared import attention_kit
 from shared.attention import pay_attention
 
 from .transformers_compat import causal_mask_kwargs, model_input_compat, tied_weights_keys
@@ -83,10 +84,6 @@ def _pay_attention_gqa(qkv_list, dropout_p=0.0, softmax_scale=None, causal=False
     del q, k, v
     output = pay_attention(qkv_list, dropout_p=dropout_p, softmax_scale=softmax_scale, causal=causal, attention_mask=attention_mask, force_attention="sdpa", recycle_q=True)
     return output.view(batch, num_kv_heads, q_len, groups, head_dim).permute(0, 2, 1, 3, 4).reshape(batch, q_len, num_heads, head_dim)
-
-
-def _shared_attention(qkv_list, dropout_p: float = 0.0, softmax_scale=None, causal: bool = False):
-    return _pay_attention_gqa(qkv_list, dropout_p=dropout_p, softmax_scale=softmax_scale, causal=causal)
 
 
 def create_block_causal_mask(index: torch.Tensor):
@@ -181,6 +178,15 @@ def _apply_rotary_inplace(x, cos, sin, scratch, unsqueeze_dim):
     x1.mul_(cos).addcmul_(x2, sin, value=-1)
     x2.mul_(cos).addcmul_(scratch, sin)
     return x
+
+
+def _norm_rope_rows(x, norm_t, norm_hw, cos, sin, partner):
+    """forward_gen's norms of the t and hw halves of the head dimension, then RoPE of its t, h and w parts, of rows x (batch, tokens,
+    heads, head_dim), in one pass each: the same arithmetic as the Qwen3RMSNorm calls and the three rotate-half passes."""
+    normed = F.rms_norm(x.unflatten(-1, (2, -1)).float(), (x.shape[-1] // 2,), eps=norm_t.variance_epsilon)
+    normed = normed.to(x.dtype).mul_(torch.stack((norm_t.weight, norm_hw.weight))).flatten(-2)
+    rotated = normed[..., partner]
+    return normed.mul_(cos).addcmul_(rotated, sin)
 
 
 def apply_rotary_pos_emb(qk_list, cos, sin, scratch, position_ids=None, unsqueeze_dim=1):
@@ -541,6 +547,43 @@ class Qwen3Attention(nn.Module):
     #     attn_output = self.o_proj_mot_gen(attn_output)
     #     return attn_output, attn_weights
 
+    def gen_rope_tables(self, hidden_states, indexes):
+        """forward_gen's t, h and w rotary tables over the whole head dimension, for one rotate-half pass: cos and signed sin
+        (1, tokens, 1, head_dim), and the index of each channel's partner. The same for every layer of a step."""
+        cos_t, sin_t = self.rotary_emb(hidden_states, indexes[0].unsqueeze(0))
+        cos_h, sin_h = self.rotary_emb_hw(hidden_states, indexes[1].unsqueeze(0))
+        cos_w, sin_w = self.rotary_emb_hw(hidden_states, indexes[2].unsqueeze(0))
+        cos = torch.cat((cos_t, cos_t, cos_h, cos_h, cos_w, cos_w), dim=-1).unsqueeze(2)
+        sin = torch.cat((-sin_t, sin_t, -sin_h, sin_h, -sin_w, sin_w), dim=-1).unsqueeze(2)
+        partner, start = [], 0
+        for half in (cos_t.shape[-1], cos_h.shape[-1], cos_w.shape[-1]):  # each part: the first half takes the second one, and back
+            partner += [torch.arange(start + half, start + 2 * half, device=cos.device), torch.arange(start, start + half, device=cos.device)]
+            start += 2 * half
+        return cos, sin, torch.cat(partner)
+
+    def _norm_rope_gen_(self, query, key, rope):
+        """attention_kit callback: forward_gen's norms and RoPE of q and/or k in place, by chunks of tokens."""
+        cos, sin, partner = rope
+        for tensor, norm_t, norm_hw in ((query, self.q_norm_mot_gen, self.q_norm_hw_mot_gen), (key, self.k_norm_mot_gen, self.k_norm_hw_mot_gen)):
+            if tensor is not None:
+                attention_kit.rows_(tensor, lambda part, first, last: _norm_rope_rows(part, norm_t, norm_hw, cos[:, first:last], sin[:, first:last], partner))
+
+    def _forward_gen_kit(self, hidden_states_list, indexes, past_key_values, rope):
+        """forward_gen without mask: the current tokens attend to the cached prefix and themselves through attention_kit; rope: the
+        step's gen_rope_tables, computed here when not given."""
+        if rope is None:
+            rope = self.gen_rope_tables(hidden_states_list[0], indexes)
+        kv_prefix = None
+        if past_key_values is not None and past_key_values.layers[self.layer_idx].keys is not None:  # cached prefix (batch, kv heads, tokens, head_dim)
+            layer = past_key_values.layers[self.layer_idx]
+            kv_prefix = (layer.keys.transpose(1, 2), layer.values.transpose(1, 2))
+        attn_output = attention_kit.qkv_attention(hidden_states_list, self.q_proj_mot_gen, self.k_proj_mot_gen, self.v_proj_mot_gen,
+                                                  self.config.num_attention_heads, self.head_dim, lambda query, key, group: self._norm_rope_gen_(query, key, rope),
+                                                  kv_heads=self.config.num_key_value_heads, kv_prefix=kv_prefix)
+        attn_output_list = [attn_output.flatten(2)]
+        del attn_output, kv_prefix
+        return _linear_disposable(self.o_proj_mot_gen, attn_output_list)
+
     def forward_gen(
         self,
         hidden_states_list,
@@ -550,6 +593,9 @@ class Qwen3Attention(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        update_cache = kwargs.get("update_cache", True)
+        if attention_mask is None and (past_key_values is None or not update_cache):
+            return self._forward_gen_kit(hidden_states_list, indexes, past_key_values, kwargs.get("rope")), None
         hidden_states = _take_tensor(hidden_states_list)
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
@@ -598,92 +644,6 @@ class Qwen3Attention(nn.Module):
         del query_states_t, query_states_hw, query_states_h, query_states_w
         del key_states_t, key_states_hw, key_states_h, key_states_w
         del cos_t, sin_t, cos_h, sin_h, cos_w, sin_w, rope_scratch
-
-        update_cache = kwargs.get("update_cache", True)
-
-        # ------------------------------------------------------------------
-        # Flash path:
-        # Only use when there is no explicit dense mask.
-        # This is exactly the t2i denoising use case:
-        #   current image tokens attend to [prefix + current image tokens]
-        #   fully bidirectional inside current block => causal=False
-        # ------------------------------------------------------------------
-        if attention_mask is None:
-            q = query_states
-            k_cur = key_states
-            v_cur = value_states
-            del query_states
-
-            if past_key_values is not None:
-                if update_cache:
-                    # Rare path, keep compatibility.
-                    # past_key_values.update expects [B,H,S,D]
-                    key_states, value_states = past_key_values.update(
-                        key_states.transpose(1, 2), value_states.transpose(1, 2), self.layer_idx, cache_kwargs=None
-                    )
-                    k = key_states.transpose(1, 2).contiguous()
-                    v = value_states.transpose(1, 2).contiguous()
-                else:
-                    # Optimized path:
-                    # use preallocated flash_k_cache / flash_v_cache
-                    layer = past_key_values.layers[self.layer_idx]
-
-                    if (
-                        hasattr(layer, "flash_k_cache")
-                        and layer.flash_k_cache is not None
-                        and hasattr(layer, "flash_v_cache")
-                        and layer.flash_v_cache is not None
-                    ):
-                        prefix_len = layer.flash_prefix_len
-                        cur_len = k_cur.shape[1]
-
-                        # overwrite current segment in-place
-                        layer.flash_k_cache[:, prefix_len:prefix_len + cur_len].copy_(k_cur)
-                        layer.flash_v_cache[:, prefix_len:prefix_len + cur_len].copy_(v_cur)
-
-                        k = layer.flash_k_cache[:, :prefix_len + cur_len]
-                        v = layer.flash_v_cache[:, :prefix_len + cur_len]
-                    else:
-                        # Low-memory mode: retain only compact prefix K/V and
-                        # assemble the active layer's attention inputs on demand.
-                        layer = past_key_values.layers[self.layer_idx]
-                        past_k, past_v = layer.keys, layer.values
-
-                        if past_k is not None:
-                            past_k = past_k.transpose(1, 2).contiguous()
-                            past_v = past_v.transpose(1, 2).contiguous()
-                            k = torch.cat([past_k, k_cur], dim=1)
-                            v = torch.cat([past_v, v_cur], dim=1)
-                            del past_k, past_v
-                        else:
-                            k = k_cur
-                            v = v_cur
-            else:
-                k = k_cur
-                v = v_cur
-            del key_states, value_states, k_cur, v_cur
-
-            # sanity checks
-            assert q.ndim == 4 and k.ndim == 4 and v.ndim == 4
-            assert q.shape[0] == k.shape[0] == v.shape[0], (q.shape, k.shape, v.shape)
-            assert k.shape[1] == v.shape[1], (k.shape, v.shape)
-            assert k.shape[2] == v.shape[2], (k.shape, v.shape)
-            assert q.shape[3] == k.shape[3] == v.shape[3], (q.shape, k.shape, v.shape)
-
-            qkv_list = [q, k, v]
-            del q, k, v
-            attn_output = _shared_attention(
-                qkv_list,
-                dropout_p=0.0 if not self.training else self.attention_dropout,
-                softmax_scale=self.scaling,
-                causal=False,
-            )  # [B, S_q, H_q, D]
-
-            attn_output = attn_output.reshape(*input_shape, -1)
-            attn_output_list = [attn_output]
-            del attn_output
-            attn_output = _linear_disposable(self.o_proj_mot_gen, attn_output_list)
-            return attn_output, None
 
         # ------------------------------------------------------------------
         # Original eager fallback path
@@ -989,6 +949,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
                 past_key_values=branch["past_key_values"],
                 use_cache=True,
                 update_cache=False,
+                rope=branch["rope"],
             ))
         return outputs
 
@@ -1224,6 +1185,9 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
     def forward_gen_branches(self, input_embeds_list, branches):
         input_embeds = _take_tensor(input_embeds_list)
+        # the rotary tables depend on the positions only: computed once per branch for all the layers
+        attention = self.layers[0].self_attn
+        branches = [dict(branch, rope=attention.gen_rope_tables(input_embeds, branch["indexes"])) for branch in branches]
         hidden_states = [input_embeds]
         hidden_states.extend(input_embeds.clone() for _ in branches[1:])
         del input_embeds

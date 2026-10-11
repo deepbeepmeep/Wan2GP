@@ -115,6 +115,7 @@ class family_handler:
         if base_model_type == LAYER_ARCHITECTURE:
             return {
                 "image_outputs": True,
+                "device_explicit": True,
                 "skip_prompt_template": True,
                 "embedded_guidance": False,
                 "guidance_max_phases": 1,
@@ -148,7 +149,7 @@ class family_handler:
                     "name": "layer decomposition",
                     "aliases": ["transparent design layers"],
                     "description": "Separates one flattened design into ordered transparent PNG layers.",
-                }],
+                }, {"name": "alpha output", "aliases": ["RGBA", "transparent layers"], "description": "Separate a supplied design into transparent PNG layers."}],
                 "infos": (
                     "**Ming Image Design-Layer** turns a finished poster, infographic, card, or similar design "
                     "into separate transparent image layers. Select one Reference Image, then describe the pieces "
@@ -189,6 +190,7 @@ class family_handler:
             }
         return {
             "image_outputs": True,
+            "device_explicit": True,
             "skip_prompt_template": True,
             "prompt_helper_popup_dims": [86, 94],
             "prompt_enhancer_def": {
@@ -240,6 +242,7 @@ class family_handler:
                 "info": "Preserve the model-generated alpha channel in PNG. Transparency depends on the prompt and is not guaranteed.",
             }],
             "specialities": [
+                {"name": "alpha output", "aliases": ["RGBA", "transparent background"], "description": "Set custom_settings.rgba to Enabled and request a transparent background to preserve model-generated alpha in PNG. Transparency depends on the prompt."},
                 {"name": "visual design", "aliases": ["UI design", "poster design"], "description": "Creates text-rich visual designs, posters, and interface mockups."},
             ],
             "infos": (

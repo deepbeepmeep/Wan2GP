@@ -290,7 +290,7 @@ class ACEStepPipeline:
         for i in range(batch_size):
             current_seed_for_generator = None
             if processed_input_seeds is None:
-                current_seed_for_generator = torch.randint(0, 2**32, (1,)).item()
+                current_seed_for_generator = torch.randint(0, 2**32, (1,), device=self.device).item()
             elif isinstance(processed_input_seeds, int):
                 current_seed_for_generator = processed_input_seeds
             elif isinstance(processed_input_seeds, list):
@@ -299,7 +299,7 @@ class ACEStepPipeline:
                 else:
                     current_seed_for_generator = processed_input_seeds[-1]
             if current_seed_for_generator is None:
-                current_seed_for_generator = torch.randint(0, 2**32, (1,)).item()
+                current_seed_for_generator = torch.randint(0, 2**32, (1,), device=self.device).item()
             random_generators[i].manual_seed(current_seed_for_generator)
             actual_seeds.append(current_seed_for_generator)
         return random_generators, actual_seeds
@@ -1472,26 +1472,16 @@ class ACEStepPipeline:
             encoder_text_hidden_states_null = encoder_text_hidden_states_null.repeat(batch_size, 1, 1)
 
         # not support for released checkpoint
-        speaker_embeds = torch.zeros(batch_size, 512).to(self.device).to(self.dtype)
+        speaker_embeds = torch.zeros(batch_size, 512, device=self.device, dtype=self.dtype)
 
         # 6 lyric
-        lyric_token_idx = torch.tensor([0]).repeat(batch_size, 1).to(self.device).long()
-        lyric_mask = torch.tensor([0]).repeat(batch_size, 1).to(self.device).long()
+        lyric_token_idx = torch.tensor([0], device=self.device).repeat(batch_size, 1).long()
+        lyric_mask = torch.tensor([0], device=self.device).repeat(batch_size, 1).long()
         if len(lyrics) > 0:
             lyric_token_idx = self.tokenize_lyrics(lyrics, debug=debug)
             lyric_mask = [1] * len(lyric_token_idx)
-            lyric_token_idx = (
-                torch.tensor(lyric_token_idx)
-                .unsqueeze(0)
-                .to(self.device)
-                .repeat(batch_size, 1)
-            )
-            lyric_mask = (
-                torch.tensor(lyric_mask)
-                .unsqueeze(0)
-                .to(self.device)
-                .repeat(batch_size, 1)
-            )
+            lyric_token_idx = torch.tensor(lyric_token_idx, device=self.device).unsqueeze(0).repeat(batch_size, 1)
+            lyric_mask = torch.tensor(lyric_mask, device=self.device).unsqueeze(0).repeat(batch_size, 1)
 
         if audio_duration <= 0:
             audio_duration = random.uniform(30.0, 240.0)

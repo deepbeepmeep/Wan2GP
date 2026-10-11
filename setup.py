@@ -205,16 +205,19 @@ def get_gpu_info():
     except: pass
 
     if IS_WIN:
+        amd_gpus = get_amd_gpus()
+        if amd_gpus: return amd_gpus[0][0], "AMD"
+        # wmic is not installed on recent Windows 11 builds
         try:
-            name = subprocess.check_output(
-                "wmic path win32_VideoController get name",
-                shell=True,
+            names = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name"],
                 encoding='utf-8',
                 stderr=subprocess.DEVNULL
-            )
-            name = name.replace("Name", "").strip().split('\n')[0].strip()
-            if "Radeon" in name or "AMD" in name: return name, "AMD"
-            return name, "INTEL"
+            ).split('\n')
+            names = [n.strip() for n in names if n.strip()]
+            for name in names:
+                if "Radeon" in name or "AMD" in name: return name, "AMD"
+            if names: return names[0], "INTEL"
         except: pass
     else:
         try:
@@ -230,6 +233,42 @@ def get_gpu_info():
 
     return "Unknown", "UNKNOWN"
 
+def get_amd_gpus():
+    """Return (board name, gfx target) for each AMD GPU reported by the driver's clinfo."""
+    try:
+        out = subprocess.check_output(["clinfo"], encoding='utf-8', errors='replace', stderr=subprocess.DEVNULL)
+    except: return []
+    gpus = []
+    is_gpu, board = False, ""
+    for line in out.split('\n'):
+        key, _, value = line.strip().partition(":")
+        value = value.strip()
+        if key == "Device Type":
+            is_gpu, board = "CL_DEVICE_TYPE_GPU" in value, ""
+        elif is_gpu and key == "Board name":
+            board = value
+        elif is_gpu and key == "Name" and value.startswith("gfx"):
+            gfx = value.split(":")[0]
+            gpus.append((board or gfx, gfx))
+            is_gpu = False
+    return gpus
+
+def get_amd_device_extras():
+    targets = []
+    for _, gfx in get_amd_gpus():
+        if gfx not in targets: targets.append(gfx)
+    if targets:
+        print(f"[*] Detected AMD GPU target(s): {', '.join(targets)}")
+    else:
+        targets = [t.strip() for t in input("Could not detect the AMD GPU target. Enter it (e.g. gfx1201, see docs/AMD-INSTALLATION.md): ").split(",") if t.strip()]
+    return ",".join(f"device-{t}" for t in targets)
+
+def resolve_torch_cmd(config, torch_k):
+    cmd = resolve_cmd(config['components']['torch'][torch_k]['cmd'])
+    if "{device}" in cmd:
+        cmd = cmd.replace("{device}", get_amd_device_extras())
+    return cmd
+
 def get_profile_key(gpu_name, vendor):
     g = gpu_name.upper()
     if vendor == "APPLE":
@@ -241,10 +280,7 @@ def get_profile_key(gpu_name, vendor):
         if "20" in g or "QUADRO" in g: return "RTX_20"
         return "GTX_10"
     elif vendor == "AMD":
-        if any(x in g for x in ["7600", "7700", "7800", "7900"]): return "AMD_GFX110X"
-        if any(x in g for x in ["7000", "Z1", "PHOENIX"]): return "AMD_GFX1151"
-        if any(x in g for x in ["8000", "STRIX", "1201"]): return "AMD_GFX1201"
-        return "AMD_GFX110X"
+        return "AMD"
     return "RTX_40"
 
 def get_os_key():
@@ -371,7 +407,7 @@ def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k,
     pip = template["install"].format(dir=env_path)
 
     print(f"\n[2/3] Installing Torch: {config['components']['torch'][torch_k]['label']}...")
-    torch_cmd = resolve_cmd(config['components']['torch'][torch_k]['cmd'])
+    torch_cmd = resolve_torch_cmd(config, torch_k)
     run_cmd(f"{pip} {torch_cmd}")
 
     print(f"\n[3/3] Installing Requirements & Extras...")
@@ -426,7 +462,7 @@ def menu(title, options, recommended_key=None):
 def recommended_triton(profile, torch_key):
     if not profile['triton'] or profile['triton'] == 'v33':
         return profile['triton']
-    return {'cu128': 'v34', 'cu130': 'v37'}.get(torch_key)
+    return {'cu128': 'v34', 'cu130': 'v37', 'rocm10': 'v38'}.get(torch_key)
 
 def do_install_interactive(env_type, config, detected_key):
     manager = EnvsManager()
@@ -905,10 +941,37 @@ def get_system_specs():
         ).strip()
         vram_gb = float(out.split('\n')[0]) / 1024
     except:
-        print("[!] Warning: Could not detect VRAM via nvidia-smi. Defaulting to 8GB.")
-        vram_gb = 8
+        vram_gb = get_adapter_vram_gb()
+        if not vram_gb:
+            print("[!] Warning: Could not detect VRAM. Defaulting to 8GB.")
+            vram_gb = 8
 
     return ram_gb, vram_gb
+
+def get_adapter_vram_gb():
+    """Largest dedicated VRAM among the display adapters, for GPUs nvidia-smi does not cover."""
+    sizes = []
+    if IS_WIN:
+        import winreg
+        # Win32_VideoController.AdapterRAM is a 32-bit field that caps at 4GB
+        adapters = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, adapters) as root:
+                for i in range(winreg.QueryInfoKey(root)[0]):
+                    try:
+                        with winreg.OpenKey(root, winreg.EnumKey(root, i)) as key:
+                            size = winreg.QueryValueEx(key, "HardwareInformation.qwMemorySize")[0]
+                        sizes.append(int.from_bytes(size, "little") if isinstance(size, bytes) else int(size))
+                    except OSError: pass
+        except OSError: pass
+    else:
+        drm = "/sys/class/drm"
+        for card in os.listdir(drm) if os.path.isdir(drm) else []:
+            try:
+                with open(os.path.join(drm, card, "device", "mem_info_vram_total")) as f:
+                    sizes.append(int(f.read()))
+            except: pass
+    return max(sizes, default=0) / (1024**3)
 
 def create_wgp_config(profile_key, config_data):
     WGP_CONFIG_FILE = "wgp_config.json"

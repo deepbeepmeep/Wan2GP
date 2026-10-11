@@ -26,10 +26,12 @@ class LTX2Scheduler(SchedulerProtocol):
         base_shift: float = 0.95,
         stretch: bool = True,
         terminal: float = 0.1,
+        *,
+        device: torch.device,
         **_kwargs,
     ) -> torch.FloatTensor:
         tokens = math.prod(latent.shape[2:]) if latent is not None else MAX_SHIFT_ANCHOR
-        sigmas = torch.linspace(1.0, 0.0, steps + 1)
+        sigmas = torch.linspace(1.0, 0.0, steps + 1, device=device)
 
         x1 = BASE_SHIFT_ANCHOR
         x2 = MAX_SHIFT_ANCHOR

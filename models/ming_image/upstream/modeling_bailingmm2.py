@@ -561,10 +561,10 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 [0 for _ in range(len(attention_mask_one_batch[padding_start:]))]
             )
 
-        text_ids_append_lq = torch.tensor(new_text_ids_list, dtype=text_ids.dtype).to(text_ids.device)
-        attention_mask_append_lq = torch.tensor(new_attention_mask_list, dtype=attention_mask.dtype).to(attention_mask.device)
-        gen_mask = torch.tensor(gen_mask_list, dtype=attention_mask.dtype).to(attention_mask.device)
-        labels = torch.tensor(new_labels_list, dtype=text_ids.dtype).to(text_ids.device)
+        text_ids_append_lq = torch.tensor(new_text_ids_list, dtype=text_ids.dtype, device=text_ids.device)
+        attention_mask_append_lq = torch.tensor(new_attention_mask_list, dtype=attention_mask.dtype, device=attention_mask.device)
+        gen_mask = torch.tensor(gen_mask_list, dtype=attention_mask.dtype, device=attention_mask.device)
+        labels = torch.tensor(new_labels_list, dtype=text_ids.dtype, device=text_ids.device)
 
         assert attention_mask_append_lq.shape == text_ids_append_lq.shape
         assert labels.shape == text_ids_append_lq.shape
@@ -628,7 +628,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
             assert cnt_input_image == 0
             assert cum_image_token == 0
 
-        new_image_grid_thw = torch.tensor(new_image_grid_thw, dtype=text_ids.dtype).to(text_ids.device)
+        new_image_grid_thw = torch.tensor(new_image_grid_thw, dtype=text_ids.dtype, device=text_ids.device)
         new_image_embeds = torch.cat(new_image_embeds, dim=0).to(text_ids.device)
 
         total_patch_token = 0
@@ -757,7 +757,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                     # causal-LM wrapper needlessly materializes vocabulary logits.
                     scale_embeds = self.connector.model(
                         inputs_embeds=scale_embeds, 
-                        attention_mask=torch.ones(seq_shape[0],1,seq_shape[1],seq_shape[1]).to(scale_embeds.device), 
+                        attention_mask=torch.ones(seq_shape[0],1,seq_shape[1],seq_shape[1], device=scale_embeds.device), 
                         output_hidden_states=True
                     ).hidden_states[-1]
                     

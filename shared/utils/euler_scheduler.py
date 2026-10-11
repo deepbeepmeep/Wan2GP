@@ -47,7 +47,7 @@ class EulerScheduler:
                 _timestep_transform(t, shift=shift, num_timesteps=self.num_train_timesteps)
                 for t in timesteps
             ][:-1]
-        self.timesteps = torch.tensor(timesteps)
+        self.timesteps = torch.cat(timesteps)
         return self.timesteps
 
     def _timestep_to_index(self, timestep):

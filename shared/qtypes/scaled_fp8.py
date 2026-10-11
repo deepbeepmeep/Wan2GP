@@ -159,8 +159,25 @@ def _scaled_mm_weight_scale(scale, weight):
     return None, None
 
 
+_activation_kernel = None
+
+
+def _get_activation_kernel():
+    global _activation_kernel
+    if _activation_kernel is None:
+        try:
+            from shared.kernels import fp8_activation_triton as kernel
+        except ImportError:  # no Triton: PyTorch path
+            kernel = False
+        _activation_kernel = kernel
+    return _activation_kernel
+
+
 def _quantize_activation(x, fp8_dtype):
     minv, maxv = _FP8_RANGE[fp8_dtype]
+    kernel = _get_activation_kernel()
+    if kernel and kernel.supports(x, fp8_dtype):
+        return kernel.quantize_activation(x, fp8_dtype, minv, maxv)
     absmax = x.abs().max().float()
     scale = absmax / maxv
     scale = torch.where(absmax > 0, scale, torch.ones_like(scale))

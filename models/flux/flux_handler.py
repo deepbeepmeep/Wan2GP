@@ -83,6 +83,7 @@ class family_handler():
             "no_negative_prompt" :  flux_chroma or flux_chroma_radiance,
             "flux-model": flux_model,
             "flux2": flux2,
+            "device_explicit": base_model_type in ("flux", "flux_schnell", "flux2_klein_4b", "flux2_klein_9b", "flux2_dev", "flux_chroma_radiance", "flux_dev_uso", "pi_flux2"),
         }
         if flux_chroma or flux_chroma_radiance:
             extra_model_def["guidance_max_phases"] = 1
@@ -226,6 +227,8 @@ class family_handler():
             extra_model_def["piflow"] = True
 
         extra_model_def["fit_into_canvas_image_refs"] = 0
+        if not flux_chroma_radiance:
+            extra_model_def["tiny_vae_architecture"] = "flux2_klein_4b" if flux2 else "flux"
 
         return extra_model_def
 

@@ -2,6 +2,7 @@ from shared.utils.phase_progress import vae_decoding_progress, set_phase_status
 from dataclasses import dataclass
 
 import torch
+from shared.utils.conv_bands import band_convs, conv_bands
 from einops import rearrange
 from torch import Tensor, nn
 
@@ -19,8 +20,27 @@ class AutoEncoderParams:
     shift_factor: float
 
 
-def swish(x: Tensor) -> Tensor:
-    return x * torch.sigmoid(x)
+def swish_(x: Tensor, chunk_bytes: int = 256 << 20) -> Tensor:
+    """x * sigmoid(x) written into x (always a fresh normalization output here) by chunks: the same values, without two full-size temporaries."""
+    flat, rows = x.view(-1), max(1, chunk_bytes // x.element_size())
+    for start in range(0, flat.numel(), rows):
+        part = flat[start:start + rows]
+        part.mul_(torch.sigmoid(part))
+    return x
+
+
+def norm_swish(norm: nn.GroupNorm, x: Tensor, chunk_bytes: int = 256 << 20) -> Tensor:
+    """swish(norm(x)) for a convolution. Under autocast, GroupNorm computes in float32 and the convolution casts its input to the autocast dtype:
+    each chunk of groups is cast right away, so neither the float32 copy of x nor the float32 result is allocated in full (same values)."""
+    if not torch.is_autocast_enabled(x.device.type):
+        return swish_(norm(x))
+    out = torch.empty_like(x, dtype=torch.get_autocast_dtype(x.device.type))
+    step = x.shape[1] // norm.num_groups
+    groups = max(1, chunk_bytes // (x[:, :step].numel() * 4))
+    for start in range(0, norm.num_groups, groups):
+        c0, c1 = start * step, min(norm.num_groups, start + groups) * step
+        out[:, c0:c1] = swish_(nn.functional.group_norm(x[:, c0:c1], (c1 - c0) // step, norm.weight[c0:c1], norm.bias[c0:c1], norm.eps))
+    return out
 
 
 class AttnBlock(nn.Module):
@@ -67,19 +87,15 @@ class ResnetBlock(nn.Module):
         if self.in_channels != self.out_channels:
             self.nin_shortcut = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
 
-    def forward(self, x):
-        h = x
-        h = self.norm1(h)
-        h = swish(h)
-        h = self.conv1(h)
-
-        h = self.norm2(h)
-        h = swish(h)
-        h = self.conv2(h)
-
+    def forward(self, x_list):
+        """x_list: [input], emptied so that the input can be released once read (its shortcut projection is taken first)."""
+        x = x_list.pop()
+        h = norm_swish(self.norm1, x)
         if self.in_channels != self.out_channels:
             x = self.nin_shortcut(x)
-
+        h = self.conv1(h)
+        h = norm_swish(self.norm2, h)
+        h = self.conv2(h)
         return x + h
 
 
@@ -102,9 +118,7 @@ class Upsample(nn.Module):
         self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x: Tensor):
-        x = nn.functional.interpolate(x, scale_factor=2.0, mode="nearest")
-        x = self.conv(x)
-        return x
+        return conv_bands(x, self.conv, upsample=True)  # by bands of rows: no full-size upsampled input
 
 
 class Encoder(nn.Module):
@@ -158,25 +172,23 @@ class Encoder(nn.Module):
         self.conv_out = nn.Conv2d(block_in, 2 * z_channels, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x: Tensor) -> Tensor:
-        # downsampling
-        hs = [self.conv_in(x)]
+        # downsampling (only the current activation is kept: each block releases its input once read)
+        h = self.conv_in(x)
         for i_level in range(self.num_resolutions):
             for i_block in range(self.num_res_blocks):
-                h = self.down[i_level].block[i_block](hs[-1])
+                block_input, h = [h], None
+                h = self.down[i_level].block[i_block](block_input)
                 if len(self.down[i_level].attn) > 0:
                     h = self.down[i_level].attn[i_block](h)
-                hs.append(h)
             if i_level != self.num_resolutions - 1:
-                hs.append(self.down[i_level].downsample(hs[-1]))
+                h = self.down[i_level].downsample(h)
 
         # middle
-        h = hs[-1]
-        h = self.mid.block_1(h)
+        h = self.mid.block_1([h])
         h = self.mid.attn_1(h)
-        h = self.mid.block_2(h)
+        h = self.mid.block_2([h])
         # end
-        h = self.norm_out(h)
-        h = swish(h)
+        h = norm_swish(self.norm_out, h)
         h = self.conv_out(h)
         return h
 
@@ -243,24 +255,24 @@ class Decoder(nn.Module):
         h = self.conv_in(z)
 
         # middle
-        h = self.mid.block_1(h)
+        h = self.mid.block_1([h])
         h = self.mid.attn_1(h)
-        h = self.mid.block_2(h)
+        h = self.mid.block_2([h])
 
         # cast to proper dtype
         h = h.to(upscale_dtype)
         # upsampling
         for i_level in reversed(range(self.num_resolutions)):
             for i_block in range(self.num_res_blocks + 1):
-                h = self.up[i_level].block[i_block](h)
+                block_input, h = [h], None  # handoff: the block releases its input once read
+                h = self.up[i_level].block[i_block](block_input)
                 if len(self.up[i_level].attn) > 0:
                     h = self.up[i_level].attn[i_block](h)
             if i_level != 0:
                 h = self.up[i_level].upsample(h)
 
         # end
-        h = self.norm_out(h)
-        h = swish(h)
+        h = norm_swish(self.norm_out, h)
         h = self.conv_out(h)
         return h
 
@@ -302,6 +314,7 @@ class AutoEncoder(nn.Module):
             z_channels=params.z_channels,
         )
         self.reg = DiagonalGaussian(sample=sample_z)
+        band_convs(self)  # large 3x3 convolutions by bands of rows: no full-image cuDNN workspace
 
         self.scale_factor = params.scale_factor
         self.shift_factor = params.shift_factor

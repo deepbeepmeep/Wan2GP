@@ -4,6 +4,7 @@ from typing import Protocol
 import torch
 
 from ...utils import rms_norm
+from shared import attention_kit
 from shared.attention import pay_attention
 from .rope import LTXRopeType, apply_rotary_emb_inplace
 from ....denoiser_kernels import project_many
@@ -200,6 +201,15 @@ class Attention(torch.nn.Module):
                 return "flash", 3
         return None, None
 
+    def _norm_rope_(self, query, key, pe, k_pe):
+        """attention_kit callback: q_norm/k_norm (over all heads) and RoPE of q and/or k in place."""
+        for tensor, norm, freqs in ((query, self.q_norm, pe), (key, self.k_norm, pe if k_pe is None else k_pe)):
+            if tensor is not None:
+                rows = tensor.flatten(2)
+                norm(rows)
+                if freqs is not None:
+                    apply_rotary_emb_inplace(rows, freqs, self.rope_type)
+
     def forward(
         self,
         x_list: torch.Tensor,
@@ -209,8 +219,17 @@ class Attention(torch.nn.Module):
         k_pe: torch.Tensor | None = None,
         NAG: dict | None = None,
     ) -> torch.Tensor:
+        if context_list is None and mask is None and self._resolve_attention_override()[0] is None:
+            # the gates read the attention input: computed first so that the input is released by the q/k/v projections
+            gate_logits = None if self.to_gate_logits is None else self.to_gate_logits(x_list[0])
+            # RoPE caches map frequencies to ranges of heads: all heads stay together
+            out = attention_kit.qkv_attention(x_list, self.to_q, self.to_k, self.to_v, self.heads, self.dim_head,
+                                              lambda query, key, group: self._norm_rope_(query, key, pe, k_pe), split_heads=False)
+            if gate_logits is not None:
+                out.mul_((2.0 * torch.sigmoid(gate_logits).to(dtype=out.dtype)).unsqueeze(-1))
+            return self.to_out(out.flatten(2, 3))
         x = x_list[0]
-        gate_input = x
+        gate_logits = None if self.to_gate_logits is None else self.to_gate_logits(x)  # first: x is released after the projections
         x_list.clear()
         context = None
         if context_list is not None:
@@ -274,11 +293,10 @@ class Attention(torch.nn.Module):
                 out.mul_(nag_alpha)
                 out.add_(x_pos)
                 x_pos = None
-                if self.to_gate_logits is not None:
-                    gate_logits = self.to_gate_logits(gate_input)
+                if gate_logits is not None:
                     gates = 2.0 * torch.sigmoid(gate_logits).to(dtype=out.dtype)
                     out.mul_(gates.unsqueeze(-1))
-                gate_input = None
+                gate_logits = None
                 out = out.flatten(2, 3)
                 out = self.to_out(out)
                 return out
@@ -292,11 +310,10 @@ class Attention(torch.nn.Module):
             version=attention_version,
             recycle_q= True,
         )
-        if self.to_gate_logits is not None:
-            gate_logits = self.to_gate_logits(gate_input)
+        if gate_logits is not None:
             gates = 2.0 * torch.sigmoid(gate_logits).to(dtype=out.dtype)
             out.mul_(gates.unsqueeze(-1))
-        gate_input = None
+        gate_logits = None
         out = out.flatten(2, 3)
         out = self.to_out(out)
         return out

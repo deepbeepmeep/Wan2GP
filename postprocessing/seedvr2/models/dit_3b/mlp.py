@@ -68,7 +68,7 @@ class SwiGLUMLP(nn.Module):
         seq_len = x.shape[-2]
         if seq_len <= 1024:
             return self._forward(x)
-        chunk_size = max(128, min(seq_len, seq_len * self.dim // max(2 * self.hidden_dim, 1)))
+        chunk_size = max(128, min(seq_len, seq_len * self.dim // max(4 * self.hidden_dim, 1)))  # the gate and up projections of a chunk: half the hidden states
         for start in range(0, seq_len, chunk_size):
             chunk_out = self._forward(x.narrow(-2, start, min(chunk_size, seq_len - start)))
             x.narrow(-2, start, chunk_out.shape[-2]).copy_(chunk_out)

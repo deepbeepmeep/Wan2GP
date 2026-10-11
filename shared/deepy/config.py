@@ -304,7 +304,7 @@ def validate_deepy_version_config(deepy_type: Any, compaction_type: Any, context
         enhancer_no = 0
     if normalized_type == DEEPY_TYPE_PRIME:
         if enhancer_no not in (5, 6):
-            raise ValueError("Deepy Prime requires a Qwen3.8 VL model (9B or 27B).")
+            raise ValueError("Deepy Prime requires a Qwen3.8 VL model.")
         if normalized_compaction != DEEPY_COMPACTION_TYPE_SUMMARIZE:
             raise ValueError("Deepy Prime requires Summarize compaction.")
     validate_deepy_compaction_config(compaction_type, normalized_tokens, compaction_thinking=compaction_thinking)

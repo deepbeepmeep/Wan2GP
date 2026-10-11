@@ -18,6 +18,7 @@ from diffusers.models.embeddings import TimestepEmbedding
 from diffusers.models.normalization import RMSNorm
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.utils import logging
+from shared import attention_kit
 from shared.attention import pay_attention
 from shared.utils.phase_progress import check_abort
 
@@ -246,11 +247,76 @@ def _qwenimage21_prepare_qkv(attn: 'QwenImage21Attention', hidden_states: torch.
     seq_len_q = query.shape[1]
     return (query, key, value, seq_len_q)
 
+def _qwenimage21_prefix_attention(query, key, value, segments, key_valid):
+    """Attention of the prefix segments (text: causal, condition images), each segment to the keys up to its end, (batch, tokens,
+    heads, head_dim) for each segment."""
+    outputs = []
+    for start, end, is_text in segments:
+        seg_mask = None
+        if is_text:
+            seg_len = end - start
+            seg_mask = torch.cat([torch.ones(seg_len, start, dtype=torch.bool, device=query.device), torch.tril(torch.ones(seg_len, seg_len, dtype=torch.bool, device=query.device))], dim=1)[None, None]
+        if key_valid is not None:
+            seg_key_valid = key_valid[:, None, None, :end]
+            seg_mask = seg_key_valid if seg_mask is None else seg_mask & seg_key_valid
+        outputs.append(dispatch_attention_fn([query[:, start:end], key[:, :end], value[:, :end]], attn_mask=seg_mask))
+    return outputs
+
+
+def _qwenimage21_norm_rope_(query, key, attn, rotary_emb):
+    """attention_kit callback: norm_q/norm_k then RoPE of q and/or k in place, by chunks of tokens, as _qwenimage21_prepare_qkv computes
+    them; rotary_emb: the complex frequencies of these tokens."""
+    for tensor, norm in ((query, attn.norm_q), (key, attn.norm_k)):
+        if tensor is not None:
+            attention_kit.rows_(tensor, lambda part, first, last: _qwenimage21_norm_rope_rows(part, norm, None if rotary_emb is None else rotary_emb[first:last]))
+
+
+def _qwenimage21_norm_rope_rows(x, norm, freqs_cis):
+    x = norm(x).to(x.dtype)
+    if freqs_cis is None:
+        return x
+    rotated = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
+    rotated.mul_(freqs_cis.unsqueeze(1))
+    return torch.view_as_real(rotated).flatten(3)
+
+
+def _qwenimage21_kit_attention(attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, segments):
+    """QwenImage21AttnProcessor without mask nor NAG: the prefix tokens (text and condition images) attended by segments as before,
+    then the target tokens, whose attention to all the keys goes through attention_kit with the prefix keys and values first."""
+    x = hidden_states.pop() if isinstance(hidden_states, list) else hidden_states
+    outputs, kv_prefix = [], None
+    if kv_cache_mode == 'cached':
+        kv_prefix = layer_cache.get()
+    else:
+        prefix_len = segments[-1][1] if segments else 0
+        if prefix_len:
+            query, key, value, _ = _qwenimage21_prepare_qkv(attn, x[:, :prefix_len], None if rotary_emb is None else rotary_emb[:prefix_len], None, None, None)
+            outputs = _qwenimage21_prefix_attention(query, key, value, segments, None)
+            if kv_cache_mode == 'extract':
+                layer_cache.store(key, value)
+            kv_prefix = (key, value)
+            del query, key, value
+            rotary_emb = None if rotary_emb is None else rotary_emb[prefix_len:]
+        x = x[:, prefix_len:].contiguous()
+    x_list = [x]
+    del x
+    out = attention_kit.qkv_attention(x_list, attn.to_q, attn.to_k, attn.to_v, attn.heads, attn.inner_dim // attn.heads,
+                                      lambda query, key, group: _qwenimage21_norm_rope_(query, key, attn, rotary_emb), kv_prefix=kv_prefix)
+    kv_prefix = None
+    if outputs:
+        outputs.append(out)
+        out = torch.cat(outputs, dim=1)
+        outputs.clear()
+    return attn.to_out[1](attn.to_out[0](out.flatten(2, 3)))
+
+
 class QwenImage21AttnProcessor:
     _attention_backend = None
     _parallel_config = None
 
     def __call__(self, attn: 'QwenImage21Attention', hidden_states: torch.Tensor, attention_mask: Any | None=None, rotary_emb: torch.Tensor | None=None, layer_cache: QwenImage21KVLayerCache | None=None, kv_cache_mode: str | None=None, cache_write_slice: slice | None=None, segments: list[tuple[int, int, bool]] | None=None, key_valid: torch.Tensor | None=None, nag_cache=None, nag_parameters=None, nag_target_tokens=None) -> torch.Tensor:
+        if nag_cache is None and attention_mask is None and key_valid is None and (kv_cache_mode == 'cached' or segments is not None):
+            return _qwenimage21_kit_attention(attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, segments)
         query, key, value, seq_len_q = _qwenimage21_prepare_qkv(attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice)
         query_dtype = query.dtype
         alternate = None
@@ -267,16 +333,7 @@ class QwenImage21AttnProcessor:
             hidden_states = dispatch_attention_fn(qkv_list, attn_mask=attention_mask, recycle_q=True)
         else:
             prefix_len = segments[-1][1] if segments else 0
-            outputs = []
-            for start, end, is_text in segments:
-                seg_mask = None
-                if is_text:
-                    seg_len = end - start
-                    seg_mask = torch.cat([torch.ones(seg_len, start, dtype=torch.bool, device=query.device), torch.tril(torch.ones(seg_len, seg_len, dtype=torch.bool, device=query.device))], dim=1)[None, None]
-                if key_valid is not None:
-                    seg_key_valid = key_valid[:, None, None, :end]
-                    seg_mask = seg_key_valid if seg_mask is None else seg_mask & seg_key_valid
-                outputs.append(dispatch_attention_fn([query[:, start:end], key[:, :end], value[:, :end]], attn_mask=seg_mask))
+            outputs = _qwenimage21_prefix_attention(query, key, value, segments, key_valid)
             if prefix_len < seq_len_q:
                 qkv_list = [query[:, prefix_len:], key, value]
                 del query, key, value

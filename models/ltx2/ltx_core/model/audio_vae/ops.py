@@ -12,25 +12,28 @@ class AudioProcessor(nn.Module):
         mel_bins: int,
         mel_hop_length: int,
         n_fft: int,
+        device: torch.device,
     ) -> None:
         super().__init__()
         self.sample_rate = sample_rate
         self.n_fft = n_fft
-        self.mel_transform = torchaudio.transforms.MelSpectrogram(
-            sample_rate=sample_rate,
-            n_fft=n_fft,
-            win_length=n_fft,
-            hop_length=mel_hop_length,
-            f_min=0.0,
-            f_max=sample_rate / 2.0,
-            n_mels=mel_bins,
-            window_fn=torch.hann_window,
-            center=True,
-            pad_mode="reflect",
-            power=1.0,
-            mel_scale="slaney",
-            norm="slaney",
-        )
+        # torchaudio computes the window and mel filters on the default device: on the generation device, as for callers that relied on it
+        with torch.device(device):
+            self.mel_transform = torchaudio.transforms.MelSpectrogram(
+                sample_rate=sample_rate,
+                n_fft=n_fft,
+                win_length=n_fft,
+                hop_length=mel_hop_length,
+                f_min=0.0,
+                f_max=sample_rate / 2.0,
+                n_mels=mel_bins,
+                window_fn=torch.hann_window,
+                center=True,
+                pad_mode="reflect",
+                power=1.0,
+                mel_scale="slaney",
+                norm="slaney",
+            )
 
     def resample_waveform(
         self,

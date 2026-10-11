@@ -177,7 +177,6 @@ def set_nvfp4_backend(name):
     _NVFP4_LOGGED_BACKENDS.clear()
     _NVFP4_KERNEL_LOGGED = False
     _NVFP4_LOAD_LOGGED = False
-    _init_nvfp4_kernel_support()
 
 
 def _nvfp4_note_kernel(backend):
@@ -210,6 +209,7 @@ def _nvfp4_note_reset():
 
 def _nvfp4_note_load_backend():
     global _NVFP4_LOAD_LOGGED
+    _init_nvfp4_kernel_support()  # when NVFP4 weights load, never during compilation: the probe keeps a kernel workspace in VRAM
     if _NVFP4_LOAD_LOGGED:
         return
     _NVFP4_LOAD_LOGGED = True
@@ -292,9 +292,6 @@ def _supports_nvfp4_kernel(device):
     if not _NVFP4_KERNEL_CHECKED:
         _init_nvfp4_kernel_support()
     return _NVFP4_KERNEL_AVAILABLE
-
-
-_init_nvfp4_kernel_support()
 
 
 def _is_fake_tensor(tensor):

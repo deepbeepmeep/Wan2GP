@@ -400,14 +400,14 @@ def get_t_scale_rope_index(
                 text_len = ed - st
 
                 st_idx = llm_pos_ids_list[-1][0].max() + 1 if len(llm_pos_ids_list) > 0 else 0
-                llm_pos_ids_list.append(torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx)
+                llm_pos_ids_list.append(torch.arange(text_len, device=input_ids.device).view(1, -1).expand(3, -1) + st_idx)
 
                 # body-diagonal symmetry
-                t_index = torch.arange(llm_grid_t).view(-1, 1).expand(
+                t_index = torch.arange(llm_grid_t, device=input_ids.device).view(-1, 1).expand(
                     -1, llm_grid_h * llm_grid_w).flatten()
-                h_index = torch.arange(llm_grid_h).view(1, -1, 1).expand(
+                h_index = torch.arange(llm_grid_h, device=input_ids.device).view(1, -1, 1).expand(
                     llm_grid_t, -1, llm_grid_w).flatten() - (llm_grid_h - 1) // 2
-                w_index = torch.arange(llm_grid_w).view(1, 1, -1).expand(
+                w_index = torch.arange(llm_grid_w, device=input_ids.device).view(1, 1, -1).expand(
                     llm_grid_t, llm_grid_h, -1).flatten() - (llm_grid_w - 1) // 2
 
                 # time dim adjust step size
@@ -427,7 +427,7 @@ def get_t_scale_rope_index(
                 # next text token near last video token position = last t + 1
                 st_idx = llm_pos_ids_list[-1][0].max() + 1 if len(llm_pos_ids_list) > 0 else 0
                 text_len = len(input_tokens) - st
-                llm_pos_ids_list.append(torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx)
+                llm_pos_ids_list.append(torch.arange(text_len, device=input_ids.device).view(1, -1).expand(3, -1) + st_idx)
 
             llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(3, -1)
             llm_positions = llm_positions.to(dtype=position_ids.dtype, device=position_ids.device)

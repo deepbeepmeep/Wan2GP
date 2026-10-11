@@ -134,7 +134,7 @@ def encode_image_refs(ae, img_ctx: list[Image.Image]):
         encoded_refs.append(encoded)
 
     # Create time offsets for each reference
-    t_off = [scale + scale * t for t in torch.arange(0, len(encoded_refs))]
+    t_off = [scale + scale * t for t in torch.arange(0, len(encoded_refs), device=encoded_refs[0].device)]
     t_off = [t.view(-1) for t in t_off]
 
     # Process with position IDs
@@ -171,10 +171,10 @@ def prc_txt(x: Tensor, t_coord: Tensor | None = None) -> tuple[Tensor, Tensor]:
     _l, _ = x.shape  # noqa: F841
 
     coords = {
-        "t": torch.arange(1) if t_coord is None else t_coord,
-        "h": torch.arange(1),  # dummy dimension
-        "w": torch.arange(1),  # dummy dimension
-        "l": torch.arange(_l),
+        "t": torch.arange(1, device=x.device) if t_coord is None else t_coord,
+        "h": torch.arange(1, device=x.device),  # dummy dimension
+        "w": torch.arange(1, device=x.device),  # dummy dimension
+        "l": torch.arange(_l, device=x.device),
     }
     x_ids = torch.cartesian_prod(coords["t"], coords["h"], coords["w"], coords["l"])
     return x, x_ids.to(x.device)
@@ -182,10 +182,10 @@ def prc_txt(x: Tensor, t_coord: Tensor | None = None) -> tuple[Tensor, Tensor]:
 def prc_img(x: Tensor, t_coord: Tensor | None = None) -> tuple[Tensor, Tensor]:
     _, h, w = x.shape  # noqa: F841
     x_coords = {
-        "t": torch.arange(1) if t_coord is None else t_coord,
-        "h": torch.arange(h),
-        "w": torch.arange(w),
-        "l": torch.arange(1),
+        "t": torch.arange(1, device=x.device) if t_coord is None else t_coord,
+        "h": torch.arange(h, device=x.device),
+        "w": torch.arange(w, device=x.device),
+        "l": torch.arange(1, device=x.device),
     }
     x_ids = torch.cartesian_prod(x_coords["t"], x_coords["h"], x_coords["w"], x_coords["l"])
     x = rearrange(x, "c h w -> (h w) c")

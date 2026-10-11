@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch import Tensor
 
+from shared import attention_kit
 from shared.attention import pay_attention
 from shared.utils.lora_mapping import convert_lora_keys
 
@@ -30,6 +31,19 @@ def _apply_rope_inplace(x: Tensor, freqs: Tensor) -> Tensor:
     x_pair[..., 0].mul_(cos).sub_(x1 * sin)
     x_pair[..., 1].mul_(cos).add_(x0 * sin)
     return x
+
+
+def _norm_rope_(query, key, qknorm, freqs):
+    """attention_kit callback: QKNorm and RoPE of q and/or k (batch, tokens, heads, head_dim) in place, by chunks of tokens: the values
+    of Attention.forward, whose tensors are (batch, heads, tokens, head_dim)."""
+    for tensor, norm in ((query, qknorm.qnorm), (key, qknorm.knorm)):
+        if tensor is not None:
+            attention_kit.rows_(tensor, lambda part, first, last: _norm_rope_rows(norm.forward(part), None if freqs is None else freqs[:, first:last]))
+
+
+def _norm_rope_rows(x: Tensor, freqs: Tensor | None) -> Tensor:
+    """_apply_rope_inplace of x (batch, tokens, heads, head_dim)."""
+    return x if freqs is None else _apply_rope_inplace(x.transpose(1, 2), freqs).transpose(1, 2)
 
 
 def ropeapply(xq: Tensor, xk: Tensor, freqs: Tensor) -> tuple[Tensor, Tensor]:
@@ -307,6 +321,17 @@ class Attention(nn.Module):
         neg_context: Tensor | None = None,
         neg_mask: Tensor | None = None,
     ) -> Tensor:
+        if NAG is None:
+            # the gate reads the attention input: computed first so that the attention releases the input after its projections
+            x_list = qkv if isinstance(qkv, list) else [qkv]
+            gate = self.gate(x_list[0])
+            qkv = None
+            out = attention_kit.qkv_attention(x_list, self.wq, self.wk, self.wv, self.heads, self.headdim,
+                                              lambda query, key, group: _norm_rope_(query, key, self.qknorm, freqs),
+                                              kv_heads=self.kvheads, attention_mask=None if mask is None else mask.transpose(1, 2)).flatten(2)
+            out.mul_(gate.sigmoid_())
+            del gate
+            return self.wo(out)
         if isinstance(qkv, list):
             qkv_ = qkv[0]
             qkv.clear()

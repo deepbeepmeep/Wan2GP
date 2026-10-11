@@ -9,6 +9,7 @@ import gc
 from audio_separator.separator import Separator
 from shared.utils import files_locator as fl
 from shared.utils.download import process_files_def_if_needed
+from shared.utils.default_device import keep_default_device
 from preprocessing.roformer.assets import query_download_def
 from shared.utils.media_control import controlled_model_loading, checkpoint_modules
 
@@ -52,9 +53,9 @@ def _prepare_separator_input(src_path: str, min_seconds: float):
     return use_path, temp_path, original_duration
 
 
+@keep_default_device()
 def extract_vocal_and_background_stems(src_path: str, vocals_dst_path: str, background_dst_path: str, min_seconds: float = 8) -> tuple[str, str]:
     process_files_def_if_needed(query_download_def())
-    default_device = torch.get_default_device()
     torch.set_default_device('cpu')
 
     vocals_dst = Path(vocals_dst_path)
@@ -85,14 +86,13 @@ def extract_vocal_and_background_stems(src_path: str, vocals_dst_path: str, back
 
         torch.cuda.empty_cache()
         gc.collect()
-        torch.set_default_device(default_device)
 
 
+@keep_default_device()
 def _get_single_stem(src_path: str, dst_path: str, stem: str, min_seconds: float = 8) -> str:
     """Separate audio and save only the requested stem to ``dst_path``."""
 
     process_files_def_if_needed(query_download_def())
-    default_device = torch.get_default_device()
     torch.set_default_device('cpu')
 
     dst = Path(dst_path)
@@ -128,7 +128,6 @@ def _get_single_stem(src_path: str, dst_path: str, stem: str, min_seconds: float
 
         torch.cuda.empty_cache()
         gc.collect()
-        torch.set_default_device(default_device)
 
 
 def get_vocals(src_path: str, dst_path: str, min_seconds: float = 8) -> str:

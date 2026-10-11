@@ -413,7 +413,7 @@ class Flux(nn.Module):
         if self.chroma:
             mod_index_length = 344
             distill_timestep = timestep_embedding(timesteps, 16).to(img.device, img.dtype)
-            guidance =  torch.tensor([0.]* distill_timestep.shape[0])
+            guidance =  torch.tensor([0.]* distill_timestep.shape[0], device=img.device)
             distil_guidance = timestep_embedding(guidance, 16).to(img.device, img.dtype)
             modulation_index = timestep_embedding(torch.arange(mod_index_length, device=img.device), 32).to(img.device, img.dtype)
             modulation_index = modulation_index.unsqueeze(0).repeat(img.shape[0], 1, 1).to(img.device, img.dtype)

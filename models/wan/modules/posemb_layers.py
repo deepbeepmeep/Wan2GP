@@ -260,6 +260,15 @@ def _apply_rope_inplace_inner(x: torch.Tensor, cos: torch.Tensor, sin: torch.Ten
 
 
 def _apply_rope_inplace(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, use_fp32: bool) -> torch.Tensor:
+    if use_fp32 and x.dtype != torch.float32 and x.dim() == cos.dim() and x.shape[1] == cos.shape[1] > 1:
+        # by chunks of tokens: the same values without a float32 copy of x
+        step = max(1, (64 << 20) // (x[:, 0].numel() * 4))
+        for start in range(0, x.shape[1], step):
+            part = x[:, start:start + step]
+            x_work = part.to(torch.float32)
+            _apply_rope_inplace_inner(x_work, cos[:, start:start + step], sin[:, start:start + step])
+            part.copy_(x_work.to(x.dtype))
+        return x
     if use_fp32 and x.dtype != torch.float32:
         x_work = x.to(torch.float32)
         _apply_rope_inplace_inner(x_work, cos, sin)
@@ -355,6 +364,7 @@ def get_nd_rotary_pos_embed(
     enable_riflex = False,
     rope_dim_list = [44, 42, 42],
     head_dim = 128,
+    device,
 ):
     """
     This is a n-d version of precompute_freqs_cis, which is a RoPE for tokens with n-d structure.
@@ -381,7 +391,7 @@ def get_nd_rotary_pos_embed(
     ), "sum(rope_dim_list) should equal to head_dim of attention layer"
 
     grid = get_meshgrid_nd(
-        start, *args, dim=len(rope_dim_list), dtype=_rope_freqs_dtype()
+        start, *args, dim=len(rope_dim_list), dtype=_rope_freqs_dtype(), device=device
     )  # [3, W, H, D] / [2, W, H]
 
     if isinstance(theta_rescale_factor, int) or isinstance(theta_rescale_factor, float):
@@ -489,7 +499,7 @@ def apply_rotary_source_id(freqs, source_id, head_dim=128):
     source_cos, source_sin = get_1d_rotary_pos_embed(head_dim, source_pos, use_real=True)
     return cos * source_cos - sin * source_sin, sin * source_cos + cos * source_sin
 
-def get_rotary_pos_embed(latents_size, enable_RIFLEx = False):
+def get_rotary_pos_embed(latents_size, enable_RIFLEx = False, *, device):
     target_ndim = 3
     ndim = 5 - 2
 
@@ -520,6 +530,7 @@ def get_rotary_pos_embed(latents_size, enable_RIFLEx = False):
         use_real=True,
         theta_rescale_factor=1,
         L_test = latents_size[0],
-        enable_riflex = enable_RIFLEx
+        enable_riflex = enable_RIFLEx,
+        device=device,
     )
     return (freqs_cos, freqs_sin)

@@ -1158,6 +1158,21 @@ WAC.syncSettingsState = function () {
   if (launcher) launcher.setAttribute('aria-expanded', open ? 'true' : 'false');
 };
 
+WAC.syncSettingsDropdowns = function () {
+  const panel = WAC.settingsPanel();
+  if (!panel) return;
+  for (const menu of panel.querySelectorAll('.chat__settings-scroll .wrap > ul.options[role="listbox"]')) {
+    const input = menu.parentElement.getBoundingClientRect();
+    const scroll = menu.closest('.chat__settings-scroll').getBoundingClientRect();
+    const above = Math.max(0, input.top - Math.max(0, scroll.top) - 4);
+    const below = Math.max(0, Math.min(window.innerHeight, scroll.bottom) - input.bottom - 4);
+    const openUp = below < Math.min(280, menu.scrollHeight) && above > below;
+    menu.style.setProperty('--chat-options-top', openUp ? 'auto' : '100%');
+    menu.style.setProperty('--chat-options-bottom', openUp ? '100%' : 'auto');
+    menu.style.setProperty('--chat-options-height', `${Math.min(280, openUp ? above : below)}px`);
+  }
+};
+
 WAC.syncDockLayout = function () {
   const dock = WAC.dock();
   if (!dock) return;
@@ -1486,6 +1501,7 @@ WAC.appendStreamingInlineMarkdown = function (parent, value) {
 
 WAC.resetStreamingMarkdown = function (node) {
   node.replaceChildren();
+  delete node.__wangpStreamingArrival;
   const state = { source: '', buffer: '', inFence: false, fence: '', code: null, list: null, listType: '', table: null, tableHeader: null, blockBoundary: true, tail: null };
   node.__wangpStreamingMarkdown = state;
   return state;
@@ -1745,14 +1761,27 @@ WAC.clearStreamingReveals = function (root, flush = false) {
 
 WAC.queueStreamingReveal = function (live, text) {
   const now = performance.now();
-  const reveal = WAC.streamingReveals.get(live) || { last: now, text: '' };
+  const start = live.__wangpStreamingMarkdown.source.length;
+  if (text.length <= start) return;
+  const reveal = WAC.streamingReveals.get(live) || { last: now, target: start };
   reveal.text = text;
-  // Spread each chunk over the observed arrival interval (server cadence 250 ms) so slow decoding flows
-  // instead of bursting then pausing; a backlog still catches up within 700 ms.
-  const arrival = live.__wangpStreamingArrival;
-  const interval = arrival ? Math.min(700, 0.7 * arrival.interval + 0.3 * (now - arrival.at)) : 250;
-  live.__wangpStreamingArrival = { at: now, interval };
-  reveal.speed = (text.length - live.__wangpStreamingMarkdown.source.length) * 1000 / interval;
+  // Learn visible throughput per block, independently of the model, action and tokenizer.
+  // Coalesced events within 50 ms form one sample; empty/final events are not arrivals.
+  let arrival = live.__wangpStreamingArrival;
+  if (!arrival) arrival = live.__wangpStreamingArrival = { at: now, length: text.length, interval: 250, rate: (text.length - start) * 2, measured: false };
+  const elapsed = now - arrival.at;
+  if (!reveal.finalEvent && text.length > arrival.length && elapsed >= 50) {
+    const rate = (text.length - arrival.length) * 1000 / elapsed;
+    const weight = Math.max(rate < arrival.rate ? 0.5 : 0, 1 - Math.exp(-elapsed / 1000));
+    arrival.rate = arrival.measured ? arrival.rate + weight * (rate - arrival.rate) : rate;
+    arrival.interval = Math.max(elapsed, 0.75 * arrival.interval + 0.25 * elapsed);
+    arrival.at = now;
+    arrival.length = text.length;
+    arrival.measured = true;
+  }
+  // Completion no longer needs a jitter buffer, but must not dump the remaining text.
+  if (reveal.finalEvent) reveal.finishAt ??= now + Math.min(700, (text.length - reveal.target) * 1000 / arrival.rate);
+  else delete reveal.finishAt;
   WAC.streamingReveals.set(live, reveal);
   if (!WAC.shouldRevealStreamingText(live)) WAC.clearStreamingReveals(live, true);
   else if (!WAC.streamingRevealFrame) WAC.streamingRevealFrame = window.requestAnimationFrame(WAC.stepStreamingReveals);
@@ -1771,15 +1800,20 @@ WAC.stepStreamingReveals = function (now) {
     const scrollState = WAC.captureAutoscrollState();
     for (const { live, reveal, animate } of ready) {
       const start = live.__wangpStreamingMarkdown.source.length;
-      // A fractional target keeps the pace; whole-word reveals may run ahead of it and then wait.
-      reveal.target = Math.min(reveal.text.length, (reveal.target ?? start) + reveal.speed * (now - reveal.last) / 1000);
+      const remaining = reveal.text.length - reveal.target;
+      const arrival = live.__wangpStreamingArrival;
+      const bufferSeconds = Math.max(250, arrival.interval) / 1000;
+      // Keep about one arrival interval in reserve. Correct excess/deficit gradually instead
+      // of consuming the entire backlog on every chunk and pausing until the next one.
+      const speed = reveal.finishAt
+        ? remaining * 1000 / Math.max(1, reveal.finishAt - reveal.last)
+        : arrival.rate + (remaining - arrival.rate * bufferSeconds) / (2 * bufferSeconds);
+      reveal.target = Math.min(reveal.text.length, reveal.target + speed * (now - reveal.last) / 1000);
       let end = animate ? Math.floor(reveal.target) : reveal.text.length;
+      // Stay on the pacing clock; rounding forward to a whole word can consume a slow
+      // model's entire next chunk. Only keep UTF-16 surrogate pairs together.
+      if (end < reveal.text.length && /[\uDC00-\uDFFF]/u.test(reveal.text[end])) end -= 1;
       if (end <= start) { reveal.last = now; continue; }
-      // Keep ordinary words together, without stalling on long URLs or unspaced text.
-      const limit = Math.min(reveal.text.length, end + 32);
-      while (end < limit && !/\s/u.test(reveal.text[end])) end += 1;
-      if (end < reveal.text.length && /[\uDC00-\uDFFF]/u.test(reveal.text[end])) end += 1;
-      while (end < reveal.text.length && /\s/u.test(reveal.text[end])) end += 1;
       WAC.appendStreamingMarkdown(live, reveal.text.slice(start, end));
       reveal.last = now;
       if (end === reveal.text.length) {
@@ -2485,6 +2519,7 @@ WAC.installObserver = function () {
         WAC.syncScrollBridge();
         WAC.syncThemeState();
         WAC.syncDockLayout();
+        WAC.syncSettingsDropdowns();
         WAC.syncDeepyTypePreview();
         WAC.setQueuedEditButtonLabels(!!WAC.queuedEditMessageId);
         WAC.handleEventNodeMutation();
@@ -2517,6 +2552,10 @@ WAC.installObserver = function () {
 WAC.installDockBridge = function () {
   if (WAC.dockBridgeInstalled) return;
   WAC.dockBridgeInstalled = true;
+  window.addEventListener('resize', WAC.syncSettingsDropdowns);
+  document.addEventListener('scroll', (event) => {
+    if (event.target.matches?.('.chat__settings-scroll')) WAC.syncSettingsDropdowns();
+  }, true);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) WAC.clearStreamingReveals(null, true);
   });

@@ -25,6 +25,7 @@ from tqdm import tqdm
 
 from ..transformer.timestep_embedding import PixArtAlphaCombinedTimestepSizeEmbeddings
 from ...types import SpatioTemporalScaleFactors, VideoLatentShape
+from .keyframes import DecodeKeyframes, joint_na3d_eager, keyframe_stage_times, keyframe_video_slots, planes_for_tile, video_keyframe_slots
 from .ops import PerChannelStatistics, patchify, unpatchify
 from .tiling import TilingConfig, compute_trapezoidal_mask_1d
 
@@ -184,9 +185,10 @@ def _rotate_axis_(x: torch.Tensor, positions: torch.Tensor, inv_freq: torch.Tens
         target[..., 1].copy_(odd * cos + even * sin)
 
 
-def _apply_rope_(x: torch.Tensor, split: tuple[int, int, int], inv_freqs: tuple[torch.Tensor, ...]) -> None:
+def _apply_rope_(x: torch.Tensor, split: tuple[int, int, int], inv_freqs: tuple[torch.Tensor, ...], t_pos: torch.Tensor | None = None) -> None:
     d_t, d_h, _ = split
-    t_pos = torch.arange(x.shape[1], dtype=torch.float32, device=x.device)
+    if t_pos is None:
+        t_pos = torch.arange(x.shape[1], dtype=torch.float32, device=x.device)
     h_pos = torch.arange(x.shape[2], dtype=torch.float32, device=x.device)
     w_pos = torch.arange(x.shape[3], dtype=torch.float32, device=x.device)
     _rotate_axis_(x[..., :d_t], t_pos, inv_freqs[0], 1)
@@ -279,6 +281,15 @@ def _na3d(qkv_list: list[torch.Tensor], kernel_size: tuple[int, int, int]) -> to
     return _na3d_eager(qkv_list, kernel_size)
 
 
+def _joint_na3d(qkv_list: list[torch.Tensor], keyframe_times: torch.Tensor, kernel_size: tuple[int, int, int]) -> tuple[torch.Tensor, torch.Tensor]:
+    if _TRITON_NA_AVAILABLE and qkv_list[0].is_cuda:
+        from .triton_na import joint_na3d
+
+        time = qkv_list[0].shape[1]
+        return joint_na3d(qkv_list, video_keyframe_slots(keyframe_times, time), keyframe_video_slots(keyframe_times, time), kernel_size)
+    return joint_na3d_eager(qkv_list, keyframe_times, kernel_size)
+
+
 class NeighborhoodAttention3D(nn.Module):
     def __init__(self, dim: int, kernel_size: tuple[int, int, int], head_dim: int = 64, rope_dim_split: tuple[int, int, int] | None = None):
         super().__init__()
@@ -296,12 +307,9 @@ class NeighborhoodAttention3D(nn.Module):
         self.q_norm = nn.RMSNorm(head_dim, eps=1e-6)
         self.k_norm = nn.RMSNorm(head_dim, eps=1e-6)
 
-    def forward(self, x_list: list[torch.Tensor]) -> torch.Tensor:
+    def _qkv_rope(self, x_list: list[torch.Tensor], t_pos: torch.Tensor | None = None) -> list[torch.Tensor]:
         x = _take_tensor(x_list)
-        batch, t, h, w, _ = x.shape
-        if any(size < kernel for size, kernel in zip((t, h, w), self.kernel_size, strict=True)):
-            raise ValueError(f"NAD attention volume {(t, h, w)} is smaller than kernel {self.kernel_size}")
-        shape = batch, t, h, w, self.num_heads, self.head_dim
+        shape = *x.shape[:4], self.num_heads, self.head_dim
         device = x.device
         q, k, v = self.qkv(x)
         x = None
@@ -316,14 +324,27 @@ class NeighborhoodAttention3D(nn.Module):
         k = None
         k = _rms_norm_disposable(self.k_norm, k_input)
         inv_freqs = self.rope_inv_t.to(device), self.rope_inv_h.to(device), self.rope_inv_w.to(device)
-        _apply_rope_(q, self.rope_dim_split, inv_freqs)
-        _apply_rope_(k, self.rope_dim_split, inv_freqs)
-        qkv_list = [q, k, v]
-        q = k = v = None
-        out = _na3d(qkv_list, self.kernel_size).reshape(batch, t, h, w, self.dim)
+        _apply_rope_(q, self.rope_dim_split, inv_freqs, t_pos)
+        _apply_rope_(k, self.rope_dim_split, inv_freqs, t_pos)
+        return [q, k, v]
+
+    def forward(self, x_list: list[torch.Tensor]) -> torch.Tensor:
+        batch, t, h, w, _ = x_list[0].shape
+        if any(size < kernel for size, kernel in zip((t, h, w), self.kernel_size, strict=True)):
+            raise ValueError(f"NAD attention volume {(t, h, w)} is smaller than kernel {self.kernel_size}")
+        out = _na3d(self._qkv_rope(x_list), self.kernel_size).reshape(batch, t, h, w, self.dim)
         out_list = [out]
         out = None
         return _linear_disposable(self.proj, out_list)
+
+    def forward_with_keyframes(self, x_list: list[torch.Tensor], keyframe_x_list: list[torch.Tensor], keyframe_times: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Joint attention over video and keyframe planes (centered windows masked at the edges, so no kernel-size floor)."""
+        batch, t, h, w, _ = x_list[0].shape
+        planes = keyframe_x_list[0].shape[1]
+        out, keyframe_out = _joint_na3d(self._qkv_rope(x_list) + self._qkv_rope(keyframe_x_list, keyframe_times), keyframe_times, self.kernel_size)
+        out_list = [out.reshape(batch, t, h, w, self.dim)]
+        out = None
+        return _linear_disposable(self.proj, out_list), self.proj(keyframe_out.reshape(batch, planes, h, w, self.dim))
 
 
 class SwiGLU(nn.Module):
@@ -376,6 +397,15 @@ class NABlock(nn.Module):
         x.add_(mlp_out)
         return x
 
+    def forward_with_keyframes(self, x: torch.Tensor, keyframe_x: torch.Tensor, keyframe_times: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        attention_out, keyframe_attention = self.attn.forward_with_keyframes([self.norm1(x)], [self.norm1(keyframe_x)], keyframe_times)
+        x.add_(attention_out)
+        keyframe_x.add_(keyframe_attention)
+        attention_out = keyframe_attention = None
+        x.add_(self.mlp([self.norm2(x)]))
+        keyframe_x.add_(self.mlp([self.norm2(keyframe_x)]))
+        return x, keyframe_x
+
 
 class DiffusionNABlock(nn.Module):
     def __init__(self, dim: int, kernel_size: tuple[int, int, int], context_channels: int, head_dim: int = 64, rope_dim_split: tuple[int, int, int] | None = None):
@@ -387,6 +417,19 @@ class DiffusionNABlock(nn.Module):
         self.norm2 = nn.RMSNorm(dim, eps=1e-6)
         hidden = (int(dim * 4.0) + 15) // 16 * 16
         self.mlp = SwiGLU(dim, hidden)
+
+    def forward_with_keyframes(self, context: torch.Tensor, x: torch.Tensor, keyframe_context: torch.Tensor, keyframe_x: torch.Tensor, modulation: tuple[torch.Tensor, ...], keyframe_times: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Both streams take their own context injection and the same modulation, then meet in the joint attention."""
+        scale_msa, shift_msa, _, scale_mlp, shift_mlp, _, _ = [modulation[index] + self.scale_shift_table[index].view(1, 1, 1, 1, -1) for index in range(7)]
+        x.add_(self.context_proj(context))
+        keyframe_x.add_(self.context_proj(keyframe_context))
+        attention_out, keyframe_attention = self.attn.forward_with_keyframes([self.norm1(x).mul_(1 + scale_msa).add_(shift_msa)], [self.norm1(keyframe_x).mul_(1 + scale_msa).add_(shift_msa)], keyframe_times)
+        x.add_(attention_out)
+        keyframe_x.add_(keyframe_attention)
+        attention_out = keyframe_attention = None
+        x.add_(self.mlp([self.norm2(x).mul_(1 + scale_mlp).add_(shift_mlp)]))
+        keyframe_x.add_(self.mlp([self.norm2(keyframe_x).mul_(1 + scale_mlp).add_(shift_mlp)]))
+        return x, keyframe_x
 
     def forward(self, context: torch.Tensor, x: torch.Tensor, modulation: tuple[torch.Tensor, ...]) -> torch.Tensor:
         scale_msa, shift_msa, _, scale_mlp, shift_mlp, _, _ = [modulation[index] + self.scale_shift_table[index].view(1, 1, 1, 1, -1) for index in range(7)]
@@ -500,6 +543,8 @@ class DiffusionVideoDecoder(nn.Module):
         self.video_downscale_factors = SpatioTemporalScaleFactors.default()
         self.per_channel_statistics = PerChannelStatistics(latent_channels=in_channels)
         self.conv_in = ChannelLinear(in_channels, self.stage_channels[0], bias=True)
+        # Keyframe-stream tag added to un-normalized keyframe latents before the shared conv_in.
+        self.type_emb = nn.Parameter(torch.zeros(in_channels))
         self.det_stages = nn.ModuleList()
         self.upsamples = nn.ModuleList()
         for index in range(len(self.stage_channels) - 1):
@@ -524,6 +569,8 @@ class DiffusionVideoDecoder(nn.Module):
         halo4 = tuple(self.stage_depths[3] * (self.stage_kernels[3][axis] // 2) for axis in range(3))
         halo5 = tuple(math.ceil(self.stage_depths[-1] * (self.stage5_kernel[axis] // 2) / stride4[axis]) for axis in range(3))
         self._tile_halo = tuple(max(halo4[axis], halo5[axis]) for axis in range(3))
+        # Temporal upsampling still to come at each stage input, then 1 at stage 5: keyframe plane time units.
+        self._keyframe_time_strides = tuple(math.prod(int(upsample[0][0]) for upsample in upsamples[index:]) for index in range(len(upsamples) + 1))
 
     @classmethod
     def from_config(cls, config: dict) -> "DiffusionVideoDecoder":
@@ -549,16 +596,27 @@ class DiffusionVideoDecoder(nn.Module):
             minimum[axis] = max(minimum[axis], math.ceil(self.stage5_kernel[axis] / cumulative[axis]))
         return tuple(minimum)
 
-    def _run_stage(self, x_list: list[torch.Tensor], index: int, drop_leading_frame: bool, interrupt_check: Callable[[], bool] | None) -> torch.Tensor:
+    def _run_stage(self, x_list: list[torch.Tensor], index: int, drop_leading_frame: bool, interrupt_check: Callable[[], bool] | None, keyframe_x: torch.Tensor | None = None, keyframe_times: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor | None]:
         x = _take_tensor(x_list)
         for block in self.det_stages[index]:
-            x = block(x)
+            if keyframe_x is None:
+                x = block(x)
+            else:
+                x, keyframe_x = block.forward_with_keyframes(x, keyframe_x, keyframe_times)
             _check_interrupt(interrupt_check)
         upsample_input = [x]
         x = None
-        return self.upsamples[index](upsample_input, drop_leading_frame=drop_leading_frame)
+        x = self.upsamples[index](upsample_input, drop_leading_frame=drop_leading_frame)
+        if keyframe_x is not None:
+            # Each plane is upsampled as its own one-frame clip: temporal strides collapse, only H/W grow.
+            batch, planes = keyframe_x.shape[:2]
+            keyframe_x = self.upsamples[index]([keyframe_x.flatten(0, 1).unsqueeze(1)], drop_leading_frame=True).squeeze(1).unflatten(0, (batch, planes))
+        return x, keyframe_x
 
-    def _stages_1_to_3(self, latent_list: list[torch.Tensor], interrupt_check: Callable[[], bool] | None) -> torch.Tensor:
+    def _keyframe_times(self, index: int, keyframe_indices: tuple[int, ...] | None, origin: float, device: torch.device) -> torch.Tensor | None:
+        return None if keyframe_indices is None else keyframe_stage_times(keyframe_indices, self._keyframe_time_strides[index], origin, device)
+
+    def _stages_1_to_3(self, latent_list: list[torch.Tensor], interrupt_check: Callable[[], bool] | None, keyframes: DecodeKeyframes | None = None) -> tuple[torch.Tensor, torch.Tensor | None]:
         latent = _take_tensor(latent_list)
         std = self.per_channel_statistics.get_buffer("std-of-means").view(1, -1, 1, 1, 1).to(latent)
         mean = self.per_channel_statistics.get_buffer("mean-of-means").view(1, -1, 1, 1, 1).to(latent)
@@ -568,14 +626,19 @@ class DiffusionVideoDecoder(nn.Module):
         conv_input = [x]
         x = None
         x = _linear_disposable(self.conv_in, conv_input)
+        device = x.device
+        keyframe_x = keyframe_indices = None
+        if keyframes is not None:
+            keyframe_indices = keyframes.pixel_frame_indices
+            keyframe_x = self.conv_in((keyframes.latents.to(std) * std + mean).permute(0, 2, 3, 4, 1) + self.type_emb.to(std))
         for index in range(3):
             stage_input = [x]
             x = None
-            x = self._run_stage(stage_input, index, True, interrupt_check)
-        return x
+            x, keyframe_x = self._run_stage(stage_input, index, True, interrupt_check, keyframe_x, self._keyframe_times(index, keyframe_indices, 0.0, device))
+        return x, keyframe_x
 
-    def _stage_4(self, x_list: list[torch.Tensor], is_origin: bool, pad_trailing: bool, interrupt_check: Callable[[], bool] | None) -> torch.Tensor:
-        x = self._run_stage(x_list, 3, is_origin, interrupt_check)
+    def _stage_4(self, x_list: list[torch.Tensor], is_origin: bool, pad_trailing: bool, interrupt_check: Callable[[], bool] | None, keyframe_x: torch.Tensor | None = None, keyframe_times: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor | None]:
+        x, keyframe_x = self._run_stage(x_list, 3, is_origin, interrupt_check, keyframe_x, keyframe_times)
         if pad_trailing:
             ghost = self._trailing_latent_frames * self.video_downscale_factors.time
             content = max(x.shape[1] - ghost, 1)
@@ -583,9 +646,25 @@ class DiffusionVideoDecoder(nn.Module):
             resize_input = [x]
             x = None
             x, _ = _resize_axis(resize_input, 1, target, False)
-        return x
+        return x, keyframe_x
 
-    def _diffusion_step(self, context: torch.Tensor, noise_list: list[torch.Tensor], timestep: torch.Tensor, interrupt_check: Callable[[], bool] | None) -> torch.Tensor:
+    def _stage5_pixels(self, x_list: list[torch.Tensor], high_precision: bool = False) -> torch.Tensor:
+        if high_precision:
+            # HDR codes need more than bf16 output steps (which band shadows and highlights): run the output head in fp32.
+            x = F.rms_norm(_take_tensor(x_list).float(), (self.norm_out.normalized_shape[0],), self.norm_out.weight.float(), self.norm_out.eps)
+            x = F.linear(x, self.conv_out.weight.float(), self.conv_out.bias.float()).permute(0, 4, 1, 2, 3)
+        else:
+            x = _rms_norm_disposable(self.norm_out, x_list)
+            conv_input = [x]
+            x = None
+            x = _linear_disposable(self.conv_out, conv_input).permute(0, 4, 1, 2, 3)
+        contiguous_input = [x]
+        x = None
+        x = _contiguous_disposable(contiguous_input)
+        return unpatchify(x, patch_size_hw=self.patch_size)
+
+    def _diffusion_step(self, context: torch.Tensor, noise_list: list[torch.Tensor], timestep: torch.Tensor, interrupt_check: Callable[[], bool] | None, keyframe_context: torch.Tensor | None = None, keyframe_noise: torch.Tensor | None = None, keyframe_times: torch.Tensor | None = None, high_precision: bool = False) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """One stage-5 step; with keyframes the planes are a second pixel stream that the video attends to."""
         noise = _take_tensor(noise_list)
         x = patchify(noise, patch_size_hw=self.patch_size).permute(0, 2, 3, 4, 1)
         noise = None
@@ -594,53 +673,59 @@ class DiffusionVideoDecoder(nn.Module):
         x = _linear_disposable(self.conv_in_x_t, conv_input)
         t_emb = self.t_embedder(self.timestep_scale_multiplier * timestep, hidden_dtype=x.dtype)
         modulation = self.shared_adaln(t_emb)
+        keyframe_x = None if keyframe_context is None else self.conv_in_x_t(patchify(keyframe_noise, patch_size_hw=self.patch_size).permute(0, 2, 3, 4, 1))
         for block in self.diff_blocks:
-            x = block(context, x, modulation)
+            if keyframe_x is None:
+                x = block(context, x, modulation)
+            else:
+                x, keyframe_x = block.forward_with_keyframes(context, x, keyframe_context, keyframe_x, modulation, keyframe_times)
             _check_interrupt(interrupt_check)
         norm_input = [x]
         x = None
-        x = _rms_norm_disposable(self.norm_out, norm_input)
-        conv_input = [x]
-        x = None
-        x = _linear_disposable(self.conv_out, conv_input).permute(0, 4, 1, 2, 3)
-        contiguous_input = [x]
-        x = None
-        x = _contiguous_disposable(contiguous_input)
-        return unpatchify(x, patch_size_hw=self.patch_size)
+        return self._stage5_pixels(norm_input, high_precision), None if keyframe_x is None else self._stage5_pixels([keyframe_x], high_precision)
 
-    def _decode_tile(self, features_list: list[torch.Tensor], noise_list: list[torch.Tensor], is_origin: bool, pad_trailing: bool, interrupt_check: Callable[[], bool] | None) -> torch.Tensor:
+    def _euler_update(self, x_list: list[torch.Tensor], model_out_list: list[torch.Tensor], timestep: torch.Tensor, next_timestep: torch.Tensor) -> torch.Tensor:
+        x = _take_tensor(x_list)
+        device = x.device
+        dt = (timestep - next_timestep).view(-1, 1, 1, 1, 1).float()
+        velocity = _to_disposable(model_out_list, device, torch.float32)
+        if self.model_output_type == "x0":
+            velocity.neg_().add_(x).div_(timestep.view(-1, 1, 1, 1, 1).float())
+        x_dtype = x.dtype
+        velocity.mul_(-dt).add_(x)
+        x = None
+        velocity_list = [velocity]
+        velocity = None
+        return _to_disposable(velocity_list, device, x_dtype)
+
+    def _decode_tile(self, features_list: list[torch.Tensor], noise_list: list[torch.Tensor], is_origin: bool, pad_trailing: bool, interrupt_check: Callable[[], bool] | None, keyframes: tuple | None = None, high_precision: bool = False) -> torch.Tensor:
+        """``keyframes`` is ``(stage-4 plane features, plane noise, global pixel indices, stage-4 origin, pixel origin)`` of this tile."""
         features = _take_tensor(features_list)
         device, batch = features.device, features.shape[0]
         stage_input = [features]
         features = None
-        context = self._stage_4(stage_input, is_origin, pad_trailing, interrupt_check)
+        keyframe_features, keyframe_noise, keyframe_indices, stage4_origin, pixel_origin = keyframes or (None, None, None, 0, 0)
+        context, keyframe_context = self._stage_4(stage_input, is_origin, pad_trailing, interrupt_check, keyframe_features, self._keyframe_times(3, keyframe_indices, stage4_origin, device))
+        keyframe_features = None
+        keyframe_times = self._keyframe_times(4, keyframe_indices, pixel_origin, device)
         timesteps = self.default_inference_timesteps.to(device).unsqueeze(0).expand(batch, -1)
         x = _take_tensor(noise_list)
         for index, timestep in enumerate(timesteps.unbind(1)):
             if index == timesteps.shape[1] - 1 and self.model_output_type == "x0":
                 noise_input = [x]
                 x = None
-                return self._diffusion_step(context, noise_input, timestep, interrupt_check)
-            model_out = self._diffusion_step(context, [x], timestep, interrupt_check)
+                return self._diffusion_step(context, noise_input, timestep, interrupt_check, keyframe_context, keyframe_noise, keyframe_times, high_precision)[0]
+            model_out, keyframe_out = self._diffusion_step(context, [x], timestep, interrupt_check, keyframe_context, keyframe_noise, keyframe_times, high_precision)
             next_timestep = timesteps[:, index + 1] if index + 1 < timesteps.shape[1] else torch.zeros_like(timestep)
-            dt = (timestep - next_timestep).view(-1, 1, 1, 1, 1).float()
-            if self.model_output_type == "x0":
-                model_output_list = [model_out]
-                model_out = None
-                velocity = _to_disposable(model_output_list, device, torch.float32)
-                velocity.neg_().add_(x).div_(timestep.view(-1, 1, 1, 1, 1).float())
-            else:
-                model_output_list = [model_out]
-                model_out = None
-                velocity = _to_disposable(model_output_list, device, torch.float32)
-            x_dtype = x.dtype
-            velocity.mul_(-dt).add_(x)
-            velocity_list = [velocity]
-            velocity = None
-            x = _to_disposable(velocity_list, device, x_dtype)
+            x_input, model_output_list = [x], [model_out]
+            x = model_out = None
+            x = self._euler_update(x_input, model_output_list, timestep, next_timestep)
+            if keyframe_out is not None:
+                keyframe_noise = self._euler_update([keyframe_noise], [keyframe_out], timestep, next_timestep)
+                keyframe_out = None
         return x
 
-    def _schedule(self, shape: VideoLatentShape, tiling_config: TilingConfig | None) -> list[_Tile]:
+    def _schedule(self, shape: VideoLatentShape, tiling_config: TilingConfig | None, device: torch.device) -> list[_Tile]:
         stage4_t = shape.frames
         stage4_h = shape.height
         stage4_w = shape.width
@@ -683,9 +768,9 @@ class DiffusionVideoDecoder(nn.Module):
             out_h = slice(h_interval.start * pixel_scale[1], h_interval.end * pixel_scale[1])
             out_w = slice(w_interval.start * pixel_scale[2], w_interval.end * pixel_scale[2])
             masks = (
-                compute_trapezoidal_mask_1d(t_end - t_start, t_interval.left_ramp * pixel_scale[0], t_interval.right_ramp * pixel_scale[0]),
-                compute_trapezoidal_mask_1d(out_h.stop - out_h.start, h_interval.left_ramp * pixel_scale[1], h_interval.right_ramp * pixel_scale[1]),
-                compute_trapezoidal_mask_1d(out_w.stop - out_w.start, w_interval.left_ramp * pixel_scale[2], w_interval.right_ramp * pixel_scale[2]),
+                compute_trapezoidal_mask_1d(t_end - t_start, t_interval.left_ramp * pixel_scale[0], t_interval.right_ramp * pixel_scale[0], device=device),
+                compute_trapezoidal_mask_1d(out_h.stop - out_h.start, h_interval.left_ramp * pixel_scale[1], h_interval.right_ramp * pixel_scale[1], device=device),
+                compute_trapezoidal_mask_1d(out_w.stop - out_w.start, w_interval.left_ramp * pixel_scale[2], w_interval.right_ramp * pixel_scale[2], device=device),
             )
             tiles.append(_Tile(t_interval, h_interval, w_interval, out_t, out_h, out_w, masks))
         return tiles
@@ -703,7 +788,8 @@ class DiffusionVideoDecoder(nn.Module):
         weights = weights[:, :, :frames, h_start:h_start + content_shape.height, w_start:w_start + content_shape.width]
         return buffer.div_(weights.clamp_min_(1e-8)).to(buffer.dtype)
 
-    def _decode_pixels(self, latent_list: list[torch.Tensor], tiling_config: TilingConfig | None, generator: torch.Generator | None, interrupt_check: Callable[[], bool] | None, output_uint8: bool = False) -> Iterator[torch.Tensor]:
+    def _decode_pixels(self, latent_list: list[torch.Tensor], tiling_config: TilingConfig | None, generator: torch.Generator | None, interrupt_check: Callable[[], bool] | None, output_uint8: bool = False, keyframes: DecodeKeyframes | None = None, high_precision: bool = False) -> Iterator[torch.Tensor]:
+        """``high_precision`` (HDR) computes the output head and accumulates the tiles in fp32."""
         latent = _take_tensor(latent_list)
         content_latent = VideoLatentShape.from_torch_shape(latent.shape)
         content_pixels = content_latent.upscale(self.video_downscale_factors)._replace(channels=self.out_channels)
@@ -719,16 +805,22 @@ class DiffusionVideoDecoder(nn.Module):
         resize_input = [latent]
         latent = None
         latent, w_pad = _resize_axis(resize_input, 4, target, True)
+        if keyframes is not None:
+            # Same symmetric spatial pad as the video, or every plane would be offset from it.
+            keyframe_latents, _ = _resize_axis([keyframes.latents], 3, latent.shape[3], True)
+            keyframe_latents, _ = _resize_axis([keyframe_latents], 4, latent.shape[4], True)
+            keyframes = DecodeKeyframes(keyframe_latents, keyframes.pixel_frame_indices)
+            keyframe_latents = None
         work_latent = VideoLatentShape.from_torch_shape(latent.shape)
         work_pixels = work_latent.upscale(self.video_downscale_factors)._replace(channels=self.out_channels)
-        tiles = self._schedule(work_latent, tiling_config)
+        tiles = self._schedule(work_latent, tiling_config, latent.device)
         with PhaseProgress(len(tiles)) as phase_progress:
             trailing_input = [latent]
             latent = None
             latent = _append_trailing_frames(trailing_input, self._trailing_latent_frames)
             stage_input = [latent]
             latent = None
-            features = self._stages_1_to_3(stage_input, interrupt_check)
+            features, keyframe_features = self._stages_1_to_3(stage_input, interrupt_check, keyframes)
             decode_device = features.device
             features_list = [features]
             features = None
@@ -747,7 +839,7 @@ class DiffusionVideoDecoder(nn.Module):
                     _check_interrupt(interrupt_check)
                     group_start, group_stop = group[0].out_t.start, group[0].out_t.stop
                     group_frames = group_stop - group_start
-                    accum_dtype = torch.float16 if features.dtype == torch.bfloat16 else features.dtype
+                    accum_dtype = torch.float32 if high_precision else torch.float16 if features.dtype == torch.bfloat16 else features.dtype
                     buffer = torch.zeros((work_pixels.batch, self.out_channels, group_frames, work_pixels.height, work_pixels.width), device="cpu", dtype=accum_dtype)
                     weights = torch.zeros((1, 1, group_frames, work_pixels.height, work_pixels.width), device="cpu", dtype=accum_dtype)
                     for tile in group:
@@ -769,7 +861,14 @@ class DiffusionVideoDecoder(nn.Module):
                         noise = _to_disposable(noise_list, decode_device)
                         feature_list, noise_list = [feature_tile], [noise]
                         feature_tile = noise = None
-                        decoded = self._decode_tile(feature_list, noise_list, is_origin, pad_trailing, interrupt_check)
+                        tile_keyframes = None
+                        if keyframe_features is not None:
+                            keep = planes_for_tile(keyframes.pixel_frame_indices, tile.out_t.start, tile.out_t.stop - 1)
+                            keyframe_noise = torch.randn((*noise_shape[:2], len(keep), *noise_shape[3:]), dtype=features.dtype, device=noise_device, generator=generator).to(decode_device)
+                            tile_keyframes = (keyframe_features[:, keep, tile.h.start:tile.h.end, tile.w.start:tile.w.end], keyframe_noise, tuple(keyframes.pixel_frame_indices[index] for index in keep), tile.t.start, tile.out_t.start)
+                            keyframe_noise = None
+                        decoded = self._decode_tile(feature_list, noise_list, is_origin, pad_trailing, interrupt_check, tile_keyframes, high_precision)
+                        tile_keyframes = None
                         expected = (tile.out_t.stop - tile.out_t.start, tile.out_h.stop - tile.out_h.start, tile.out_w.stop - tile.out_w.start)
                         resize_input = [decoded]
                         decoded = None
@@ -819,16 +918,16 @@ class DiffusionVideoDecoder(nn.Module):
             finally:
                 progress.close()
 
-    def forward(self, sample: torch.Tensor | list[torch.Tensor], generator: torch.Generator | None = None, interrupt_check: Callable[[], bool] | None = None) -> torch.Tensor:
+    def forward(self, sample: torch.Tensor | list[torch.Tensor], generator: torch.Generator | None = None, interrupt_check: Callable[[], bool] | None = None, keyframes: DecodeKeyframes | None = None, high_precision: bool = False) -> torch.Tensor:
         sample_list = sample if isinstance(sample, list) else [sample]
         sample = None
-        return next(self._decode_pixels(sample_list, None, generator, interrupt_check))
+        return next(self._decode_pixels(sample_list, None, generator, interrupt_check, keyframes=keyframes, high_precision=high_precision))
 
-    def tiled_decode(self, latent: torch.Tensor | list[torch.Tensor], tiling_config: TilingConfig, generator: torch.Generator | None = None, interrupt_check: Callable[[], bool] | None = None, copy_emitted_chunks: bool = False, output_uint8: bool = False) -> Iterator[torch.Tensor]:
+    def tiled_decode(self, latent: torch.Tensor | list[torch.Tensor], tiling_config: TilingConfig, generator: torch.Generator | None = None, interrupt_check: Callable[[], bool] | None = None, copy_emitted_chunks: bool = False, output_uint8: bool = False, keyframes: DecodeKeyframes | None = None, high_precision: bool = False) -> Iterator[torch.Tensor]:
         try:
             latent_list = latent if isinstance(latent, list) else [latent]
             latent = None
-            for chunk in self._decode_pixels(latent_list, tiling_config, generator, interrupt_check, output_uint8):
+            for chunk in self._decode_pixels(latent_list, tiling_config, generator, interrupt_check, output_uint8, keyframes, high_precision):
                 yield chunk.clone() if copy_emitted_chunks else chunk
         except _DecodeInterrupted:
             return

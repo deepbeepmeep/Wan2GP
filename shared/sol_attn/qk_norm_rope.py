@@ -62,7 +62,8 @@ def _rms_norm_rope_kernel(
     tl.store(x + offsets, normalized, mask=remaining)
 
 
-def _apply_rms_norm_rope_(x: torch.Tensor, weight: torch.Tensor, rope: torch.Tensor, eps: float) -> None:
+def rms_norm_rope_(x: torch.Tensor, weight: torch.Tensor, rope: torch.Tensor, eps: float) -> None:
+    """Normalize and rotate one of Q or K in place."""
     batch, tokens, heads, head_dim = x.shape
     pairs = rope.shape[-2]
     if x.dtype != torch.bfloat16 or weight.dtype != torch.bfloat16 or rope.dtype != torch.bfloat16:
@@ -85,8 +86,8 @@ def qk_rms_norm_rope_(q: torch.Tensor, k: torch.Tensor, q_weight: torch.Tensor, 
                        rope: torch.Tensor, eps: float) -> None:
     """Normalize and rotate Q/K in place without materializing their strided views."""
 
-    _apply_rms_norm_rope_(q, q_weight, rope, eps)
-    _apply_rms_norm_rope_(k, k_weight, rope, eps)
+    rms_norm_rope_(q, q_weight, rope, eps)
+    rms_norm_rope_(k, k_weight, rope, eps)
 
 
-__all__ = ["qk_rms_norm_rope_"]
+__all__ = ["qk_rms_norm_rope_", "rms_norm_rope_"]

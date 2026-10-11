@@ -29,6 +29,7 @@ class family_handler():
         extra_model_def["frames_minimum"] = 17
         extra_model_def["frames_steps"] = 20
         extra_model_def["latent_size"] = 4
+        extra_model_def["tiny_vae_architecture"] = "t2v"
         extra_model_def["sliding_window"] = True
         extra_model_def["perturbation"] = True
         extra_model_def["tea_cache"] = True

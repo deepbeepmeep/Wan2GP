@@ -26,6 +26,7 @@ from .utils.constants import (
     LTX23_USE_DISTILLED_8_STEPS_STAGE_2_SIGMAS,
     STAGE_2_DISTILLED_SIGMA_VALUES,
 )
+from .utils.spatial_tiling import spatially_tiled_denoising_func
 from .utils.helpers import (
     PERTURBATION_SKIP_SELF_ATTENTION,
     assert_resolution,
@@ -171,6 +172,7 @@ class TI2VidTwoStagesPipeline:
         return_latent_slice: slice | None = None,
         continuous_conditioning_and_guide: bool = False,
         skip_stage_2: bool = False,
+        tiled_stage_2: bool = False,
         frozen_video_conditioning: torch.Tensor | None = None,
         frozen_output_video: torch.Tensor | None = None,
         self_refiner_setting: int = 0,
@@ -183,7 +185,7 @@ class TI2VidTwoStagesPipeline:
         hdr_transform: str | None = None,
         skip_audio: bool = False,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
-        assert_resolution(height=height, width=width, is_two_stage=True)
+        assert_resolution(height=height, width=width, is_two_stage=not skip_stage_2)
 
         generator = torch.Generator(device=self.device).manual_seed(seed)
         mask_generator = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
@@ -326,13 +328,12 @@ class TI2VidTwoStagesPipeline:
                     stage_1_output_shape,
                     latent_channels=self.pipeline_components.video_latent_channels,
                     scale_factors=self.pipeline_components.video_scale_factors,
-                ).to_torch_shape()
+                ).to_torch_shape(),
+                device="meta",
             )
-            sigmas = LTX2Scheduler().execute(latent=empty_latent, steps=num_inference_steps).to(
-                dtype=torch.float32, device=self.device
-            )
+            sigmas = LTX2Scheduler().execute(latent=empty_latent, steps=num_inference_steps, device=self.device)
         else:
-            sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
+            sigmas = LTX2Scheduler().execute(steps=num_inference_steps, device=self.device)
         if loras_slists is not None:
             stage_1_steps = len(sigmas) - 1
             update_loras_slists(
@@ -600,6 +601,8 @@ class TI2VidTwoStagesPipeline:
                 audio_context_mask_builder=a_context_p_mask_builder,
                 skip_audio_to_video=frozen_video_conditioning is not None,
             )
+            if tiled_stage_2:
+                denoise_fn = spatially_tiled_denoising_func(denoise_fn, stage_2_output_shape, self.pipeline_components, interrupt_check, callback)
             if use_hq_sampler:
                 return res2s_audio_video_denoising_loop(
                     sigmas=sigmas,

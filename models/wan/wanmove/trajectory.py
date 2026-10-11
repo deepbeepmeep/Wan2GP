@@ -96,15 +96,15 @@ def create_pos_feature_map(
     t, n, _ = pred_tracks.shape
     t_down, h_down, w_down = downsample_ratios
     feature_map = torch.zeros((t-1) // t_down + 1, height // h_down, width // w_down, pos_emb_dim, device=device, dtype=dtype)
-    track_pos = - torch.ones(n, (t-1) // t_down + 1, 2, dtype=torch.long)
+    track_pos = - torch.ones(n, (t-1) // t_down + 1, 2, dtype=torch.long, device=device)
     
     if track_num == -1:
         track_num = n
 
-    tracks_idx = torch.randperm(n)[:track_num]
+    tracks_idx = torch.randperm(n, device=device)[:track_num]
     tracks = pred_tracks[:, tracks_idx]
     visibility = pred_visibility[:, tracks_idx] if pred_visibility is not None else None
-    tracks_embs = get_pos_emb(torch.randperm(n)[:track_num], pos_emb_dim, device=device, dtype=dtype)
+    tracks_embs = get_pos_emb(torch.randperm(n, device=device)[:track_num], pos_emb_dim, device=device, dtype=dtype)
 
     cover_count = 0
     if visibility is None:
@@ -139,7 +139,7 @@ def replace_feature(
     n = track_pos.shape[1]
     
     # Shuffle the trajectory order
-    track_pos = track_pos[:, torch.randperm(n), :, :]
+    track_pos = track_pos[:, torch.randperm(n, device=track_pos.device), :, :]
     
     # Extract coordinates at time steps ≥ 1 and generate a valid mask
     current_pos = track_pos[:, :, 1:, :]  # [B, N, T-1, 2]

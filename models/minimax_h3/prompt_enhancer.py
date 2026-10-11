@@ -31,6 +31,8 @@ For supplied frame anchors, prepend: `For the target video, at 0.00 seconds into
 
 Shot 1 has no timestamp. Later cuts use `[Shot N] At MM:SS.mmm, ...` with increasing times. Keep speaker IDs stable and exact speech/lyrics inside `<d>[Language] ...</d>`. A line crossing a cut uses `<scenetrans>` at both connecting points; `<cutoff>` marks speech interrupted by the ending. Quote visible lettering separately. Ambience goes in `overall_soundscape`; audience-only score in `non_diegetic_music` (`N/A` for none).
 
+In soundtrack mode (`A` or `K`), for visible speech explicitly include `speaking with natural lip movements synchronized` or equivalent wording requesting lip sync. Identify the speaking character; no transcript is required. Describe the action directly, without referring to a supplied audio track or assigning it an `<Audio N>` label. This encourages speaking motion, especially in the first window, but does not guarantee exact lip sync. Outside soundtrack mode, requested speech must still include the exact spoken words in `<d>[Language] ...</d>`.
+
 For a single long video, use paragraph-per-window processing (`PW`): blank lines separate windows, all fields of one window stay together. Each window restarts at Shot 1 and time zero. Overlap is Picture 1; its end anchor is Picture 2. Without a start/overlap, an end-only anchor is Picture 1. Optional navigation titles must start with `#`. Consult the long-video guide for window scheduling and slash commands.
 """
 
@@ -49,7 +51,7 @@ When an image fixes a point on the output timeline, put its alignment instructio
 - **Start frame:** (First Frame) `<Picture 1>` belongs to `[Shot 1]` at `0.00` seconds.
 - **End frame:** (Last Frame) `<Picture 1>` (if only an End Image is provided) belongs to the actual final shot and aligns with the exact end time.
 - **Start + End:** `<Picture 1>` anchors `0.00` seconds and `<Picture 2>` anchors the exact end time. A single continuous shot is usually preferable unless the requested action genuinely needs cuts.
-Pleae note that when using sliding windows, the picture count is reset to 1 in each new window. So the last overlap frame (first frame of the new window) will always correspond to `<Picture 1>` and any new End Frame provided will correspond to `<Picture 2>` (or `<Picture 1>` if new shot is requested or there is no overlap frame for this window)
+Please note that when using sliding windows, the picture count is reset to 1 in each new window. So the last overlap frame (first frame of the new window) will always correspond to `<Picture 1>` and any new End Frame provided will correspond to `<Picture 2>` (or `<Picture 1>` if new shot is requested or there is no overlap frame for this window). Injected frames that fall in the window come next, in time order; declare each one with its own alignment line at its time in the window. An injected frame on the window's first or last frame counts as its start or end image, and one inside the overlap is not used.
 
 ### Connecting shots
 
@@ -62,6 +64,14 @@ Pleae note that when using sliding windows, the picture count is reset to 1 in e
 `overall_soundscape` summarizes ambience, physical sounds, and non-verbal human sounds without repeating dialogue. `non_diegetic_music` describes only music the audience hears but the characters do not; write `N/A` when no such score is wanted.
 
 Multiple shots can be defined inside the same sliding window but each new sliding window resets the timeline and is expected to start with a new Shot 1 at time zero. 
+
+### Speaking in soundtrack mode
+
+When using **Soundtrack Kept** for visible speech, identify the speaking character and explicitly request synchronized lip movements. Include `speaking with natural lip movements synchronized` or equivalent wording in the prompt, especially for the first window. For example: `A woman is sitting on a boat and complaining about life. She is visibly speaking with natural lip movements synchronized.` In a structured prompt, put this action in `integrated_multimodal_description`.
+
+You do not need to write the spoken words. Describe the speaking action directly, without mentioning a supplied audio track or giving it an `<Audio N>` label: soundtrack mode does not provide it as a named audio reference. This encourages visible speaking, but does not guarantee exact lip sync.
+
+Outside **Soundtrack Kept** mode, when requesting speech, still include the exact spoken words in `<d>[Language] ...</d>`, for example `The woman says <d>[English] I was afraid to speak.</d>`.
 
 {SLIDING_WINDOW_PROMPT_INFOS}
 ### Prompt examples
@@ -103,11 +113,11 @@ detailed_description: Describe the actual scene, action, camera, light and sound
 overall_soundscape: Ambience, physical sounds and voices.
 non_diegetic_music: Audience-only score, or N/A.
 
-With a kept soundtrack (`AS` or `KS`), that audio is not a reference: give it no <Audio N> label and describe its speech (exact words in <d>) and sounds where they occur. Keep labels stable: <Subject N> = reusable person/object/setting/style; <Picture N> = concrete image; <Video N> = video role; <Audio N> = sound or voice. Number each asset type independently. Start/end images precede general image references; account for them when assigning Picture numbers. Define a reference's role explicitly: identity, motion, framing, voice, copied audio, or a timed keyframe. State its use at the relevant point in the timeline.
+With a kept soundtrack (`AS` or `KS`), for visible speech explicitly include `speaking with natural lip movements synchronized` or equivalent wording requesting lip sync in `detailed_description`. Identify the speaking character; no transcript is required. Describe the action directly, without referring to a supplied audio track or assigning it an <Audio N> label. This encourages speaking motion, especially in the first window, but does not guarantee exact lip sync. Outside soundtrack mode, requested speech must still include the exact spoken words in `<d>[Language] ...</d>`, including when using audio references. Keep labels stable: <Subject N> = reusable person/object/setting/style; <Picture N> = concrete image; <Video N> = video role; <Audio N> = sound or voice reference. Number each asset type independently. Start/end images precede general image references; account for them when assigning Picture numbers. Define a reference's role explicitly: identity, motion, framing, voice, copied audio, or a timed keyframe. State its use at the relevant point in the timeline.
 
 Shot 1 has no timestamp; later cuts use [Shot N] At MM:SS.mmm with increasing times. Use stable speaker IDs (S1), with exact speech in <d>[Language] ...</d>. Speech across a cut uses <scenetrans> at both connecting points; <cutoff> marks an interrupted ending. Quote visible lettering. Preserve identity, props, geography and cause/effect.
 
-For sliding windows (`PW`), keep all six sections together with no internal blank lines. Blank lines separate windows; restart each window at Shot 1 and time zero, and remap Picture numbers to that window's anchors/references. Navigation titles start with #. Read the long-video guide for scheduling.
+For sliding windows (`PW`), keep all six sections together with no internal blank lines. Blank lines separate windows; restart each window at Shot 1 and time zero, and remap Picture numbers to that window's anchors/references in this order: start or continued frame (`<Picture 1>`), end image, the window's injected frames by time, then reference images. Navigation titles start with #. Read the long-video guide for scheduling.
 """
 
 H3_AUDIO_DEEPY_PROMPT_INFOS = """For speech, write the exact words in `prompt`, one turn per `Speaker N:` block. Put language, emotion, pace and acting directions in square brackets; these are not spoken. Example:
@@ -162,6 +172,14 @@ Use `fully_preserved`, `partially_preserved`, `attribute_transfer`, or `weak_ref
 Multiple shots can be defined inside the same sliding window but each new sliding window resets the timeline and is expected to start with a new Shot 1 at time zero. 
 
 Describe reference use where it actually takes effect in the timeline. A reference video is not automatically an edit or continuation, and audio is not automatically copied merely because it is present. Put exact dialogue inside `<d>[Language] ...</d>`, ambience and physical sounds in `overall_soundscape`, and audience-only score in `non_diegetic_music`.
+
+### Speaking in soundtrack mode
+
+When using **Soundtrack Kept** (`AS` or `KS`) for visible speech, identify the speaking character and explicitly request synchronized lip movements in `detailed_description`. Include `speaking with natural lip movements synchronized` or equivalent wording, especially for the first window. For example: `<Subject 1> is visibly speaking with natural lip movements synchronized.`
+
+You do not need to write the spoken words. Describe the speaking action directly, without mentioning a supplied audio track or giving it an `<Audio N>` label: soundtrack mode does not provide it as a named audio reference. This encourages visible speaking, but does not guarantee exact lip sync.
+
+Outside **Soundtrack Kept** mode, when requesting speech, still include the exact spoken words in `<d>[Language] ...</d>`, including when using audio references. For example: `<Subject 1> says (S1) <d>[English] I was afraid to speak.</d>`.
 
 {SLIDING_WINDOW_PROMPT_INFOS}
 ### Prompt examples
@@ -221,7 +239,7 @@ non_diegetic_music: N/A
 ```
 
 ### WanGP Prompt Enhancer 
-When the WanGP enhancer receives an image for Ref2VA, it is the first selected reference image (`<Picture 1>`). Define reusable content from it as `<Subject N>` unless the user explicitly assigns the picture a concrete keyframe role.
+When the WanGP enhancer receives images for Ref2VA, each one is labelled with the `<Picture N>` H3 will see in that window. Define reusable content from reference images as `<Subject N>` unless the user explicitly assigns the picture a concrete keyframe role; start, end and injected frames are keyframes at their times.
 
 
 Adapted from MiniMax's [official full-reference prompt-writing guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md).
@@ -247,9 +265,14 @@ There is no input image and no picture-alignment instruction. Construct a comple
 """ + _FL2VA_SHARED_RULES
 
 
-FL2VA_IMAGE_SYSTEM_PROMPT = """You are a professional audiovisual prompt writer for MiniMax H3 first-frame-to-video-and-audio generation. Rewrite the user's text and the supplied image into one production-ready H3 prompt.
+_H3_PICTURE_LABEL_RULES = """
+The image descriptions are headed with the exact label H3 receives, such as `<Picture 2>: end image`. Use these labels as given and never renumber them. A start image is the window's first frame, an end image its last frame, an injected frame the frame at its stated time, and a reference image guides appearance only, without a place on the timeline. If no description is headed `<Picture 1>`, then `<Picture 1>` is the last frame of the previous window, which you cannot see: continue directly from it without describing its content.
+"""
 
-Treat the supplied image as `<Picture 1>`, the actual first frame of `[Shot 1]` at 0.00 seconds—not as a general character sheet. The first line must be: `For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.` Then leave one blank line before the three core fields.
+
+FL2VA_IMAGE_SYSTEM_PROMPT = """You are a professional audiovisual prompt writer for MiniMax H3 first-frame-to-video-and-audio generation. Rewrite the user's text and the supplied images into one production-ready H3 prompt.
+""" + _H3_PICTURE_LABEL_RULES + """
+Treat `<Picture 1>` as the actual first frame of `[Shot 1]` at 0.00 seconds—not as a general character sheet. Before the three core fields, write one alignment line per timeline picture in time order, starting with `For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.`; use the exact end time for an end image and the stated time for an injected frame, each with the shot it belongs to. Then leave one blank line before the three core fields.
 
 Start Shot 1 from the image's visible style, subjects, composition, clothing, colors, objects, lighting, and spatial relationships. Preserve those anchors, then describe a causally continuous path through action onset, development, and result. Never redescribe the image as an isolated still. If the user explicitly requests an additional last-frame Picture 2, favor one continuous shot and describe the observable motion path that reaches Picture 2 at the end rather than inventing disconnected intermediate scenes.
 """ + _FL2VA_SHARED_RULES
@@ -280,9 +303,11 @@ No reference image is visible to you. Use reference labels and asset facts expli
 """ + _REF2VA_SHARED_RULES
 
 
-REF2VA_IMAGE_SYSTEM_PROMPT = """You are a professional audiovisual prompt writer for MiniMax H3 Ref2VA. Rewrite the user's request and the supplied image into a production-ready full-reference prompt.
+REF2VA_IMAGE_SYSTEM_PROMPT = """You are a professional audiovisual prompt writer for MiniMax H3 Ref2VA. Rewrite the user's request and the supplied images into a production-ready full-reference prompt.
+""" + _H3_PICTURE_LABEL_RULES + """
+A reference image is a general reference asset—not a frame of the output. Inspect it and define the visible people, animals, objects, environment, clothing, style, pose, or other requested reusable content as `<Subject N>` entries sourced from its `<Picture N>`. Do not write a standalone retention entry for a reference image or align it to a time unless the user explicitly asks to use it as a concrete keyframe or composition anchor. Preserve the requested traits while allowing the new target action and shot design to develop naturally.
 
-The supplied image is `<Picture 1>`, the first Ref2VA reference image. It is a general reference asset—not the output's first frame. Inspect it and define the visible people, animals, objects, environment, clothing, style, pose, or other requested reusable content as `<Subject N>` entries sourced from `<Picture 1>`. Do not write a standalone `<Picture 1>` retention entry or align it to 0.00 seconds unless the user explicitly asks to use that image as a concrete keyframe or composition anchor. Preserve the requested traits while allowing the new target action and shot design to develop naturally.
+Start, end, continued and injected frames are keyframes: give each its own `<Picture N>` entry in subject_definitions stating its time in the target video (0.00 seconds for a start or continued frame, the exact end time for an end image, the stated time for an injected frame), include keyframe completion in the summary, mark it fully_preserved in retention_analysis, and make detailed_description reach each keyframe at its time.
 """ + _REF2VA_SHARED_RULES
 
 

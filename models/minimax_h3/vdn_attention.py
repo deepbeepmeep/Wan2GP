@@ -7,7 +7,10 @@ Only the learned VDN branch lives here; H3's QKV projections remain shared.
 
 import torch
 import torch.nn.functional as F
+from mmgp import offload
 from torch import nn
+
+from shared import attention_kit
 
 try:
     import triton
@@ -120,14 +123,17 @@ class LinearAttentionSepConv(nn.Module):
             setattr(self, f"{name}_tm", nn.Conv1d(channels, channels, 5, padding=2, groups=channels,
                                                    bias=False, dtype=dtype, device=device))
 
-    def apply(self, name, tokens, frames, frame_size, use_triton):
+    def apply(self, name, tokens, frames, frame_size, use_triton, head_range=None):
+        """tokens: (rows, heads, head_dim), the heads head_range of the channels (all when None)."""
         heads, head_dim = tokens.shape[-2:]
         height, width = frame_size
         channels = heads * head_dim
+        rows = slice(None) if head_range is None else slice(head_range.start * head_dim, head_range.stop * head_dim)
         volume = tokens.reshape(frames, height, width, channels).permute(0, 3, 1, 2)
-        volume = F.conv2d(volume, getattr(self, f"{name}_sp").weight, padding=2, groups=channels)
+        volume = F.conv2d(volume, getattr(self, f"{name}_sp").weight[rows], padding=2, groups=channels)
         x = volume.permute(0, 2, 3, 1).reshape(frames, height * width, channels)
-        weight = getattr(self, f"{name}_tm").weight.squeeze(1).to(x.dtype)
+        volume = None
+        weight = getattr(self, f"{name}_tm").weight[rows].squeeze(1).to(x.dtype)
         if use_triton:
             result = _triton_temporal_conv(x, weight, heads, head_dim, name == "k")
             if result is not None:
@@ -138,12 +144,16 @@ class LinearAttentionSepConv(nn.Module):
         return _activate(result.reshape(-1, heads, head_dim), name == "k")
 
 
-def _frame_statistics(key, value, beta):
+def _frame_statistics(kv_handoff, beta):
+    key, value = kv_handoff
+    kv_handoff.clear()
     with torch.autocast(device_type=key.device.type, enabled=False):
         key16 = key.contiguous()
+        key = None
         key32 = key16.float()
         scaled = (key32 * beta.unsqueeze(-1).float()).contiguous()
         a = scaled.transpose(-1, -2) @ key32
+        del scaled, key32
         a = 0.5 * (a + a.transpose(-1, -2))
         b = ((value * beta.unsqueeze(-1).to(value.dtype)).contiguous().transpose(-1, -2) @ key16).float()
         return a, b
@@ -247,17 +257,7 @@ class VDNLinearBranch(nn.Module):
         self.output_gate = OutputGate(hidden, heads, head_dim, head_dim, dtype, device)
         self.short_conv = LinearAttentionSepConv(heads * head_dim, dtype, device)
 
-    def _features(self, raw_handoff, frames, frame_size, use_triton):
-        raw_q, raw_k, raw_v = raw_handoff
-        raw_handoff.clear()
-        q = _activate(raw_q, True)
-        raw_q = None
-        k = self.short_conv.apply("k", raw_k, frames, frame_size, use_triton)
-        raw_k = None
-        v = self.short_conv.apply("v", raw_v, frames, frame_size, use_triton)
-        return q, k, v
-
-    def _text_state(self, text_x, raw_handoff):
+    def _text_state(self, text_x, raw_handoff, head_range):
         if text_x.numel() == 0:
             raw_handoff.clear()
             return None
@@ -265,53 +265,59 @@ class VDNLinearBranch(nn.Module):
         raw_handoff.clear()
         key, value = _activate(raw_key, True), _activate(raw_value, False)
         raw_key = raw_value = None
-        beta = torch.sigmoid(self.beta_proj(text_x)).transpose(0, 1).unsqueeze(0)
+        beta = torch.sigmoid(self.beta_proj(text_x)).transpose(0, 1).unsqueeze(0)[:, head_range]
         key = key.permute(1, 0, 2).unsqueeze(0)
         value = value.permute(1, 0, 2).unsqueeze(0)
-        a, b = _frame_statistics(key, value, beta)
-        _, injection = _factor(torch.ones(1, self.heads, self.head_dim, device=a.device), a, b)
+        a, b = _frame_statistics([key, value], beta)
+        _, injection = _factor(torch.ones(1, key.shape[1], self.head_dim, device=a.device), a, b)
         return injection[0] * 0.5
 
-    def forward(self, x, raw_handoff, frames, tokens_per_frame, frame_size, bounds, text_x, text_raw_handoff, use_triton):
-        if frames <= 2:
-            raw_handoff.clear()
-            text_raw_handoff.clear()
-            return x.new_zeros(x.shape[0], self.heads * self.head_dim)
-        inner = slice(tokens_per_frame, (frames - 1) * tokens_per_frame)
-        raw_inner = [tensor[inner] for tensor in raw_handoff]
-        raw_handoff.clear()
-        result = self._forward_inner(x[inner], raw_inner, frames - 2, tokens_per_frame,
-                                     frame_size, [(lo - 1, hi - 1) for lo, hi in bounds[1:-1]],
-                                     text_x, text_raw_handoff, use_triton)
-        output = result.new_zeros(x.shape[0], result.shape[-1])
-        output[inner] = result
-        return output
-
-    def _forward_inner(self, x, raw_handoff, frames, tokens_per_frame, frame_size, bounds, text_x, text_raw_handoff, use_triton):
-        initial = self._text_state(text_x, text_raw_handoff)
-        q, k, v = self._features(raw_handoff, frames, frame_size, use_triton)
-        shape = (frames, tokens_per_frame, self.heads, self.head_dim)
-        qf = q.view(shape).permute(0, 2, 1, 3)
-        kf = k.view(shape).permute(0, 2, 1, 3)
-        vf = v.view(shape).permute(0, 2, 1, 3)
+    def prepare(self, x, frames, tokens_per_frame):
+        """What the branch reads from x (video rows, frames > 2): beta, alpha and the gate input of the readout."""
+        frames, x = frames - 2, x[tokens_per_frame:(frames - 1) * tokens_per_frame]
         beta = torch.sigmoid(self.beta_proj(x)).view(frames, tokens_per_frame, self.heads).permute(0, 2, 1)
         alpha = self.alpha(x.view(frames, tokens_per_frame, -1).mean(1, dtype=torch.float32))
-        readout = torch.empty((frames, self.heads, tokens_per_frame, self.head_dim), dtype=x.dtype, device=x.device)
-        for first_head in range(0, self.heads, _LINEAR_HEAD_CHUNK):
-            heads = slice(first_head, min(first_head + _LINEAR_HEAD_CHUNK, self.heads))
-            a, b = _frame_statistics(kf[:, heads], vf[:, heads], beta[:, heads])
-            statistics_handoff = [a, b]
-            a = b = None
-            prefix, suffix = _scan(alpha[:, heads], statistics_handoff, None if initial is None else initial[heads])
-            state = _gather(prefix, suffix, alpha[:, heads], bounds, None if initial is None else initial[heads]).to(x.dtype)
+        return beta, alpha, self.output_gate.down(x)
+
+    def states(self, key, value, text_x, text_key, text_value, beta, alpha, frames, tokens_per_frame, frame_size, bounds, use_triton,
+               head_range):
+        """The per frame states of the delta rule from the raw keys and values (the heads head_range) of the video rows, 14 heads at a
+        time, and of the text rows."""
+        initial = self._text_state(text_x, [text_key, text_value], head_range)
+        inner = slice(tokens_per_frame, (frames - 1) * tokens_per_frame)
+        frames, bounds = frames - 2, [(lo - 1, hi - 1) for lo, hi in bounds[1:-1]]
+        shape, states = (frames, tokens_per_frame, -1, self.head_dim), []
+        for first_head in range(head_range.start, head_range.stop, _LINEAR_HEAD_CHUNK):
+            heads = slice(first_head, min(first_head + _LINEAR_HEAD_CHUNK, head_range.stop))
+            local = slice(heads.start - head_range.start, heads.stop - head_range.start)
+            kv_handoff = [self.short_conv.apply(name, tensor[inner, local], frames, frame_size, use_triton, heads).view(shape).permute(0, 2, 1, 3)
+                          for name, tensor in (("k", key), ("v", value))]
+            statistics_handoff = list(_frame_statistics(kv_handoff, beta[:, heads]))
+            prefix, suffix = _scan(alpha[:, heads], statistics_handoff, None if initial is None else initial[local])
+            states.append(_gather(prefix, suffix, alpha[:, heads], bounds, None if initial is None else initial[local]).to(key.dtype))
             del prefix, suffix
-            readout[:, heads] = torch.matmul(qf[:, heads], state.transpose(-1, -2))
-            del state
-        del qf, kf, vf, q, k, v, beta, alpha, initial
-        readout = readout.permute(0, 2, 1, 3).reshape(-1, self.heads, self.head_dim)
+        return states
+
+    def readout(self, query_handoff, states, gate_projection, frames, tokens_per_frame, head_range):
+        """The branch output (inner frames, heads of head_range, head_dim) from the raw queries of the video rows (handed off, the
+        heads head_range) and the states; gate_projection() returns the up projection of the output gate for these heads."""
+        heads_count = head_range.stop - head_range.start
+        inner = slice(tokens_per_frame, (frames - 1) * tokens_per_frame)
+        frames = frames - 2
+        q = _activate(query_handoff.pop()[inner], True)  # the raw queries are released by the first activation
+        qf = q.view(frames, tokens_per_frame, heads_count, self.head_dim).permute(0, 2, 1, 3)
+        readout = torch.empty((frames, heads_count, tokens_per_frame, self.head_dim), dtype=q.dtype, device=q.device)
+        for index, first_head in enumerate(range(head_range.start, head_range.stop, _LINEAR_HEAD_CHUNK)):
+            local = slice(first_head - head_range.start, min(first_head + _LINEAR_HEAD_CHUNK, head_range.stop) - head_range.start)
+            readout[:, local] = torch.matmul(qf[:, local], states[index].transpose(-1, -2))
+            states[index] = None
+        del qf, q
+        readout = readout.permute(0, 2, 1, 3).reshape(-1, heads_count, self.head_dim)
         readout = self.norm(readout)
-        readout.mul_(self.output_gate(x))
-        return readout.reshape(x.shape[0], -1)
+        if gate_projection is not None:
+            gate = gate_projection()
+            readout.mul_(gate.sigmoid_().view(-1, heads_count, self.head_dim))
+        return readout
 
 
 class VDNHybridAttention(nn.Module):
@@ -336,40 +342,147 @@ class VDNHybridAttention(nn.Module):
         if not self.use_triton:
             _notify_slow()
 
-    def forward(self, x_handoff, raw_qkv, softmax_qkv, original_out):
+    def forward(self, x_handoff, qkv, norm_rope, original_out, input_again=None):
+        """x is handed off. qkv: the q, k, v projection modules, each computed when needed (q twice: normalized in place for the window
+        attention, then raw again for the readout), or the raw q, k, v tensors (1, tokens, heads, head_dim) of a fused projection.
+        norm_rope(query, key) normalizes and rotates in place. input_again() computes x again (from the block's input), so that x is not
+        kept for the projections of q. The linear branch reads x, then the raw k and v, before k is normalized."""
+        if (isinstance(qkv[0], nn.Module) and attention_kit.head_groups(self.heads, x_handoff[0].shape[0]) > 1
+                and offload.linear_rows_supported(qkv, x_handoff[0])):
+            return self._forward_head_groups(x_handoff, qkv, norm_rope, original_out)
         x = x_handoff.pop()
-        video = slice(self.video_start, x.shape[0])
-        local = self._window_softmax(softmax_qkv)
-        local.mul_(self.softmax_gate(x))
-        output = original_out(local.reshape(x.shape[0], -1))
-        del local
+        tokens = x.shape[0]
+        video = slice(self.video_start, tokens)
         text_idx = self.text_indices.to(x.device)
-        query, key, value = raw_qkv
-        raw_qkv.clear()
-        video_raw = [query[video], key[video], value[video]]
-        text_raw = [key[text_idx], value[text_idx]]
-        query = key = value = None
-        branch = self.linear_attention(x[video], video_raw, self.frames,
-                                       self.tokens_per_frame, self.frame_size, self.bounds, x[text_idx],
-                                       text_raw, self.use_triton)
+        softmax_gate = self.softmax_gate(x)
+        linear = (*self.linear_attention.prepare(x[video], self.frames, self.tokens_per_frame), x[text_idx]) if self.frames > 2 else None
+        project = source = None
+        if isinstance(qkv[0], nn.Module):
+            rows = offload.linear_rows_supported(qkv, x)
+            prepare_input = lambda x: offload.prepare_linear_input([x], qkv) if rows else x
+            source = prepare_input(x)
+            project = lambda index: (offload.linear_rows(qkv[index], source, 0, self.heads * self.head_dim) if rows
+                                     else qkv[index](source)).view(1, tokens, self.heads, self.head_dim)
+            query, key, value = None, project(1), project(2)
+            if input_again is not None:
+                source = None
+        else:
+            query, key, value = qkv
+        x = None
+        states = None
+        if linear is not None:
+            beta, alpha, gate, text_x = linear
+            states = self.linear_attention.states(key[0, video], value[0, video], text_x, key[0, text_idx], value[0, text_idx], beta, alpha,
+                                                  self.frames, self.tokens_per_frame, self.frame_size, self.bounds, self.use_triton,
+                                                  slice(0, self.heads))
+            linear = beta = alpha = text_x = None
+        norm_rope(None, key)
+        if project is None:
+            softmax_query = query.clone()
+        else:
+            source = prepare_input(input_again()) if source is None else source
+            softmax_query = project(0)
+            if input_again is not None:
+                source = None
+        norm_rope(softmax_query, None)
+        softmax_handoff = [softmax_query, key, value]
+        softmax_query = key = value = None
+        local = self._window_softmax(softmax_handoff)
+        local.mul_(softmax_gate)
+        output = original_out(local.reshape(tokens, -1))
+        del local, softmax_gate
+        if states is None:
+            branch = output.new_zeros(tokens - self.video_start, self.heads * self.head_dim)
+        else:
+            if project is not None:
+                source = prepare_input(input_again()) if source is None else source
+                query = project(0)
+            query_handoff = [query[0, video]]
+            query = project = source = None
+            readout = self.linear_attention.readout(query_handoff, states, lambda: self.linear_attention.output_gate.up(gate), self.frames,
+                                                    self.tokens_per_frame, slice(0, self.heads))
+            branch = readout.new_zeros(tokens - self.video_start, self.heads * self.head_dim)
+            branch[self.tokens_per_frame:(self.frames - 1) * self.tokens_per_frame] = readout.reshape(-1, self.heads * self.head_dim)
+            readout = None
+        query = states = project = source = gate = None
+        output[video].add_(self.to_out_linear(branch))
+        return output
+
+    def _forward_head_groups(self, x_handoff, qkv, norm_rope, original_out):
+        """forward() by groups of heads (Attention Head Split): the window attention of each group goes into one output of all the
+        heads; once that output is projected, the readout of each group goes into one branch output (q projected again)."""
+        x = x_handoff.pop()
+        tokens = x.shape[0]
+        step = self.heads // attention_kit.head_groups(self.heads, tokens)
+        head_ranges = [slice(first, first + step) for first in range(0, self.heads, step)]
+        video = slice(self.video_start, tokens)
+        text_idx = self.text_indices.to(x.device)
+        softmax_gate = self.softmax_gate(x)
+        linear = (*self.linear_attention.prepare(x[video], self.frames, self.tokens_per_frame), x[text_idx]) if self.frames > 2 else None
+        source = offload.prepare_linear_input([x], qkv)
+        x = None
+        project = lambda index, heads: offload.linear_rows(qkv[index], source, heads.start * self.head_dim,
+                                                            heads.stop * self.head_dim).view(1, tokens, step, self.head_dim)
+        local, states = None, []
+        for heads in head_ranges:
+            key, value = project(1, heads), project(2, heads)
+            if linear is not None:
+                beta, alpha, _, text_x = linear
+                states.append(self.linear_attention.states(key[0, video], value[0, video], text_x, key[0, text_idx], value[0, text_idx],
+                                                           beta, alpha, self.frames, self.tokens_per_frame, self.frame_size, self.bounds,
+                                                           self.use_triton, heads))
+                beta = alpha = text_x = None
+            norm_rope(None, key)
+            query = project(0, heads)
+            norm_rope(query, None)
+            handoff = [query, key, value]
+            query = key = value = None
+            attention = self._window_softmax(handoff)
+            if local is None:
+                local = attention.new_empty((1, tokens, self.heads, self.head_dim))
+            local[:, :, heads] = attention
+            attention = None
+        local.mul_(softmax_gate)
+        output = original_out(local.reshape(tokens, -1))
+        local = softmax_gate = None
+        branch = output.new_zeros(tokens - self.video_start, self.heads * self.head_dim)
+        if linear is not None:  # the output gate of the readouts is computed into the branch output (same shape), by chunks of tokens
+            gate = linear[2]
+            linear = None
+            inner = slice(self.tokens_per_frame, (self.frames - 1) * self.tokens_per_frame)
+            gated = branch[inner]
+            rows = max(1, (1 << 30) // (gated.shape[1] * gated.element_size()))
+            for start in range(0, gate.shape[0], rows):
+                gated[start:start + rows] = self.linear_attention.output_gate.up(gate[start:start + rows])
+            gate = None
+            gated.sigmoid_()
+            for heads, head_states in zip(head_ranges, states):
+                readout = self.linear_attention.readout([project(0, heads)[0, video]], head_states, None, self.frames, self.tokens_per_frame, heads)
+                gated[:, heads.start * self.head_dim:heads.stop * self.head_dim].mul_(readout.reshape(readout.shape[0], -1))
+                readout = None
+            gated = None
+        project = source = states = None
         output[video].add_(self.to_out_linear(branch))
         return output
 
     def _window_softmax(self, qkv_handoff):
+        """Written into the query; the attention of the dense rows to all the keys comes last, so that it releases k, then v, as it
+        quantizes them."""
         from shared.attention import pay_attention, sage2_supported
 
         query, key, value = qkv_handoff
         qkv_handoff.clear()
         video_start, frames, per_frame = self.video_start, self.frames, self.tokens_per_frame
-        output = torch.empty_like(query)
         force_attention = "sage2" if query.is_cuda and sage2_supported else "sdpa"
         dense_rows, groups = _window_plan(self.layout, video_start, frames, per_frame, self.bounds, query.device)
         if force_attention == "sage2":
             _notify_sage()
-        output[:, dense_rows] = pay_attention([query[:, dense_rows], key, value], force_attention=force_attention, recycle_q=True)
         for rows, indices in groups:
-            output[:, rows] = pay_attention([query[:, rows], key[:, indices], value[:, indices]], force_attention=force_attention, recycle_q=True)
-        return output
+            query[:, rows] = pay_attention([query[:, rows], key[:, indices], value[:, indices]], force_attention=force_attention, recycle_q=True)
+        dense_handoff = [query[:, dense_rows], key, value]
+        key = value = None
+        query[:, dense_rows] = attention_kit.kv_first_attention(dense_handoff, force_attention)
+        return query
 
 
 __all__ = ["VDNHybridAttention"]

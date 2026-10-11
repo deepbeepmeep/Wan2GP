@@ -22,14 +22,14 @@ HEAD_DIM = 128
 THRESHOLD_GROUP_SIZE = 64
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['T', 's_b', 's_t', 's_h', 'N'], do_not_specialize_on_alignment=['T', 's_b', 's_t', 's_h', 'N'])
 def _reduce_kc_kernel(
     k_ptr,
     kc,
     T,
     s_b, s_t, s_h,
     H: tl.constexpr,
-    N: tl.constexpr,
+    N,
     D: tl.constexpr,
     BLOCK: tl.constexpr,
     TILE_D: tl.constexpr,
@@ -58,7 +58,7 @@ def _reduce_kc_kernel(
     )
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['T', 's_b', 's_t', 's_h', 'N'], do_not_specialize_on_alignment=['T', 's_b', 's_t', 's_h', 'N'])
 def _reduce_vc_kernel(
     v_ptr,
     vc,
@@ -66,7 +66,7 @@ def _reduce_vc_kernel(
     T,
     s_b, s_t, s_h,
     H: tl.constexpr,
-    N: tl.constexpr,
+    N,
     D: tl.constexpr,
     BLOCK: tl.constexpr,
     TILE_D: tl.constexpr,
@@ -101,13 +101,13 @@ def _reduce_vc_kernel(
         )
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['N'], do_not_specialize_on_alignment=['N'])
 def _reduce_kc_stats_kernel(
     kc_ptr,
     kc_mean,
     kc_var_diag,
     H: tl.constexpr,
-    N: tl.constexpr,
+    N,
     D: tl.constexpr,
     TILE_D: tl.constexpr,
     GROUP: tl.constexpr,
@@ -144,7 +144,7 @@ def _reduce_kc_stats_kernel(
     )
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['T', 's_b', 's_t', 's_h', 'N'], do_not_specialize_on_alignment=['T', 's_b', 's_t', 's_h', 'N'])
 def _diag_threshold_kernel(
     q_ptr,
     kc_mean,
@@ -154,7 +154,7 @@ def _diag_threshold_kernel(
     T,
     s_b, s_t, s_h,
     H: tl.constexpr,
-    N: tl.constexpr,
+    N,
     D: tl.constexpr,
     BLOCK: tl.constexpr,
     TILE_D: tl.constexpr,
@@ -195,14 +195,14 @@ def _diag_threshold_kernel(
     )
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['T', 's_b', 's_t', 's_h', 'N'], do_not_specialize_on_alignment=['T', 's_b', 's_t', 's_h', 'N'])
 def _pool_query_kernel(
     q_ptr,
     q_bar,
     T,
     s_b, s_t, s_h,
     H: tl.constexpr,
-    N: tl.constexpr,
+    N,
     D: tl.constexpr,
     BLOCK: tl.constexpr,
     TILE_D: tl.constexpr,
@@ -226,7 +226,7 @@ def _pool_query_kernel(
     )
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['N'], do_not_specialize_on_alignment=['N'])
 def _exact_fused_threshold_kernel(
     q_bar,
     kc_mean,
@@ -234,7 +234,7 @@ def _exact_fused_threshold_kernel(
     global_threshold,
     softmax_scale,
     H: tl.constexpr,
-    N: tl.constexpr,
+    N,
     D: tl.constexpr,
     BLOCK_M: tl.constexpr,
     TILE_D: tl.constexpr,
@@ -566,3 +566,7 @@ def prepare(
 
 
 __all__ = ["prepare", "prepare_int8_kv"]
+
+
+from shared.kernels.triton_compilation_log import install_triton_compilation_logger
+install_triton_compilation_logger()

@@ -3,6 +3,7 @@
 
 import argparse
 import contextlib
+import contextvars
 import copy
 import dataclasses
 import hashlib
@@ -20,12 +21,16 @@ from typing import TYPE_CHECKING, Any, Literal
 from shared.utils.gallery_sources import GALLERY_SOURCES, MESH_EXTENSIONS, source_for_kind
 from shared.utils.gallery_media import disambiguate_gallery_media_ids, gallery_media_ids
 from shared.utils.setting_names import split_settings, unknown_settings_error
+from shared.mcp.config import DEFAULT_PORT, server_port
 
 if TYPE_CHECKING:
     from shared.api import SessionJob
 
 
 _MAX_STORED_EVENTS = 500
+_TIMING_LOG = logging.getLogger("wangp.mcp.timing")
+_REQUEST_ID = contextvars.ContextVar("wangp_mcp_request_id", default="inprocess")
+_REQUEST_TIMING = contextvars.ContextVar("wangp_mcp_request_timing", default=None)
 _MEDIA_TRANSFER_TTL_SECONDS = 600
 _MAX_UPLOAD_BYTES = 8 * 1024**3
 _TRANSPORT_ALIASES = {
@@ -112,6 +117,8 @@ def _read_markdown_section(path: Path, start_heading: str, end_heading: str) -> 
 
 
 def _register_documentation_resources(mcp, file_access_policy=None, long_text_active: bool = False, api_version: str | int = 1) -> None:
+    from .skills import skill_metadata
+
     api_version = str(api_version)
 
     def document_reader(document_path: Path):
@@ -134,7 +141,7 @@ def _register_documentation_resources(mcp, file_access_policy=None, long_text_ac
 
     for path in sorted(_AGENT_SKILLS_DIR.glob("*/SKILL.md")):
         skill_name = path.parent.name
-        if api_version != "1" and skill_name not in {"long-story-writing", "long-generation-prompts", "character-sheet"}:
+        if api_version != "1" and skill_name in {"large-artifact-workflows", "long-form-story"}:
             continue
         if skill_name in {"long-story-writing", "long-generation-prompts"} and not long_text_active:
             continue
@@ -146,10 +153,7 @@ def _register_documentation_resources(mcp, file_access_policy=None, long_text_ac
         resource_uri = f"wangp://skills/{skill_name}"
         read_skill = document_reader(path)
         read_skill.__name__ = f"read_{skill_name.replace('-', '_')}_skill"
-        description = f"Trusted on-demand WanGP methodology for {skill_name.replace('-', ' ')}."
-        if api_version != "1":
-            description = {"long-story-writing": "Long stories: chapters, outline, continuity, canon, causality and final verification.", "long-generation-prompts": "Long prompts: files, editing, sliding-window boundaries and ordered image anchors.",
-                           "character-sheet": "Character sheets: turnaround views of a 3D asset at one scale, close-ups, layout with titles and labels, checks and reuse as references."}[skill_name]
+        description = skill_metadata(read_skill(), skill_name)["description"]
         mcp.resource(resource_uri, name=skill_name, title=skill_name.replace("-", " ").title(), description=description, mime_type="text/markdown")(read_skill)
 
     @mcp.resource("wangp://docs/settings/prompt-flags", name="prompt_flags", title="WanGP Prompt-Type Flags", description="Exact image_prompt_type, video_prompt_type, and audio_prompt_type flag definitions.", mime_type="text/markdown")
@@ -327,6 +331,10 @@ def _gallery_records(session, media_type: str = "all", limit: int = 50) -> list[
     limit = max(1, min(int(limit), 500))
     gen = session._state["gen"]
     current_records = []
+    workspace_id = getattr(session, '_workspace_id', None)
+    if workspace_id:
+        from shared.utils.workspace_storage import workspace_gallery
+        gen = workspace_gallery(gen, workspace_id)
     gallery_defs = [(source.media_ids, list(gen.get(source.files_key, []) or []), list(gen.get(source.settings_key, []) or []), int(gen.get(source.selected_key, -1))) for source in GALLERY_SOURCES]
     for gallery, paths, settings_list, selected_index in gallery_defs:
         for index, path in enumerate(paths):
@@ -432,6 +440,12 @@ def _compact_gallery_record(record: dict[str, Any]) -> dict[str, Any]:
     }
     if record.get("current_time_seconds") is not None:
         result["current_time_seconds"] = record["current_time_seconds"]
+    if settings.get("output_role"):
+        result["role"] = settings["output_role"]
+    if settings.get("client_id"):
+        result["task_id"] = settings["client_id"]
+    if "window_no" in settings:
+        result["window_no"] = settings["window_no"]
     result.update(_compact_gallery_stats(media_type, str(record.get("path", "") or "")))
     return result
 
@@ -500,10 +514,10 @@ def _compact_model_metadata(records: list[dict[str, Any]]) -> list[dict[str, Any
 def _compact_deepy_model_metadata(record: dict[str, Any]) -> dict[str, Any]:
     compact = {key: copy.deepcopy(record[key]) for key in ("model_type", "name", "family", "family_label", "base_model_type", "finetune", "main_output", "outputs", "inputs") if record.get(key) not in (None, "", [], {})}
     compact["capabilities"] = [key for key, enabled in record.get("capabilities", {}).items() if enabled]
-    compact.update({key: copy.deepcopy(record[key]) for key in ("accelerated", "size", "specialities", "matched_specialities", "unmatched_specialities", "word_matches", "substring_matches") if key in record})
-    if record.get("sliding_window"):
+    compact.update({key: copy.deepcopy(record[key]) for key in ("accelerated", "size", "specialities", "matched_specialities", "unmatched_specialities", "word_matches", "substring_matches", "resolution_budget", "resolution_budget_tiled", "resolution_min", "lock_resolutions", "allowed_resolutions", "vae_block_size", "resolution_assessment") if key in record})
+    if record.get("sliding_window") and "sliding_window" not in compact["capabilities"]:
         compact["capabilities"].append("sliding_window")
-    compact["media_inputs"] = {kind: [key for key, enabled in values.items() if enabled] for kind, values in record.get("media_inputs", {}).items() if isinstance(values, dict) and any(values.values())}
+    compact["media_inputs"] = {kind: copy.deepcopy(values) if kind == "custom_file" else [key for key, enabled in values.items() if enabled] for kind, values in record.get("media_inputs", {}).items() if isinstance(values, dict) and any(values.values())}
     return compact
 
 
@@ -850,6 +864,12 @@ def _resolve_artifact_references(value: Any, artifact_workspace, *, require_fina
 
 def _register_gallery_media(session, path: str) -> dict[str, Any]:
     resolved_path = _resolve_existing_path(path, "uploaded media")
+    workspace_id = getattr(session, '_workspace_id', None)
+    if workspace_id:
+        from shared.utils.workspace_storage import host_for_gen
+        host = host_for_gen(session._state['gen'])
+        host.activate_workspace(workspace_id)
+        resolved_path = host.workspaces.adopt(workspace_id, [resolved_path])[0]
     media_type = _mcp_media_type(resolved_path)
     if not media_type:
         raise ValueError(f"Unsupported media file extension: {Path(resolved_path).suffix}")
@@ -950,7 +970,7 @@ class _MediaTransferStore:
             path = self.policy.require_write(self.policy.workspace / "uploads" / uuid.uuid4().hex / filename)
             path.parent.mkdir(parents=True, exist_ok=True)
             return path
-        root = Path(self.session._output_dir) if self.session._output_dir is not None else self.session._root / "outputs"
+        root = self.policy.output_roots[0] if getattr(self.session, '_workspace_id', None) else Path(self.session._output_dir) if self.session._output_dir is not None else self.session._root / "outputs"
         upload_root = (root / "mcp_uploads" / uuid.uuid4().hex).resolve()
         upload_root.mkdir(parents=True, exist_ok=True)
         return upload_root / Path(filename).name
@@ -1275,6 +1295,7 @@ class _JobRecord:
         self.created_at = time.time()
         self.updated_at = self.created_at
         self.events: list[dict[str, Any]] = []
+        self.progress: dict[str, Any] | None = None
         self.result: dict[str, Any] | None = None
         self._lock = threading.Lock()
         self._watcher = threading.Thread(target=self._watch, daemon=True, name=f"wangp-mcp-job-{job_id}")
@@ -1290,8 +1311,10 @@ class _JobRecord:
                 if len(self.events) > _MAX_STORED_EVENTS:
                     del self.events[: len(self.events) - _MAX_STORED_EVENTS]
                 self.updated_at = time.time()
-                if event.kind == "completed" and type(event.data).__name__ == "GenerationResult":
-                    self.result = _result_to_dict(event.data, self.file_store, self.job_id)
+                if event.kind == "progress":
+                    self.progress = event_dict["data"]
+                if event.kind == "completed" and type(event.data).__name__ == "GenerationResult" and self.result is None:
+                    self.result = self._completed_result(event.data)
         self._capture_result_if_done()
         if self.state is not None:
             saved = self.snapshot(event_limit=0)
@@ -1305,21 +1328,21 @@ class _JobRecord:
                 completed = self.job.result(timeout=0)
             except Exception:
                 return
-            self.result = _result_to_dict(completed, self.file_store, self.job_id)
+            self.result = self._completed_result(completed)
             self.updated_at = time.time()
 
-    def snapshot(self, event_limit: int = 20) -> dict[str, Any]:
-        self._capture_result_if_done()
-        event_limit = 20 if event_limit is None else event_limit
-        event_limit = max(0, min(int(event_limit), _MAX_STORED_EVENTS))
-        with self._lock:
-            events = copy.deepcopy(self.events[-event_limit:] if event_limit else [])
-            result = copy.deepcopy(self.result)
-            updated_at = self.updated_at
-        if isinstance(result, dict):
-            generated_paths = {(self.session._root / path).resolve() for path in result.get("generated_files", [])}
-            result["gallery_items"] = [_compact_gallery_record(record) for record in _gallery_records(self.session, limit=500) if (self.session._root / record["path"]).resolve() in generated_paths]
-        if self.file_store is not None and result:
+    def _completed_result(self, completed) -> dict[str, Any]:
+        result = _result_to_dict(completed, self.file_store, self.job_id)
+        generated_paths = {(self.session._root / path).resolve() for path in result["generated_files"]}
+        result["gallery_items"] = []
+        if generated_paths:
+            for record in _gallery_records(self.session, limit=500):
+                if (self.session._root / record["path"]).resolve() in generated_paths:
+                    item = _compact_gallery_record(record)
+                    for key in ("selected", "in_gallery", "current_time_seconds"):
+                        item.pop(key, None)  # job outputs are immutable; live selection belongs to the Gallery
+                    result["gallery_items"].append(item)
+        if self.file_store is not None:
             policy = self.file_store.policy
             for artifact in result["artifacts"]:
                 for companion in artifact.get("side_files", []):
@@ -1328,8 +1351,21 @@ class _JobRecord:
                         if root in policy.output_roots and path.is_relative_to(root):
                             companion["path"] = f"@{alias}/{path.relative_to(root).as_posix()}"
                             break
+        return result
+
+    def snapshot(self, event_limit: int = 20) -> dict[str, Any]:
+        self._capture_result_if_done()
+        event_limit = 20 if event_limit is None else event_limit
+        event_limit = max(0, min(int(event_limit), _MAX_STORED_EVENTS))
+        with self._lock:
+            events = copy.deepcopy(self.events[-event_limit:] if event_limit else [])
+            result = copy.deepcopy(self.result)
+            progress = copy.deepcopy(self.progress)
+            updated_at = self.updated_at
         return {
             "job_id": self.job_id,
+            "workspace_id": getattr(self.session, '_workspace_id', None),
+            "agent_context": getattr(self.session, '_agent_context', None),
             "done": self.job.done,
             "cancel_requested": self.job.cancel_requested,
             "webui_submission_ready": self.job.webui_submission_ready,
@@ -1337,6 +1373,7 @@ class _JobRecord:
             "created_at": self.created_at,
             "updated_at": updated_at,
             "events": events,
+            "progress": progress,
             "result": result,
         }
 
@@ -1389,6 +1426,7 @@ class _JobStore:
             raise ValueError("request_id must contain 1..200 characters.")
         fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
         receipt = {"job_id": uuid.uuid4().hex, "request_id": request_id, "owner": self._owner, "status": "validating", "done": False, "result": None, "created_at": time.time()}
+        receipt.update(workspace_id=getattr(self._session, '_workspace_id', None), agent_context=getattr(self._session, '_agent_context', None))
         with self.state.transaction() as db:
             row = db.execute("SELECT fingerprint, job_id FROM requests WHERE request_id=?", (request_id,)).fetchone()
             if row is None:
@@ -1447,7 +1485,12 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
         raise RuntimeError("WanGP MCP server requires the 'mcp' Python package. Install project requirements or run `pip install mcp`.") from exc
 
     jobs = _JobStore(session)
-    mcp = FastMCP("WanGP", **dict(settings or {}))
+    if api_version == "2.1":
+        from .skills import SkillMCP
+
+        mcp = SkillMCP("WanGP", skills_root=session._root / "user_skills", **dict(settings or {}))
+    else:
+        mcp = FastMCP("WanGP", **dict(settings or {}))
     default_job_event_limit = max(0, min(int(default_job_event_limit), _MAX_STORED_EVENTS))
     if file_access_policy is None:
         from shared.deepy.filesystem import build_file_access_policy
@@ -1467,7 +1510,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
     allow_read_file_system = file_access_policy.read_enabled
     if api_version == "2.1":
         from .state import MCPState
-        jobs.state = MCPState(session._root, str(file_access_policy.workspace) if compact_model_tools else "external")
+        jobs.state = MCPState(session._root, getattr(session, '_agent_context', None) or (str(file_access_policy.workspace) if compact_model_tools else "external"))
     transfer_store = _MediaTransferStore(session, file_access_policy, http=http_media_transfer) if http_media_transfer or api_version == "2.1" else None
     if api_version == "2.1":
         from .transfers import ResumableTransfers
@@ -1490,7 +1533,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
         @mcp.custom_route("/wangp_api/gallery/upload/{token}", methods=["PUT"], include_in_schema=False)
         async def upload_gallery_media(request):
             if api_version == "2.1":
-                return await transfer_store.http_upload(request)
+                store = mcp._wangp_agents.transfer_store(request.path_params['token']) if hasattr(mcp, '_wangp_agents') else transfer_store
+                return await store.http_upload(request)
             from starlette.responses import JSONResponse
 
             transfer = transfer_store.consume_upload(request.path_params["token"])
@@ -1526,7 +1570,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
         @mcp.custom_route("/wangp_api/gallery/download/{token}", methods=["GET"], include_in_schema=False)
         async def download_gallery_media(request):
             if api_version == "2.1":
-                return await transfer_store.http_download(request)
+                store = mcp._wangp_agents.transfer_store(request.path_params['token']) if hasattr(mcp, '_wangp_agents') else transfer_store
+                return await store.http_download(request)
             from starlette.responses import FileResponse, JSONResponse
 
             record = transfer_store.consume_download(request.path_params["token"])
@@ -1542,7 +1587,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
     if api_version == "2.1":
         @mcp.resource("wangp://files/{token}/{offset}/{length}", name="file_bytes", description="Read exact byte ranges from an authorized download. Use the URI from create_file_download; length is at most 8388608 decoded bytes.", mime_type="application/octet-stream")
         def read_file_bytes(token: str, offset: int, length: int) -> bytes:
-            return transfer_store.read_file_range(token, offset, length)
+            store = mcp._wangp_agents.transfer_store(token) if hasattr(mcp, '_wangp_agents') else transfer_store
+            return store.read_file_range(token, offset, length)
 
         @api_tool()
         def wangp_create_file_download(source: str, include_sha256: bool = False) -> dict[str, Any]:
@@ -1954,7 +2000,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                 if not isinstance(model_type, str) or not model_type.strip():
                     raise ValueError(f"{path}.{model_key} must be a non-empty string for generation. Nothing was submitted.")
                 if session.get_model_metadata(model_type.strip()) is None:
-                    raise ValueError(f'{path}.{model_key}: unknown model {model_type.strip()!r}. Use wangp_deepy_templates(tool_id="...") for the configured default model, or wangp_models(query="...") to find one. Nothing was submitted.')
+                    template_call = 'wangp_templates(task="...", template="default")' if api_version == "2.1" else 'wangp_deepy_templates(tool_id="...")'
+                    raise ValueError(f'{path}.{model_key}: unknown model {model_type.strip()!r}. Use {template_call} for the configured default model, or wangp_models(query="...") to find one. Nothing was submitted.')
                 unknown_error = unknown_settings_error(settings)
                 if unknown_error:
                     if "accelerator profile" in unknown_error:
@@ -2020,8 +2067,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
     if api_version == "2.1":
         from .preflight import preflight
 
-        def wangp_validate(settings=None, media=None, process=None, parameters=None):
-            return preflight(session, prepare_generation, prepare_postprocess, settings, media, process, parameters)
+        def wangp_validate(settings=None, media=None, process=None, parameters=None, detail="summary"):
+            return preflight(session, prepare_generation, prepare_postprocess, settings, media, process, parameters, detail)
 
         implementations["wangp_validate"] = wangp_validate
 
@@ -2059,9 +2106,28 @@ def _http_settings(transport: str, host: str | None, port: int | None, oauth) ->
 
 def _in_thread(function):
     import anyio
+    from mcp.server.lowlevel.server import request_ctx
 
     async def run(**kwargs):
-        return await anyio.to_thread.run_sync(lambda: function(**kwargs))
+        dispatched = time.perf_counter()
+        context = request_ctx.get(None)
+        request = context.request if context is not None else None
+        # Stateful MCP sessions dispatch from a long-lived task. Use the actual
+        # message's HTTP request, not that task's inherited initialization context.
+        request_id, timing = request.scope.get("wangp_mcp_timing", ("-", None)) if request is not None else (_REQUEST_ID.get(), _REQUEST_TIMING.get())
+
+        def invoke():
+            started = time.perf_counter()
+            try:
+                return function(**kwargs)
+            finally:
+                finished = time.perf_counter()
+                if timing is not None:
+                    timing.update(queue=(started - dispatched) * 1000, handler=(finished - started) * 1000)
+                level = logging.WARNING if finished - dispatched >= 1 else logging.DEBUG
+                _TIMING_LOG.log(level, "request=%s tool=%s action=%s dispatched_at=%.3f queue_ms=%.1f handler_ms=%.1f", request_id, function.__name__, kwargs.get("action", ""), time.time() - (finished - dispatched), (started - dispatched) * 1000, (finished - started) * 1000)
+
+        return await anyio.to_thread.run_sync(invoke)
     return run
 
 
@@ -2075,13 +2141,18 @@ def build_webui_server(service, args):
 
     transport = _normalize_transport(args.mcp_transport or "streamable-http")
     if transport == "stdio":
-        raise ValueError("--mcp-webui serves MCP over HTTP: use --mcp-transport streamable-http or sse.")
+        raise ValueError("The Web UI serves MCP over HTTP: use --mcp-transport streamable-http or sse.")
     oauth = mcp_authorization(args, transport)
-    cert, key, _ = tls_options(args, args.mcp_port or 8000)  # --https-port only redirects the web UI port
+    config = service._deps.get_server_config()
+    port = server_port(args.mcp_port if args.mcp_port is not None else config.get('mcp_port', DEFAULT_PORT))
+    cert, key, _ = tls_options(args, port)  # --https-port only redirects the web UI port
     session = WanGPSession(webui_state=service._state, console_output=False, console_isatty=False, webui_append=True)
     session._gradio_webui_context = {"load_queue": service.load_inline_queue}
     # The toolbox gets its own media registry: Deepy's chat session is not shared with external agents.
-    server = build_server_for_session(session, _http_settings(transport, args.mcp_host.strip() or None, args.mcp_port, oauth), toolbox=_build_default_toolbox(session, AssistantSessionState(), native_inspection=str(args.mcp_api_version) == "2.1"), allow_read_file_system=args.mcp_allow_read_file_system, file_access_policy=_external_file_policy(session, args.mcp_allow_read_file_system) if str(args.mcp_api_version) == "2.1" else None, http_media_transfer=True, api_version=args.mcp_api_version, allow_async=True)
+    server = build_server_for_session(session, _http_settings(transport, args.mcp_host.strip() or None, port, oauth), toolbox=_build_default_toolbox(session, AssistantSessionState(), native_inspection=str(args.mcp_api_version) == "2.1"), allow_read_file_system=args.mcp_allow_read_file_system, file_access_policy=_external_file_policy(session, args.mcp_allow_read_file_system) if str(args.mcp_api_version) == "2.1" else None, http_media_transfer=True, api_version=args.mcp_api_version, allow_async=True)
+    if str(args.mcp_api_version) == '2.1':
+        from .workspaces import AgentWorkspaces
+        AgentWorkspaces(server, session, config, host=service, allow_read=args.mcp_allow_read_file_system, http=True).install()
     for tool in server._tool_manager.list_tools():  # an agent waiting for its job must not block the others
         if not tool.is_async:
             tool.fn, tool.is_async = _in_thread(tool.fn), True
@@ -2089,10 +2160,35 @@ def build_webui_server(service, args):
     app = app if oauth is None else oauth.wrap(app)
 
     async def refresh_pages(scope, receive, send):  # gallery changes made by agents reach every open page
+        if scope["type"] != "http":
+            return await app(scope, receive, send)
+        request_id = uuid.uuid4().hex[:12]
+        token = _REQUEST_ID.set(request_id)
+        timing = {}
+        timing_token = _REQUEST_TIMING.set(timing)
+        scope = {**scope, "wangp_mcp_timing": (request_id, timing)}
+        started = time.perf_counter()
+        arrived_at = time.time()
+        first_response = None
+
+        async def timed_send(message):
+            nonlocal first_response
+            if message["type"] == "http.response.start":
+                first_response = time.perf_counter()
+                metrics = {**timing, "mcp": (first_response - started) * 1000}
+                message = {**message, "headers": [*message.get("headers", []), (b"x-wangp-request-id", request_id.encode("ascii")), (b"server-timing", ", ".join(f"{name};dur={duration:.1f}" for name, duration in metrics.items()).encode("ascii"))]}
+            await send(message)
+
         try:
-            await app(scope, receive, send)
+            await app(scope, receive, timed_send)
         finally:
             service.host_changed()
+            elapsed = time.perf_counter() - started
+            first_ms = None if first_response is None else (first_response - started) * 1000
+            level = logging.WARNING if scope["method"] == "POST" and elapsed >= 1 else logging.DEBUG
+            _TIMING_LOG.log(level, "request=%s method=%s arrived_at=%.3f response_start_ms=%s total_ms=%.1f", request_id, scope["method"], arrived_at, first_ms, elapsed * 1000)
+            _REQUEST_ID.reset(token)
+            _REQUEST_TIMING.reset(timing_token)
 
     host, port = server.settings.host, server.settings.port
     print(f"WanGP MCP server: {'https' if cert else 'http'}://{host}:{port}{server.settings.sse_path if transport == 'sse' else server.settings.streamable_http_path}")
@@ -2110,7 +2206,6 @@ def build_server(args: argparse.Namespace):
     if args.auth or args.auth_password is not None:
         raise ValueError("MCP uses separate OAuth authentication. Use --mcp-auth and --mcp-auth-password.")
     args.oauth = mcp_authorization(args, args.transport)
-    args.tls = tls_options(args, args.port or 8000)
     console_output = bool(args.console_output) and args.transport != "stdio"
     with _stdio_safe_startup_output(args.transport):
         session = init(
@@ -2121,7 +2216,19 @@ def build_server(args: argparse.Namespace):
             console_output=console_output,
             console_isatty=False,
         )
-    return build_server_for_session(session, _http_settings(args.transport, args.host, args.port, args.oauth), default_job_event_limit=getattr(args, "job_event_limit", 20), allow_read_file_system=getattr(args, "allow_read_file_system", False), file_access_policy=_external_file_policy(session, args.allow_read_file_system) if str(args.mcp_api_version) == "2.1" else None, http_media_transfer=args.transport != "stdio", api_version=args.mcp_api_version, allow_async=args.mcp_async)
+    if args.transport != 'stdio':
+        config = session._ensure_runtime().module.server_config
+        args.port = server_port(args.port if args.port is not None else config.get('mcp_port', DEFAULT_PORT))
+    args.tls = tls_options(args, args.port or DEFAULT_PORT)
+    server = build_server_for_session(session, _http_settings(args.transport, args.host, args.port, args.oauth), default_job_event_limit=getattr(args, "job_event_limit", 20), allow_read_file_system=getattr(args, "allow_read_file_system", False), file_access_policy=_external_file_policy(session, args.allow_read_file_system) if str(args.mcp_api_version) == "2.1" else None, http_media_transfer=args.transport != "stdio", api_version=args.mcp_api_version, allow_async=args.mcp_async)
+    if str(args.mcp_api_version) == '2.1':
+        from .workspaces import AgentWorkspaces
+        config = dict(session._ensure_runtime().module.server_config)
+        override = session._ensure_runtime().module.args.workspaces_dir
+        if override:
+            config['workspaces_dir'] = override
+        AgentWorkspaces(server, session, config, allow_read=args.allow_read_file_system, http=args.transport != 'stdio').install()
+    return server
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -2135,7 +2242,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mcp-api-version", choices=("1", "2", "2.1"), default="2.1", help="WanGP API version; latest (2.1) by default. Pin 1 or 2 for earlier contracts.")
     parser.add_argument("--mcp-async", action="store_true", help="Enable optional asynchronous generation/post-processing in API v2/v2.1. Disabled by default; v1 keeps its historical wait behavior.")
     parser.add_argument("--host", default=None, help="Optional host for non-stdio transports.")
-    parser.add_argument("--port", type=int, default=None, help="Optional port for non-stdio transports.")
+    parser.add_argument("--port", type=server_port, default=None, help="Override the Agents configuration MCP server port for HTTP transports (default: 8000).")
     parser.add_argument("--job-event-limit", type=int, default=20, help="Default number of recent progress events included in job snapshots; use 0 for terminal state/results only.")
     parser.add_argument("--allow-read-file-system", action="store_true", help="Allow MCP tool arguments to reference arbitrary server filesystem paths. Disabled by default; media IDs returned by wangp_list_gallery remain available.")
     from shared.authentication import add_arguments

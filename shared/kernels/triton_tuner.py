@@ -61,5 +61,9 @@ class LaunchTuner:
             self.path.write_text(json.dumps({"version": self.version, "configs": self._tuned}, indent=1), encoding="utf-8")
         except OSError as error:
             print(f"[{self.label}] Could not save the Triton tuning cache {self.path}: {error}")
-        print(f"[{self.label}] Triton tuned {name} ({identity}) in {time.time() - started:.1f} s: {best} ({best_ms:.3f} ms vs {timings[0][0]:.3f} ms static).")
         return best
+
+
+from shared.kernels.triton_compilation_log import install_triton_compilation_logger, log_compilation_tuning
+install_triton_compilation_logger()
+LaunchTuner.config = log_compilation_tuning(LaunchTuner.config)

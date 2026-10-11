@@ -32,6 +32,10 @@ ATTENTION_MODE_AVAILABILITY = {
         "installed": triton_installed,
         "supported": triton_installed and (major, minor) in ((8, 6), (8, 9), (9, 0), (10, 0), (12, 0), (12, 1)),
     },
+    "veda": {
+        "installed": triton_installed,
+        "supported": triton_installed and major >= 8 and not torch.version.hip,
+    },
 }
 
 
@@ -355,6 +359,8 @@ def sage_staged(device, head_dim, force_attention=None, masked=False):
     pay_attention would run without sequence lengths on this device (with this force_attention, and a mask when masked):
     shared.sage2_core for SageAttention 2, shared.sage1_core for SageAttention without a mask; None otherwise."""
     attn = force_attention or offload.shared_state["_attention"]
+    if attn == "veda":
+        attn = offload.shared_state.get("_attention_fallback") or get_default_attention_mode()
     attn = get_default_attention_mode() if attn in ("sol", "vdn") else attn
     if attn == "sage":
         return None if masked or sage1_core is None or head_dim not in sage1_core.HEAD_DIMS else (sage1_core, sage1_core.SETTINGS)
@@ -414,6 +420,8 @@ def pay_attention(
         raise ValueError("pay_attention received both attention_mask and causal=True; build a combined mask once and pass causal=False.")
     if attention_mask != None:
         requested_attn = offload.shared_state["_attention"] if force_attention == None else force_attention
+        if requested_attn == "veda":
+            requested_attn = offload.shared_state.get("_attention_fallback") or get_default_attention_mode()
         requested_attn = get_default_attention_mode() if requested_attn in ("sol", "vdn") else requested_attn
         requested_attn = "sage2" if requested_attn == "radial" else requested_attn
         support_reason = None
@@ -432,6 +440,8 @@ def pay_attention(
         if  attention_mask.dtype == torch.bfloat16 and not bfloat16_supported:
             attention_mask = attention_mask.to(torch.float16)
     attn = offload.shared_state["_attention"] if force_attention== None else force_attention
+    if attn == "veda":
+        attn = offload.shared_state.get("_attention_fallback") or get_default_attention_mode()
     attn = get_default_attention_mode() if attn in ("sol", "vdn") else attn
 
     q,k,v = qkv_list

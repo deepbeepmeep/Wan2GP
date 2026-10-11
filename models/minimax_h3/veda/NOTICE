@@ -1,0 +1,9 @@
+Veda tiling, plans, pooling, selection and sparse kernel adapted from
+https://github.com/veda-sparse/Veda-on-ComfyUI
+Revision: 67e4eb5541b648555563144401ebaba832bd73ec
+
+MIT-licensed Veda code: see LICENSE. The INT8 kernel derives from
+SageAttention 1.0.6 (Thu-ML, BSD-3-Clause): see SAGE_LICENSE.
+WanGP changes: module-based predictor weights managed by MMGP, H3 native
+packing, explicit devices, bounded per-run caches, and shared attention routing.
+Predictor weights retain the MiniMax H3 Community License.

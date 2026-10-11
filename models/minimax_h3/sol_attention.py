@@ -11,7 +11,7 @@ from shared.attention import pay_attention
 
 SOL_ATTN_THRESH_TYPE = "diag"
 SOL_ATTN_MIN_TOKENS = 8192
-# the Sol state of the running forward (enabled, tau, sink tokens): the blocks pass them to the kernels as numbers, which CUDA graphs
+# the active Sol state of the running forward (tau, sink tokens): the blocks pass them to the kernels as numbers, which CUDA graphs
 # record, so they are part of the graph keys
 _graph_state = None
 cuda_graphs.register_key(lambda: _graph_state)
@@ -30,7 +30,7 @@ class MiniMaxH3SolAttention:
         self.tau = float(tau)
         self.enabled = offload.shared_state.get("_attention") == "sol"
         global _graph_state
-        _graph_state = (self.enabled, self.tau, self.sink_tokens)
+        _graph_state = (self.tau, self.sink_tokens) if self.enabled else None
         if self.enabled and grouped_video:
             raise ValueError("MiniMax H3 grouped masked denoising is not compatible with Sol Attention")
         if self.enabled and not self._runtime_validated:

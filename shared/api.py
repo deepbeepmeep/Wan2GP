@@ -189,6 +189,11 @@ class ProgressUpdate:
     total_steps: int | None
     raw_phase: str | None = None
     unit: str | None = None
+    task_id: str | None = None
+    task_index: int | None = None
+    task_count: int | None = None
+    window_index: int | None = None
+    window_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -603,7 +608,10 @@ class WanGPSession:
         self._ensure_runtime()
         return self
 
-    def list_model_defs(self, *, family: str | Sequence[str] | None = None, base_model_type: str | Sequence[str] | None = None, finetune: bool | str | None = None, model_type: str | Sequence[str] | None = None, main_output: str | Sequence[str] | None = None, inputs: str | Sequence[str] | None = None, name: str | Sequence[str] | None = None, query: str | None = None, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+    def list_model_defs(self, *, family: str | Sequence[str] | None = None, base_model_type: str | Sequence[str] | None = None, finetune: bool | str | None = None, model_type: str | Sequence[str] | None = None, main_output: str | Sequence[str] | None = None, inputs: str | Sequence[str] | None = None, name: str | Sequence[str] | None = None, query: str | None = None, resolution: str | None = None, include_resolution_unknown: bool = False, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+        from shared.resolutions import assess_resolution, parse_resolution
+        if resolution is not None:
+            parse_resolution(resolution)
         runtime = self._ensure_runtime()
         with _pushd(runtime.root):
             records = _strip_model_def_callables(runtime.module.list_model_defs(family=family, base_model_type=base_model_type, finetune=finetune, model_type=model_type, main_output=main_output, inputs=inputs))
@@ -622,6 +630,16 @@ class WanGPSession:
                     )
                 )
             ]
+        if resolution is not None:
+            selected = []
+            for record in records:
+                if not any(kind in ("image", "video") for kind in record["metadata"]["main_output"]):
+                    continue
+                assessment = assess_resolution(record, resolution)
+                if assessment["status"] == "recommended" or include_resolution_unknown and assessment["status"] == "unknown":
+                    record["metadata"]["resolution_assessment"] = assessment
+                    selected.append(record)
+            records = selected
         offset = max(0, int(offset or 0))
         if limit is None:
             return records[offset:]
@@ -873,6 +891,16 @@ class WanGPSession:
     def _queue_lock(self):
         return self._ensure_runtime().module.lock if self._use_webui_queue else self._job_lock
 
+    def _workspace_gallery(self):
+        from shared.utils.workspace_storage import host_for_gen
+        from shared.utils.workspaces import load_gallery
+        gen = self._state['gen']
+        workspace_id = getattr(self, '_workspace_id', None)
+        host = host_for_gen(gen)
+        if workspace_id and host is not None and host.workspace_id != workspace_id:
+            return load_gallery(host.workspaces.get(workspace_id), host._workspace_settings)
+        return gen
+
     def list_queue(self) -> dict[str, Any]:
         """List all pending/running tasks in this session's generation queue, including UI tasks."""
         gen = self._state["gen"]
@@ -885,6 +913,7 @@ class WanGPSession:
                 cancelling = running and bool(gen.get("abort", False))
                 entries.append({
                     "queue_id": queue_id, "position": index + 1, "task_id": task.get("id"),
+                    **{key: task[key] for key in ('workspace_id', 'mcp_agent_id') if key in task},
                     "client_id": str(params.get("client_id", "") or ""),
                     "model_type": str(params.get("model_type", "") or ""),
                     "prompt": str(params.get("prompt", "") or "")[:320],
@@ -953,6 +982,15 @@ class WanGPSession:
             job = SessionJob(self)
             self._bind_callbacks_to_job(job, callbacks)
             prepared_tasks = copy.deepcopy(tasks)
+            from shared.utils.workspace_storage import capture_task
+            for task in prepared_tasks:
+                if getattr(self, '_workspace_id', None):
+                    task['workspace_id'] = self._workspace_id
+                if getattr(self, '_agent_context', None):
+                    task['mcp_agent_id'] = self._agent_context
+                capture_task(task, self._state)
+            if self._output_dir is not None and any(task.get('workspace_id') for task in prepared_tasks):
+                raise ValueError('An explicit output_dir cannot be combined with a workspace-bound queue. Use its original Workspaces Root.')
             client_ids = self._ensure_task_client_ids(prepared_tasks, priority=self._use_webui_queue and not self._webui_append)
             if self._use_webui_queue:
                 prepared_tasks, manifest, load_queue_token = self._prepare_webui_bridge(prepared_tasks)
@@ -1010,6 +1048,8 @@ class WanGPSession:
             task["params"] = params
             manifest.append({
                 "id": task.get("id", index),
+                **({"workspace_id": task['workspace_id']} if task.get('workspace_id') else {}),
+                **({"mcp_agent_id": task['mcp_agent_id']} if task.get('mcp_agent_id') else {}),
                 "params": copy.deepcopy(params),
                 "plugin_data": copy.deepcopy(task.get("plugin_data", {})),
             })
@@ -1028,7 +1068,7 @@ class WanGPSession:
 
         run_webui_job(self, job, tasks)
 
-    def _build_progress_update(self, data: Any, *, include_state_fallback: bool = True) -> ProgressUpdate:
+    def _build_progress_update(self, data: Any, *, include_state_fallback: bool = True, task_id: str | None = None, task_index: int | None = None, task_count: int | None = None) -> ProgressUpdate:
         current_step: int | None = None
         total_steps: int | None = None
         status = ""
@@ -1086,6 +1126,11 @@ class WanGPSession:
             total_steps=total_steps,
             raw_phase=display_phase or None,
             unit=unit,
+            task_id=task_id,
+            task_index=task_index,
+            task_count=task_count,
+            window_index=(self._state["gen"].get("window_no") or None) if phase != "loading_model" else None,
+            window_count=(self._state["gen"].get("total_windows") or None) if phase != "loading_model" else None,
         )
 
     def _build_preview_update(self, wgp, tasks: list[dict[str, Any]], payload: Any) -> PreviewUpdate | None:

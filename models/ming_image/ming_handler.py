@@ -5,12 +5,10 @@ The checkpoint URLs describe the prepared DeepBeepMeep layout.  The
 upstream code and checkpoint provenance are recorded in README.md.
 """
 
-from math import prod
 from pathlib import Path
 
 import torch
 
-from shared.resolutions import all_global_resolution_choices, parse_resolution
 from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
 
@@ -122,10 +120,7 @@ class family_handler:
                 "guidance_max_phases": 1,
                 "NAG": False,
                 "profiles_dir": [LAYER_ARCHITECTURE],
-                "resolutions": [
-                    choice for choice in all_global_resolution_choices()
-                    if prod(parse_resolution(choice[1])) <= 1024 * 1024
-                ],
+                "resolutions_categories": ["<=720p"],
                 "text_encoder_folder": ENCODER,
                 "text_encoder_URLs": [
                     build_hf_url(REPO, ENCODER, ENCODER_CORE + suffix)
@@ -215,10 +210,7 @@ class family_handler:
             "embedded_guidance": False,
             "NAG": False,
             "profiles_dir": [ARCHITECTURE],
-            "resolutions": [
-                choice for choice in all_global_resolution_choices()
-                if prod(parse_resolution(choice[1])) <= 2048 * 2048
-            ],
+            "resolutions_categories": ["<=2048sq"],
             "text_encoder_folder": ENCODER,
             "text_encoder_URLs": [
                 build_hf_url(REPO, ENCODER, ENCODER_CORE + suffix)

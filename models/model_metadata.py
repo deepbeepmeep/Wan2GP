@@ -3,6 +3,7 @@ import copy
 import fnmatch
 import os
 import re
+from .help_shared import normalize_specialities
 
 
 METADATA_KEY = "metadata"
@@ -61,7 +62,7 @@ def _normalized_choices(choice_def):
     seen = set()
 
     def add_choice(label, value):
-        value = str(value or "")
+        value = "" if value is None else str(value)
         if value in seen:
             return
         seen.add(value)
@@ -250,6 +251,9 @@ def infer_setting_values(model_def):
 
 
 def store_metadata(model_type, model_def, model_types_handlers, families_infos):
+    from shared.resolutions import resolution_metadata
+    if "specialities" in model_def:
+        model_def["specialities"] = normalize_specialities(model_def["specialities"])
     base_model_type = model_def.get("architecture", None) or model_type
     family = get_model_family(base_model_type, model_def, model_types_handlers, families_infos, for_ui=True)
     family_label = families_infos.get(family, families_infos.get("unknown", (100, "Unknown")))[1]
@@ -269,6 +273,7 @@ def store_metadata(model_type, model_def, model_types_handlers, families_infos):
         "media_inputs": media_inputs,
         "capabilities": infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs),
         "setting_values": infer_setting_values(model_def),
+        **(resolution_metadata(model_def) if any(output in ("image", "video") for output in main_outputs) else {}),
         **{key: copy.deepcopy(model_def[key]) for key in ("accelerated", "size", "specialities") if key in model_def},
     }
     return model_def

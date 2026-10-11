@@ -121,7 +121,7 @@ The client discovers authorization settings, registers, then opens the **Authori
 
 Use `--mcp-auth-password "your separate long passphrase"` with `--mcp-auth` for a fixed passphrase, or set `WANGP_MCP_AUTH_PASSWORD` in the launch environment. An explicit CLI passphrase takes precedence. Generated passphrases change at restart; supplied passphrases are not printed. Web `--auth` passwords and browser sessions do not authorize MCP requests.
 
-The same options protect the MCP address added to the web UI by `--mcp-webui`, for example `python wgp.py --listen --auth --mcp-webui --mcp-host 0.0.0.0 --mcp-port 7866 --mcp-auth --mcp-auth-url https://wangp.example.com:7866 --ssl-certfile C:\certs\wangp.pem --ssl-keyfile C:\certs\wangp-key.pem`. Web `--auth` then protects the browser pages and MCP OAuth the agents. The certificate options also serve the MCP port over HTTPS; `--https-port` redirects only the browser port.
+The same options protect the MCP address when enabled with the web UI, for example `python wgp.py --listen --auth --mcp-webui --mcp-host 0.0.0.0 --mcp-port 7866 --mcp-auth --mcp-auth-url https://wangp.example.com:7866 --ssl-certfile C:\certs\wangp.pem --ssl-keyfile C:\certs\wangp-key.pem`. Web `--auth` then protects the browser pages and MCP OAuth the agents. The certificate options also serve the MCP port over HTTPS; `--https-port` redirects only the browser port.
 
 For an HTTPS reverse proxy on the same PC:
 

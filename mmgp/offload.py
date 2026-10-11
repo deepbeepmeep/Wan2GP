@@ -255,7 +255,7 @@ def _get_max_reservable_memory(perc_reserved_mem_max = 0):
     max_reservable_memory = perc_reserved_mem_max * physical_memory
     return  max_reservable_memory
 
-def _detect_main_towers(model, min_floors = 5):
+def _detect_main_towers(model, min_floors = 5, extra_towers = ()):
     cur_blocks_prefix = None
     towers_modules= []
     towers_names= []
@@ -281,7 +281,7 @@ def _detect_main_towers(model, min_floors = 5):
 
                 cur_blocks_seq = num
             else:
-                if len(floors_modules) >= min_floors:
+                if len(floors_modules) >= min_floors or floors_modules and tower_name.rstrip(".") in extra_towers:
                     towers_modules += floors_modules
                     towers_names.append(tower_name)
                 tower_name = None
@@ -298,7 +298,7 @@ def _detect_main_towers(model, min_floors = 5):
                 tower_name = submodule_name[ :-1]  
                 floors_modules.append(submodule)
 
-    if len(floors_modules) >= min_floors:
+    if len(floors_modules) >= min_floors or floors_modules and tower_name.rstrip(".") in extra_towers:
         towers_modules += floors_modules
         towers_names.append(tower_name)
 
@@ -3464,7 +3464,14 @@ class offload:
             consumer.wait_event(transfer if isinstance(transfer, torch.cuda.Event) else transfer.result())
             self._ensure_loras(model_id, entry_name)
         else:
-            self._transfer(consumer, entry_name, cpu_to_gpu)
+            if self.shared_weight_stream:
+                # Demand copies share the prefetch buffers' allocator heap. Order reuse after earlier compute and wait only for the
+                # copy needed by this consumer; neither dependency synchronizes the host or the whole device.
+                self.transfer_stream.wait_stream(consumer)
+                transfer = self._transfer(self.transfer_stream, entry_name, cpu_to_gpu)
+                consumer.wait_event(transfer if isinstance(transfer, torch.cuda.Event) else transfer.result())
+            else:
+                self._transfer(consumer, entry_name, cpu_to_gpu)
         next_entry = entry_name
         for _ in range(self.prefetch_windows[model_id]):
             prev_entry, next_entry = next_entry, self.next_blocks_names.get(next_entry, None)
@@ -4869,6 +4876,7 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
     self.prefetch_window = prefetchWindow
     self.read_ahead_enabled = readAhead
     from . import allocator as vram_allocator
+    self.shared_weight_stream = vram_allocator.active == "vmm"
     auto_measures = autoPreload if isinstance(autoPreload, dict) else None
     autoPreload = autoPreload is True or auto_measures is not None
     if autoPreload and vram_allocator.active != "vmm":
@@ -5037,7 +5045,9 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
         if loading_callback is not None: loading_callback.check_abort()
         current_model: torch.nn.Module = models[model_id] 
         current_model._force_device= "cuda"
-        towers_names, towers_modules = _detect_main_towers(current_model)
+        # Short recurrent stacks can explicitly join the graph/offload plan so their larger blocks do not discard the fixed weight slots.
+        graph_towers = getattr(current_model, "_cuda_graph_towers", ()) if cudaGraphs is True or model_id in graphed_models else ()
+        towers_names, towers_modules = _detect_main_towers(current_model, extra_towers=graph_towers)
         compilationInThisOne = compileAllModels or model_id in modelsToCompile
         graphs = None
         if (cudaGraphs is True or model_id in graphed_models) and towers_modules:

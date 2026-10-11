@@ -233,12 +233,17 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
     @app.post("/deepy_api/media")
     async def upload(file: UploadFile = File(...), from_chat: bool = Form(False)):
         session_epoch = service._session.chat_epoch
-        output = Path(service._deps.get_server_config()['save_path'])
+        with service._mutation_lock:
+            service.prepare_media_workspace()
+            workspace_id = service.workspace_id
+            output = Path(service.workspace_output_config(workspace_id)['save_path'])
         output.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix='.import-', dir=output) as directory:
             source = await save_upload(file, Path(directory), limit=1024 * 1024 * 1024, extensions=_IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS, preserve_filename=True)
             def add():
                 with service._mutation_lock:
+                    if service.workspace_id != workspace_id:
+                        raise ValueError('The workspace changed during upload. Please import the file again.')
                     path, reused = persist_gallery_import(source, output, move=True)
                     try:
                         return service.import_media(path, session_epoch=session_epoch, from_chat=from_chat)
@@ -286,7 +291,7 @@ def run_server(deps, args):
         print(f"Deepy HTTPS: https://{host}:{https_port}")
     print("WanGP web authentication disabled." if auth.gate is None else "WanGP web authentication enabled.")
     service = DeepyService(deps)
-    service.configure_workspaces(args.workspaces_dir or str(WEB.parents[2] / 'workspaces'))
+    service.configure_workspaces(args.workspaces_dir or service._deps.get_server_config().get('workspaces_dir') or str(WEB.parents[2] / 'workspaces'))
     app = create_app(service, auth=auth, voice_language=args.deepy_voice_language, https_port=https_port)
     if https_port is None:
         uvicorn.run(app, host=host, port=port, ssl_certfile=cert, ssl_keyfile=key)

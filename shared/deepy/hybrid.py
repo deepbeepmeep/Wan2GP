@@ -303,6 +303,14 @@ class HybridService(DeepyService):
 def launch_gradio(demo, service, args, **kwargs):
     """Use Gradio's supported lifespan hook to mount the shared Web application."""
     from shared.deepy.server import server_options
+    if service.workspaces is not None:
+        def allow_workspace_media(directory):
+            if directory not in demo.allowed_paths:
+                demo.allowed_paths.append(directory)
+        service._deps.callbacks.handlers['allow_workspace_media'] = allow_workspace_media
+        kwargs['allowed_paths'] = [*kwargs.get('allowed_paths', []), *(str(service.workspaces._directory(record)) for record in service.workspaces.records.values() if 'folder' in record)]
+    if args.mcp_webui is None:
+        args.mcp_webui = service._deps.get_server_config().get('mcp_webui', False)
     host, port, cert, key, https_port, auth = server_options(args)
     print("WanGP web authentication disabled." if auth.gate is None else "WanGP web authentication enabled.")
     scheme = 'https' if cert and https_port is None else 'http'

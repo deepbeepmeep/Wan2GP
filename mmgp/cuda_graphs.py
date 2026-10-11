@@ -8,8 +8,14 @@ is captured into a CUDA graph that the next calls replay. Blocks run eagerly, wi
 settled (`ready()` False: e.g. an automatic preload measuring a new workload, which keeps other blocks in VRAM at the next step). A block thus has a graph per location of its weights (kept in VRAM, or each
 slot of the swapped blocks), and a model loaded again captures its graphs again. The tensor arguments, extra inputs (tensors that come
 and go with a block, e.g. its LoRA copies) and outputs go through static buffers shared by the graphs, the arguments a block modifies in
-place are copied back, and an output that is an argument is that argument. A block keeps its `MAX_KEYS` most recently used graphs (a new
-resolution replaces them); all the graphs go with the model or `invalidate()`.
+place are copied back when needed, and an output that is an argument is that argument. A block keeps its `MAX_KEYS` most recently used graphs (a new
+resolution replaces them); all the graphs go with the model or `invalidate()`. With MMGP's VMM allocator, eager preparation and capture
+share a pool. Suitable live arguments and first-call outputs supply the static storage; retained caller outputs are protected before
+another call can overwrite them. Graph warmup is scoped to its manager's pool. A consumed single-tensor list can transfer its input's
+execution lifetime: after its last execution view dies, later temporaries may use its physical pages while every graph address stays
+fixed. Caller references, storage aliases and recorded stream consumers prevent this transfer. Large outputs can reuse their warmup
+storage at the corresponding captured allocation; a changed allocation trace is recaptured without that output plan. These plans add
+no replay-time mapping or synchronization, and do not participate in ordinary, non-graph allocation.
 
 Contract of a block call in a scope: the block reads only its weights, its tensor arguments (in lists, tuples, dicts and dataclasses)
 and tensors it creates; its effects are its outputs and in-place updates of its tensor arguments (Python side effects are not replayed,
@@ -19,7 +25,9 @@ an error naming any other tensor.
 import contextlib
 import dataclasses
 import enum
+import sys
 import traceback
+import weakref
 
 import torch
 from torch.utils import _pytree as pytree
@@ -36,6 +44,7 @@ _reported = set()
 _capture_setups = []
 _constants = []  # tensors that blocks may read besides their weights and arguments: kept for the life of the process
 _capture_streams = {}
+_blas_workspaces = set()
 _registered = set()
 _managers = []
 _capturing = False  # a block's capture is running (its forward is recorded, nothing runs on the GPU)
@@ -101,6 +110,12 @@ def register_gate(gate):
 def register_constant(tensor):
     """A tensor that blocks may read and that is never freed nor replaced (a process-wide cache, e.g. a rotation matrix): graphs read it
     at its address."""
+    from . import allocator
+    if allocator.in_graph_warmup():
+        if _capturing:
+            raise RuntimeError("A persistent CUDA graph constant must be prepared during warmup, before capture")
+        with allocator.normal_allocations():
+            tensor = tensor.clone()
     _constants.append(tensor)
     return tensor
 
@@ -112,10 +127,23 @@ def register_capture_setup(setup):
         _capture_setups.append(setup)
 
 
+def _prepare_blas_stream(stream):
+    # PyTorch owns these workspaces per handle/stream, beyond the life of a model's graphs. Initialize both cuBLAS and cuBLASLt
+    # before warmup/capture can put them in graph scratch (which would also pin that entire pool after the model is released).
+    from . import allocator
+    with allocator.normal_allocations(), torch.cuda.stream(stream), torch.inference_mode():
+        key = (torch.cuda.current_blas_handle(), stream.cuda_stream)
+        if key not in _blas_workspaces:
+            matrix = torch.zeros((16, 16), dtype=torch.float16, device=stream.device)
+            torch.addmm(matrix[0], matrix, matrix)
+            _blas_workspaces.add(key)
+
+
 def _capture_stream(device):
     stream = _capture_streams.get(device, None)
     if stream is None:
         stream = _capture_streams[device] = torch.cuda.Stream(device)
+    _prepare_blas_stream(stream)
     for setup in _capture_setups:
         setup(stream)
     return stream
@@ -170,6 +198,29 @@ def _storage(t):
     return t.untyped_storage().data_ptr()
 
 
+def _same_buffer(a, b):
+    return b is not None and a.data_ptr() == b.data_ptr() and a.shape == b.shape and a.stride() == b.stride()
+
+
+def _unshared(tensor):
+    # The static TensorImpl and this temporary Storage wrapper are the only owners. Protect detached views and raw Storage holders too.
+    storage = tensor.untyped_storage()
+    return torch._C._storage_Use_Count(storage._cdata) == 2 and sys.getrefcount(storage) == 3
+
+
+def _adoptable(tensor):
+    from . import allocator
+    return (type(tensor) is torch.Tensor and tensor.is_cuda and not tensor.requires_grad and tensor.storage_offset() == 0 and
+            torch._debug_has_internal_overlap(tensor) == 0 and tensor.untyped_storage().nbytes() == tensor.numel() * tensor.element_size() and
+            allocator.owns_tensor(tensor))
+
+
+def _buffer_alias(tensor):
+    # A non-inference TensorImpl tracks in-place updates during capture without allocating another activation.
+    with torch.inference_mode(False):
+        return torch.empty(0, dtype=tensor.dtype, device=tensor.device).set_(tensor.untyped_storage(), tensor.storage_offset(), tensor.shape, tensor.stride())
+
+
 class _ReadCheck(TorchDispatchMode):
     """Records, during a capture, the CUDA tensors read by the operations that are neither allowed nor created by the capture."""
 
@@ -190,7 +241,72 @@ class _ReadCheck(TorchDispatchMode):
 
 
 class _Graph:
-    __slots__ = ("graph", "positions", "static", "extra_static", "static_key", "mutated", "out_leaves", "out_spec", "outputs")
+    __slots__ = ("graph", "positions", "static", "extra_static", "static_key", "mutated", "out_leaves", "out_spec", "outputs", "lifetimes", "emptied")
+
+
+def _handoffs(args, kwargs):
+    """Single-tensor lists can transfer ownership to a block. Other argument containers retain their normal lifetime."""
+    found, seen = {}, set()
+    pending = [args, kwargs]
+    while pending:
+        value = pending.pop()
+        if id(value) in seen:
+            continue
+        seen.add(id(value))
+        if isinstance(value, list) and len(value) == 1 and isinstance(value[0], torch.Tensor):
+            found[id(value[0])] = value
+        elif isinstance(value, (list, tuple)):
+            pending.extend(value)
+        elif isinstance(value, dict):
+            pending.extend(value.values())
+        elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+            pending.extend(getattr(value, field.name) for field in dataclasses.fields(value))
+    return found
+
+
+def _execute_lifetimes(forward, args, kwargs, positions, leaves):
+    """Plan consumed input storage during warmup/capture; no operation dispatch interception or replay-time remapping."""
+    if not positions:
+        return forward(*args, **kwargs), ()
+    from . import allocator
+    containers = _handoffs(args, kwargs)
+    bindings = []
+    released = []
+    try:
+        for index in positions:
+            source = leaves[index]
+            container = containers.get(id(source))
+            if container is None:
+                continue
+            view, token = allocator.lifetime_view(source)
+            if token is not None:
+                bindings.append((index, container, source, weakref.ref(view), token, view._version))
+                container[0] = view
+            del view
+        out = forward(*args, **kwargs)
+        # Rebind returned input views to the ordinary owner. Escaped results must own their storage beyond this execution.
+        flat, spec = _flatten(out)
+        by_storage = {_storage(source): source for _, _, source, _, _, _ in bindings}
+        for index, value in enumerate(flat):
+            if isinstance(value, torch.Tensor) and (source := by_storage.get(_storage(value))) is not None:
+                if _same_buffer(source, value) and source.dtype == value.dtype:
+                    flat[index] = source
+                else:
+                    with torch.inference_mode(False):
+                        flat[index] = torch.empty(0, dtype=value.dtype, device=value.device).set_(
+                            source.untyped_storage(), value.storage_offset(), value.shape, value.stride())
+        out = pytree.tree_unflatten(flat, spec)
+    finally:
+        for index, container, source, ref, token, version in bindings:
+            if allocator.end_lifetime(token):
+                released.append(index)
+            view = ref()
+            if view is not None:
+                if view._version != version:
+                    torch.autograd.graph.increment_version(source)
+                if len(container) == 1 and container[0] is view:
+                    container[0] = source
+    return out, tuple(released)
 
 
 class BlockGraphs:
@@ -209,6 +325,10 @@ class BlockGraphs:
     def clear(self):
         # entries: key -> graph; keys: block -> its keys, least recently used first; static: buffers shared by the graphs
         self.entries, self.keys, self.static, self.pool = {}, {}, {}, None
+        self.static_by_buffer, self.static_by_base = {}, {}
+        self.borrowed = set()
+        self._tensor_refs = {}
+        _blas_workspaces.clear()  # library caches may be released between models too; prepare them again before a new capture
 
     def wrap(self, module, forward):
         def graphed_forward(*args, **kwargs):
@@ -225,22 +345,101 @@ class BlockGraphs:
         signature = _signature(leaves)
         extras = self.extra_inputs(module)
         extra_signature = _signature([holder[index] for holder, index in extras])
-        key = (id(module), spec, signature, extra_signature, self.weights_key(module), tuple(provider() for provider in _key_providers))
+        positions = [index for index, leaf in enumerate(leaves) if isinstance(leaf, torch.Tensor)]
+        input_signatures = [signature[index] for index in positions] + list(extra_signature)
+        static_key, buffers = self._buffers(input_signatures, [leaves[index] for index in positions] + [None] * len(extras))
+        key = (id(module), spec, signature, extra_signature, self.weights_key(module), tuple(provider() for provider in _key_providers), tuple(static_key))
         keys = self.keys.setdefault(id(module), {})
         entry = self.entries.get(key, None)
+        lifetimes = None
+        if entry is not None and entry.lifetimes:
+            lifetimes = self._consumable(args, kwargs, leaves, positions, buffers)
+            if not set(entry.lifetimes).issubset(lifetimes):
+                key = (*key, "retained-inputs")
+                entry = self.entries.get(key)
+                lifetimes = ()
+        retained_output = entry is not None and any(k in self.borrowed and not _unshared(self.static[k]) for k in entry.static_key[len(buffers):])
+        if retained_output:
+            self._evict(key, static_key)
+            entry = None
         if entry is None:  # first call of this key: eager (it compiles and tunes the kernels, makes the caches of the weights), then captured
+            if lifetimes is None:
+                lifetimes = self._consumable(args, kwargs, leaves, positions, buffers)
             if len(keys) >= MAX_KEYS:
-                self._evict(next(iter(keys)))
+                self._evict(next(iter(keys)), static_key)
             _recording += 1
             try:
-                out = forward(*args, **kwargs)
-                self.entries[key] = self._capture(module, forward, leaves, spec, signature, extras, extra_signature, self._outputs(leaves, out))
+                from . import allocator
+                if self.pool is None:
+                    self.pool = torch.cuda.graph_pool_handle()
+                _prepare_blas_stream(torch.cuda.current_stream())
+                with allocator.graph_warmup(self.pool):
+                    plan = allocator.OutputPlan(self.pool)
+                    try:
+                        out, consumed = _execute_lifetimes(forward, args, kwargs, lifetimes, leaves)
+                        plan.pause()
+                        if consumed:
+                            # An escaped warmup result must not retain pages loaned by a static input: the preceding graph may
+                            # write that input again before this graph can protect its retained outputs. Stabilize only overlapping
+                            # results, after input claims were restored, so capture copies to independent output storage as usual.
+                            flat, out_spec = _flatten(out)
+                            for index, value in enumerate(flat):
+                                if isinstance(value, torch.Tensor) and value.is_cuda and any(
+                                        allocator.graph_storage_overlaps(value, leaves[position]) for position in consumed):
+                                    flat[index] = value.clone()
+                            out = pytree.tree_unflatten(flat, out_spec)
+                            value = None
+                            del flat
+                        # Returned views keep execution storage alive: capture them with the ordinary owner's version counter.
+                        self._capture_lifetimes, self._capture_output_plan = consumed, plan
+                        entry = self._capture(module, forward, leaves, spec, signature, extras, extra_signature, out, static_key, buffers, not retained_output)
+                        if entry is None:  # a different allocation trace must not replay the proposed aliases
+                            self._capture_output_plan = None
+                            entry = self._capture(module, forward, leaves, spec, signature, extras, extra_signature, out, static_key, buffers, not retained_output)
+                        self.entries[key] = entry
+                    finally:
+                        self.__dict__.pop('_capture_lifetimes', None)
+                        self.__dict__.pop('_capture_output_plan', None)
+                        plan.close()
             finally:
                 _recording -= 1
+                self._prune()
             keys[key] = None
             return out
         keys[key] = keys.pop(key)  # most recently used
-        return self._replay(entry, leaves, extras)
+        result = self._replay(entry, leaves, extras)
+        if entry.emptied:
+            handoffs = _handoffs(args, kwargs)
+            for index in entry.emptied:
+                container = handoffs.get(id(leaves[index]))
+                if container is not None:
+                    container.clear()
+        return result
+
+    def _consumable(self, args, kwargs, leaves, positions, buffers):
+        from . import allocator
+        if allocator.active != "vmm":
+            return ()
+        handoffs = _handoffs(args, kwargs)
+        eligible = []
+        for ordinal, index in enumerate(positions):
+            source, buffer = leaves[index], buffers[ordinal]
+            if (id(source) not in handoffs or not source.is_cuda or source.numel() * source.element_size() < 32 * 1024 * 1024 or
+                    not _same_buffer(source, buffer) or sum(value is source for value in leaves) != 1):
+                continue
+            # Account only for MMGP's references, this call's flattened arguments/buffers, and the transferring list.
+            # Any additional Python owner or storage/view owner keeps the input protected.
+            expected = self._tensor_refs.get(id(source), 0) + 4 + sum(value is source for value in buffers) + int(source is buffer)
+            if sys.getrefcount(source) != expected or source._use_count() != 1:
+                continue
+            storage = source.untyped_storage()
+            if (source.storage_offset() != 0 or storage.nbytes() != source.numel() * source.element_size() or
+                    torch._C._storage_Use_Count(storage._cdata) != 2 + int(source is not buffer) or sys.getrefcount(storage) != 3):
+                continue
+            if not allocator.lifetime_available(source):
+                continue
+            eligible.append(index)
+        return tuple(eligible)
 
     def _outputs(self, leaves, out):
         # per output leaf: ("argument", index of the argument it is), its signature, or None if it is not a tensor
@@ -249,39 +448,91 @@ class BlockGraphs:
         for leaf in _flatten(out)[0]:  # an output that is an argument (its storage, shape and strides) is returned as the caller's tensor
             if isinstance(leaf, torch.Tensor):
                 index, argument = by_pointer.get(leaf.data_ptr(), (None, None))
-                same = argument is not None and leaf.shape == argument.shape and leaf.stride() == argument.stride()
+                same = argument is not None and leaf.dtype == argument.dtype and leaf.shape == argument.shape and leaf.stride() == argument.stride()
                 outputs.append(("argument", index) if same else _signature((leaf,))[0])
             else:
                 outputs.append(None)
         return outputs
 
-    def _evict(self, key):
+    def _evict(self, key, keep=()):
         del self.keys[key[0]][key]
         del self.entries[key]
-        used = {k for entry in self.entries.values() for k in entry.static_key}
-        self.static = {k: buffer for k, buffer in self.static.items() if k in used}
+        self._prune(keep)
 
-    def _buffers(self, signatures):
+    def _prune(self, keep=()):
+        used = set(keep) | {k for entry in self.entries.values() for k in entry.static_key}
+        if any(k not in used for k in self.static):
+            self.static = {k: buffer for k, buffer in self.static.items() if k in used}
+            self.static_by_buffer, self.static_by_base = {}, {}
+            for key, buffer in self.static.items():
+                self._index_buffer(key, buffer)
+        self.borrowed.intersection_update(used)
+        refs = {}
+        for buffer in self.static.values():
+            refs[id(buffer)] = refs.get(id(buffer), 0) + 1
+        for entry in self.entries.values():
+            for buffer in (*entry.static, *entry.extra_static, *entry.outputs):
+                if isinstance(buffer, torch.Tensor):
+                    refs[id(buffer)] = refs.get(id(buffer), 0) + 1
+        self._tensor_refs = refs
+
+    def _index_buffer(self, key, buffer):
+        self.static_by_buffer.setdefault((key[0], buffer.data_ptr()), []).append(key)
+        self.static_by_base.setdefault(key[:2], []).append(key)
+
+    def _buffers(self, signatures, sources, counts=None):
         # static buffers, shared by the graphs (they run one after the other) for each signature and occurrence in a call; not inference
         # tensors, whose version counters show the in-place updates of the arguments
-        counts, keys, buffers = {}, [], []
-        for signature in signatures:
-            key = (signature, counts.setdefault(signature, 0))
+        counts, keys, buffers = {} if counts is None else counts, [], []
+        for signature, source in zip(signatures, sources):
+            base = (signature, counts.setdefault(signature, 0))
             counts[signature] += 1
-            buffer = self.static.get(key, None)
-            if buffer is None:
+            # Prefix tensors can keep hundreds of adopted buffers alive. A replay usually names an existing buffer exactly;
+            # look it up directly instead of scanning every other layer's buffers for every argument.
+            matching = None if source is None else next((k for k in self.static_by_buffer.get((signature, source.data_ptr()), ())
+                                                        if _same_buffer(self.static[k], source)), None)
+            if matching is not None:
+                key = matching
+            else:
+                candidates = [k for k in self.static_by_base.get(base, ()) if k not in keys]
+                key = next((k for k in candidates if k not in self.borrowed or _unshared(self.static[k])), None)
+            if key in self.borrowed and matching is None:
+                from . import allocator
+                allocator.prepare_reuse(self.static[key])
+            if key is None:
+                key = (*base, 1 + max((k[2] for k in candidates), default=-1))
                 shape, stride, dtype, device = signature
-                with torch.inference_mode(False):
-                    buffer = self.static[key] = torch.empty_strided(shape, stride, dtype=dtype, device=device)
+                if source is not None and _adoptable(source):
+                    self.static[key] = _buffer_alias(source)
+                    self.borrowed.add(key)
+                else:
+                    with torch.inference_mode(False):
+                        self.static[key] = torch.empty_strided(shape, stride, dtype=dtype, device=device)
+                self._index_buffer(key, self.static[key])
+                buffer_id = id(self.static[key])
+                self._tensor_refs[buffer_id] = self._tensor_refs.get(buffer_id, 0) + 1
             keys.append(key)
-            buffers.append(buffer)
+            buffers.append(self.static[key])
         return keys, buffers
 
-    def _capture(self, module, forward, leaves, spec, signature, extras, extra_signature, outputs):
+    def _capture(self, module, forward, leaves, spec, signature, extras, extra_signature, warm_output, static_key, buffers, adopt_outputs):
+        from . import allocator
         entry = _Graph()
+        outputs = self._outputs(leaves, warm_output)
         entry.positions = [index for index, leaf in enumerate(leaves) if isinstance(leaf, torch.Tensor)]
         out_signatures = [output for output in outputs if output is not None and output[0] != "argument"]
-        entry.static_key, buffers = self._buffers([signature[index] for index in entry.positions] + list(extra_signature) + out_signatures)
+        counts = {}
+        for sig in [signature[index] for index in entry.positions] + list(extra_signature):
+            counts[sig] = counts.get(sig, 0) + 1
+        out_sources = [leaf if adopt_outputs else None for leaf, output in zip(_flatten(warm_output)[0], outputs) if output is not None and output[0] != "argument"]
+        output_keys, output_buffers = self._buffers(out_signatures, out_sources, counts)
+        plan = self._capture_output_plan
+        if plan is not None:
+            for source, buffer in zip(out_sources, output_buffers):
+                if source is not None and _same_buffer(source, buffer) and _adoptable(source):
+                    plan.bind(buffer)
+        entry.static_key = static_key + output_keys
+        buffers = buffers + output_buffers
         inputs = len(entry.positions)
         entry.static, entry.extra_static = buffers[:inputs], buffers[inputs:inputs + len(extras)]
         out_buffers = iter(buffers[inputs + len(extras):])
@@ -310,9 +561,16 @@ class BlockGraphs:
         with torch.cuda.stream(_capture_stream(torch.cuda.current_device())):
             entry.graph.capture_begin(self.pool, capture_error_mode="thread_local")
             _capturing = True
+            if plan is not None:
+                plan.capture()
+            plan_valid = True
             try:
                 with check:
-                    out_leaves, entry.out_spec = _flatten(forward(*args, **kwargs))
+                    handoffs = _handoffs(args, kwargs) if self._capture_lifetimes else {}
+                    output, entry.lifetimes = _execute_lifetimes(forward, args, kwargs, self._capture_lifetimes, static_leaves)
+                    entry.emptied = tuple(index for index in entry.lifetimes if not handoffs[id(static_leaves[index])])
+                    out_leaves, entry.out_spec = _flatten(output)
+                    del output
                     entry.outputs = []
                     for leaf, output in zip(out_leaves, outputs):  # the other outputs are copied to static buffers, which leaves the memory of
                         if output is None:  # the tensors of the block to the next captures
@@ -321,15 +579,19 @@ class BlockGraphs:
                             entry.outputs.append(entry.positions.index(output[1]))
                         else:
                             static = next(out_buffers)
-                            static.copy_(leaf)
+                            if not allocator.same_graph_storage(leaf, static):
+                                static.copy_(leaf)
                             entry.outputs.append(static)
                     entry.out_leaves = [None if isinstance(leaf, torch.Tensor) else leaf for leaf in out_leaves]
                     del out_leaves
+                    leaf = None
             except Exception as error:
                 with contextlib.suppress(Exception):  # the stream leaves the capture, which the error has invalidated
                     entry.graph.capture_end()
                 raise RuntimeError(f"{failed}: {error}") from error
             finally:
+                if plan is not None:
+                    plan_valid = plan.finish()
                 _capturing = False
                 for (holder, index), original in zip(extras, originals):
                     holder[index] = original
@@ -337,6 +599,8 @@ class BlockGraphs:
                 entry.graph.capture_end()
             except Exception as error:
                 raise RuntimeError(f"{failed}: {error}") from error
+        if not plan_valid:
+            return None
         if isinstance(check, _ReadCheck):
             if check.unknown:
                 raise RuntimeError(f"CUDA graph capture of a block of '{self.name}' ({type(module).__name__}): it reads tensors that are neither "
@@ -349,13 +613,27 @@ class BlockGraphs:
         return entry
 
     def _replay(self, entry, leaves, extras):
+        from . import allocator
+        for key in entry.static_key[len(entry.static) + len(entry.extra_static):]:
+            if key in self.borrowed:
+                allocator.prepare_reuse(self.static[key])
         for index, static in zip(entry.positions, entry.static):
-            static.copy_(leaves[index])
+            if not _same_buffer(static, leaves[index]):
+                static.copy_(leaves[index])
         if extras:
             torch._foreach_copy_(entry.extra_static, [holder[index] for holder, index in extras])
         entry.graph.replay()
+        stream = torch.cuda.current_stream()
+        for key in set(entry.static_key):
+            if key in self.borrowed:
+                self.static[key].record_stream(stream)
         for index in entry.mutated:
-            leaves[entry.positions[index]].copy_(entry.static[index])
-        out = [leaf if output is None else leaves[entry.positions[output]] if isinstance(output, int) else output.clone()
+            if not _same_buffer(leaves[entry.positions[index]], entry.static[index]):
+                leaves[entry.positions[index]].copy_(entry.static[index])
+            else:
+                torch.autograd.graph.increment_version(leaves[entry.positions[index]])
+        output_keys = iter(entry.static_key[len(entry.static) + len(entry.extra_static):])
+        out = [leaf if output is None else leaves[entry.positions[output]] if isinstance(output, int) else
+               _buffer_alias(output) if next(output_keys) in self.borrowed else output.clone()
                for leaf, output in zip(entry.out_leaves, entry.outputs)]
         return pytree.tree_unflatten(out, entry.out_spec)

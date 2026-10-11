@@ -50,6 +50,7 @@ deepy_sessions/
 /ComputeCache/
 dlss5/
 /settings/
+/user_skills/
 
 # Local engineering specifications and tests must never be committed.
 /specs/

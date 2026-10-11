@@ -26,6 +26,16 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
         raise ValueError(f"audio_track_no must select an available 1-based audio stream (found {len(streams)}).")
     stream = streams[audio_track_no - 1]
     rate, channels = int(stream["sample_rate"]), int(stream["channels"])
+    container = probe.get("format", {})
+    audio_start = max(0.0, float(stream.get("start_time", 0)) - float(container.get("start_time", 0)))
+    audio_duration = float(stream["duration"]) if stream.get("duration") not in (None, "N/A") else None
+    end_time = start_time + duration if duration is not None else None
+    if audio_duration is not None:
+        end_time = min(end_time, audio_start + audio_duration) if end_time is not None else audio_start + audio_duration
+    start_time = max(start_time, audio_start)
+    duration = end_time - start_time if end_time is not None else None
+    if duration is not None and duration <= 0:
+        raise ValueError("The selected audio range contains no samples.")
     command = [binary, "-nostdin", "-hide_banner", "-nostats", "-threads", "1", "-ss", str(start_time), "-i", str(path), "-map", f"0:a:{audio_track_no - 1}", "-vn"]
     if duration is not None:
         command += ["-t", str(duration)]
@@ -43,8 +53,10 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
         silence_start = None
 
     # ebur128 passes the original samples through; measurements below are not loudness-normalized.
+    # Trim before metering: an output -t alone can let the filter inspect later frames.
+    filters = ([f"atrim=end_sample={round(duration * rate)}"] if duration is not None else []) + ["ebur128=peak=true:framelog=verbose"]
     with tempfile.TemporaryFile() as log:
-        process = subprocess.Popen(command + ["-af", "ebur128=peak=true:framelog=verbose", "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"], stdout=subprocess.PIPE, stderr=log)
+        process = subprocess.Popen(command + ["-af", ",".join(filters), "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"], stdout=subprocess.PIPE, stderr=log)
         try:
             while data := process.stdout.read(window * channels * 4):
                 samples = np.frombuffer(data, dtype="<f4").reshape(-1, channels).astype(np.float64)
@@ -86,13 +98,14 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
         return value if value is not None and math.isfinite(value) else None
 
     result = {"status": "done", "audio_track_no": audio_track_no, "sample_rate": rate, "channels": channels,
-              "channel_layout": stream.get("channel_layout"), "source_duration_seconds": probe.get("format", {}).get("duration"),
+              "channel_layout": stream.get("channel_layout"), "source_duration_seconds": float(container["duration"]) if container.get("duration") not in (None, "N/A") else None,
+              "audio_start_time_seconds": audio_start, "audio_duration_seconds": audio_duration,
               "coverage": {"start_time": start_time, "end_time": start_time + frames / rate, "duration_seconds": frames / rate, "samples_per_channel": frames},
               "per_channel": [{"channel": index + 1, "peak_dbfs": db(peak[index]), "rms_dbfs": db(math.sqrt(squares[index] / frames)), "full_scale_samples": int(clipped[index])} for index in range(channels)],
               "loudness": {"method": "FFmpeg EBU R128", "integrated_lufs": measured(integrated), "true_peak_dbfs": measured(true_peak)},
               "silence": {"threshold_dbfs": silence_db, "window_seconds": window / rate, "minimum_seconds": min_silence,
                           "duration_seconds": silent_seconds, "interval_count": interval_count, "intervals": intervals, "truncated": interval_count > len(intervals)},
-              "notes": ["Silence uses all-channel RMS in 20 ms windows; interval times are relative to the source file.", "Full-scale samples (absolute amplitude >= 1) indicate possible clipping, not proof of audible distortion. Null dBFS means zero amplitude; null loudness means unavailable. Measurements do not judge semantic content or musical quality."]}
+              "notes": ["Coverage follows the selected audio stream's playable timeline when its duration is known, excluding decoder tail padding. Times are relative to the source file.", "Silence means all-channel RMS below the threshold in 20 ms windows, not necessarily zero samples or missing audio.", "Full-scale samples (absolute amplitude >= 1) indicate possible clipping, not proof of audible distortion. Null dBFS means zero amplitude; null loudness means unavailable. Measurements do not judge semantic content or musical quality."]}
     if preview_path:
         seconds = min(preview_seconds, frames / rate)
         # A compact stereo preview is deliberately bounded; measurements above retain all source channels.

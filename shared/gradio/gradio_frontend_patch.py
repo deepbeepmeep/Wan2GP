@@ -342,8 +342,11 @@ _PATCHES = {
         ('async function No(S,J,K){', 'const wangpMetadataPending=new Map(),wangpMetadataSent=new Map();async function No(S,J,K){'),
         ('const R=pe;if(dn.length>0)', 'const R=pe;' + metadata_events.PREPARE_JS + 'if(dn.length>0)'),
         ('R.inputs.map(W=>No(W,J,K))', 'R.inputs.map((W,index)=>wangpMetadata&&index===1?wangpMetadata:No(W,J,K))'),
-        ('else if(ne.stage==="error"){', 'else if(ne.stage==="error"){wangpMetadataSent.delete(S);'),
-        ('if(d.closed)return;t(21,ce=[st("Error",String(ae)', 'wangpMetadataSent.delete(S);if(d.closed)return;t(21,ce=[st("Error",String(ae)'),
+        # Gradio only clears a queued interaction on a data response. A failed
+        # request has no data, so a second click can leave pending_request set
+        # forever. Retire it on failure so the next user gesture can submit.
+        ('else if(ne.stage==="error"){', 'else if(ne.stage==="error"){R.pending_request=!1;R.final_event=null;wangpMetadataSent.delete(S);'),
+        ('if(d.closed)return;t(21,ce=[st("Error",String(ae)', 'R.pending_request=!1;R.final_event=null;wangpMetadataSent.delete(S);if(d.closed)return;t(21,ce=[st("Error",String(ae)'),
         # Gradio already shows its lost-connection status. A failed request for
         # each pending event would otherwise add the same error toast again.
         ('if(ne.message){const ge=ne.message.replace(rf,', 'if(ne.message&&!ne.message.startsWith("Connection errored out.")){const ge=ne.message.replace(rf,'),

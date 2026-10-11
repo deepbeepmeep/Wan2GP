@@ -554,6 +554,8 @@ class family_handler:
             "frames_steps": 8,
             "sliding_window": not msr,
             "returns_audio": True,
+            "audio_window_alignment": True,
+            "audio_overlap_repair_ms": 80,  # reserve two 40 ms audio latents at the join
             "auto_null_audio": True,
             "multimedia_generation": True,
             "image_end_frame_position": True,
@@ -838,6 +840,9 @@ class family_handler:
         #     "scale": 1,
         #     }
 
+        from models.help_shared import merge_help
+        from .infos import compact_help
+        extra_model_def = merge_help(extra_model_def, compact_help(msr=msr, joy=joy, editanything=editanything_ref, ltx25=ltx25))
         extra_model_def["phase_2_spatial_tiling"] = not (msr or joy or editanything_ref)
         if extra_model_def["phase_2_spatial_tiling"]:
             tiling_help = "\n\n**Two Phases with Tiling** refines overlapping spatial tiles in phase 2, blending predictions at every step. Phase 1 establishes the whole scene. This reduces each transformer call's spatial extent, takes more calls, and can change fine detail. VAE tiling is independent."
@@ -846,6 +851,10 @@ class family_handler:
                     extra_model_def[key] += tiling_help
         from .vfx import vfx_model_def
         extra_model_def.update(vfx_model_def(model_def))
+        if ltx25:
+            extra_model_def["resolution_budget"] = "1920x1088"
+            if extra_model_def["phase_2_spatial_tiling"]:
+                extra_model_def["resolution_budget_tiled"] = "3840x2176"
         return extra_model_def
 
     @staticmethod

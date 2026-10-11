@@ -19,6 +19,7 @@
       picker.node.append(button); button.onclick = event => {event.stopPropagation(); this.open();};
       this.dialog = document.createElement('dialog'); this.dialog.className = 'wangp-workspace-viewer'; this.dialog.ariaLabel = 'Workspace media viewer';
       this.dialog.innerHTML = `<header><div class="wv-heading"><div class="wv-workspace-picker"><select data-workspace aria-label="Workspace"></select><button data-create aria-label="Add workspace" title="Add workspace">${svg('create')}</button></div><span data-summary></span></div><div class="wv-header-actions"><button data-retention aria-label="Automatic workspace archiving" title="Automatic workspace archiving">${svg('broom')}</button><button data-close aria-label="Close workspace viewer" title="Close (Esc)">${svg('close')}</button></div></header>
+        <div class="wv-storage"><strong data-storage-label></strong><code data-folder></code><button data-folder-change hidden>Change Folder</button></div>
         <div class="wv-toolbar"><div role="tablist" data-sources aria-label="Workspace media"></div><span class="wv-spacer"></span><span data-activity></span><button data-protect aria-label="Protect workspace from automatic archiving" aria-pressed="false">${svg('unlock')}</button><button data-import>${svg('import')}Import</button><button data-refresh>Refresh</button><input data-files type="file" multiple hidden></div>
         <div class="wv-selection"><span data-count></span><button data-page-select>Select page</button><button data-clear>Clear selection</button><div data-actions hidden><button data-action="eject">${svg('eject')}Eject</button><button data-action="delete">${svg('delete')}Delete files</button><button data-action="copy">${svg('copy')}Copy to workspace</button><button data-action="move">${svg('move')}Move to workspace</button><button data-action="archive">${svg('archive')}ZIP</button><button data-action="first" title="Move selected media to the oldest end">${svg('first')}Move to start</button><button data-action="last" title="Move selected media to the newest end">${svg('last')}Move to end</button></div></div>
         <p class="wv-notice" role="status" hidden></p><div class="wv-content"><section class="wv-browser" aria-label="Workspace media grid"><div class="wv-grid" role="listbox" aria-multiselectable="true" aria-label="Media"></div><div class="wv-empty" hidden>No media in this gallery. Import files to get started.</div><div class="wv-rubber" hidden></div></section><aside><h3>Media details</h3><div class="wv-preview"></div><iframe title="Generation properties" sandbox=""></iframe><button data-extract-settings disabled title="Load the selected media's generation settings and close the workspace manager">Extract Settings</button></aside></div>
@@ -27,10 +28,14 @@
       this.grid = this.dialog.querySelector('.wv-grid'); this.browser = this.dialog.querySelector('.wv-browser');
       this.info = this.dialog.querySelector('iframe'); this.preview = this.dialog.querySelector('.wv-preview');
       this.modal = document.createElement('dialog'); this.modal.className = 'wangp-workspace-dialog';
-      this.modal.innerHTML = '<form><h2></h2><div class="wangp-workspace-body"><p></p><label data-name-label>Archive name<input maxlength="120" required></label><label data-target-label><span data-select-label>Target workspace</span><select required></select></label><div class="wangp-workspace-error" role="alert" hidden></div><div class="wangp-workspace-actions"><button type="button" data-cancel>Cancel</button><button type="submit">Confirm</button></div></div></form>';
+      this.modal.innerHTML = '<form><h2></h2><div class="wangp-workspace-body"><p></p><label data-name-label><span data-name-caption>Archive name</span><input maxlength="120" required></label><label data-target-label><span data-select-label>Target workspace</span><select required></select></label><div class="wangp-workspace-error" role="alert" hidden></div><div class="wangp-workspace-actions"><button type="button" data-cancel>Cancel</button><button type="submit">Confirm</button></div></div></form>';
       document.body.append(this.modal);
       this.modal.querySelector('[data-cancel]').onclick = () => this.modal.close();
       this.modal.querySelector('form').onsubmit = event => {event.preventDefault(); this.confirm();};
+      const storageButton = document.createElement('button'); storageButton.type = 'button'; storageButton.dataset.storage = ''; storageButton.textContent = 'Storage'; storageButton.title = 'Inspect or Convert Workspace Storage';
+      this.dialog.querySelector('.wv-header-actions').prepend(storageButton);
+      storageButton.onclick = () => this.storage();
+      this.dialog.querySelector('[data-folder-change]').onclick = () => this.storage(true);
       this.dialog.querySelector('[data-close]').onclick = () => this.dialog.close();
       this.dialog.querySelector('[data-extract-settings]').onclick = () => {
         if (this.busy || this.loading || this.selected.size !== 1) return;
@@ -103,6 +108,12 @@
       select.title = select.selectedOptions[0].textContent;
     }
     renderActivity(state) {
+      this.dialog.querySelector('[data-storage]').textContent = state.storage_mode === 'dedicated' ? 'Folder Storage' : 'Shared Storage';
+      this.dialog.querySelector('[data-storage]').title = state.folder || 'Shared Output Folders';
+      this.dialog.querySelector('[data-storage-label]').textContent = state.storage_mode === 'dedicated' ? 'Dedicated folder' : 'Shared references · Files can be in multiple folders';
+      this.dialog.querySelector('[data-folder]').textContent = state.folder || '';
+      this.dialog.querySelector('[data-folder]').hidden = !state.folder;
+      this.dialog.querySelector('[data-folder-change]').hidden = !state.folder;
       const date = new Date(state.last_activity * 1000), activity = this.dialog.querySelector('[data-activity]');
       activity.textContent = 'Last Activity: ' + date.toLocaleString([], {dateStyle:'medium', timeStyle:'short'}); activity.title = date.toLocaleString();
       const button = this.dialog.querySelector('[data-protect]');
@@ -130,6 +141,27 @@
       this.setBusy(true);
       try {await this.transport.request('workspace_viewer/protection', {workspace:this.workspace, protected:!this.state.archive_protected}); await this.load(this.page, true);}
       catch (error) {this.notice(error.message);}
+      finally {this.setBusy(false);}
+    }
+    async storage(relocate = false) {
+      if (this.busy || !this.state) return;
+      this.setBusy(true);
+      try {
+        const mode = relocate ? 'dedicated' : this.state.storage_mode === 'dedicated' ? 'shared' : 'dedicated';
+        const preview = await this.transport.request('workspace_viewer/storage', {workspace:this.workspace, mode});
+        this.modal.dataset.action = relocate ? 'folder' : 'storage'; this.modal.dataset.storageMode = mode; this.modal.dataset.workspace = this.workspace;
+        delete this.modal.dataset.targetFolder;
+        this.modal.querySelector('h2').textContent = relocate ? 'Change Workspace Folder' : mode === 'dedicated' ? 'Convert to Dedicated Folder' : 'Convert to Shared References';
+        this.modal.querySelector('p').textContent = `${preview.media_count} media, ${preview.file_count} files, ${(preview.bytes / 1024 / 1024).toFixed(1)} MB. ${mode === 'dedicated' ? 'Copy these files into an independent workspace folder. Originals stay in place.' : 'Keep files in their current folder and store absolute references. Future outputs use the shared output folders.'}${this.state.folder ? '\nCurrent folder: ' + this.state.folder : ''}${preview.missing.length ? '\nRestore missing files before converting: ' + preview.missing.join(', ') : ''}`;
+        this.modal.querySelector('[data-name-label]').hidden = !relocate; this.modal.querySelector('input').disabled = !relocate;
+        this.modal.querySelector('[data-name-caption]').textContent = 'New folder on the server';
+        this.modal.querySelector('input').maxLength = 32767;
+        this.modal.querySelector('input').value = relocate ? this.state.folder : '';
+        this.modal.querySelector('[data-target-label]').hidden = true; this.modal.querySelector('select').disabled = true;
+        this.modal.querySelector('[role=alert]').hidden = true;
+        this.modal.querySelector('[type=submit]').textContent = relocate ? 'Preview Copy' : 'Convert'; this.modal.querySelector('[type=submit]').disabled = !!preview.missing.length;
+        this.modal.showModal();
+      } catch (error) {this.notice(error.message);}
       finally {this.setBusy(false);}
     }
     invalidate() {
@@ -289,8 +321,9 @@
       this.modal.dataset.action = action;
       this.modal.querySelector('h2').textContent = {delete:'Delete files permanently',copy:'Copy to workspace',move:'Move to workspace',archive:'Download ZIP archive',retention:'Automatic workspace archiving'}[action];
       this.modal.querySelector('p').textContent = action === 'retention' ? 'At the next WanGP startup, archive unlocked workspaces with no media additions, removals or reordering during this period. Their dedicated Deepy sessions are archived too. Media files stay in place. Opening or renaming a workspace does not reset its activity date.' : action === 'delete' ? `Permanently delete ${this.selected.size} selected media files from disk? They will also be removed from every workspace that references them. This cannot be undone.` : action === 'copy' ? 'Append the selected media to another workspace. The original files are shared, without copying them on disk.' : 'Choose the name of the ZIP to download.';
-      if (action === 'move') this.modal.querySelector('p').textContent = 'Move the selected media to another workspace and remove them from this one. The files stay in place on disk; other workspaces keep their references.';
+      if (['copy', 'move'].includes(action)) this.modal.querySelector('p').textContent = 'Dedicated destinations receive independent file copies; shared destinations receive references. Original files remain on disk.' + (action === 'move' ? ' After success, remove these entries from the source gallery.' : '');
       this.modal.querySelector('[data-name-label]').hidden = action !== 'archive'; this.modal.querySelector('input').disabled = action !== 'archive';
+      this.modal.querySelector('[data-name-caption]').textContent = 'Archive name'; this.modal.querySelector('input').maxLength = 120;
       this.modal.querySelector('input').value = action === 'archive' ? this.state.name + '.zip' : '';
       const target = this.modal.querySelector('select'); target.disabled = !['copy', 'move', 'retention'].includes(action); target.closest('label').hidden = target.disabled;
       this.modal.querySelector('[data-select-label]').textContent = action === 'retention' ? 'Archive after inactivity of' : 'Target workspace';
@@ -303,6 +336,27 @@
     }
     async confirm() {
       const button = this.modal.querySelector('[type=submit]'); button.disabled = true;
+      if (['storage', 'folder'].includes(this.modal.dataset.action)) {
+        this.setBusy(true);
+        try {
+          const relocation = this.modal.dataset.action === 'folder';
+          const payload = {workspace:this.modal.dataset.workspace, mode:this.modal.dataset.storageMode};
+          if (relocation && !this.modal.dataset.targetFolder) {
+            const preview = await this.transport.request('workspace_viewer/storage', {...payload, folder:this.modal.querySelector('input').value.trim()});
+            if (preview.missing.length) throw new Error('Restore missing files before changing folders: ' + preview.missing.join(', '));
+            this.modal.dataset.targetFolder = preview.folder;
+            this.modal.querySelector('input').value = preview.folder; this.modal.querySelector('input').disabled = true;
+            this.modal.querySelector('p').textContent = `Copy and verify ${preview.media_count} media, ${preview.file_count} files (${(preview.bytes / 1024 / 1024).toFixed(1)} MB) into this folder, then use it for future outputs. Originals stay in place. Existing files are not overwritten or automatically added to the gallery. Agents assigned to this workspace will have access to this folder's contents.`;
+            this.modal.querySelector('[role=alert]').hidden = true;
+            button.textContent = 'Copy and Use Folder';
+          } else {
+            await this.transport.request('workspace_viewer/storage', {...payload, ...(relocation ? {folder:this.modal.dataset.targetFolder} : {}), confirmed:true});
+            this.modal.close(); await this.load(this.page || 0); this.notice(relocation ? 'Workspace folder changed. Original files were retained.' : 'Workspace storage converted. Original files were retained.');
+          }
+        } catch (error) {const node = this.modal.querySelector('[role=alert]'); node.hidden = false; node.textContent = error.message;}
+        finally {button.disabled = false; this.setBusy(false);}
+        return;
+      }
       if (this.modal.dataset.action === 'retention') {
         this.setBusy(true);
         try {

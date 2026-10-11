@@ -6,6 +6,7 @@ import sys
 from collections.abc import Sequence
 
 from shared.lora_paths import load_lora_config
+from shared.mcp.config import server_port
 
 
 def _arg_provided(argv: Sequence[str], name: str) -> bool:
@@ -41,7 +42,7 @@ def parse_wgp_args(config_filename: str, argv: Sequence[str] | None = None):
     add("--verbose", type=str, default=1, help="Verbose level")
     add("--debug-deepy", type=str, default=None, help="Enable Deepy verbose debug logging and write it to the given folder")
     add("--deepy-sessions-dir", type=str, default="", metavar="FOLDER", help="Store persistent Deepy sessions in FOLDER (default: ./deepy_sessions)")
-    add("--workspaces-dir", type=str, default="", metavar="FOLDER", help="Store gallery workspaces in FOLDER (default: ./workspaces)")
+    add("--workspaces-dir", type=str, default="", metavar="FOLDER", help="Workspace manifests and dedicated media folders (overrides Configuration / Outputs; default: ./workspaces)")
     add("--llm-io", type=str, default="", metavar="FOLDER", help="Write a plain-text transcript of all local and remote LLM input/output to FOLDER")
     add("--steps", type=int, default=0, help="default denoising steps")
     add("--frames", type=int, default=0, help="default number of frames")
@@ -79,10 +80,10 @@ def parse_wgp_args(config_filename: str, argv: Sequence[str] | None = None):
     add("--deepy-voice-language", default=None, type=normalize_deepy_voice_language, help="Override the configured Whisper dictation language, e.g. fr, en or auto (default: Deepy configuration)")
     add("--ask-deepy", action="store_true", help="Start an interactive Deepy console session without launching the web UI")
     add("--mcp", action="store_true", help="Start WanGP as an MCP server without launching the web UI")
-    add("--mcp-webui", action="store_true", help="Also serve MCP API v2.1 over HTTP from the web UI process: agent jobs use the shared queue and gallery shown on every page")
-    add("--mcp-transport", type=str, default="", help="MCP transport: stdio (default with --mcp), sse, or streamable-http (default with --mcp-webui)")
+    add("--mcp-webui", action=argparse.BooleanOptionalAction, default=None, help="Override Configuration > Agents MCP autostart for this launch; --mcp-webui enables it and --no-mcp-webui disables it")
+    add("--mcp-transport", type=str, default="", help="MCP transport: stdio (default with --mcp), sse, or streamable-http (default with the web UI)")
     add("--mcp-host", type=str, default="", help="Optional MCP host for non-stdio transports")
-    add("--mcp-port", type=int, default=None, help="Optional MCP port for non-stdio transports")
+    add("--mcp-port", type=server_port, default=None, help="Override the Agents configuration MCP server port for HTTP transports (default: 8000)")
     add("--mcp-api-version", choices=("1", "2", "2.1"), default="2.1", help="WanGP MCP API version (latest: 2.1); pin 1 or 2 for earlier contracts")
     add("--mcp-async", action="store_true", help="Allow asynchronous generation/post-processing in MCP API v2/v2.1; disabled by default")
     add("--mcp-console-output", action="store_true", help="Mirror WanGP stdout/stderr while serving MCP requests")

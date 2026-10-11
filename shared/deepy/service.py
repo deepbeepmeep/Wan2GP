@@ -344,6 +344,8 @@ class DeepyService(WorkspaceSupport, GenerationRuntime):
                 raise DeepyBusy('The Deepy session changed during upload. Please import the file again.')
             if context == 'deepy':
                 self.prepare_media_workspace()
+            if self.workspaces is not None:
+                path = self.workspaces.adopt(self.workspace_id, [str(path)])[0]
             result = self.gallery.add_path(str(path))
             record = media_registry.mark_media_access(result["record"], "read")
             entry = {"media_id": record["settings"]["gallery_media_ids"][0], "title": record["label"], "media_type": record["media_type"]}

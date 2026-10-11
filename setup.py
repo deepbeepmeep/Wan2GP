@@ -1012,7 +1012,7 @@ def create_wgp_config(profile_key, config_data):
         elif "20" in profile_key:
             attn_mode = "sage"
 
-    compile_mode = ""
+    compile_mode = "disabled"
     # triton_key = prof_settings.get('triton')
     # if triton_key and triton_key != "none":
     #     compile_mode = "transformer"

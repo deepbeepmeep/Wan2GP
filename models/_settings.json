@@ -94,6 +94,7 @@
 	"sliding_window_trim_first_frames": 0,
 	"RIFLEx_setting": 0,
 	"override_profile": -1,
+	"override_compile": "",
 	"override_attention": "",
 	"attention_sparsity": 1.0,
 	"output_filename": "",

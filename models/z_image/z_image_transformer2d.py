@@ -403,6 +403,8 @@ class RopeEmbedder:
 
 
 class ZImageTransformer2DModel(nn.Module):
+    _cuda_graph_towers = ("noise_refiner", "context_refiner")
+
     def preprocess_loras(self, model_type, sd):
         first = next(iter(sd), None)
         if first is None:

@@ -134,4 +134,5 @@ class model_factory:
         set_phase_status("Decoding Audio")
         mel = self.audio_vae.decode((audio / self.config["audio_scaling_factor"]).transpose(1, 2).float())
         waveform = self.audio_vae.vocode(mel).flatten().clamp_(-1, 1).cpu().numpy()
+        waveform = waveform[:round(frames.shape[1] / fps * AUDIO_SAMPLE_RATE)]
         return {"x": frames, "audio": waveform, "audio_sampling_rate": AUDIO_SAMPLE_RATE}

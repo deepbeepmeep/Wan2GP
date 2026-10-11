@@ -397,7 +397,7 @@ class WebUIQueueProbe:
                 self._register_error(client_id, error_text or "WanGP queue error", stage="generation")
 
     def _check_outputs(self, queue_client_ids: list[str]) -> None:
-        galleries = self._wgp.get_processed_queue(self._gen)
+        galleries = self._wgp.get_processed_queue(self._session._workspace_gallery())
         for client_id in self._client_ids:
             if client_id in self._outputs_by_client_id or client_id in self._errors_by_client_id:
                 continue
@@ -497,7 +497,7 @@ class WebUIQueueProbe:
             self._live_started_client_ids.add(active_client_id)
             progress_args = self._gen.get("last_progress_args")
             progress_ready = progress_args != self._active_progress_seed
-            progress_update = self._session._build_progress_update(progress_args, include_state_fallback=False) if progress_ready else None
+            progress_update = self._session._build_progress_update(progress_args, include_state_fallback=False, task_id=active_client_id, task_index=self._task_index_by_client_id[active_client_id], task_count=len(self._client_ids)) if progress_ready else None
             if progress_update is not None:
                 if len(progress_update.status) > 0 and progress_update.status != self._last_status_text:
                     self._last_status_text = progress_update.status
@@ -510,6 +510,8 @@ class WebUIQueueProbe:
                     progress_update.total_steps,
                     progress_update.status,
                     progress_update.unit,
+                    progress_update.window_index,
+                    progress_update.window_count,
                 )
                 if progress_key != self._last_progress_key:
                     self._last_progress_key = progress_key

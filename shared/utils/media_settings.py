@@ -20,7 +20,11 @@ class MediaSettings(list):
             return [self[i] for i in range(*index.indices(len(self)))]
         value = super().__getitem__(index)
         if isinstance(value, _Pending):
-            value = value.read(value.path)
+            try:
+                value = value.read(value.path)
+            except OSError:
+                # The media may disappear between gallery filtering and this lazy read.
+                return {}
             self[index] = value
         return value
 

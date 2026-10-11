@@ -933,8 +933,8 @@ def _summarize_interrupted_committed_messages(messages: list[dict[str, Any]]) ->
                 tool_name = mapped_tool_name or tool_name
                 status = str(payload.get("status", "") or "").strip()
                 identifiers = [f"{key}={payload[key]}" for key in ("job_id", "output_file", "media_id") if payload.get(key) not in (None, "")]
-            if tool_name in {"wangp_get_deepy_template_settings", "wangp_deepy_templates"} and isinstance(payload.get("settings"), dict):
-                retained_template = {key: payload.get(key) for key in ("tool_id", "template", "general_properties_active") if payload.get(key) is not None}
+            if tool_name in {"wangp_get_deepy_template_settings", "wangp_deepy_templates", "wangp_templates"} and isinstance(payload.get("settings"), dict):
+                retained_template = {key: payload.get(key) for key in ("task", "tool_id", "template", "general_properties_active") if payload.get(key) is not None}
                 retained_template["settings"] = payload["settings"]
                 if isinstance(payload.get("general_properties"), dict):
                     retained_template["general_properties"] = payload["general_properties"]
@@ -2046,9 +2046,15 @@ class DeepyZeroTools:
     def _sync_recent_media(self, max_items: int = 5) -> None:
         if self.session is None:
             return
-        galleries = self.get_processed_queue(self.gen)
+        galleries = self.get_processed_queue(self._workspace_gallery())
         for files, settings in galleries.values():
             media_registry.sync_recent_generated_media(self.session, files, settings, max_items=max_items)
+
+    def _workspace_gallery(self):
+        from shared.utils.workspace_storage import host_for_gen, workspace_gallery
+        host = host_for_gen(self.gen)
+        workspace_id = getattr(self, 'workspace_id', None) or (host.deepy_workspace_id() if host else None)
+        return workspace_gallery(self.gen, workspace_id)
 
     def _remember_generated_client_id(self, client_id: str) -> None:
         if self.session is None:
@@ -2365,7 +2371,12 @@ class DeepyZeroTools:
         if len(file_path) == 0:
             raise RuntimeError("Output file path is empty.")
         if callable(self.get_output_filepath):
-            resolved = str(self.get_output_filepath(file_path, is_image, audio_only) or "").strip()
+            from shared.utils.workspace_storage import host_for_gen, execution_workspace
+            from contextlib import nullcontext
+            host = host_for_gen(self.gen)
+            workspace_id = getattr(self, 'workspace_id', None) or (host.deepy_workspace_id() if host else None)
+            with execution_workspace(host, workspace_id) if host else nullcontext():
+                resolved = str(self.get_output_filepath(file_path, is_image, audio_only) or "").strip()
             if len(resolved) > 0:
                 return os.path.abspath(os.path.normpath(resolved))
         return os.path.abspath(os.path.normpath(file_path))
@@ -2407,7 +2418,11 @@ class DeepyZeroTools:
 
     def _server_config(self) -> dict[str, Any]:
         if callable(self.get_server_config):
-            return dict(self.get_server_config() or {})
+            from shared.utils.workspace_storage import host_for_gen, output_config
+            config = dict(self.get_server_config() or {})
+            host = host_for_gen(self.gen)
+            workspace_id = getattr(self, 'workspace_id', None) or (host.deepy_workspace_id() if host else None)
+            return output_config(config, binding=(host, workspace_id)) if host else config
         return {}
 
     def _file_access_policy(self):
@@ -2449,8 +2464,9 @@ class DeepyZeroTools:
         source = next((source for source in GALLERY_SOURCES if lookup.startswith(source.media_ids + ":")), None)
         if source is None:
             return ""
-        paths = self.gen.get(source.files_key, []) or []
-        settings_list = self.gen.get(source.settings_key, []) or []
+        gen = self._workspace_gallery()
+        paths = gen.get(source.files_key, []) or []
+        settings_list = gen.get(source.settings_key, []) or []
         for index, path in enumerate(paths):
             resolved = str(path or "").strip()
             settings = settings_list[index] if index < len(settings_list) else None
@@ -2463,11 +2479,13 @@ class DeepyZeroTools:
         lookup = str(value or "").strip()
         record = None if self.session is None else media_registry.get_media_record(self.session, lookup)
         if record is not None:
+            self._check_workspace_media(record['path'])
             return media_registry.mark_media_access(record, "read")
         if self.session is None:
             return record
         gallery_path = self._resolve_gallery_media_path(lookup)
         if gallery_path:
+            self._check_workspace_media(gallery_path)
             return media_registry.register_media(self.session, gallery_path, source="gallery", access="read")
         if Path(lookup).suffix:
             try:
@@ -2476,6 +2494,16 @@ class DeepyZeroTools:
                 return None
             return media_registry.register_media(self.session, str(candidate), source="filesystem", access="read")
         return None
+
+    def _check_workspace_media(self, path):
+        from shared.utils.workspace_storage import host_for_gen
+        host = host_for_gen(self.gen)
+        if host is None:
+            return
+        workspace_id = getattr(self, 'workspace_id', None) or host.deepy_workspace_id()
+        directory = host.workspaces.media_dir(workspace_id)
+        if directory is not None and not Path(path).resolve().is_relative_to(directory) and not self._file_access_policy().can_read(Path(path)):
+            raise PermissionError('This media is outside the assigned workspace and authorized folders. Import it first.')
 
     def _apply_custom_file(self, tool_name: str, task: dict[str, Any], custom_file: str | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """Puts custom_file (gallery media id or authorized file path) in the model's custom file input (custom_guide)."""
@@ -2780,7 +2808,9 @@ class DeepyZeroTools:
         self._set_status(f"Queueing {activity_label}...", kind="tool")
         self._update_tool_progress("running", "Queued", {"status": "queued", "client_id": client_id, "prompt": prompt, "resolution": resolution})
         task["priority"] = True
-        gen["inline_queue"] = task
+        from shared.utils.workspace_storage import host_for_gen
+        host = host_for_gen(gen)
+        gen["inline_queue"] = [{'id': 0, 'params': task, 'workspace_id': getattr(self, 'workspace_id', None) or host.deepy_workspace_id()}] if host else task
         self._log(f"Queued {activity_label} for {client_id}")
 
         from shared.deepy.media_pause import MediaToolPause
@@ -2809,7 +2839,7 @@ class DeepyZeroTools:
                     }
                     self._update_tool_progress("error", "Error", result)
                     return result
-                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
+                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(self._workspace_gallery())
                 media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
                 media_settings_list = (audio_file_settings_list or []) if gallery_media_type == "audio" else (file_settings_list or [])
                 file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
@@ -2850,7 +2880,7 @@ class DeepyZeroTools:
                     }
                     self._update_tool_progress("error", "Error", result)
                     return result
-                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
+                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(self._workspace_gallery())
                 media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
                 media_settings_list = (audio_file_settings_list or []) if gallery_media_type == "audio" else (file_settings_list or [])
                 queue = list(gen.get("queue", []) or [])
@@ -3882,6 +3912,12 @@ class DeepyZeroTools:
         if source is None:
             return {"status": "error", "path": str(path or "").strip(), "media_id": "", "media_type": "", "already_present": False, "error": "Not an authorized existing image, video, or audio file."}
         output_path = os.path.abspath(os.path.normpath(str(source.get("path", "") or "")))
+        from shared.utils.workspace_storage import host_for_gen
+        host = host_for_gen(self.gen)
+        if host is not None:
+            workspace_id = getattr(self, 'workspace_id', None) or host.deepy_workspace_id()
+            host.activate_workspace(workspace_id)
+            output_path = host.workspaces.adopt(workspace_id, [output_path])[0]
         media_type = str(source.get("media_type", "") or "").strip()
         try:
             if media_type == "image":
@@ -4542,7 +4578,7 @@ class DeepyZeroTools:
         return result
 
     @assistant_tool(
-        description="Inspect an audio/video stream on CPU: peak/RMS, clipping indicators, EBU R128 loudness and silence intervals. Optional playable preview (at most 30 seconds). Does not transcribe or judge musical quality.",
+        description="Inspect the selected audio stream's playable range on CPU: peak/RMS, clipping indicators, EBU R128 loudness and below-threshold silence intervals. Coverage excludes decoder tail padding when track duration is known; silence does not mean zero or missing audio. Optional playable preview (at most 30 seconds). Does not transcribe or judge musical quality.",
         parameters={
             "media_id": {"type": "string", "description": "Audio or video media ID or authorized file.", "required": True},
             "audio_track_no": {"type": "integer", "description": "1-based audio stream; default 1.", "required": False},

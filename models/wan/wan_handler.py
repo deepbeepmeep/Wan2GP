@@ -1,4 +1,6 @@
 # Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .infos import wan_help
 
 import re
 import torch
@@ -974,7 +976,10 @@ class family_handler():
         #     extra_model_def["one_image_ref_needed"] = True
 
 
-        return extra_model_def
+        guidance = wan_help(base_model_type, {**extra_model_def, **model_def})
+        if base_model_type in ("vace_ditto_14B", "bernini_1.3B", "vace_standin_14B", "vace_lynx_14B", "vace_multitalk_14B"):
+            extra_model_def["infos"] = guidance["infos"]
+        return merge_help(extra_model_def, guidance)
         
 
     @staticmethod

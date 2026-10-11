@@ -85,9 +85,16 @@ def qkv_attention(x_list, q_proj, k_proj, v_proj, heads, head_dim, norm_rope, **
     return joint_qkv_attention([(x_list, (q_proj, k_proj, v_proj))], heads, head_dim, norm_rope, **kwargs)
 
 
+def cross_qkv_attention(x_list, context_list, q_proj, k_proj, v_proj, heads, head_dim, norm_rope, **kwargs):
+    """The same projection/attention path with queries from x and keys/values from context, both handed off in lists.
+    Head splitting considers the longer sequence, including a long video used as keys for short audio queries."""
+    return joint_qkv_attention([(x_list, (q_proj, None, None)), (context_list, (None, k_proj, v_proj))],
+                              heads, head_dim, norm_rope, _cross=True, **kwargs)
+
+
 @torch.compiler.disable()
 def joint_qkv_attention(streams, heads, head_dim, norm_rope, kv_heads=None, norm_spans_heads=False, split_heads=True, kv_prefix=None,
-                        attention_mask=None, force_attention=None, attention_fn=None):
+                        attention_mask=None, force_attention=None, attention_fn=None, norm_stats=None, _cross=False):
     """Attention of the q/k/v projections of several streams joined along the tokens in their order: streams is a list of
     (x_list, (q_proj, k_proj, v_proj)), each x handed off in its list, of shape (batch, tokens, features) or (tokens, features).
     Returns (batch, all tokens, heads, head_dim).
@@ -98,7 +105,9 @@ def joint_qkv_attention(streams, heads, head_dim, norm_rope, kv_heads=None, norm
     attention_fn: optional model-specific sparse attention accepting the disposable qkv_list and HeadGroup. It owns attention
     computation; projection preparation, head splitting and normalization still use this kit. Staged Sage quantization is disabled.
     kv_prefix: (key, value) of shape (batch, prefix tokens, kv_heads, head_dim), already normalized and rotated, put before the
-    projected keys and values. attention_mask: pay_attention's mask. kv_heads < heads: grouped query attention."""
+    projected keys and values. attention_mask: pay_attention's mask. kv_heads < heads: grouped query attention.
+    norm_stats(project): optional model-native mean-square calculation, used only when splitting a norm spanning all heads;
+    project(which, head_range) supplies disposable projections. Otherwise statistics are accumulated by groups below."""
     global _unsplit_notice
     inputs, projections = [], []
     for x_list, stream_projections in streams:
@@ -108,12 +117,14 @@ def joint_qkv_attention(streams, heads, head_dim, norm_rope, kv_heads=None, norm
         projections.append(stream_projections)
     streams = x = None
     batch, lengths, dtype = inputs[0].shape[0], [x.shape[1] for x in inputs], inputs[0].dtype
-    tokens = sum(lengths)
+    tokens = lengths[0] if _cross else sum(lengths)
     kv_heads = kv_heads or heads
-    groups = head_groups(kv_heads, batch * tokens) if split_heads else 1
+    groups = head_groups(kv_heads, batch * (max(lengths) if _cross else tokens)) if split_heads else 1
     staged = None if attention_fn is not None else sage_staged(inputs[0].device, head_dim, force_attention, attention_mask is not None)
     linear_inputs = [None] * len(inputs)
     for index, modules in enumerate(projections):
+        if _cross:
+            modules = tuple(module for module in modules if module is not None)
         if offload.linear_rows_supported(modules, inputs[index]):
             x_holder, inputs[index] = [inputs[index]], None
             linear_inputs[index] = offload.prepare_linear_input(x_holder, modules)
@@ -137,6 +148,8 @@ def joint_qkv_attention(streams, heads, head_dim, norm_rope, kv_heads=None, norm
 
     def project(which, head_range):
         """Projection which (0 q, 1 k, 2 v) of the heads head_range, the streams joined along the tokens."""
+        if _cross:
+            return project_stream(0 if which == 0 else 1, which, head_range)
         if len(lengths) == 1:
             return project_stream(0, which, head_range)
         joined, start = None, 0
@@ -160,7 +173,9 @@ def joint_qkv_attention(streams, heads, head_dim, norm_rope, kv_heads=None, norm
         return torch.cat([kv_prefix[which - 1][:, :, head_range.start:head_range.stop], tensor], dim=1)
 
     mean_squares = None
-    if norm_spans_heads and groups > 1:
+    if norm_spans_heads and groups > 1 and norm_stats is not None:
+        mean_squares = norm_stats(project)
+    elif norm_spans_heads and groups > 1:
         mean_squares = []
         for which, total in ((0, heads), (1, kv_heads)):
             step, squares = total // groups, None

@@ -8,6 +8,7 @@ import html
 import json
 import os
 from shared.utils.config_store import config_snapshot, update_config
+from shared.mcp.config import DEFAULT_PORT, server_port
 from shared.gradio.form_sync import GradioForm
 from shared.utils.form_sync import Saved
 from shared.deepy.config import DEEPY_VOICE_LANGUAGE_KEY, deepy_voice_language_choices, normalize_deepy_voice_language
@@ -185,6 +186,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_global("server_config_filename")
         self.request_global("attention_mode")
         self.request_global("compile")
+        self.request_global("compile_choices")
         self.request_global("default_profile_video")
         self.request_global("default_profile_image")
         self.request_global("default_profile_audio")
@@ -228,6 +230,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.request_component("model_description")
         self.request_component("header")
         self.request_component("override_attention")
+        self.request_component("override_compile")
         self.request_component("model_family")
         self.request_component("model_base_type_choice")
         self.request_component("model_choice")
@@ -385,15 +388,14 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         value=self.server_config.get("lm_decoder_engine", ""),
                         label="Language Models Decoder Engine (when available for a model, used also by Prompt Enhancer and Deepy)",
                     )
-                    self.compile_choice = gr.Dropdown(choices=[("None", ""), ("CUDA Graph (faster short steps, the first steps of a new resolution are slower)", "cudagraph"), ("PyTorch Compilation (up to 20% faster, requires Triton)", "transformer")], value=self.compile, label="Transformer Compilation (faster, but the first generation is slower and some GPUs/Models may not support it)", interactive=not self.args.lock_config)
+                    self.compile_choice = gr.Dropdown(choices=self.compile_choices, value=self.compile, label="Transformer Compilation (faster, but the first generation is slower and some GPUs/Models may not support it)", interactive=not self.args.lock_config)
                     self.boost_choice = gr.Dropdown(choices=[("ON", 1), ("OFF", 2)], value=self.boost, label="Boost Layers Offloading when CFG > 1 (~10% speedup for ~1GB VRAM)")
                     self.int8_kernels_choice = gr.Dropdown(choices=int8_backend.CHOICES, value=self.server_config.get("int8_kernels", "auto"), label="INT8 Math Kernels", info="Auto selects Comfy Kitchen, then Triton, then PyTorch. Disabled uses PyTorch. Changes apply to the next generation without reloading weights.")
                     self.fp8_kernels_choice = gr.Dropdown(choices=fp8_backend.CHOICES, value=self.server_config.get("fp8_kernels", "auto"), label="FP8 Math Kernels", info="For FP8 checkpoints. Auto uses CUDA FP8 when available, then Triton, then PyTorch. Changes apply to the next generation without reloading weights.")
                     self.kernel_precision_choice = gr.Dropdown(choices=kernel_policy.CHOICES, value=self.server_config.get("kernel_precision", "fast"), label="CUDA Kernels Optimized Ops Precision (When Available)", info="Fast allows additional VAE optimizations with small rounding differences. Allow Faster Approximate Kernels is the default. INT8 math is controlled separately.")
                     self.attention_head_split_choice = gr.Dropdown(choices=attention_kit.HEAD_SPLIT_CHOICES, value=self.server_config.get("attention_head_split", 0), label="Attention Head Split (much lower VRAM for long videos, up to 10% slower)", info="Models that support it compute attention one group of heads at a time for long sequences, which lowers the VRAM peak of denoising. Higher levels use more groups, saving more VRAM at a small speed cost; how many groups each level gives depends on the model. Applies to the next generation without reloading.")
-                    self.process_queues_when_browser_unfocused_choice = gr.Dropdown(
-                        choices=[("Yes", 1), ("No", 0)],
-                        value=self.server_config.get(gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY, 1),
+                    self.process_queues_when_browser_unfocused_choice = gr.Checkbox(
+                        value=bool(self.server_config.get(gradio_queue_focus_patch.FOCUS_QUEUE_SERVER_CONFIG_KEY, 1)),
                         label="Continue Browser Actions in Background (may use more energy)",
                         info="Let pending interface actions and updates continue while this browser tab is in the background. Already-started generation queues run on the server and continue even when all browser tabs are closed. Does not change server process priority.",
                         interactive=not self.args.lock_config
@@ -405,15 +407,16 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         visible=os.name == "nt", interactive=not self.args.lock_config,
                     )
                     compute_cache, compute_cache_shown = self.server_config.get(COMPUTE_CACHE_KEY, False), compute_cache_useful()
-                    self.compute_cache_choice = gr.Checkbox(
-                        value=compute_cache, label="WanGP Compute Cache (requires restart)",
-                        info="On RTX 50xx and other Blackwell GPUs, the NVIDIA driver optimizes the GPU code of WanGP for the exact GPU at each launch. This keeps the result in a folder of its own, where other programs no longer evict it: the code is optimized once instead of after every restart, so the first generation after a restart starts sooner and the SSD is no longer rewritten at each launch. May take up to 2 GB of disk space.",
-                        visible=compute_cache_shown, interactive=not self.args.lock_config,
-                    )
-                    self.compute_cache_path_choice = gr.Textbox(
-                        value=self.server_config.get(COMPUTE_CACHE_PATH_KEY, COMPUTE_CACHE_PATH_DEFAULT), label="Compute Cache Folder",
-                        info="Relative to the WanGP folder, or a full path.", visible=compute_cache_shown and compute_cache, interactive=not self.args.lock_config,
-                    )
+                    with gr.Group(visible=compute_cache_shown):
+                        self.compute_cache_choice = gr.Checkbox(
+                            value=compute_cache, label="WanGP Compute Cache (requires restart)",
+                            info="On RTX 50xx and other Blackwell GPUs, the NVIDIA driver optimizes the GPU code of WanGP for the exact GPU at each launch. This keeps the result in a folder of its own, where other programs no longer evict it: the code is optimized once instead of after every restart, so the first generation after a restart starts sooner and the SSD is no longer rewritten at each launch. May take up to 2 GB of disk space.",
+                            interactive=not self.args.lock_config,
+                        )
+                        self.compute_cache_path_choice = gr.Textbox(
+                            value=self.server_config.get(COMPUTE_CACHE_PATH_KEY, COMPUTE_CACHE_PATH_DEFAULT), label="Compute Cache Folder",
+                            info="Relative to the WanGP folder, or a full path.", visible=compute_cache, interactive=not self.args.lock_config,
+                        )
                     self.compute_cache_choice.change(fn=lambda enabled: gr.update(visible=enabled), inputs=[self.compute_cache_choice], outputs=[self.compute_cache_path_choice], show_progress="hidden")
 
                 with gr.Tab("RAM/VRAM Management"):
@@ -701,6 +704,17 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         self.deepy_type_choice.change(fn=lambda value: (gr.update(visible=value == DEEPY_TYPE_ZERO), gr.update(visible=value == DEEPY_TYPE_PRIME)), inputs=[self.deepy_type_choice], outputs=[self.deepy_zero_options, self.deepy_prime_options], show_progress="hidden")
                         self.deepy_requirement_md = gr.Markdown(value=deepy_requirement_message(self.server_config) if deepy_type_default != DEEPY_TYPE_DISABLED else "")
 
+                with gr.Tab('Agents'):
+                    self.mcp_webui_choice = gr.Checkbox(value=self.server_config.get('mcp_webui', False), label='Enable MCP with Web UI (requires restart)', info='Allow external agents to connect to WanGP. Off by default.')
+                    self.mcp_port_choice = gr.Number(value=self.server_config.get('mcp_port', DEFAULT_PORT), precision=0, minimum=1, maximum=65535, label='MCP Server Port (requires restart)', info='--mcp-port overrides this port for the current launch.')
+                    mcp_workspace_mode = self.server_config.get('mcp_workspace_mode', 'auto')
+                    if mcp_workspace_mode == 'auto':
+                        mcp_workspace_mode = 'per_agent' if self.server_config.get('workspace_storage_mode', 'shared') == 'dedicated' else 'shared'
+                    self.mcp_workspace_mode_choice = gr.Dropdown(
+                        choices=[('Use Selected Workspace (agents use the current gallery workspace)', 'shared'), ('Create a Workspace per Agent (each agent automatically gets its own workspace)', 'per_agent')],
+                        value=mcp_workspace_mode, label='MCP Agent Workspace (requires restart)',
+                    )
+
                 with gr.Tab("Outputs"):
                     self.video_container_choice = gr.Dropdown(choices=VIDEO_CONTAINER_CHOICES, value=self.server_config.get("video_container", "mp4"), label="Video Container")
                     self.video_output_codec_choice = gr.Dropdown(choices=SDR_VIDEO_CODEC_CHOICES, value=self.server_config.get("video_output_codec", "libx264_8"), label="SDR Video Codec")
@@ -743,24 +757,28 @@ class ConfigTabPlugin(WAN2GPPlugin):
                         visible=True,
                         label="Audio Codec to use for standalone audio files",
                     )
-                    self.metadata_choice = gr.Dropdown(
-                        choices=[("Export JSON files", "json"), ("Embed metadata in file (Exif/tag)", "metadata"), ("None", "none")],
-                        value=self.server_config.get("metadata_type", "metadata"), label="Metadata Handling"
-                    )
+                    with gr.Group():
+                        self.metadata_choice = gr.Dropdown(
+                            choices=[("Export JSON files", "json"), ("Embed metadata in file (Exif/tag)", "metadata"), ("Export JSON files + Embed metadata in file (Exif/tag)", "json_metadata"), ("None", "none")],
+                            value=self.server_config.get("metadata_type", "metadata"), label="Metadata Handling"
+                        )
+                        self.embed_source_images_choice = gr.Checkbox(
+                            value=self.server_config.get("embed_source_images", False),
+                            label="Embed Source Images",
+                            info="Saves i2v source images inside MP4/MOV/MKV files"
+                        )
                     self.keep_intermediate_sliding_windows_choice = gr.Dropdown(
                         choices=[("Yes", 1), ("No", 0)],
                         value=self.server_config.get("keep_intermediate_sliding_windows", 1),
                         label="Keep Intermediate Sliding Windows"
                     )
-                    self.embed_source_images_choice = gr.Checkbox(
-                        value=self.server_config.get("embed_source_images", False),
-                        label="Embed Source Images",
-                        info="Saves i2v source images inside MP4/MOV/MKV files"
-                    )
-                    self.video_save_path_choice = gr.Textbox(label="Video Output Folder (requires restart)", value=self.save_path)
-                    self.image_save_path_choice = gr.Textbox(label="Image Output Folder (requires restart)", value=self.image_save_path)
-                    self.audio_save_path_choice = gr.Textbox(label="Audio Output Folder (requires restart)", value=self.audio_save_path)
-                    self.mesh_save_path_choice = gr.Textbox(label="3D Output Folder (requires restart)", value=self.mesh_save_path)
+                    self.workspace_storage_choice = gr.Radio(choices=[('Shared Output Folders', 'shared'), ('Dedicated Folder per Workspace', 'dedicated')], value=self.server_config.get('workspace_storage_mode', 'shared'), label='Default Storage for New Workspaces', info='Existing workspaces keep their storage mode. Convert them in the workspace manager. Dedicated workspaces use the Workspaces Root instead of the shared output folders below.')
+                    self.workspaces_root_choice = gr.Textbox(label='Workspaces Root (requires restart)', value=self.server_config.get('workspaces_dir', 'workspaces'), info='Contains workspace JSON files and dedicated media folders. Move the complete existing root before changing this path. --workspaces-dir overrides this value.')
+                    gr.Markdown('### Shared Workspace Output Folders\nExisting shared workspaces keep using these folders, even when new workspaces use dedicated folders. To move an existing workspace, convert it in Workspace Manager; changing the default above does not move its media.')
+                    self.video_save_path_choice = gr.Textbox(label="Shared Video Output Folder (requires restart)", value=self.save_path)
+                    self.image_save_path_choice = gr.Textbox(label="Shared Image Output Folder (requires restart)", value=self.image_save_path)
+                    self.audio_save_path_choice = gr.Textbox(label="Shared Audio Output Folder (requires restart)", value=self.audio_save_path)
+                    self.mesh_save_path_choice = gr.Textbox(label="Shared 3D Output Folder (requires restart)", value=self.mesh_save_path)
 
                 with gr.Tab("Notifications"):
                     self.notification_sound_enabled_choice = gr.Dropdown(choices=[("On", 1), ("Off", 0)], value=self.server_config.get("notification_sound_enabled", 0), label="Notification Sound")
@@ -911,6 +929,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.video_container_choice, self.video_output_codec_choice, self.rgba_video_output_choice, self.hdr_video_crf_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice, self.mesh_save_path_choice,
+            self.workspace_storage_choice, self.workspaces_root_choice, self.mcp_workspace_mode_choice, self.mcp_port_choice, self.mcp_webui_choice,
             self.notification_sound_enabled_choice, self.notification_sound_volume_choice, self.notification_apprise_urls_choice, self.notification_secure_storage_choice, self.notification_on_generation_choice, self.notification_on_queue_complete_choice, self.notification_on_queue_interrupted_choice,
             *self.audio_processor_config_components,
             *self.temporal_upsampler_config_components,
@@ -922,8 +941,8 @@ class ConfigTabPlugin(WAN2GPPlugin):
         view_events = [event for index, event in gr.context.get_blocks_context().fns.items() if index >= first_event and event.fn and event.outputs and all(kind in ('input', 'change') for _, kind in event.targets)]
         self.synced_form = GradioForm(self.state.value.service.forms, 'configuration', inputs[1:-1], view_events=view_events)
         self.synced_form.bind_save(
-            self.apply_btn.click, lambda *values: self._save_changes(*values[:-1], override_attention=values[-1]),
-            inputs=[*inputs, self.override_attention],
+            self.apply_btn.click, lambda *values: self._save_changes(*values[:-2], override_attention=values[-2], override_compile=values[-1]),
+            inputs=[*inputs, self.override_attention, self.override_compile],
             outputs=[
                 self.msg,
                 self.model_description,
@@ -959,7 +978,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         self.release_RAM_btn.click(fn=release_ram_and_notify, inputs=[self.state])
         return [self.release_RAM_btn]
 
-    def _save_changes(self, state, *args, override_attention=""):
+    def _save_changes(self, state, *args, override_attention="", override_compile=""):
         gen_in_progress = self.is_generation_in_progress()
         # return "<div style='color:red; text-align:center;'>Unable to change config when a generation is in progress.</div>", *[gr.update()]*5
 
@@ -1007,6 +1026,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             video_container_choice, video_output_codec_choice, rgba_video_output_choice, hdr_video_crf_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice, audio_save_path_choice, mesh_save_path_choice,
+            workspace_storage_choice, workspaces_root_choice, mcp_workspace_mode_choice, mcp_port_choice, mcp_webui_choice,
             notification_sound_enabled_choice, notification_sound_volume_choice, notification_apprise_urls_choice, notification_secure_storage_choice, notification_on_generation_choice, notification_on_queue_complete_choice, notification_on_queue_interrupted_choice,
             last_resolution_choice
         ) = fixed_args
@@ -1054,6 +1074,9 @@ class ConfigTabPlugin(WAN2GPPlugin):
                 return f"<div style='color:red; text-align:center;'>Configuration was not saved: {exc}</div>", *[gr.update()]*9
 
         try:
+            mcp_port_choice = server_port(mcp_port_choice)
+            if mcp_workspace_mode_choice not in ('shared', 'per_agent'):
+                raise ValueError('Choose an MCP Agent Workspace option.')
             if deepy_enabled_choice:
                 if not deepy_remote and not qwen_local:
                     raise ValueError("Florence 2 is not compatible with Deepy. Select a Qwen model or disable Deepy before saving.")
@@ -1115,6 +1138,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "generation_preview": generation_preview_choice,
             "text_encoder_quantization": text_encoder_quantization_choice, "save_path": save_path_choice,
             "image_save_path": image_save_path_choice, "audio_save_path": audio_save_path_choice, "mesh_save_path": mesh_save_path_choice,
+            'workspace_storage_mode': workspace_storage_choice, 'workspaces_dir': workspaces_root_choice.strip() or 'workspaces', 'mcp_workspace_mode': mcp_workspace_mode_choice, 'mcp_port': mcp_port_choice, 'mcp_webui': mcp_webui_choice,
             "lm_decoder_engine": lm_decoder_engine_choice,
             "compile": compile_choice, "profile": video_profile_choice,
             "video_profile": video_profile_choice, "image_profile": image_profile_choice, "audio_profile": audio_profile_choice,
@@ -1238,6 +1262,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         changes = list(updates)
 
         no_reload_keys = [
+            'workspace_storage_mode', 'workspaces_dir', 'mcp_workspace_mode', 'mcp_port', 'mcp_webui',
             VOICE_MODE_KEY,
             DEEPY_VOICE_LANGUAGE_KEY,
             "attention_mode", "vae_config", "boost", "int8_kernels", "fp8_kernels", "kernel_precision", "attention_head_split", "save_path", "image_save_path", "audio_save_path", "mesh_save_path",
@@ -1319,7 +1344,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         model_type = state["model_type"]
         
         model_family_update, model_base_type_update, model_choice_update = self.generate_dropdown_model_list(model_type)
-        description_update, header_update = self.generate_header(model_type, compile=new_server_config["compile"], attention_mode=new_server_config["attention_mode"], override_attention=override_attention)
+        description_update, header_update = self.generate_header(model_type, compile=new_server_config["compile"], attention_mode=new_server_config["attention_mode"], override_attention=override_attention, override_compile=override_compile)
 
         if gen_in_progress:
             msg = "<div style='color:green; text-align:center;'>The new configuration has been succesfully applied. Some of the Settings will be only effective when you will start another Generation</div>"

@@ -5,9 +5,9 @@ import triton.language as tl
 from triton.language.extra.cuda import libdevice
 
 
-@triton.jit
-def _scale_shift(X, SCALE, SHIFT, Y, N, D: tl.constexpr, L: tl.constexpr,
-                 T: tl.constexpr, BLOCK: tl.constexpr):
+@triton.jit(do_not_specialize=['N', 'L', 'T'], do_not_specialize_on_alignment=['N', 'L', 'T'])
+def _scale_shift(X, SCALE, SHIFT, Y, N, D: tl.constexpr, L,
+                 T, BLOCK: tl.constexpr):
     i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     row, col = i // D, i % D
     s = (row // L * T + row % L // (L // T)) * D + col
@@ -27,11 +27,11 @@ def scale_shift(x, scale, shift, in_place):
     return out
 
 
-@triton.jit
-def _split_rope(X, C0, S0, C1, S1, C2, S2, N, TOKENS: tl.constexpr,
-                WIDTH: tl.constexpr, HALF: tl.constexpr, PAD: tl.constexpr,
-                AXES: tl.constexpr, GRID: tl.constexpr, AXIS_IDS: tl.constexpr,
-                FREQ_WIDTH: tl.constexpr, BATCH_STRIDE: tl.constexpr,
+@triton.jit(do_not_specialize=['N', 'TOKENS', 'WIDTH', 'G0', 'G1', 'G2', 'BATCH_STRIDE', 'HEAD_START'], do_not_specialize_on_alignment=['N', 'TOKENS', 'WIDTH', 'G0', 'G1', 'G2', 'BATCH_STRIDE', 'HEAD_START'])
+def _split_rope(X, C0, S0, C1, S1, C2, S2, N, TOKENS,
+                WIDTH, HALF: tl.constexpr, PAD: tl.constexpr,
+                AXES: tl.constexpr, G0, G1, G2, AXIS_IDS: tl.constexpr,
+                FREQ_WIDTH: tl.constexpr, BATCH_STRIDE, HEAD_START,
                 FP32: tl.constexpr, BLOCK: tl.constexpr):
     i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     f = i % (WIDTH // 2)
@@ -39,16 +39,18 @@ def _split_rope(X, C0, S0, C1, S1, C2, S2, N, TOKENS: tl.constexpr,
     batch = i // (WIDTH // 2) // TOKENS
     head, local = f // HALF, f % HALF
     offset = batch * BATCH_STRIDE + token * WIDTH + head * HALF * 2 + local
+    f = f + HEAD_START * HALF
     axis = (f - PAD) % AXES
     col = (f - PAD) // AXES
     c = tl.full((BLOCK,), 1.0, tl.float32)
     s = tl.full((BLOCK,), 0.0, tl.float32)
     for a in tl.static_range(AXES):
-        divisor = 1
-        for j in tl.static_range(len(GRID)):
-            if j > AXIS_IDS[a]:
-                divisor *= GRID[j]
-        row = token // divisor % GRID[AXIS_IDS[a]]
+        if AXIS_IDS[a] == 0:
+            row = token // (G1 * G2) % G0
+        elif AXIS_IDS[a] == 1:
+            row = token // G2 % G1
+        else:
+            row = token % G2
         valid = (i < N) & (f >= PAD) & (axis == a)
         if a == 0:
             cv = tl.load(C0 + row * FREQ_WIDTH + col, valid, 0).to(tl.float32)
@@ -69,19 +71,19 @@ def _split_rope(X, C0, S0, C1, S1, C2, S2, N, TOKENS: tl.constexpr,
         a = a.to(X.dtype.element_ty).to(tl.float32)
         b = b.to(X.dtype.element_ty).to(tl.float32)
     # Preserve the native grouped layout's padding in every head group.
-    valid = (i < N) & ((head % AXES != 0) | (local >= PAD))
+    valid = (i < N) & (((head + HEAD_START) % AXES != 0) | (local >= PAD))
     tl.store(X + offset, libdevice.sub_rn(a, libdevice.mul_rn(x1, s)), valid)
     tl.store(X + offset + HALF, libdevice.add_rn(b, libdevice.mul_rn(x0, s)), valid)
 
 
-def split_rope(x, cache, layout):
+def split_rope(x, cache, layout, head_start=0, dim_head=None):
     cos, sin = layout.axis_cos, layout.axis_sin
     pointers = tuple(value for a in range(3) for value in (cos[min(a, len(cos)-1)], sin[min(a, len(sin)-1)]))
     size = x.numel() // 2
     return _split_rope[(triton.cdiv(size, 256),)](
-        x, *pointers, size, x.shape[1], x.shape[2], x.shape[2] // cache.num_attention_heads // 2,
-        cache.pad_size, len(cos), layout.grid_sizes, cache.rope_axes, cos[0].shape[1],
-        x.stride(0), cache.use_fp32_freqs, 256, enable_fp_fusion=False)
+        x, *pointers, size, x.shape[1], x.shape[2], (dim_head or x.shape[2] // cache.num_attention_heads) // 2,
+        cache.pad_size, len(cos), *(layout.grid_sizes + (1,) * (3 - len(layout.grid_sizes))), cache.rope_axes, cos[0].shape[1],
+        x.stride(0), head_start, cache.use_fp32_freqs, 256, enable_fp_fusion=False)
 
 
 from shared.kernels.triton_compilation_log import install_triton_compilation_logger

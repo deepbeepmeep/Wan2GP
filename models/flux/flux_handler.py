@@ -1,4 +1,6 @@
 # Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .infos import flux_help
 import torch
 import gradio as gr
 from PIL import Image
@@ -232,7 +234,7 @@ class family_handler():
         if not flux_chroma_radiance:
             extra_model_def["tiny_vae_architecture"] = "flux2_klein_4b" if flux2 else "flux"
 
-        return extra_model_def
+        return merge_help(extra_model_def, flux_help(base_model_type, {**extra_model_def, **model_def}))
 
 
     @staticmethod

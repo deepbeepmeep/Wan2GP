@@ -30,6 +30,7 @@ from .pdd import pdd_sampling_plans, pdd_sampling_plans_for_sigmas
 from .spectrum import MiniMaxH3Spectrum
 from .transformer import VISUAL_COND_TIMESTEP, pack_audio, patchify_video, unpack_audio
 from .video_vae import LATENTS_MEAN, LATENTS_STD
+from .veda.attention import generation_context as veda_generation_context
 
 
 AUDIO_SAMPLE_RATE = 32000
@@ -742,11 +743,12 @@ class MiniMaxH3Pipeline:
 
     @_return_none_on_interrupt
     @generation_progress
+    @veda_generation_context
     @torch.inference_mode()
     def generate(self, input_prompt, image_start=None, image_end=None, image_end_frame_position=None, input_frames=None, input_frames2=None, input_frames3=None, input_ref_images=None,
                  frames_to_inject=None, frames_relative_positions_list=None, image_refs_relative_size=100,
                  input_masks=None, outpainting_dims=None, denoising_strength=1.0, masking_strength=1.0,
-                 input_video=None, input_waveform=None, input_waveform_sample_rate=None,
+                 input_video=None, input_waveform=None, input_waveform_sample_rate=None, audio_conditioning_end=None,
                  video_guide=None, audio_guide=None, audio_guide2=None, audio_guide3=None, prefix_frames_count=0,
                  frame_num=124, height=768, width=1344, shift=12.0, sampling_steps=30, sampling_steps2=3, seed=0,
                  callback=None, VAE_tile_size=None, audio_prompt_type="", video_prompt_type="", fps=24,
@@ -819,6 +821,8 @@ class MiniMaxH3Pipeline:
             frame_num = frozen_control_video.shape[1]
         history_frames = continuation[:, -continuation_count:-1] if continuation_count > 1 else None
         history_count = 0 if history_frames is None else history_frames.shape[1]
+        if audio_conditioning_end is not None and audio_conditioning_end < history_count / fps:
+            raise ValueError("H3 native continuation regenerates only the last overlap frame's audio; the source soundtrack ends too early to repair this join.")
         target_frames = frame_num - history_count
         aligned_target_frames = 1 if image_outputs else normalize_frame_count(target_frames, 5, 17, 5)
         if target_frames <= 0:
@@ -972,9 +976,15 @@ class MiniMaxH3Pipeline:
                 boundary_latents = (continuation_audio.shape[-1] if not history_count else
                                     min(continuation_audio.shape[-1], max(1, round(AUDIO_LATENT_FPS / fps))))
                 history_latents = continuation_audio.shape[-1] - boundary_latents
+                if audio_conditioning_end is not None:
+                    condition_tokens = max(0, math.floor(audio_conditioning_end * AUDIO_LATENT_FPS + 1e-9))
+                    boundary_tokens = max(0, math.floor((audio_conditioning_end - history_count / fps) * AUDIO_LATENT_FPS + 1e-9))
+                    condition_tokens = min(condition_tokens, history_latents + boundary_tokens)
+                    continuation_audio = continuation_audio[..., :condition_tokens]
                 if history_latents:
                     self._add_audio_condition(continuation_audio[..., :history_latents], "history", audio_latents, audio_keyframes)
-                self._add_audio_condition(continuation_audio[..., history_latents:], "first", audio_latents, audio_keyframes)
+                if continuation_audio.shape[-1] > history_latents:
+                    self._add_audio_condition(continuation_audio[..., history_latents:], "first", audio_latents, audio_keyframes)
         if frozen_target_video is not None:
             with control_video_encoding(audio_from_control_video):
                 target_video_condition = self._encode_video(_resize_video(frozen_target_video, height, width), keep_all_latents=True)
@@ -1041,6 +1051,9 @@ class MiniMaxH3Pipeline:
                 target_audio_condition = self._encode_audio(condition_waveform)
         elif control_known_frames is not None and waveform is not None:
             target_audio_condition = self._encode_audio(waveform[..., :round(control_known_frames.shape[1] / fps * AUDIO_SAMPLE_RATE)])
+        if target_audio_condition is not None and audio_conditioning_end is not None:
+            condition_tokens = max(0, math.floor((audio_conditioning_end - history_count / fps) * AUDIO_LATENT_FPS + 1e-9))
+            target_audio_condition = target_audio_condition[..., :condition_tokens]
         if self.reference_mode:
             visual_ref_count = sum(ref["kind"] in ("image", "video", "video_audio") for ref in refs)
             audio_ref_count = sum(ref["kind"] in ("audio", "video_audio") for ref in refs)
@@ -1698,7 +1711,7 @@ class MiniMaxH3Pipeline:
         decoded_audio = self.audio_vae.decode(audio)[0]
         audio = None
         target_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)
-        decoded_audio = _fit_audio_samples(decoded_audio, target_samples)
+        decoded_audio = _fit_audio_samples(decoded_audio, target_samples) if self.audio_only else decoded_audio[..., :target_samples]
 
         output_prefix = history_frames
         output_prefix_count = history_count

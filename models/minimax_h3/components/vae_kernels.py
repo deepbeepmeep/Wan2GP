@@ -7,12 +7,12 @@ from triton.language.extra import libdevice
 
 from shared.kernels.triton_tuner import LaunchTuner
 
-_TUNER = LaunchTuner("wan2gp_h3_vae_kernels", 2, "H3 VAE")
+_TUNER = LaunchTuner("wan2gp_h3_vae_kernels", 5, "H3 VAE")
 
 
-@triton.jit
-def _cast_rope(X, OUT, C, S, ROWS: tl.constexpr, TOKENS: tl.constexpr, HEADS: tl.constexpr,
-             SB: tl.constexpr, ST: tl.constexpr, SH: tl.constexpr, CB: tl.constexpr, CT: tl.constexpr,
+@triton.jit(do_not_specialize=['ROWS', 'TOKENS', 'HEADS', 'SB', 'ST', 'SH', 'CB', 'CT'], do_not_specialize_on_alignment=['ROWS', 'TOKENS', 'HEADS', 'SB', 'ST', 'SH', 'CB', 'CT'])
+def _cast_rope(X, OUT, C, S, ROWS, TOKENS, HEADS,
+             SB, ST, SH, CB, CT,
              D: tl.constexpr, R: tl.constexpr, BLOCK: tl.constexpr):
     rows = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     cols = tl.arange(0, D)
@@ -39,8 +39,8 @@ def _cast_rope(X, OUT, C, S, ROWS: tl.constexpr, TOKENS: tl.constexpr, HEADS: tl
     tl.store(out + rows[:, None] * D + cols[None, :], x, rows[:, None] < ROWS)
 
 
-@triton.jit
-def _swiglu(X, N: tl.constexpr, D: tl.constexpr, BLOCK: tl.constexpr):
+@triton.jit(do_not_specialize=['N'], do_not_specialize_on_alignment=['N'])
+def _swiglu(X, N, D: tl.constexpr, BLOCK: tl.constexpr):
     i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     offset = (i // D) * (2 * D) + i % D
     gate = tl.load(X + offset, i < N, 0).to(tl.float32)
@@ -49,7 +49,7 @@ def _swiglu(X, N: tl.constexpr, D: tl.constexpr, BLOCK: tl.constexpr):
     tl.store(X + offset, activated * value, i < N)
 
 
-@triton.jit(do_not_specialize=["N"])
+@triton.jit(do_not_specialize=['N'], do_not_specialize_on_alignment=['N'])
 def _residual(X, SCALE, RESIDUAL, N, D: tl.constexpr, BLOCK: tl.constexpr):
     """branch * scale + residual with the two roundings of branch.mul_(scale).add_(residual): bit-identical."""
     i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
@@ -82,7 +82,7 @@ def residual_(branch, scale, residual):
     return branch
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['N'], do_not_specialize_on_alignment=['N'])
 def _swiglu_contiguous(X, OUT, N, D: tl.constexpr, BLOCK: tl.constexpr):
     i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     offset = (i // D) * (2 * D) + i % D
@@ -92,7 +92,7 @@ def _swiglu_contiguous(X, OUT, N, D: tl.constexpr, BLOCK: tl.constexpr):
     tl.store(OUT + i, activated * value, i < N)
 
 
-@triton.jit(do_not_specialize=["N"])
+@triton.jit(do_not_specialize=['N'], do_not_specialize_on_alignment=['N'])
 def _swiglu_rn(X, OUT, N, D: tl.constexpr, BLOCK: tl.constexpr):
     """silu(gate) rounded to the activation dtype, then times the value: F.silu(gate).mul_(value) bit for bit (IEEE division and
     expf as PyTorch's kernel)."""
@@ -114,7 +114,7 @@ def swiglu_rn(expanded):
 
 
 @triton.jit
-def _norm_rope_rows(X, base, ok, cos, sin, sign, partner, keep, EPS, D: tl.constexpr):
+def _norm_rope_rows(X, base, ok, cos, sin, partner, keep, EPS, D: tl.constexpr, HALF: tl.constexpr, BLOCK: tl.constexpr):
     """Rows of one head, loaded whole: RMSNorm without weight in FP32 rounded to the activation dtype (the norm output), then the
     split-half rotation of the rotary channels in FP32 with one final rounding; the other channels keep the norm output. The partner
     channels are a second load of the same rows (cache hits)."""
@@ -122,13 +122,26 @@ def _norm_rope_rows(X, base, ok, cos, sin, sign, partner, keep, EPS, D: tl.const
     ptr = X + base[:, None] + c[None, :]
     x = tl.load(ptr, ok[:, None], 0).to(tl.float32)
     other = tl.load(X + base[:, None] + partner[None, :], ok[:, None], 0).to(tl.float32)
-    inv = libdevice.rsqrt(tl.sum(x * x, 1) / D + EPS)[:, None]
+    if D == 64:
+        # Match Kitchen's lane sums (c, c + 32), then its warp reduction. Reuse
+        # the loaded row: a differently ordered sum can change FP16 rounding.
+        first, second = tl.split(tl.trans(tl.reshape(x, (BLOCK, 2, 32)), (0, 2, 1)))
+        squares = tl.fma(second, second, first * first)
+        total = tl.sum(squares, 1)
+    else:
+        total = tl.sum(x * x, 1)
+    inv = libdevice.rsqrt(total / D + EPS)[:, None]
     y = (x * inv).to(X.dtype.element_ty).to(tl.float32)
     other = (other * inv).to(X.dtype.element_ty).to(tl.float32)
-    tl.store(ptr, tl.where(keep[None, :], y, y * cos + sign[None, :] * other * sin), ok[:, None])
+    # Preserve which matrix product is rounded before the CUDA rotation's FMA.
+    # Algebraically equivalent contractions can amplify into visible outliers.
+    first_half = c[None, :] < HALF
+    rotated = tl.fma(tl.where(first_half, cos, sin), tl.where(first_half, y, other),
+                     tl.where(first_half, -sin, cos) * tl.where(first_half, other, y))
+    tl.store(ptr, tl.where(keep[None, :], y, rotated), ok[:, None])
 
 
-@triton.jit(do_not_specialize=["ROWS", "HEADS", "SEQ", "QB", "QS", "QH", "KB", "KS", "KH", "CB", "CS"])
+@triton.jit(do_not_specialize=['ROWS', 'HEADS', 'SEQ', 'QB', 'QS', 'QH', 'KB', 'KS', 'KH', 'CB', 'CS'], do_not_specialize_on_alignment=['ROWS', 'HEADS', 'SEQ', 'QB', 'QS', 'QH', 'KB', 'KS', 'KH', 'CB', 'CS'])
 def _qk_rms_rope(Q, K, COS, SIN, ROWS, HEADS, SEQ, QB, QS, QH, KB, KS, KH, CB, CS, EPS, D: tl.constexpr, HALF: tl.constexpr,
                  BLOCK: tl.constexpr):
     rows = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)  # (batch, token, head) rows: the heads of a token share its angles
@@ -140,17 +153,16 @@ def _qk_rms_rope(Q, K, COS, SIN, ROWS, HEADS, SEQ, QB, QS, QH, KB, KS, KH, CB, C
     c = tl.arange(0, D)
     keep = c >= 2 * HALF
     partner = tl.where(c < HALF, c + HALF, tl.where(keep, c, c - HALF))
-    sign = tl.where(c < HALF, -1.0, 1.0)
     rotated = ok[:, None] & (c[None, :] < 2 * HALF)
     angle = batch[:, None] * CB + seq[:, None] * CS + c[None, :]
     cos = tl.load(COS + angle, rotated, 0)
     sin = tl.load(SIN + angle, rotated, 0)
-    _norm_rope_rows(Q, batch * QB + seq * QS + head * QH, ok, cos, sin, sign, partner, keep, EPS, D)
-    _norm_rope_rows(K, batch * KB + seq * KS + head * KH, ok, cos, sin, sign, partner, keep, EPS, D)
+    _norm_rope_rows(Q, batch * QB + seq * QS + head * QH, ok, cos, sin, partner, keep, EPS, D, HALF, BLOCK)
+    _norm_rope_rows(K, batch * KB + seq * KS + head * KH, ok, cos, sin, partner, keep, EPS, D, HALF, BLOCK)
 
 
 _ROPE_CONFIGS = ((8, 1), (16, 2), (16, 4), (32, 4), (64, 8))
-_TUNE_ROWS = 1 << 19
+_TUNE_ROWS = 1 << 17  # cap tuning scratch for strided projection views
 
 
 def can_rms_rope(dim, rot):
@@ -161,8 +173,8 @@ def can_rms_rope(dim, rot):
 def rms_rope_(q, k, rotary, eps):
     """In place on q and k (batch, tokens, heads, head_dim), any strides with contiguous channels (views of a fused projection): per head
     RMSNorm without weight, then the split-half RoPE of the first rotary channels with the angles of rotary (cos, sin), FP32 (batch,
-    tokens, 1, rotary channels) whose two halves are equal. The rounding points of Comfy Kitchen's fused kernel; rounding-level
-    differences from the PyTorch path (FP32 norm rounded, then a 16-bit rotation)."""
+    tokens, 1, rotary channels) whose two halves are equal. H3's 64-channel heads preserve Comfy Kitchen's reduction and rotation
+    rounding, including its FP32 fused multiply-add order. Still approximate relative to the PyTorch 16-bit rotation."""
     cos, sin = rotary[0], rotary[1]
     batch, seq, heads, dim = q.shape
     rows = batch * seq * heads
@@ -171,7 +183,7 @@ def rms_rope_(q, k, rotary, eps):
         block, warps = config
         n = qq.shape[0] * qq.shape[1] * heads
         _qk_rms_rope[(triton.cdiv(n, block),)](qq, kk, cos, sin, n, heads, qq.shape[1], *qq.stride()[:3], *kk.stride()[:3], cos.stride(0),
-                                                cos.stride(1), eps, dim, cos.shape[-1] // 2, block, num_warps=warps)
+                                                cos.stride(1), eps, dim, cos.shape[-1] // 2, block, num_warps=warps, enable_fp_fusion=False)
 
     def prepare_scratch():  # copies of the first rows, in the head layout of q and k (views of a fused projection)
         tokens = max(1, min(seq, _TUNE_ROWS // heads))
@@ -198,9 +210,9 @@ def swiglu(expanded):
     return out
 
 
-@triton.jit
-def _silu_pad_frames(X, OUT, N, C: tl.constexpr, T: tl.constexpr,
-                     H: tl.constexpr, W: tl.constexpr, P: tl.constexpr,
+@triton.jit(do_not_specialize=['N', 'T', 'H', 'W'], do_not_specialize_on_alignment=['N', 'T', 'H', 'W'])
+def _silu_pad_frames(X, OUT, N, C: tl.constexpr, T,
+                     H, W, P: tl.constexpr,
                      FRONT: tl.constexpr, BLOCK: tl.constexpr):
     i = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     col = i % (W + 2 * P) - P

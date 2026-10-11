@@ -9,8 +9,9 @@ import subprocess
 import time
 from pathlib import Path
 
-from shared import extra_settings
+from shared import extra_settings, resolutions
 from shared.api import apply_media_flag_defaults, apply_video_length_duration
+from shared.utils.frame_scheduler import has_slash_commands
 
 
 def task_settings(source):
@@ -26,6 +27,8 @@ def effective_settings(session, supplied):
     apply_video_length_duration(normalized, model_def)
     effective = session.get_default_settings(model_type)
     effective.update(normalized)
+    if "guidance_phases" in effective:
+        effective["guidance_phases"], effective["video_prompt_type"] = resolutions.normalize_phase_2_tiling_selection(model_def, effective["guidance_phases"], effective.get("video_prompt_type", ""))
     return model_def, effective
 
 
@@ -64,6 +67,8 @@ def validate_declared_settings(session, supplied):
     resolution = effective.get("resolution")
     if resolution and (not isinstance(resolution, str) or not re.fullmatch(r"[1-9]\d*x[1-9]\d*", resolution)):
         raise ValueError('resolution must be a positive "WIDTHxHEIGHT" string.')
+    if resolution and not (model_def.get("audio_only") or model_def.get("mesh_outputs")):
+        resolutions.validate_agent_resolution(model_def, resolution, effective.get("guidance_phases", 1), effective.get("video_prompt_type", ""))
     custom = effective.get("custom_settings") or {}
     definitions = []
     if model_def.get("custom_settings") or model_def.get("custom_guide"):
@@ -96,9 +101,12 @@ def validate_declared_settings(session, supplied):
         raise ValueError("The selected model/input mode requires image_refs.")
 
 
-def preflight(session, prepare_generation, prepare_postprocess, settings=None, media=None, process=None, parameters=None):
+def preflight(session, prepare_generation, prepare_postprocess, settings=None, media=None, process=None, parameters=None, detail="summary"):
+    if detail not in {"summary", "full"}:
+        raise ValueError("detail must be summary or full.")
     report = {"valid": False, "submitted": False, "checked_at": time.time(), "diagnostics": [], "tasks": [],
-              "limitations": ["Snapshot only; submission validates again. No downloads, model loading, inference, GPU reservation or VRAM/runtime prediction.", "Queue state covers this WanGP instance, not GPU use by other processes."]}
+              "limitations": ["Snapshot only; submission validates again. No downloads, model loading, inference, GPU reservation or VRAM/runtime prediction.", "Queue state covers this WanGP instance, not GPU use by other processes.", "Requested dimensions/video describe normalized settings, not predicted output. Reference sizing, window scheduling, continuation and trimming can change the saved dimensions or duration; inspect completed media for actual values."]}
+    config = session._ensure_runtime().module.server_config
     try:
         if settings is not None:
             if media is not None or process is not None or parameters is not None:
@@ -106,7 +114,7 @@ def preflight(session, prepare_generation, prepare_postprocess, settings=None, m
             prepared = prepare_generation(copy.deepcopy(settings))
             for index, (explicit, supplied) in enumerate(zip(task_settings(settings), task_settings(prepared))):
                 if str(supplied.get("mode", "")).startswith("edit_"):
-                    report["tasks"].append({"index": index, "settings": supplied, "checks_unavailable": ["Use media + process preflight for processor-specific contracts."]})
+                    report["tasks"].append({"index": index, "mode": supplied["mode"], **({"settings": supplied} if detail == "full" else {}), "checks_unavailable": ["Use media + process preflight for processor-specific contracts."]})
                     continue
                 model_def, effective = effective_settings(session, supplied)
                 model_type = effective.get("model_type", effective.get("base_model_type"))
@@ -125,19 +133,64 @@ def preflight(session, prepare_generation, prepare_postprocess, settings=None, m
                 task["active_modes"] = {key: effective.get(key, "") for key in ("image_prompt_type", "video_prompt_type", "audio_prompt_type")}
                 task["declared_limits"] = {key: schema[key] for key in ("frames_minimum", "frames_maximum", "frames_steps", "sliding_window") if schema.get(key) is not None}
                 resolution = effective.get("resolution")
-                if resolution:
-                    task["dimensions"] = dict(zip(("width", "height"), map(int, resolution.split("x"))))
+                if resolution and not (model_def.get("audio_only") or model_def.get("mesh_outputs")):
+                    task["requested_dimensions"] = dict(zip(("width", "height"), map(int, resolution.split("x"))))
+                    block = model_def.get("vae_block_size", 16)
+                    assessment = resolutions.assess_resolution(model_def, resolution, effective.get("guidance_phases", 1), effective.get("video_prompt_type", ""))
+                    task["resolution_assessment"] = assessment
+                    canvas = dict(zip(("width", "height"), resolutions.parse_resolution(assessment["aligned"])))
+                    fit = config.get("fit_canvas", 0)
+                    task["sizing"] = {"multiple": block, "mode": {0: "pixel_budget", 1: "outer_box", 2: "crop"}[fit], "canvas_dimensions": canvas}
+                    visuals = [item for item in task["inputs"] if item["media_type"] in {"image", "video"}]
+                    if has_slash_commands([effective["prompt"]]) or effective.get("video_guide_outpainting", "#") not in ("", "#"):
+                        task["checks_unavailable"].append("Initial dimensions with prompt scheduling or outpainting are resolved during generation.")
+                    elif not visuals:
+                        task["sizing"]["initial_dimensions"] = canvas.copy()
+                    elif len(visuals) == 1 and visuals[0]["role"] == "image_start" and "S" in effective.get("image_prompt_type", ""):
+                        from shared.utils.utils import calculate_new_dimensions
+                        source = visuals[0]
+                        height, width = calculate_new_dimensions(canvas["height"], canvas["width"], source["height"], source["width"], fit, block_size=block)
+                        task["sizing"]["initial_dimensions"] = {"width": width, "height": height}
+                    else:
+                        task["checks_unavailable"].append("Initial dimensions depend on reference/control inputs and are resolved during generation.")
+                    task["sizing"]["scope"] = "Initial canvas/input sizing, before model-specific processing or optional upscaling; later windows may use other inputs."
                 fps = float(effective.get("force_fps") or 0) or schema.get("fps")
-                if effective.get("video_length") and fps:
-                    task["video"] = {"frames": int(effective["video_length"]), "fps": float(fps), "duration_seconds": int(effective["video_length"]) / float(fps)}
-                if effective.get("duration_seconds") is not None:
+                if effective.get("video_length") and fps and not (model_def.get("audio_only") or model_def.get("image_outputs") or model_def.get("mesh_outputs")):
+                    task["requested_video"] = {"frames": int(effective["video_length"]), "fps": float(fps), "duration_seconds": int(effective["video_length"]) / float(fps)}
+                if model_def.get("audio_only") and effective.get("duration_seconds"):
                     task["target_audio_duration_seconds"] = effective["duration_seconds"]
                 selected = effective.get("activated_loras") or []
                 if selected:
                     available = session.list_loras(model_type)
-                    task["missing_loras"] = [name for name in selected if name not in available["loras"] and not (Path(name).is_absolute() and Path(name).is_file())]
+                    module = session._ensure_runtime().module
+                    local_loras = {Path(name) for name in available["loras"]}
+                    missing, downloadable = [], []
+                    for name in selected:
+                        path = Path(module.get_lora_local_path(None, name))
+                        if path in local_loras or (path.is_absolute() and path.is_file()):
+                            continue
+                        if available["supported"] and name.startswith(("http:", "https:")):
+                            downloadable.append(name)
+                        else:
+                            missing.append(name)
+                    task["missing_loras"] = missing
                     if task["missing_loras"]:
                         report["diagnostics"].append({"severity": "error", "task": index, "message": f"LoRAs not found in this model's catalog: {task['missing_loras']}"})
+                    if downloadable:
+                        task["downloadable_loras"] = downloadable
+                        report["diagnostics"].append({"severity": "warning", "task": index, "message": f"LoRAs are not installed locally; execution will attempt to download them. Remote availability was not checked: {downloadable}"})
+                if detail == "summary":
+                    task.pop("settings")
+                    task.pop("sources")
+                    # Show normalization and injected defaults, not a second copy of the request.
+                    task["adjustments"] = {key: value for key, value in effective.items() if (key in supplied or key in task["active_modes"] and value) and explicit.get(key) != value and key not in inactive}
+                    resolved_text = {key: len(task["adjustments"].pop(key)) for key in ("prompt", "alt_prompt", "negative_prompt") if isinstance(task["adjustments"].get(key), str)}
+                    if resolved_text:
+                        task["resolved_text_lengths"] = resolved_text
+                    if "custom_settings" in task["adjustments"]:
+                        task["adjustments"]["custom_settings"] = {key: value for key, value in task["adjustments"]["custom_settings"].items() if f"custom_settings.{key}" not in inactive}
+                    task["media_inputs"] = {kind: inputs if kind == "custom_file" else {key: value for key, value in inputs.items() if value} for kind, inputs in task["media_inputs"].items() if any(inputs.values())}
+                    task["active_modes"] = {key: value for key, value in task["active_modes"].items() if value}
                 report["tasks"].append(task)
                 if not task["availability"]["available"]:
                     report["diagnostics"].append({"severity": "warning", "task": index, "message": "Model checkpoint availability is partial or missing; execution may require downloads."})
@@ -146,11 +199,12 @@ def preflight(session, prepare_generation, prepare_postprocess, settings=None, m
                 raise ValueError("Provide settings, or both media and process with optional parameters.")
             from .server import _is_media_id
             task, details = prepare_postprocess(media_id=media if _is_media_id(media) else None, path=None if _is_media_id(media) else media, process=process, parameters=parameters)
-            report["tasks"].append({**details, "settings": task, "checks_unavailable": ["Processor weight/download availability and runtime memory requirements."]})
+            report["tasks"].append({**details, **({"settings": task} if detail == "full" else {}), "checks_unavailable": ["Processor weight/download availability and runtime memory requirements."]})
         report["valid"] = not any(item["severity"] == "error" for item in report["diagnostics"])
     except (ValueError, TypeError, KeyError, OSError, subprocess.TimeoutExpired) as exc:
         report["diagnostics"].append({"severity": "error", "message": str(exc)})
     report["queue"] = session.list_queue()
-    config = session._ensure_runtime().module.server_config
+    if detail == "summary":
+        report["queue"] = {key: value for key, value in report["queue"].items() if key.endswith("_count")}
     report["runtime_config"] = {key: config[key] for key in ("transformer_quantization", "text_encoder_quantization", "mixed_precision", "vae_precision", "profile", "attention_mode") if key in config}
     return report

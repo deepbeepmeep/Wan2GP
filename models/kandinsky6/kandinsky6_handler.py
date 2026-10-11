@@ -1,5 +1,6 @@
 # Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import torch
+from models.help_shared import specialities
 
 from shared.utils.hf import build_hf_url
 from .prompts import K6_DEEPY_INFOS, K6_DEEPY_PROMPT_INFOS, K6_IMAGE_ENHANCER_INSTRUCTIONS, K6_INFOS, K6_PROMPT_INFOS, K6_TEXT_ENHANCER_INSTRUCTIONS
@@ -64,6 +65,7 @@ class family_handler:
                 build_hf_url("DeepBeepMeep/Qwen_image", TEXT_ENCODER_FOLDER, "Qwen2.5-VL-7B-Instruct_quanto_bf16_int8.safetensors"),
             ],
             "infos": K6_INFOS,
+            "specialities": specialities("audio-video generation"),
             "prompt_infos": K6_PROMPT_INFOS,
             "deepy_infos": K6_DEEPY_INFOS,
             "deepy_prompt_infos": K6_DEEPY_PROMPT_INFOS,

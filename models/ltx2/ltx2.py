@@ -1409,6 +1409,7 @@ class LTX2:
         input_ref_images=None,
         input_waveform=None,
         input_waveform_sample_rate=None,
+        audio_conditioning_end=None,
         audio_scale: float | None = None,
         outpainting_dims: list[int] | None = None,
         frame_num: int = 121,
@@ -1784,6 +1785,11 @@ class LTX2:
                         4,
                     )
                     audio_latent = audio_latent.to(device=self.device, dtype=self.dtype)
+                    if audio_conditioning_end is not None and "1" not in audio_prompt_type:
+                        # Keep the reliable prefix fixed; the remaining target tokens retain their noise.
+                        token_seconds = self.audio_encoder.mel_hop_length * audio_downsample / self.audio_encoder.sample_rate
+                        prefix_tokens = max(0, math.floor(audio_conditioning_end / token_seconds + 1e-9))
+                        audio_latent = audio_latent[:, :, :prefix_tokens, :]
                     if "1" in audio_prompt_type:
                         audio_conditionings = [AudioConditionByReferenceLatent(audio_latent)]
                         audio_conditionings_stage2 = []
@@ -1804,7 +1810,9 @@ class LTX2:
                             audio_latent_downsample_factor=audio_downsample,
                         )
                         target_frames = target_shape.frames
-                        if audio_latent.shape[2] < target_frames:
+                        if audio_latent.shape[2] == 0:
+                            audio_conditionings = None
+                        elif audio_latent.shape[2] < target_frames:
                             audio_conditionings = [AudioConditionByLatentPrefix(audio_latent)]
                         else:
                             if audio_latent.shape[2] > target_frames:

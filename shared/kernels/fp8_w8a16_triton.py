@@ -193,7 +193,7 @@ def _tune(key, slot, x, weight, scale, bias, out, decode):
         _load_cache()[key] = list(best)
         _save_cache()
     gain = f" ({baseline / timings[best]:.2f}x the static configuration)" if baseline is not None and best != candidates[0] else ""
-    print(f"[FP8] Triton tuned {slot} {weight.shape[1]}->{weight.shape[0]} on {rows} tokens in {time.time() - started:.1f} s: {best}{gain}.")
+    # The shared compilation logger reports the selected configuration once.
     return best
 
 
@@ -214,5 +214,6 @@ def linear(x, weight, scale, bias, out):
     return out
 
 
-from shared.kernels.triton_compilation_log import install_triton_compilation_logger
+from shared.kernels.triton_compilation_log import install_triton_compilation_logger, log_compilation_tuning
 install_triton_compilation_logger()
+_tune = log_compilation_tuning(_tune)

@@ -34,7 +34,7 @@
         if (await this.commit(this.dialog.dataset.action, payload)) this.dialog.close();
       };
     }
-    static label(item) { return `${item.deepy_session_id ? '🤖' : '📁'} ${item.name}`; }
+    static label(item) { return `${item.deepy_session_id || item.mcp_agent_id ? '🤖' : '📁'} ${item.name}${item.storage_mode === 'dedicated' ? ' · Folder' : ''}`; }
     availability() {
       const locked = this.deepy && !!this.state?.deepy_locked;
       this.select.disabled = this.busy || locked;

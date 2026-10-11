@@ -2,13 +2,18 @@
 """Shared, paginated documentation browsing for MCP and Deepy Prime."""
 
 import fnmatch
+import hashlib
 import json
 import re
 from typing import Any
 
 RESOURCE_ALIASES = {"wangp://guides/v2": "wangp://guides/workflows"}
-RESOURCE_DESCRIPTION = "Find documentation and workflows. Without uri, query filters the resource index. With uri, query searches passages ('*' lists headings), section reads matching headings; omit both for full text. limit caps results/text blocks per page; cursor continues unchanged filters. Follow next_call for more."
+RESOURCE_DESCRIPTION = "Find documentation, skills and workflows. Without uri, query filters the resource index (e.g. 'skills' or a task). With uri, query searches passages ('*' lists headings), section reads matching headings; omit both for full text. User skills include a revision for updates with wangp_io(action='save_skill'). limit caps results/text blocks per page; cursor continues unchanged filters. Follow next_call for more."
 _MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+
+
+def resource_record(item, server="wangp"):
+    return {"server": server, "uri": str(item.uri), "name": item.name, "title": item.title or item.name, "description": item.description or "", "mime_type": item.mimeType or ""}
 
 
 async def query_resources(pages, resources, read_resource, arguments, *, servers=("wangp",), unavailable_servers=None, read_page_chars=16000):
@@ -50,6 +55,8 @@ async def query_resources(pages, resources, read_resource, arguments, *, servers
         else:
             contents = await read_resource(server, uri)
             metadata = {"server": server, "uri": uri}
+            if server == "wangp" and uri.startswith("wangp://skills/user/"):
+                metadata["revision"] = hashlib.sha256(contents[0]["text"].encode("utf-8")).hexdigest()
             if server == "wangp" and uri.startswith("wangp://docs/"):
                 metadata["applicability"] = matches[0]["description"]
             if query:

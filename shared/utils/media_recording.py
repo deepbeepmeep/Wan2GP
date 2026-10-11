@@ -26,7 +26,7 @@ def _ensure_creation_metadata(configs: Any) -> Any:
     return saved_configs
 
 
-def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bool, audio_only: bool, gen: dict[str, Any], *, get_processed_queue: Callable[[dict[str, Any]], dict[str, tuple[list[Any], list[Any]]]], metadata_choice: str = "metadata", embedded_images: Any = None, replace_last_file: bool = False, lock: Any = None, verbose_level: int = 0, write_metadata: bool = True) -> None:
+def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bool, audio_only: bool, gen: dict[str, Any], *, get_processed_queue: Callable[[dict[str, Any]], dict[str, tuple[list[Any], list[Any]]]], metadata_choice: str = "metadata", embedded_images: Any = None, replace_last_file: bool = False, lock: Any = None, verbose_level: int = 0, write_metadata: bool = True, output_role: str = "final") -> None:
     galleries = get_processed_queue(gen)
     paths = [video_path] if not isinstance(video_path, list) else video_path
     queue_lock = lock if lock is not None else nullcontext()
@@ -35,10 +35,11 @@ def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bo
         previous_path = None
         saved_configs = _ensure_creation_metadata(configs)
         if configs is not None and write_metadata:
-            if metadata_choice == "json":
+            saved_configs["output_role"] = output_role
+            if metadata_choice in ("json", "json_metadata"):
                 with open(os.path.splitext(path)[0] + ".json", "w") as f:
                     json.dump(saved_configs, f, indent=4)
-            elif metadata_choice == "metadata":
+            if metadata_choice in ("metadata", "json_metadata"):
                 if audio_only:
                     save_audio_metadata(path, saved_configs)
                 elif source is MESH:
@@ -69,7 +70,7 @@ def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bo
                 file_settings_list.append(saved_configs)
             gen["last_gallery_source"] = source.id
         if previous_path is not None and previous_path != path:
-            if metadata_choice == "json":
+            if metadata_choice in ("json", "json_metadata"):
                 previous_json_path = os.path.splitext(previous_path)[0] + ".json"
                 if os.path.isfile(previous_json_path):
                     os.remove(previous_json_path)

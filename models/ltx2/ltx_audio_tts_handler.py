@@ -446,7 +446,8 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        return {**(_get_dramabox_model_def() if _is_dramabox(base_model_type) else _get_scenema_model_def()), "device_explicit": True}
+        from models.help_shared import specialities
+        return {**(_get_dramabox_model_def() if _is_dramabox(base_model_type) else _get_scenema_model_def()), "device_explicit": True, "specialities": specialities("voice design", "voice cloning", "speech dialogue")}
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

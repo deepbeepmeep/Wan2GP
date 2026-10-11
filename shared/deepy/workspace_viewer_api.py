@@ -45,8 +45,19 @@ class ViewerProtection(BaseModel):
     protected: StrictBool
 
 
+class ViewerMigration(BaseModel):
+    workspace: str
+    mode: Literal['shared', 'dedicated']
+    folder: str | None = None
+    confirmed: StrictBool = False
+
+
 def mount_workspace_viewer(app, service):
     viewer = service.workspace_viewer
+
+    @app.post('/deepy_api/workspace_viewer/storage')
+    def storage(payload: ViewerMigration):
+        return viewer.migrate(**payload.model_dump())
 
     @app.get('/deepy_api/workspace_viewer')
     def page(workspace: str, source: GallerySourceId = 'video', page: int = Query(0, ge=0)):
@@ -90,7 +101,7 @@ def mount_workspace_viewer(app, service):
     async def upload(workspace: str, file: UploadFile = File(...)):
         # The target is captured before uploading: never import into a workspace
         # selected by another browser while this upload was in flight.
-        output = Path(service._deps.get_server_config()['save_path'])
+        output = Path(service.workspace_output_config(workspace)['save_path'])
         output.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix='.import-', dir=output) as temporary:
             source = await save_upload(file, Path(temporary), limit=1024 * 1024 * 1024, extensions=_IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS | set(MESH_IMPORT_EXTENSIONS), preserve_filename=True)
@@ -100,7 +111,7 @@ def mount_workspace_viewer(app, service):
                         raise ValueError('The active workspace changed during upload. Please try again.')
                     if source.suffix.lower() in MESH_IMPORT_EXTENSIONS:
                         from shared.utils.mesh_outputs import import_mesh_file
-                        path, reused = import_mesh_file(str(source), service._deps.get_server_config()['mesh_save_path'])
+                        path, reused = import_mesh_file(str(source), service.workspace_output_config(workspace)['mesh_save_path'])
                     else:
                         path, reused = persist_gallery_import(source, output, move=True)
                     try:

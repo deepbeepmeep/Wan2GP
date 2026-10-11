@@ -1,5 +1,172 @@
 /* Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt) */ function() {
     console.log("[WanGP] main JS initialized");
+    window.wangpRefreshSettingsTools = function() {
+        for (const row of document.querySelectorAll('.wangp-settings-file-actions')) {
+            row.classList.toggle('is-compact', row.clientWidth < 580);
+            for (const button of row.querySelectorAll('.wangp-settings-default, .wangp-settings-export')) {
+                if (!button.hasAttribute('aria-label')) button.setAttribute('aria-label', button.textContent.trim());
+            }
+        }
+    };
+    window.wangpRefreshSettingsTools();
+    let inputModeFrame = 0;
+    const inputModeHelp = {"": "Text Prompt", S: "Start with an Image", V: "Continue an Uploaded Video", L: "Continue the Last Generated Video"};
+    const inputModeShortLabels = {"": "Text", S: "Start image", V: "Continue Video", L: "Last Video"};
+    function closeInputMenu(dropdown, restoreFocus = false) {
+        dropdown.lastElementChild.hidden = true;
+        dropdown.firstElementChild.setAttribute('aria-expanded', 'false');
+        if (restoreFocus) dropdown.firstElementChild.focus({preventScroll: true});
+    }
+    function openInputMenu(dropdown) {
+        dropdown.lastElementChild.hidden = false;
+        dropdown.firstElementChild.setAttribute('aria-expanded', 'true');
+        (dropdown.querySelector('[aria-selected="true"]:not(:disabled)') || dropdown.querySelector('[role="option"]:not(:disabled)')).focus({preventScroll: true});
+    }
+    window.wangpRefreshInputModes = function() {
+        if (inputModeFrame) return;
+        inputModeFrame = requestAnimationFrame(() => {
+            inputModeFrame = 0;
+            window.wangpRefreshSettingsTools();
+            for (const radio of document.querySelectorAll('.wangp-input-modes')) {
+                if (!radio.getBoundingClientRect().width) continue;
+                const inputs = [...radio.querySelectorAll('input[type="radio"]')];
+                const segments = inputs[0].closest('.wrap');
+                for (const input of inputs) {
+                    const label = input.closest('label');
+                    if (label.querySelector('.wangp-mode-full')) continue;
+                    const caption = label.querySelector('span');
+                    const full = document.createElement('span');
+                    full.className = 'wangp-mode-full';
+                    full.textContent = caption.textContent;
+                    full.setAttribute('aria-hidden', 'true');
+                    const short = document.createElement('span');
+                    short.className = 'wangp-mode-short';
+                    short.textContent = inputModeShortLabels[input.value];
+                    short.setAttribute('aria-hidden', 'true');
+                    input.setAttribute('aria-label', full.textContent);
+                    caption.replaceChildren(full, short);
+                }
+                let dropdown = radio.querySelector('.wangp-input-dropdown');
+                if (!dropdown) {
+                    dropdown = document.createElement('div');
+                    dropdown.className = 'wangp-input-dropdown';
+                    const trigger = document.createElement('button');
+                    trigger.type = 'button';
+                    trigger.className = 'wangp-input-trigger';
+                    trigger.setAttribute('aria-haspopup', 'listbox');
+                    trigger.setAttribute('aria-expanded', 'false');
+                    const menu = document.createElement('div');
+                    menu.className = 'wangp-input-menu';
+                    menu.id = radio.id + '-input-menu';
+                    menu.setAttribute('role', 'listbox');
+                    menu.setAttribute('aria-label', 'Video Input Mode');
+                    menu.hidden = true;
+                    trigger.setAttribute('aria-controls', menu.id);
+                    dropdown.append(trigger, menu);
+                    radio.append(dropdown);
+                }
+                const trigger = dropdown.firstElementChild;
+                const menu = dropdown.lastElementChild;
+                const choices = inputs.map(input => [input.value, input.closest('label').querySelector('.wangp-mode-full').textContent, input.disabled]);
+                const signature = JSON.stringify(choices);
+                if (dropdown.dataset.choices !== signature) {
+                    menu.replaceChildren(...choices.map(([value, text, disabled]) => {
+                        const option = document.createElement('button');
+                        option.type = 'button';
+                        option.setAttribute('role', 'option');
+                        option.tabIndex = -1;
+                        option.dataset.value = value;
+                        option.textContent = text;
+                        option.disabled = disabled;
+                        return option;
+                    }));
+                    dropdown.dataset.choices = signature;
+                }
+                for (const input of inputs) {
+                    const label = input.closest('label');
+                    if (label.dataset.wangpInputTooltip !== inputModeHelp[input.value]) label.dataset.wangpInputTooltip = inputModeHelp[input.value];
+                }
+                const selected = inputs.find(input => input.checked);
+                const value = selected ? selected.value : '';
+                const caption = choices.find(choice => choice[0] === value)[1];
+                if (trigger.textContent !== caption) trigger.textContent = caption;
+                trigger.setAttribute('aria-label', 'Video Input Mode: ' + caption);
+                trigger.disabled = inputs.every(input => input.disabled);
+                if (trigger.dataset.wangpInputTooltip !== inputModeHelp[value]) trigger.dataset.wangpInputTooltip = inputModeHelp[value];
+                for (const option of menu.children) {
+                    const checked = String(option.dataset.value === value);
+                    if (option.getAttribute('aria-selected') !== checked) option.setAttribute('aria-selected', checked);
+                }
+                // Measure text and padding, excluding the extra width shared by expanded buttons.
+                // These sizes remain available while the segments are hidden.
+                const segmentStyle = getComputedStyle(segments);
+                let requiredWidth = parseFloat(segmentStyle.borderLeftWidth) + parseFloat(segmentStyle.borderRightWidth);
+                const labelSizes = inputs.map(input => {
+                    const label = input.closest('label');
+                    const style = getComputedStyle(label);
+                    const fullWidth = label.querySelector('.wangp-mode-full').getBoundingClientRect().width;
+                    requiredWidth += fullWidth + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+                    return {label, savedWidth: fullWidth - label.querySelector('.wangp-mode-short').getBoundingClientRect().width};
+                });
+                for (const {label, savedWidth} of labelSizes.reverse()) {
+                    const shorten = savedWidth > 0 && requiredWidth > radio.clientWidth;
+                    label.classList.toggle('is-short', shorten);
+                    if (shorten) requiredWidth -= savedWidth;
+                }
+                const compact = requiredWidth > radio.clientWidth;
+                if (radio.classList.contains('is-compact') !== compact) {
+                    const focused = document.activeElement;
+                    radio.classList.toggle('is-compact', compact);
+                    closeInputMenu(dropdown);
+                    if (compact && segments.contains(focused)) trigger.focus({preventScroll: true});
+                    else if (!compact && dropdown.contains(focused) && selected) selected.focus({preventScroll: true});
+                }
+            }
+        });
+    };
+    document.addEventListener('change', event => {
+        if (event.target.closest('.wangp-input-mode-row')) window.wangpRefreshInputModes();
+    });
+    document.addEventListener('click', event => {
+        const dropdown = event.target.closest('.wangp-input-dropdown');
+        for (const other of document.querySelectorAll('.wangp-input-dropdown:has([aria-expanded="true"])')) {
+            if (other !== dropdown) closeInputMenu(other);
+        }
+        if (dropdown) {
+            const option = event.target.closest('[role="option"]');
+            if (option) {
+                const radio = dropdown.closest('.wangp-input-modes');
+                [...radio.querySelectorAll('input[type="radio"]')].find(input => input.value === option.dataset.value).click();
+                closeInputMenu(dropdown, true);
+            } else if (event.target.closest('.wangp-input-trigger')) {
+                if (dropdown.lastElementChild.hidden) openInputMenu(dropdown);
+                else closeInputMenu(dropdown);
+            }
+        }
+        if (event.target.closest('[role="tab"]')) window.wangpRefreshInputModes();
+    });
+    document.addEventListener('keydown', event => {
+        const dropdown = event.target.closest('.wangp-input-dropdown');
+        if (!dropdown) return;
+        if (event.key === 'Escape') {
+            closeInputMenu(dropdown, true);
+            event.preventDefault();
+        } else if (event.key === 'Tab') {
+            closeInputMenu(dropdown, true);
+        } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+            event.preventDefault();
+            if (dropdown.lastElementChild.hidden) openInputMenu(dropdown);
+            else {
+                const options = [...dropdown.querySelectorAll('[role="option"]:not(:disabled)')];
+                const index = options.indexOf(document.activeElement);
+                const next = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+                options[next].focus({preventScroll: true});
+            }
+        }
+    });
+    window.addEventListener('resize', window.wangpRefreshInputModes, {passive: true});
+    document.fonts.addEventListener('loadingdone', window.wangpRefreshInputModes);
+    window.wangpRefreshInputModes();
     let generationLayoutFrame = 0;
     function scheduleGenerationReferences() {
         if (generationLayoutFrame) return;
@@ -28,19 +195,27 @@
     // CSS positions the bars; this only distinguishes floating from landed.
     let actionFrame = 0;
     const actionResize = new ResizeObserver(scheduleActionAppearance);
-    const observedActions = new Set();
+    const observedActionNodes = new Set();
     function scheduleActionAppearance() {
         if (!actionFrame) actionFrame = requestAnimationFrame(updateActionAppearance);
     }
     function updateActionAppearance() {
         actionFrame = 0;
         const bars = document.querySelectorAll('.wangp-settings-actions');
-        for (const bar of bars) {
-            if (!observedActions.has(bar)) {
-                observedActions.add(bar);
-                actionResize.observe(bar);
-                actionResize.observe(bar.parentElement);
+        const nodes = new Set([...bars].flatMap(bar => [bar, bar.parentElement]));
+        for (const node of observedActionNodes) {
+            if (!nodes.has(node)) {
+                actionResize.unobserve(node);
+                observedActionNodes.delete(node);
             }
+        }
+        for (const node of nodes) {
+            if (!observedActionNodes.has(node)) {
+                actionResize.observe(node);
+                observedActionNodes.add(node);
+            }
+        }
+        for (const bar of bars) {
             const rect = bar.getBoundingClientRect();
             if (!rect.width || !rect.height) {
                 bar.classList.toggle('is-floating', false);
@@ -56,18 +231,18 @@
                 : bar.parentElement.getBoundingClientRect().top + (parseFloat(parentStyle.paddingTop) || 0);
             bar.classList.toggle('is-floating', rect.top < naturalTop - 1);
         }
-        for (const bar of observedActions) {
-            if (!bar.isConnected) {
-                actionResize.unobserve(bar);
-                observedActions.delete(bar);
+    }
+    document.addEventListener('scroll', event => {
+        for (const node of observedActionNodes) {
+            if (event.target.contains(node)) {
+                scheduleActionAppearance();
+                break;
             }
         }
-    }
-    document.addEventListener('scroll', scheduleActionAppearance, {capture: true, passive: true});
+    }, {capture: true, passive: true});
     window.addEventListener('resize', scheduleActionAppearance, {passive: true});
-    new MutationObserver(scheduleActionAppearance).observe(document.querySelector('gradio-app'), {
-        childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden']
-    });
+    // Form rebuilds register their new bars; resize handles visibility and geometry.
+    window.wangpRefreshActionBars = scheduleActionAppearance;
     scheduleActionAppearance();
     document.addEventListener('click', (event) => {
         const closeButton = event.target.closest('button[aria-label="Close"]');

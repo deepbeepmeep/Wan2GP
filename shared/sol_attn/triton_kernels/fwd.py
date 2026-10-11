@@ -5,6 +5,7 @@
 
 import torch
 import triton
+from shared.kernels.triton_autotune import model_autotune
 import triton.language as tl
 
 try:
@@ -47,7 +48,7 @@ def _restore_q(kwargs, exception):
         kwargs["q_desc"].base.copy_(_saved_q.pop())
 
 
-@triton.autotune(
+@model_autotune(
     configs=[
         triton.Config({}, num_warps=warps, num_stages=stages)
         for warps in (4, 8)
@@ -57,7 +58,7 @@ def _restore_q(kwargs, exception):
     pre_hook=_save_q,
     post_hook=_restore_q,
 )
-@triton.jit
+@triton.jit(do_not_specialize=['T', 'query_start_block', 'sink_start_block', 'sink_end_block', 'NT'], do_not_specialize_on_alignment=['T', 'query_start_block', 'sink_start_block', 'sink_end_block', 'NT'])
 def _forward_tma(
     q_desc,
     k_desc,
@@ -74,7 +75,7 @@ def _forward_tma(
     HAS_SINK: tl.constexpr,
     H: tl.constexpr,
     D: tl.constexpr,
-    NT: tl.constexpr,
+    NT,
     BV: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
@@ -197,13 +198,13 @@ def _forward_tma(
     )
 
 
-@triton.autotune(
+@model_autotune(
     # This was the winner at both 22,263 and 38,247 H3 tokens on SM89.
     # A single config also avoids first-use benchmarking on the pointer path.
     configs=[triton.Config({"BV": 128}, num_warps=4, num_stages=1)],
     key=["T"],
 )
-@triton.jit
+@triton.jit(do_not_specialize=['T', 'query_start_block', 'sink_start_block', 'sink_end_block', 'NT'], do_not_specialize_on_alignment=['T', 'query_start_block', 'sink_start_block', 'sink_end_block', 'NT'])
 def _forward_ptr(
     q_ptr,
     k_ptr,
@@ -233,7 +234,7 @@ def _forward_ptr(
     HAS_SINK: tl.constexpr,
     H: tl.constexpr,
     D: tl.constexpr,
-    NT: tl.constexpr,
+    NT,
     BV: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
@@ -511,3 +512,7 @@ def sol_attn(
 
 
 __all__ = ["sol_attn"]
+
+
+from shared.kernels.triton_compilation_log import install_triton_compilation_logger
+install_triton_compilation_logger()

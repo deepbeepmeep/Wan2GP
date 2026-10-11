@@ -31,7 +31,7 @@ class ResumableTransfers(_MediaTransferStore):
         self.scope = hashlib.sha256(repr((policy.mode, [str(root) for root in policy.output_roots])).encode()).hexdigest()
 
     def _seal(self, kind, **fields):
-        return self.state.seal({"kind": kind, "scope": self.scope, "expires": time.time() + TTL_SECONDS, **fields})
+        return self.state.seal({"kind": kind, "scope": self.scope, "expires": time.time() + TTL_SECONDS, **({'agent_context': self.session._agent_context} if getattr(self.session, '_agent_context', None) else {}), **fields})
 
     def _open(self, token, kind):
         record = self.state.unseal(token, kind)

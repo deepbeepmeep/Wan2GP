@@ -194,7 +194,10 @@ class BasicAVTransformerBlock(torch.nn.Module):
     def _apply_ffn_chunked(self, ffn: FeedForward, x: torch.Tensor) -> torch.Tensor:
         if x.shape[1] < self.ff_chunk_min_tokens:
             return ffn(x)
-        chunk_size = max(int(x.shape[1] / max(ffn.mult, 1)), 1)
+        # Large videos benefit from keeping the expanded scratch below one full hidden state. Small workloads keep their
+        # established chunk count so that additional launches do not dominate their FFN time.
+        chunks = ffn.mult * (2 if x.numel() * x.element_size() >= 512 << 20 else 1)
+        chunk_size = max(int(x.shape[1] / max(chunks, 1)), 1)
         x_flat = x.view(-1, x.shape[-1])
         for chunk in torch.split(x_flat, chunk_size):
             chunk[...] = ffn(chunk)
@@ -335,8 +338,9 @@ class BasicAVTransformerBlock(torch.nn.Module):
 
         # Audio - Video cross attention.
         if run_a2v or run_v2a:
-            vx_norm3 = rms_norm(vx, eps=self.norm_eps)
-            ax_norm3 = rms_norm(ax, eps=self.norm_eps)
+            # Both directions consume the original states. Compute the small audio result first, but add it only after a2v.
+            # Recomputing the video norm avoids retaining a full normalized video alongside its modulated copy.
+            pending_v2a = None
 
             (
                 scale_ca_audio_hidden_states_a2v,
@@ -374,14 +378,40 @@ class BasicAVTransformerBlock(torch.nn.Module):
             shift_ca_video_hidden_states_v2a = shift_ca_video_hidden_states_v2a.to(vx.dtype)
             gate_out_a2v = gate_out_a2v.to(vx.dtype)
 
+            if run_v2a:
+                ax_scaled = _apply_scale_shift(
+                    rms_norm(ax, eps=self.norm_eps),
+                    scale_ca_audio_hidden_states_v2a,
+                    shift_ca_audio_hidden_states_v2a,
+                )
+                vx_scaled = _apply_scale_shift(
+                    rms_norm(vx, eps=self.norm_eps),
+                    scale_ca_video_hidden_states_v2a,
+                    shift_ca_video_hidden_states_v2a,
+                )
+                v2a_mask = perturbations.mask_like(PerturbationType.SKIP_V2A_CROSS_ATTN, self.idx, ax)
+                x_list, context_list = [ax_scaled], [vx_scaled]
+                del ax_scaled, vx_scaled
+                attn_out = self.video_to_audio_attn(
+                    x_list,
+                    context_list=context_list,
+                    mask=audio.cross_attention_mask,
+                    pe=audio.cross_positional_embeddings,
+                    k_pe=video.cross_positional_embeddings,
+                )
+                attn_out = _apply_gate(attn_out, gate_out_v2a)
+                attn_out.mul_(v2a_mask)
+                pending_v2a = attn_out
+                attn_out = ax_scaled = vx_scaled = None
+
             if run_a2v:
                 vx_scaled = _apply_scale_shift(
-                    vx_norm3.clone(),
+                    rms_norm(vx, eps=self.norm_eps),
                     scale_ca_video_hidden_states_a2v,
                     shift_ca_video_hidden_states_a2v,
                 )
                 ax_scaled = _apply_scale_shift(
-                    ax_norm3.clone(),
+                    rms_norm(ax, eps=self.norm_eps),
                     scale_ca_audio_hidden_states_a2v,
                     shift_ca_audio_hidden_states_a2v,
                 )
@@ -400,34 +430,10 @@ class BasicAVTransformerBlock(torch.nn.Module):
                 vx.add_(attn_out)
                 attn_out = vx_scaled = ax_scaled = None
 
-            if run_v2a:
-                ax_scaled = _apply_scale_shift(
-                    ax_norm3,
-                    scale_ca_audio_hidden_states_v2a,
-                    shift_ca_audio_hidden_states_v2a,
-                )
-                vx_scaled = _apply_scale_shift(
-                    vx_norm3,
-                    scale_ca_video_hidden_states_v2a,
-                    shift_ca_video_hidden_states_v2a,
-                )
-                vx_norm3 = ax_norm3 = None  # scaled in place: the attention releases its context after the projections
-                v2a_mask = perturbations.mask_like(PerturbationType.SKIP_V2A_CROSS_ATTN, self.idx, ax)
-                x_list, context_list = [ax_scaled], [vx_scaled]
-                del ax_scaled, vx_scaled
-                attn_out = self.video_to_audio_attn(
-                    x_list,
-                    context_list=context_list,
-                    mask=audio.cross_attention_mask,
-                    pe=audio.cross_positional_embeddings,
-                    k_pe=video.cross_positional_embeddings,
-                )
-                attn_out = _apply_gate(attn_out, gate_out_v2a)
-                attn_out.mul_(v2a_mask)
-                ax.add_(attn_out)
-                attn_out = ax_scaled = vx_scaled = None
+            if pending_v2a is not None:
+                ax.add_(pending_v2a)
+                pending_v2a = None
 
-            vx_norm3 = ax_norm3 = None  # not needed by the feed-forward
             del gate_out_a2v, gate_out_v2a
             del (
                 scale_ca_video_hidden_states_a2v,

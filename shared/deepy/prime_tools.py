@@ -23,7 +23,7 @@ from shared.deepy import media_registry
 from shared.deepy.config import DEEPY_CONTEXT_TOKENS_DEFAULT, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, get_deepy_config_value, get_deepy_runtime_config, normalize_deepy_context_tokens, normalize_deepy_mcp_auto_discover_paths, normalize_deepy_prime_mcp_servers
 from shared.gradio import assistant_chat
 from shared.mcp.server import build_inprocess_server, resolve_gallery_media_path
-from shared.mcp.resources import RESOURCE_ALIASES, RESOURCE_DESCRIPTION, query_resources, _extract_markdown_sections, _select_markdown_sections, _search_markdown_sections, _resource_read_blocks
+from shared.mcp.resources import RESOURCE_ALIASES, RESOURCE_DESCRIPTION, query_resources, resource_record, _extract_markdown_sections, _select_markdown_sections, _search_markdown_sections, _resource_read_blocks
 
 
 PRIME_ASYNC_ENABLED = False
@@ -90,6 +90,10 @@ class DeepyPrimeTools:
 
         base_policy = build_file_access_policy(zero_tools._server_config() if zero_tools is not None else get_deepy_runtime_config())
         self._api_session = WanGPSession(webui_state=state, console_output=False, console_isatty=False)
+        from shared.utils.workspace_storage import host_for_gen
+        host = host_for_gen(state['gen'])
+        if host is not None:
+            self._api_session._workspace_id = host.deepy_workspace_id()
         self._api_session._gradio_webui_context = {"defer_load_queue_trigger": True}
 
         workspace = session_store.session_workspace(assistant_session)
@@ -244,14 +248,7 @@ class DeepyPrimeTools:
                         while True:
                             listed_resources = await client.list_resources(cursor=cursor)
                             for resource in listed_resources.resources:
-                                self._resource_defs.append({
-                                    "server": server_name,
-                                    "uri": str(resource.uri),
-                                    "name": str(getattr(resource, "name", "") or ""),
-                                    "title": str(getattr(resource, "title", "") or ""),
-                                    "description": str(getattr(resource, "description", "") or ""),
-                                    "mime_type": str(getattr(resource, "mimeType", "") or ""),
-                                })
+                                self._resource_defs.append(resource_record(resource, server_name))
                             cursor = getattr(listed_resources, "nextCursor", None)
                             if not cursor:
                                 break
@@ -287,6 +284,8 @@ class DeepyPrimeTools:
                     tool_name, arguments, future = request
                     try:
                         if tool_name == "mcp_resource":
+                            local_resources = (await clients["wangp"].list_resources()).resources
+                            self._resource_defs = [item for item in self._resource_defs if item["server"] != "wangp"] + [resource_record(item) for item in local_resources]
                             async def read_resource(server_name, uri):
                                 response = await clients[server_name].read_resource(uri)
                                 return [{"uri": str(item.uri), "mime_type": str(item.mimeType or ""), **({"text": item.text} if hasattr(item, "text") else {"blob": item.blob})} for item in response.contents]
@@ -568,6 +567,7 @@ class DeepyPrimeTools:
             "wangp_model": ("model_type",),
             "wangp_models": ("action",),
             "wangp_deepy_templates": ("tool_id",),
+            "wangp_templates": ("task", "template"),
             "wangp_session": ("action",),
             "wangp_toolbox": ("action",),
             "wangp_io": ("action",),
@@ -689,6 +689,12 @@ class DeepyPrimeTools:
             if settings is None:
                 return self.get_tool_display_name(tool_name)
             media_label, model_label = self._generation_label_context(settings)
+        elif tool_name == "wangp_templates":
+            task = arguments.get("task")
+            template = arguments.get("template")
+            if template is not None:
+                return finish(f"Read {short(template)} Template for {humanize(task or '')}")
+            return finish(f"Browse Templates for {humanize(task)}" if task else "Browse Template Tasks")
         elif tool_name in {"wangp_deepy_templates", "wangp_list_gallery"} and "action" not in arguments:
             if tool_name == "wangp_deepy_templates":
                 tool_name = "wangp_list_deepy_templates" if arguments.get("cursor") else "wangp_get_deepy_template_settings"

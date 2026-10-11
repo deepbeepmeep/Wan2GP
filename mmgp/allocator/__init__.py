@@ -9,9 +9,11 @@ install(spill=True) places what VRAM has no room for in system RAM instead of ra
 statistics and empty_cache are answered by the allocator. set_pressure_callback, mark_reset / mark_peak, room and stats serve the automatic
 VRAM preload; set_vram_limit emulates a smaller GPU for tests."""
 import ctypes
+import contextlib
 import os
 import platform
 import sys
+import threading
 
 import torch
 
@@ -34,6 +36,7 @@ _OOM_ERROR_LIBRARIES = {("win32", "amd64"): "oom_error_win_amd64.dll", ("linux",
 OOM_ERROR_TORCH_VERSIONS = ((2, 6), (2, 15))
 _oom_error = None  # the companion library, kept loaded while the allocator may call it
 _pressure_callback = None  # the ctypes callback, kept alive while the library may call it
+_warmup = threading.local()
 
 
 def library_path():
@@ -98,6 +101,31 @@ def install(mode="vmm", large_mb=256, chunk_mb=32, spill=False):
     lib.vmm_configure(large_mb << 20, chunk_mb << 20, 3 if spill else 0)  # spill modes: pinned system RAM, then the driver's allocation
     lib.vmm_set_oom_thrower.argtypes = (ctypes.c_void_p,)
     lib.vmm_set_ram_release.argtypes = (ctypes.c_void_p,)
+    lib.vmm_begin_warmup.argtypes = (ctypes.c_int, ctypes.c_ulonglong, ctypes.c_ulonglong, ctypes.c_void_p)
+    lib.vmm_end_warmup.argtypes = (ctypes.c_int, ctypes.c_ulonglong, ctypes.c_ulonglong)
+    lib.vmm_pause_warmup.argtypes = (ctypes.c_int,)
+    lib.vmm_pause_warmup.restype = ctypes.c_int
+    lib.vmm_prepare_reuse.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int)
+    lib.vmm_prepare_reuse.restype = ctypes.c_int
+    lib.vmm_lifetime_wrap.argtypes = (ctypes.c_void_p, ctypes.c_size_t)
+    lib.vmm_lifetime_wrap.restype = ctypes.c_void_p
+    lib.vmm_lifetime_end.argtypes = (ctypes.c_void_p,)
+    lib.vmm_lifetime_end.restype = ctypes.c_int
+    lib.vmm_lifetime_available.argtypes = (ctypes.c_void_p, ctypes.c_int)
+    lib.vmm_lifetime_available.restype = ctypes.c_int
+    lib.vmm_lifetime_discard.argtypes = (ctypes.c_void_p,)
+    lib.vmm_output_plan_begin.argtypes = (ctypes.c_int, ctypes.c_ulonglong, ctypes.c_ulonglong)
+    lib.vmm_output_plan_begin.restype = ctypes.c_void_p
+    lib.vmm_output_plan_pause.argtypes = ()
+    lib.vmm_output_plan_bind.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
+    lib.vmm_output_plan_capture.argtypes = (ctypes.c_void_p,)
+    lib.vmm_output_plan_finish.argtypes = (ctypes.c_void_p,)
+    lib.vmm_output_plan_finish.restype = ctypes.c_int
+    lib.vmm_output_plan_delete.argtypes = (ctypes.c_void_p,)
+    lib.vmm_same_graph_storage.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int)
+    lib.vmm_same_graph_storage.restype = ctypes.c_int
+    lib.vmm_graph_storage_overlaps.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int)
+    lib.vmm_graph_storage_overlaps.restype = ctypes.c_int
     _install_oom_error(lib)
     _lib, active = lib, mode
     _redirect_torch_memory_functions()
@@ -131,6 +159,134 @@ def _install_oom_error(lib):
 
 def _device_index(device=None):
     return torch.cuda.current_device() if device is None else torch.cuda._get_device_index(device, optional=True)
+
+
+@contextlib.contextmanager
+def graph_warmup(pool):
+    """Run warmup on the graph's storage, including its capture. Native allocation paths outside this scope are unchanged."""
+    if active != "vmm":
+        yield
+        return
+    device = torch.cuda.current_device()
+    stream = torch.cuda.current_stream(device)
+    _lib.vmm_begin_warmup(device, *pool, stream.cuda_stream)
+    _warmup.depth = getattr(_warmup, "depth", 0) + 1
+    try:
+        yield
+    finally:
+        _warmup.depth -= 1
+        _lib.vmm_end_warmup(device, *pool)
+
+
+def in_graph_warmup():
+    return getattr(_warmup, "depth", 0) > 0
+
+
+def owns_tensor(tensor):
+    return active == "vmm" and bool(_lib.vmm_prepare_reuse(tensor.untyped_storage().data_ptr(), None, 0))
+
+
+def prepare_reuse(tensor):
+    """Order reuse of an adopted live buffer after its recorded consumers, without waiting on the CPU."""
+    stream = torch.cuda.current_stream(tensor.device)
+    if not _lib.vmm_prepare_reuse(tensor.untyped_storage().data_ptr(), stream.cuda_stream, 1):
+        raise RuntimeError("CUDA graph tried to reuse a buffer no longer owned by the MMGP allocator")
+
+
+_capsule_get = ctypes.pythonapi.PyCapsule_GetPointer
+_capsule_get.argtypes = (ctypes.py_object, ctypes.c_char_p)
+_capsule_get.restype = ctypes.c_void_p
+_capsule_name = ctypes.pythonapi.PyCapsule_SetName
+_capsule_name.argtypes = (ctypes.py_object, ctypes.c_char_p)
+_capsule_name.restype = ctypes.c_int
+_capsule_new = ctypes.pythonapi.PyCapsule_New
+_capsule_new.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p)
+_capsule_new.restype = ctypes.py_object
+_capsule_valid = ctypes.pythonapi.PyCapsule_IsValid
+_capsule_valid.argtypes = (ctypes.py_object, ctypes.c_char_p)
+_capsule_valid.restype = ctypes.c_int
+
+
+def lifetime_available(tensor):
+    """Other-stream consumers keep their input protected instead of adding a dependency for memory reuse."""
+    return bool(_lib.vmm_lifetime_available(tensor.untyped_storage().data_ptr(), tensor.device.index))
+
+
+def lifetime_view(tensor):
+    """An execution-owned view; native storage destruction detects the last alias without Python dispatch hooks."""
+    if active != "vmm":
+        return tensor, None
+    capsule = torch.utils.dlpack.to_dlpack(tensor)
+    token = _lib.vmm_lifetime_wrap(_capsule_get(capsule, b"dltensor"), tensor.numel() * tensor.element_size())
+    if token is None:
+        return tensor, None
+    _capsule_name(capsule, b"used_dltensor")  # ownership passes to the wrapping DLPack storage
+    wrapped = _capsule_new(token, b"dltensor", None)
+    try:
+        with torch.inference_mode(False):
+            view = torch.utils.dlpack.from_dlpack(wrapped)
+    except BaseException:
+        _lib.vmm_lifetime_end(token)
+        if _capsule_valid(wrapped, b"dltensor"):
+            _lib.vmm_lifetime_discard(token)
+        raise
+    return view, token
+
+
+def end_lifetime(token):
+    return bool(_lib.vmm_lifetime_end(token))
+
+
+class OutputPlan:
+    """Bind eligible captured outputs to warmup storage at their observed allocation, without a GPU copy."""
+    def __init__(self, pool):
+        self.token = _lib.vmm_output_plan_begin(torch.cuda.current_device(), *pool) if active == "vmm" else None
+
+    def pause(self):
+        if self.token is not None:
+            _lib.vmm_output_plan_pause()
+
+    def bind(self, tensor):
+        if self.token is not None:
+            _lib.vmm_output_plan_bind(self.token, tensor.untyped_storage().data_ptr())
+
+    def capture(self):
+        if self.token is not None:
+            _lib.vmm_output_plan_capture(self.token)
+
+    def finish(self):
+        return self.token is None or bool(_lib.vmm_output_plan_finish(self.token))
+
+    def close(self):
+        if self.token is not None:
+            self.pause()
+            _lib.vmm_output_plan_delete(self.token)
+            self.token = None
+
+
+def graph_storage_overlaps(first, second):
+    """Capture planning only: escaped outputs must not alias physical pages loaned by static inputs."""
+    return (active == "vmm" and first.is_cuda and first.device == second.device and
+            bool(_lib.vmm_graph_storage_overlaps(first.untyped_storage().data_ptr(), second.untyped_storage().data_ptr(), first.device.index)))
+
+
+def same_graph_storage(first, second):
+    return (active == "vmm" and first.is_cuda and first.device == second.device and first.storage_offset() == second.storage_offset() == 0 and
+            first.shape == second.shape and first.stride() == second.stride() and first.dtype == second.dtype and
+            bool(_lib.vmm_same_graph_storage(first.data_ptr(), second.data_ptr(), first.device.index)))
+
+
+@contextlib.contextmanager
+def normal_allocations():
+    """Persistent warmup caches need independent storage: earlier graphs can overwrite their pool's scratch on replay."""
+    if not in_graph_warmup():
+        yield
+        return
+    previous = _lib.vmm_pause_warmup(1)
+    try:
+        yield
+    finally:
+        _lib.vmm_pause_warmup(previous)
 
 
 def stats(device=None):

@@ -130,17 +130,18 @@ Queue completed: 3/3 tasks in 5m 23s
 
 ```bash
 --mcp                              # Start WanGP as an MCP server without the web UI
---mcp-webui                        # Also serve MCP from the web UI: agents share its queue and gallery
---mcp-transport TRANSPORT          # stdio (default with --mcp), sse, or streamable-http (default with --mcp-webui)
+--mcp-webui                        # Override Agents config: enable MCP with the web UI
+--no-mcp-webui                     # Override Agents config: disable MCP with the web UI
+--mcp-transport TRANSPORT          # stdio (default with --mcp), sse, or streamable-http (default with the web UI)
 --mcp-host HOST                    # Host for HTTP transports
---mcp-port PORT                    # Port for HTTP transports
+--mcp-port PORT                    # Override Configuration > Agents port for HTTP transports (default: 8000)
 --mcp-api-version {1,2,2.1}        # WanGP API contract; latest (2.1) by default
 --mcp-async                        # Permit wait=false in v2/v2.1; disabled by default
 --mcp-console-output               # Mirror WanGP output while serving MCP
 --mcp-allow-read-file-system       # Allow agents to submit arbitrary server file paths (disabled by default)
 ```
 
-`--mcp-webui` adds an MCP address to a normal web UI launch: agents' generations join the queue shown in the browser, run after the tasks already waiting and appear in every open page's progress, preview and gallery. In this mode asynchronous calls are always available. See [MCP server inside the web UI](API.md#mcp-server-inside-the-web-ui).
+MCP is off by default with the web UI, including after upgrading. Control autostart with **Enable MCP with Web UI** under **Configuration > Agents**. When enabled, agents' generations join the queue shown in the browser, run after the tasks already waiting and appear in every open page's progress, preview and gallery. In this mode asynchronous calls are always available. Set **MCP Server Port** under **Configuration > Agents** and restart, or override it for one launch with `--mcp-port PORT`. `--mcp-webui` and `--no-mcp-webui` override the saved autostart choice for one launch without changing it. See [MCP server inside the web UI](API.md#mcp-server-inside-the-web-ui).
 
 Media IDs returned by the Gallery remain usable when unrestricted filesystem reads are disabled. V2.1 also provides output-folder reads and a writable session workspace. Streamable HTTP and SSE servers expose short-lived file and Gallery upload/download URLs; stdio downloads use binary MCP resources with byte-range support.
 
@@ -331,7 +332,7 @@ JSON entries take precedence over `--loras`. Unlisted keys use the root from `--
 ```bash
 --settings PATH              # Path to folder containing default settings for all models
 --config PATH                # Config folder for wgp_config.json and queue.zip
---workspaces-dir FOLDER       # Gallery workspaces for Gradio/Web (default: ./workspaces)
+--workspaces-dir FOLDER       # Workspace manifests/media; overrides Config / Outputs (default: ./workspaces)
 --verbose LEVEL              # Information level 0-2 (default: 1)
 ```
 

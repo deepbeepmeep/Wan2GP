@@ -1,6 +1,7 @@
 # Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import os
 import torch
+from models.help_shared import specialities
 
 from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
@@ -52,11 +53,13 @@ class family_handler:
     @staticmethod
     def query_model_def(base_model_type, model_def):
         return {
+            'specialities': specialities('audio-video generation'),
             'device_explicit': True, 'dtype': 'bf16', 'size': 'large', 'returns_audio': True, 'multimedia_generation': True,
             'fps': 24, 'frames_minimum': 49, 'frames_steps': 4, 'frames_selection_maximum': 289, 'sliding_window': False, 'video_continuation': False,
             'image_prompt_types_allowed': 'S', 'i2v_class': True, 'capability_overrides': {'text_to_video': False}, 'lora_multiplier_phases': 3,
             'guidance_max_phases': 3, 'embedded_guidance': False, 'inference_steps': True, 'flow_shift': True, 'profiles_dir': ['wan_2_2'],
             'tiny_vae_architecture': 't2v', 'compile': False, 'vae_block_size': 16,
+            'resolution_budget': '2048x2048',
             'sample_solvers': [('Euler', 'euler'), ('LightX2V With Audio Substeps', 'lightx2v')],
             'alt_prompt': {'label': 'Audio Prompt (Optional)', 'name': 'Audio Prompt', 'lines': 3},
             'model_modes': {'label': 'Video Attention', 'choices': [('Full', 0), ('Sparse (Experimental)', 1)], 'default': 0},

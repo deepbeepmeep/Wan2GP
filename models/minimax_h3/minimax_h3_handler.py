@@ -493,6 +493,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         if base_model_type == VIGGLE_ARCHITECTURE:
             result = family_handler.query_model_def(REF2VA_PRUNED_ARCHITECTURE, model_def)
+            result.pop("resolution_budget_tiled", None)
             result.update({
                 "profiles_dir": [VIGGLE_ARCHITECTURE],
                 "device_explicit": True,
@@ -527,6 +528,7 @@ class family_handler:
         if base_model_type in CONTROL_ARCHITECTURES:
             pruned = base_model_type == CONTROL_PRUNED_ARCHITECTURE
             result = family_handler.query_model_def(FL2VA_PRUNED_ARCHITECTURE if pruned else FL2VA_ARCHITECTURE, model_def)
+            result.pop("resolution_budget_tiled", None)
             for key in ("guide_custom_choices", "custom_frames_injection", "one_image_ref_only", "switch_threshold"):
                 result.pop(key)
             result.update({
@@ -560,16 +562,17 @@ class family_handler:
         pruned = base_model_type in (FL2VA_PRUNED_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
         vdn = model_def.get("vdn", False)
         pdd = model_def.get("pdd", False)
+        veda = model_def.get("veda", False)
         text_encoder_variant = model_def.get("text_encoder_variant")
         text_encoder_files = [TEXT_ENCODER_BF16, TEXT_ENCODER_INT8] if text_encoder_variant is None else TEXT_ENCODER_VARIANTS[text_encoder_variant]
         result = {
             "dtype": "bf16",
             "device_explicit": True,
-            "cuda_graphs": ["transformer"],
+            "cuda_graphs": [] if veda else ["transformer"],
             "uint8_guides": _uint8_guides,
             "tiny_vae_architecture": REF2VA_ARCHITECTURE,
             "size": "lighter" if pruned else "large",
-            **({"accelerated": "native"} if pdd or vdn else {}),
+            **({"accelerated": "native"} if pdd or vdn or veda else {}),
             **({"specialities": [{"name": "character consistency", "aliases": ["identity preservation"]}, {"name": "motion transfer", "description": "Transfer motion or camera from reference videos to image-reference characters."}]} if reference_mode else {}),
             "fps": 24,
             "v2i_switch_supported": True,
@@ -585,6 +588,8 @@ class family_handler:
             "visible_phases": 0,
             "lora_multiplier_phases": 1 if pdd else 2,
             "phase_2_spatial_tiling": not pdd,
+            "resolution_budget": "2048x2048",
+            **({"resolution_budget_tiled": "3840x2176"} if not pdd else {}),
             "custom_settings": [{
                 "id": H3_MASK_MODE_SETTING,
                 "name": "Mask Denoising Mode",
@@ -627,10 +632,12 @@ class family_handler:
             "custom_attention_modes": {
                 "vdn": {"label": "VDN hybrid attention", "supports_sparsity": False, "installed": True, "supported": True},
             } if vdn else {
+                "veda": {"label": "Veda Learned Sparse Attention (Triton, NVIDIA SM80+)", "supports_sparsity": False},
+            } if veda else {
                 "sol": {"label": "Sol sparse attention, requires Triton and RTX 30xx or newer", "supports_sparsity": True},
             },
-            "default_attention_modes_supported": not vdn,
-            "attention": {">=0": "vdn"} if vdn else None,
+            "default_attention_modes_supported": not (vdn or veda),
+            "attention": {">=0": "vdn"} if vdn else {">=80": "veda"} if veda else None,
             "attention_sparsity": {
                 "label": "Start Tau (higher = more sparse/faster; lower = more faithful; End Tau = 0.8)",
                 "start": 0.0,
@@ -640,6 +647,8 @@ class family_handler:
             "sample_solvers": [("Euler", "euler")] if pdd else [("Euler", "euler"), ("RES Multistep", "res_multistep"), ("Ralston 2S (~2x slower)", "ralston_2s")],
             "no_negative_prompt": True,
             "returns_audio": True,
+            "audio_window_alignment": True,
+            "audio_overlap_repair_ms": 25,  # one audio latent, plus the measured waveform shortfall
             "multimedia_generation": True,
             "image_end_frame_position": True,
             "control_video_trim_disabled": True,
@@ -831,6 +840,11 @@ class family_handler:
             result["deepy_infos"] += " Two-phase generation uses `num_inference_steps2` (default 3) for final enhancement and `switch_threshold` for its starting noise. Accelerator LoRAs before `|` with any nonzero phase-2 multiplier replace the automatic Turbo together, at their specified multipliers; if all are zero, the automatic Turbo is used. `1;0` means phase 1 only, `1;0.6` sets phase 2 to 0.6, and `1` applies to both phases. LoRAs after `|` keep their multipliers."
         if vdn:
             result["deepy_infos"] += " VDN loads its acceleration LoRA automatically and defaults to 8 steps."
+        if veda:
+            result["compile"] = False
+            help_text = " Veda variants always use learned sparse attention in the H3 transformer; the attention override is locked to Veda. Other attention operations use the application attention backend. It reuses the standard H3 settings, LoRAs and step counts. The predictor follows Transformer Quantization (BF16 or INT8 ConvRot). Sparsity can change fine detail or motion; compare with a standard H3 variant at the same seed. Speed benefits are greatest for large videos. Requires Triton and an NVIDIA SM80+ GPU. Veda runs without CUDA graphs or transformer compilation."
+            result["infos"] += "\n\n### Veda Sparse Attention\n\n" + help_text.strip()
+            result["deepy_infos"] += help_text
         still_infos = "\n\n**Text to Image:** generate one still image without audio. Video duration, extra frames and Audio Refinement do not apply in this mode."
         still_prompt_infos = "\n\nFor Text to Image, describe one still scene: its subject, composition, lighting and details. A plain-language image prompt is sufficient; speech and soundtrack instructions are unnecessary. The optional Write enhancer offers image prompts from text alone or from text plus the selected images. With an image, specify what to change and what to preserve."
         result["infos"] += still_infos
@@ -843,6 +857,8 @@ class family_handler:
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
+        if model_def.get("veda", False):
+            inputs["override_attention"] = "veda"
         if ((inputs.get("spatial_upsampling") or "").startswith(X2_VAE_METHOD) and int(inputs["image_mode"]) == 0
                 and base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, VIGGLE_ARCHITECTURE)
                 and "2" in inputs["audio_prompt_type"]):
@@ -1117,7 +1133,7 @@ class family_handler:
                                  video_vae_filename=video_vae_file,
                                  audio_vae_filename=model_def.get("audio_vae_file", AUDIO_VAE_FILE), shared_h3_pipeline=shared_h3_pipeline,
                                  pdd=pdd, pdd_num_steps=PDD_NUM_STEPS if pdd else None, pdd_block_size=PDD_BLOCK_SIZE if pdd else None,
-                                 vdn=model_def.get("vdn", False), audio_only=base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE,
+                                 vdn=model_def.get("vdn", False), veda=model_def.get("veda", False), audio_only=base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE,
                                  fixed_prompt_filename=os.path.join(VIGGLE_ASSET_FOLDER, VIGGLE_PROMPT_FILE) if viggle else None)
         pipe = {"transformer": pipeline.transformer}
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE and H3_DIALOGUE_GENERATION:
@@ -1144,6 +1160,10 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if model_def.get("veda", False):
+            ui_defaults["override_attention"] = "veda"
+        elif ui_defaults.get("override_attention") == "veda":
+            ui_defaults["override_attention"] = ""
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE:
             return
         if base_model_type in CONTROL_ARCHITECTURES:

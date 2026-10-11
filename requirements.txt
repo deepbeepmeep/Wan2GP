@@ -3,6 +3,7 @@
 optimum-quanto==0.2.7
 safetensors
 psutil
+filelock
 comfy-kitchen==0.2.35
 # Core AI stack
 diffusers==0.36.0

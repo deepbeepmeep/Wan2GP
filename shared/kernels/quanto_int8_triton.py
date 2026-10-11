@@ -1452,3 +1452,8 @@ def scaled_int8_mm(
         num_stages=num_stages,
     )
     return out
+
+
+from shared.kernels.triton_compilation_log import install_triton_compilation_logger, log_compilation_tuning
+install_triton_compilation_logger()
+_autotune_config = log_compilation_tuning(_autotune_config)

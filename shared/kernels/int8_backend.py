@@ -170,7 +170,10 @@ def _weight_scale(weight, n, device):
         return triton._prepare_weight_scale(weight._scale, n, device)
     scale = weight.__dict__.get("_kitchen_scale", None)
     if scale is None:
-        scale = weight._kitchen_scale = triton._prepare_weight_scale(weight._scale, n, device)
+        from mmgp import allocator
+        # A converted weight scale outlives this block. A later block's warmup must not place it in scratch used by an earlier graph.
+        with allocator.normal_allocations():
+            scale = weight._kitchen_scale = triton._prepare_weight_scale(weight._scale, n, device)
     return scale
 
 
@@ -250,6 +253,49 @@ def kitchen_linear_prequantized(weight, bias, q, scales, out):
     if not used:
         raise RuntimeError("Comfy Kitchen rejected the shared-input INT8 output tile")
     return out
+
+
+def linear_grouped(modules, x):
+    """Independent small projections with batched input preparation and normal module hooks.
+
+    Group-64 ConvRot normally launches rotation and quantization for each module.
+    Retain its BF16 rotation boundary, but prepare all input rows together. No
+    weights are packed or cached, so MMGP retains their lifetime and residency.
+    """
+    from shared.kernels import kernel_policy
+    supported = (kernel_policy.allow_approximate() and kitchen_enabled() and _direct_cutlass
+                 and torch.is_inference_mode_enabled() and not torch.compiler.is_compiling()
+                 and not triton._is_fake_tensor(x) and x.is_cuda and x.dtype == torch.bfloat16
+                 and x.ndim == 3 and x.is_contiguous() and len(modules) == x.shape[0]
+                 and x.shape[1] > 2 and x.shape[2] % 64 == 0
+                 and x.numel() * 4 <= _SCRATCH_BYTES
+                 and all(getattr(module, '_convrot_group_size', 0) == 64
+                         and getattr(getattr(module, 'weight_qtype', None), 'name', None) == 'qint8_convrot'
+                         and module.in_features == x.shape[2]
+                         and module.out_features == modules[0].out_features and module.out_features % 8 == 0
+                         and not getattr(module, '_wangp_linear_fusion', None)
+                         and not getattr(module, '_wangp_prequantized_input', None)
+                         and (not getattr(module, '_mm_lora_old_forward', None)
+                              or getattr(module, '_mm_lora_data', None) == {}) for module in modules))
+    if not supported:
+        return torch.stack([module(part) for module, part in zip(modules, x.unbind())])
+    from shared.qtypes.int8_convrot import _rotate_activation
+    rotated = _rotate_activation(x, 64).reshape(-1, x.shape[-1])
+    q, scales = _kitchen.quantize_int8_rowwise(rotated)
+    del rotated
+    q, scales = q.reshape_as(x), scales.reshape(x.shape[0], x.shape[1], -1)
+    output = x.new_empty((x.shape[0], x.shape[1], modules[0].out_features))
+    for module, part, quantized, scale, out in zip(modules, x.unbind(), q.unbind(), scales.unbind(), output.unbind()):
+        previous = getattr(module, '_wangp_prequantized_input', None)
+        module._wangp_prequantized_input = (quantized, scale, out)
+        try:
+            module(part)
+        finally:
+            if previous is None:
+                del module._wangp_prequantized_input
+            else:
+                module._wangp_prequantized_input = previous
+    return output
 
 
 def kitchen_linear_fused(input, weight, bias, input_act, act_weight, act_eps, residual, residual_scale, out=None):

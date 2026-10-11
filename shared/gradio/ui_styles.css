@@ -650,3 +650,68 @@ user-select: text;
 .toast-wrap .toast-text, .toast-wrap .toast-text *, .gradio-container [role="alert"] * { overflow-wrap: anywhere !important; word-break: break-word !important; }
 .toast-wrap .toast-text, .gradio-container [role="alert"] .toast-text { white-space: pre-wrap !important; }
 .toast-wrap .toast-close, .gradio-container [role="alert"] button { position: sticky !important; top: 0 !important; align-self: flex-start !important; flex: 0 0 auto !important; }
+.resolution-picker-row { gap: 2px !important; align-items: center !important; padding-left: 4px !important; background: var(--block-background-fill); border-radius: var(--block-radius); overflow: visible !important; }
+.resolution-picker-toggle { position: relative; flex: 0 0 24px !important; width: 24px !important; min-width: 24px !important; height: 28px !important; padding: 3px !important; font-size: 0 !important; background: transparent !important; border: 0 !important; outline: none !important; box-shadow: none !important; color: #175a79 !important; overflow: visible !important; }
+.resolution-picker-toggle::before { content: ""; display: block; width: 18px; height: 18px; background: currentColor; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4'/%3E%3C/svg%3E") center / contain no-repeat; }
+.resolution-picker-toggle:hover, .resolution-picker-toggle:focus-visible { background: var(--background-fill-secondary) !important; }
+.resolution-picker-toggle::after { content: "Switch between Presets and Megapixels"; position: absolute; left: 0; top: calc(100% + 6px); z-index: 100; padding: 6px 9px; border-radius: 4px; background: var(--body-text-color); color: var(--background-fill-primary); font-size: var(--text-sm); font-weight: normal; white-space: nowrap; pointer-events: none; opacity: 0; visibility: hidden; }
+.resolution-picker-toggle:hover::after, .resolution-picker-toggle:focus-visible::after { opacity: 1; visibility: visible; transition: opacity 0.15s 2s, visibility 0s 2s; }
+
+.wangp-reset-settings { position: relative; flex: 0 0 36px !important; width: 36px !important; min-width: 36px !important; height: 36px !important; padding: 0 !important; font-size: 0 !important; column-gap: 0 !important; overflow: visible !important; }
+.wangp-reset-settings::before { width: 18px !important; height: 18px !important; flex-basis: 18px !important; }
+.wangp-reset-settings::after { content: "Reset Settings"; position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 100; padding: 6px 9px; border-radius: 4px; background: var(--body-text-color); color: var(--background-fill-primary); font-size: var(--text-sm); font-weight: normal; white-space: nowrap; pointer-events: none; opacity: 0; visibility: hidden; }
+.wangp-reset-settings:hover::after, .wangp-reset-settings:focus-visible::after { opacity: 1; visibility: visible; transition: opacity 0.15s 2s, visibility 0s 2s; }
+
+.gr-group:has(> .styler > .wangp-input-mode-row), .styler:has(> .wangp-input-mode-row) { overflow: visible !important; }
+.wangp-input-mode-row > .form { flex-wrap: nowrap !important; align-items: center; gap: 10px !important; min-width: 0 !important; padding: 8px; background: var(--studio-surface, var(--block-background-fill)) !important; border-radius: 8px; overflow: visible !important; }
+.wangp-input-modes { position: relative; flex: 1 1 0 !important; min-width: 0 !important; padding: 0 !important; border: 0 !important; background: transparent !important; overflow: visible !important; }
+.wangp-input-modes > .wrap:has(input[type="radio"]) { display: flex; flex-wrap: nowrap !important; gap: 0 !important; width: max-content; min-width: 100%; border: 1px solid var(--border-color-primary); border-radius: 6px; }
+.wangp-input-modes label { position: relative; flex: 1 0 auto; justify-content: center; padding: 6px 10px !important; margin: 0 !important; border: 0 !important; border-radius: 0 !important; box-shadow: none !important; white-space: nowrap; }
+.wangp-input-modes label:first-child { border-radius: 5px 0 0 5px !important; }
+.wangp-input-modes label:last-child { border-radius: 0 5px 5px 0 !important; }
+.wangp-input-modes label:only-child { border-radius: 5px !important; }
+.wangp-input-modes label span { margin-left: 0 !important; }
+.wangp-mode-short, .is-short .wangp-mode-full { position: absolute; visibility: hidden; }
+.is-short .wangp-mode-short { position: static; visibility: inherit; }
+.wangp-input-modes input[type="radio"] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.wangp-input-modes label:has(input:focus-visible) { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.wangp-input-modes.is-compact > .wrap:has(input[type="radio"]) { position: absolute; visibility: hidden; opacity: 0; pointer-events: none; }
+.wangp-input-dropdown { position: relative; display: none; }
+.wangp-input-modes.is-compact .wangp-input-dropdown { display: block; }
+.wangp-input-trigger { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-width: 0; height: 34px; padding: 5px 11px; border: 1px solid var(--studio-border, var(--input-border-color)); border-radius: 7px; background: var(--studio-surface, var(--block-background-fill)); color: var(--studio-label, var(--body-text-color)); font: inherit; font-weight: 600; cursor: pointer; }
+.wangp-input-trigger::before { content: ""; order: 1; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg) translateY(-2px); }
+.wangp-input-trigger:hover, .wangp-input-trigger[aria-expanded="true"] { background: var(--studio-soft, var(--background-fill-secondary)); border-color: var(--studio-accent, var(--color-accent)); }
+.wangp-input-trigger:focus-visible, .wangp-input-menu button:focus-visible { outline: 2px solid var(--studio-accent, var(--color-accent)); outline-offset: 2px; }
+.wangp-input-menu { position: absolute; z-index: 100; top: calc(100% + 6px); left: 0; width: 100%; padding: 5px; border: 1px solid var(--studio-border, var(--input-border-color)); border-radius: 9px; background: var(--studio-surface, var(--block-background-fill)); box-shadow: 0 6px 20px #163d6424; }
+.wangp-input-menu[hidden] { display: none; }
+.wangp-input-menu button { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 7px 10px; border: 0; border-radius: 5px; background: transparent; color: var(--body-text-color); font: inherit; text-align: left; cursor: pointer; }
+.wangp-input-menu button:hover, .wangp-input-menu button:focus { background: var(--studio-soft, var(--background-fill-secondary)); }
+.wangp-input-menu button[aria-selected="true"] { background: var(--studio-soft, var(--background-fill-secondary)); color: var(--studio-label, var(--body-text-color)); font-weight: 600; }
+.wangp-input-menu button[aria-selected="true"]::after { content: ""; width: 5px; height: 9px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); margin-right: 2px; }
+.wangp-input-menu button:disabled { opacity: .5; cursor: default; }
+.wangp-input-end { flex: 0 0 auto !important; width: max-content; min-width: 0 !important; margin-right: 4px !important; padding: 0 !important; border: 0 !important; background: transparent !important; overflow: visible !important; }
+.wangp-input-end label { position: relative; white-space: nowrap; margin: 0 !important; }
+[data-wangp-input-tooltip]::after, .wangp-input-end label::after { content: attr(data-wangp-input-tooltip); position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 100; width: max-content; padding: 6px 9px; border-radius: 4px; background: var(--body-text-color); color: var(--background-fill-primary); font-size: var(--text-sm); font-weight: normal; line-height: 1.3; pointer-events: none; opacity: 0; visibility: hidden; }
+.wangp-input-end label::after { content: "Use End Image(s)"; left: auto; right: 0; }
+[data-wangp-input-tooltip]:hover::after, [data-wangp-input-tooltip]:focus-visible::after, [data-wangp-input-tooltip]:has(input:focus-visible)::after, .wangp-input-end label:hover::after, .wangp-input-end label:has(input:focus-visible)::after { opacity: 1; visibility: visible; transition: opacity 0.15s 2s, visibility 0s 2s; }
+.wangp-input-trigger[aria-expanded="true"]::after { visibility: hidden; opacity: 0; transition: none; }
+
+.wangp-settings-tools { container-type: inline-size; }
+.wangp-settings-file-actions { align-items: center; flex-wrap: nowrap !important; gap: clamp(4px, .8cqw, 8px) !important; }
+.wangp-settings-file-actions > button:not(.wangp-reset-settings) { padding: 3px clamp(4px, .8cqw, 8px) !important; min-height: 30px !important; font-size: clamp(12px, 2cqw, 14px) !important; }
+.wangp-settings-file-actions > button:not(.wangp-reset-settings) { column-gap: 5px !important; white-space: nowrap; }
+.wangp-settings-file-actions > button::before { width: 14px !important; height: 14px !important; flex-basis: 14px !important; }
+.wangp-settings-file-actions > .wangp-reset-settings { flex-basis: 30px !important; width: 30px !important; min-width: 30px !important; height: 30px !important; }
+.wangp-settings-file-actions > .wangp-reset-settings::before { width: 18px !important; height: 18px !important; flex-basis: 18px !important; }
+.wangp-settings-file-actions > .wangp-settings-include-media { flex: 0 0 auto !important; width: max-content !important; }
+.wangp-settings-include-media label { white-space: nowrap; }
+.wangp-settings-file-actions.is-compact > :is(.wangp-settings-default, .wangp-settings-export) { font-size: 0 !important; }
+.wangp-settings-file-actions.is-compact > .wangp-settings-default::after { content: "Set Default"; font-size: 12px; }
+.wangp-settings-file-actions.is-compact > .wangp-settings-export::after { content: "Export"; font-size: 12px; }
+.wangp-lora-download-row { flex-wrap: nowrap !important; align-items: center; }
+.wangp-lora-download-row > .form { flex: 1 1 0 !important; min-width: 0 !important; }
+.wangp-lora-download-row > button { flex: 0 0 auto !important; padding: 5px 8px !important; white-space: nowrap; }
+
+.wangp-prompt-enhancer-row, .wangp-prompt-enhancer-row > .form { flex-wrap: nowrap !important; }
+.wangp-prompt-enhancer-row > .form { flex: 1 1 0 !important; min-width: 0 !important; }
+.wangp-prompt-enhancer-row > .btn_centered, .wangp-prompt-enhancer-row > .form > :is(.cbx_centered, .cbx_bottom) { flex: 0 0 auto !important; min-width: 0 !important; }

@@ -64,7 +64,7 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
-## 10th of October 2026: WanGP v18.00 - Distortion of Space and Time
+## 11th of October 2026: WanGP v18.00 - Distortion of Space and Time
 
 - **LTX 2.x VAE x3 faster**: the LTX 2 VAE was rewritten in WanGP: 20s of 480p (24fps) video now takes about 28s to generate on an RTX 5090 using Profile 4. Realtime, we can see you from here...
 
@@ -89,6 +89,13 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 - **Deepy Goes 3D**: Deepy can now look at a 3D asset from any angle, zoom or animation frame, draw layouts in SVG, and has a new *Character Sheet* skill: one 3D character in, a turnaround sheet out.
 
+- **H3 Veda Sparse**: MiniMax H3 gets learned sparse attention, with up to **2x faster generation** for higher-resolution or longer videos. Available for both the full 33B and pruned 20B FL2VA/Ref2VA models, using the same settings and LoRAs. 
+
+- **Workspace Folders**: keep each project's generated and imported media in its own folder for easier organization and backups. Choose dedicated folders for new workspaces, or use **Gallery Manager** to convert an existing workspace or choose a different storage folder. To enable this feature: *Config / Outputs* tab
+
+- **Expanded MCP Support for Agents**: external agents gain new tools to validate generation settings, manage their own workspaces, inspect images, videos and 3D assets, and transfer files. Agent activity is now visible in the Gradio interface, so you can follow their work.
+
+- **UI Improvements**: the loaded model's name stays visible in the status area, including between generations. Set a custom target resolution with the **megapixel slider** and **Aspect Ratio** selector, while compact buttons and adaptive controls make the interface fit more comfortably in narrow windows.
 
 ## 7th of October 2026: WanGP v17.17 - With Great Speed Comes Even Less VRAM
 

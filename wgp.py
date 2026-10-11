@@ -10313,22 +10313,22 @@ def add_videos_to_gallery(state, input_file_list, choice, files_to_load):
         return [gr.update()] * output_count
     get_file_list(state, input_file_list)
     new_choices, last_source = {}, VIDEO
-    with lock:
-        valid_files_count = 0
-        invalid_files_count = 0
-        for file_path in files_to_load:
-            file_settings, _, audio_file = get_settings_from_file(state, file_path, False, False, False)
-            source = gallery_source("audio") if audio_file else source_for_path(file_path) if file_settings is not None else _import_source(file_path)
-            if source is None:
-                invalid_files_count += 1
-                continue
-            if source is MESH:
-                file_path, reused = import_mesh_file(file_path, workspace_storage.output_config(server_config, state=state)['mesh_save_path'], filename=getattr(file_path, 'orig_name', None))
-            else:
-                file_path, reused = persist_gallery_import(file_path, workspace_storage.output_config(server_config, state=state)['save_path'], filename=getattr(file_path, 'orig_name', None))
-            if reused:
-                gr.Info(f"Existing file reused: {os.path.basename(file_path)}")
-            files, settings_list = get_file_list(state, None, source.id)
+    valid_files_count = 0
+    invalid_files_count = 0
+    for file_path in files_to_load:
+        file_settings, _, audio_file = get_settings_from_file(state, file_path, False, False, False)
+        source = gallery_source("audio") if audio_file else source_for_path(file_path) if file_settings is not None else _import_source(file_path)
+        if source is None:
+            invalid_files_count += 1
+            continue
+        if source is MESH:
+            file_path, reused = import_mesh_file(file_path, workspace_storage.output_config(server_config, state=state)['mesh_save_path'], filename=getattr(file_path, 'orig_name', None))
+        else:
+            file_path, reused = persist_gallery_import(file_path, workspace_storage.output_config(server_config, state=state)['save_path'], filename=getattr(file_path, 'orig_name', None))
+        if reused:
+            gr.Info(f"Existing file reused: {os.path.basename(file_path)}")
+        files, settings_list = get_file_list(state, None, source.id)
+        with lock:
             if file_path in files:
                 index = files.index(file_path)
                 files.pop(index)

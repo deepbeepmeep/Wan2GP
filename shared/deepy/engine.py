@@ -8409,7 +8409,8 @@ class AssistantEngine:
                 if len(suffix_tokens) > 0:
                     prefix_tokens = self._active_sequence_token_count()
                     prefix_tokens = len(self.session.rendered_token_ids) if prefix_tokens is None else prefix_tokens
-                    if prefix_tokens + len(suffix_tokens) > max(1, self._get_context_window_tokens()):
+                    required_reserve = 0 if self._get_compaction_type() == DEEPY_COMPACTION_TYPE_SUMMARIZE else generation_reserve_tokens
+                    if prefix_tokens + len(suffix_tokens) > max(1, self._get_context_window_tokens() - required_reserve):
                         self._log("Live tool suffix append skipped because history must be trimmed before continuing.")
                     else:
                         mode = self._run_prefill_call(len(suffix_tokens), lambda: runtime.append_suffix(suffix_tokens), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))

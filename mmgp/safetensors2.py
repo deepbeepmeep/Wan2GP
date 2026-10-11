@@ -195,6 +195,7 @@ def _read_safetensors_header(path, file):
         #catalog = json.loads(header_bytes.decode('utf-8'))
         catalog  = json.loads(header_bytes)
         metadata = catalog.pop("__metadata__", None) 
+        catalog = dict(sorted(catalog.items(), key=lambda item: item[1]["data_offsets"]))
         metadata = _parse_metadata(metadata)
 
         _cached_entry = cached_metadata(path, catalog, metadata,length_of_header )        

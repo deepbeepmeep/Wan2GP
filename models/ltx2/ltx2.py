@@ -352,8 +352,8 @@ class LTX2SuperModel(torch.nn.Module):
         object.__setattr__(self, "_ltx2", ltx2_model)
 
         transformer = ltx2_model.model
-        velocity_model = getattr(transformer, "velocity_model", transformer)
-        self.velocity_model = velocity_model
+        # MMGP registers LoRA slots on the X0Model, not its inner velocity model.
+        self.model = transformer
         split_map = getattr(transformer, "split_linear_modules_map", None)
         if split_map is not None:
             self.split_linear_modules_map = split_map
@@ -482,7 +482,7 @@ def _attach_lora_preprocessor(transformer: torch.nn.Module) -> None:
             if module_name.startswith("feature_extractor_linear."):
                 module_name = f"text_embedding_projection.{module_name[len('feature_extractor_linear.') :]}"
             if module_name not in module_names:
-                prefixed_name = f"velocity_model.{module_name}"
+                prefixed_name = f"model.{module_name}" if module_name.startswith("velocity_model.") else f"model.velocity_model.{module_name}"
                 if module_name.endswith(".to_out") and f"{prefixed_name}.0" in module_names:
                     module_name = f"{prefixed_name}.0"
                 elif prefixed_name in module_names:

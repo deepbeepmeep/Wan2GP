@@ -16,7 +16,7 @@ from triton.language.extra import libdevice
 
 from shared.kernels.triton_tuner import LaunchTuner
 
-_TUNER = LaunchTuner("wan2gp_causal_vae_kernels", 3, "Causal 3D VAE")
+_TUNER = LaunchTuner("wan2gp_causal_vae_kernels", 4, "Causal 3D VAE")
 _MAX_CHUNKS = 256  # partial statistics per group
 _CHUNK_ELEMENTS = 1 << 14  # at least this many elements per statistics program
 _MAX_GROUP_CHANNELS = 64
@@ -144,7 +144,7 @@ def _norm_silu_pad_kernel(X, OUT, A, B, T, H, W, TP, HP, WP, PT, PH, PW, OUT_TP,
     y = (x * tl.load(A + volume) + tl.load(B + volume)).to(OUT.dtype.element_ty)
     if SILU:
         y = y.to(tl.float32)
-        y = libdevice.div_rn(y, 1.0 + libdevice.exp(-y)).to(OUT.dtype.element_ty)  # IEEE division and expf, as PyTorch
+        y = tl.div_rn(y, 1.0 + libdevice.exp(-y)).to(OUT.dtype.element_ty)  # IEEE division and expf, as PyTorch
     tl.store(OUT + (volume * OUT_TP + OUT_T0 + plane % TP) * HP * WP + idx, y, valid)
 
 

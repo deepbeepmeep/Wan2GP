@@ -11,6 +11,51 @@ gradio-app {
     width: 100%;
 }
 
+/* Settings group labels retain Gradio's values and selection behavior. */
+@keyframes wangp-settings-separator-ready {
+    from { --wangp-settings-separator-ready: 0; }
+    to { --wangp-settings-separator-ready: 1; }
+}
+.wangp-settings-dropdown .wrap:has(> .wrap-inner) {
+    container-type: inline-size;
+}
+.wangp-settings-dropdown ul.options {
+    width: 100cqw !important;
+    min-width: 0;
+}
+.wangp-settings-dropdown ul.options > li {
+    width: 100% !important;
+}
+[data-testid="dropdown-option"][aria-label^="─"][aria-label$="─"] {
+    animation: wangp-settings-separator-ready 1ms;
+    position: relative;
+    align-items: center;
+    gap: 0.5em;
+    padding-inline: calc(var(--size-2) + 1em);
+    white-space: nowrap;
+}
+[data-testid="dropdown-option"]:has(> .wangp-settings-separator-title)::before,
+[data-testid="dropdown-option"]:has(> .wangp-settings-separator-title)::after {
+    content: "";
+    flex: 1 1 0;
+    min-width: 0;
+    border-top: 1px solid currentColor;
+    opacity: 0.5;
+    pointer-events: none;
+}
+[data-testid="dropdown-option"]:has(> .wangp-settings-separator-title) > .inner-item {
+    position: absolute;
+    left: var(--size-2);
+}
+.wangp-settings-separator-title {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
 /* Keep actions at the bottom of their column, floating until their slot is in
    view. Native sticky positioning also follows wrapping, tab and form updates. */
 .gradio-container:has(.wangp-settings-actions) {
@@ -698,19 +743,29 @@ user-select: text;
 
 .wangp-settings-tools { container-type: inline-size; }
 .wangp-settings-file-actions { align-items: center; flex-wrap: nowrap !important; gap: clamp(4px, .8cqw, 8px) !important; }
-.wangp-settings-file-actions > button:not(.wangp-reset-settings) { padding: 3px clamp(4px, .8cqw, 8px) !important; min-height: 30px !important; font-size: clamp(12px, 2cqw, 14px) !important; }
-.wangp-settings-file-actions > button:not(.wangp-reset-settings) { column-gap: 5px !important; white-space: nowrap; }
-.wangp-settings-file-actions > button::before { width: 14px !important; height: 14px !important; flex-basis: 14px !important; }
-.wangp-settings-file-actions > .wangp-reset-settings { flex-basis: 30px !important; width: 30px !important; min-width: 30px !important; height: 30px !important; }
-.wangp-settings-file-actions > .wangp-reset-settings::before { width: 18px !important; height: 18px !important; flex-basis: 18px !important; }
+.wangp-settings-file-actions > button:not(.wangp-reset-settings), .wangp-lora-download-row > button {
+    padding: var(--button-small-padding) !important;
+    min-height: 0 !important;
+    border-radius: var(--button-small-radius);
+    font-size: var(--button-small-text-size) !important;
+    font-weight: var(--button-small-text-weight);
+    column-gap: 6px;
+    white-space: nowrap;
+}
+.wangp-settings-file-actions > .wangp-reset-settings { flex: 0 0 auto !important; width: auto !important; min-width: 0 !important; height: auto !important; padding: var(--button-small-padding) !important; }
+.wangp-settings-file-actions > .wangp-reset-settings::before { width: 12px !important; height: 1lh !important; flex-basis: 12px !important; font-size: var(--button-small-text-size); }
 .wangp-settings-file-actions > .wangp-settings-include-media { flex: 0 0 auto !important; width: max-content !important; }
 .wangp-settings-include-media label { white-space: nowrap; }
 .wangp-settings-file-actions.is-compact > :is(.wangp-settings-default, .wangp-settings-export) { font-size: 0 !important; }
-.wangp-settings-file-actions.is-compact > .wangp-settings-default::after { content: "Set Default"; font-size: 12px; }
-.wangp-settings-file-actions.is-compact > .wangp-settings-export::after { content: "Export"; font-size: 12px; }
-.wangp-lora-download-row { flex-wrap: nowrap !important; align-items: center; }
+.wangp-settings-file-actions.is-compact > .wangp-settings-default::after { content: "Set Default"; font-size: var(--button-small-text-size); }
+.wangp-settings-file-actions.is-compact > .wangp-settings-export::after { content: "Export"; font-size: var(--button-small-text-size); }
+.wangp-lora-download-row { flex-wrap: nowrap !important; align-items: center; gap: 8px !important; }
 .wangp-lora-download-row > .form { flex: 1 1 0 !important; min-width: 0 !important; }
-.wangp-lora-download-row > button { flex: 0 0 auto !important; padding: 5px 8px !important; white-space: nowrap; }
+.wangp-lora-download-row .compact_text { padding: 0 !important; }
+.wangp-lora-download-row textarea { padding: var(--button-small-padding) !important; font-size: var(--button-small-text-size) !important; line-height: var(--line-md); }
+.wangp-lora-download-row > button { flex: 0 0 auto !important; font-size: 0 !important; }
+/* Keep this action's literal caption instead of Gradio's translated label. */
+.wangp-lora-download-row > button::after { content: "Download"; font-size: var(--button-small-text-size); }
 
 .wangp-prompt-enhancer-row, .wangp-prompt-enhancer-row > .form { flex-wrap: nowrap !important; }
 .wangp-prompt-enhancer-row > .form { flex: 1 1 0 !important; min-width: 0 !important; }

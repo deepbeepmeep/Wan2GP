@@ -277,6 +277,13 @@ _PATCHES = {
         ('me(n,l[10]),l[30](n)', 'wangpModelInput(n,l[10]),l[30](n)'),
         ('c[0]&1024&&n.value!==i[10]&&me(n,i[10])', 'c[0]&1024&&wangpModelInput(n,i[10])'),
     ],
+    'Tabs-DtiML6DO.js': [
+        # Overflow choices must keep the same visibility and availability as
+        # their full-size tabs, including after model-dependent updates.
+        ('l(8,T=b.slice(W+1))', 'l(8,T=b.slice(W+1).filter(tab=>tab?.visible))'),
+        ('S(e,"selected",t[33]?.id===t[6])},m(d,u)', 'S(e,"selected",t[33]?.id===t[6]),e.disabled=!t[33].interactive,m(e,"aria-disabled",e.disabled)},m(d,u)'),
+        ('u[0]&320&&S(e,"selected",t[33]?.id===t[6])', 'u[0]&320&&S(e,"selected",t[33]?.id===t[6]),u[0]&256&&(e.disabled=!t[33].interactive,m(e,"aria-disabled",e.disabled))'),
+    ],
     'Gallery-D7vc32lN.js': [
         ('function Ve(s){', '''function wangpGalleryGap(event) {
             const container = event.target.closest('.thumbnails, .grid-container');

@@ -1,11 +1,60 @@
 /* Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt) */ function() {
     console.log("[WanGP] main JS initialized");
+    const settingsSeparatorRoots = new Set();
+    let settingsSeparatorFrame = 0;
+    function scheduleSettingsSeparators(root) {
+        settingsSeparatorRoots.add(root);
+        if (settingsSeparatorFrame) return;
+        settingsSeparatorFrame = requestAnimationFrame(() => {
+            settingsSeparatorFrame = 0;
+            for (const root of settingsSeparatorRoots) {
+                for (const row of root.querySelectorAll('[data-testid="dropdown-option"]')) {
+                    const label = row.getAttribute('aria-label');
+                    const match = label.match(/^─+(.+?)─+$/);
+                    let caption = row.querySelector('.wangp-settings-separator-title');
+                    if (match) {
+                        row.closest('.block').classList.add('wangp-settings-dropdown');
+                        if (!caption) {
+                            // Keep Svelte's text node alive when filtering reuses an option.
+                            const text = [...row.childNodes].find(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim() === label);
+                            caption = document.createElement('span');
+                            caption.className = 'wangp-settings-separator-title';
+                            text.before(caption);
+                            caption.append(text);
+                        }
+                        caption.firstChild.textContent = match[1].trim();
+                    } else if (caption) {
+                        caption.firstChild.textContent = label;
+                        caption.replaceWith(...caption.childNodes);
+                    }
+                }
+            }
+            settingsSeparatorRoots.clear();
+        });
+    }
+    // One-shot mount events also cover lists replaced by a server-side update.
+    document.addEventListener('animationstart', event => {
+        if (event.animationName === 'wangp-settings-separator-ready') scheduleSettingsSeparators(event.target.parentElement);
+    });
+    for (const type of ['focusin', 'pointerdown', 'input', 'keydown']) {
+        document.addEventListener(type, event => {
+            const dropdown = event.target.closest('.block');
+            if (dropdown?.querySelector('input[role="listbox"]')) scheduleSettingsSeparators(dropdown);
+        }, {passive: true});
+    }
     window.wangpRefreshSettingsTools = function() {
         for (const row of document.querySelectorAll('.wangp-settings-file-actions')) {
+            const reset = row.querySelector('.wangp-reset-settings');
+            const exportButton = row.querySelector('.wangp-settings-export');
+            // Keep keyboard focus order aligned with the displayed actions.
+            if (reset.nextElementSibling !== exportButton) exportButton.before(reset);
             row.classList.toggle('is-compact', row.clientWidth < 580);
             for (const button of row.querySelectorAll('.wangp-settings-default, .wangp-settings-export')) {
                 if (!button.hasAttribute('aria-label')) button.setAttribute('aria-label', button.textContent.trim());
             }
+        }
+        for (const button of document.querySelectorAll('.wangp-lora-download-row > button')) {
+            button.setAttribute('aria-label', 'Download');
         }
     };
     window.wangpRefreshSettingsTools();
@@ -33,18 +82,19 @@
                 const segments = inputs[0].closest('.wrap');
                 for (const input of inputs) {
                     const label = input.closest('label');
-                    if (label.querySelector('.wangp-mode-full')) continue;
-                    const caption = label.querySelector('span');
-                    const full = document.createElement('span');
-                    full.className = 'wangp-mode-full';
-                    full.textContent = caption.textContent;
-                    full.setAttribute('aria-hidden', 'true');
-                    const short = document.createElement('span');
-                    short.className = 'wangp-mode-short';
-                    short.textContent = inputModeShortLabels[input.value];
-                    short.setAttribute('aria-hidden', 'true');
-                    input.setAttribute('aria-label', full.textContent);
-                    caption.replaceChildren(full, short);
+                    // Keep Gradio's caption node intact so model changes can update it.
+                    const full = label.querySelector('span');
+                    let short = label.querySelector('.wangp-mode-short');
+                    if (!short) {
+                        full.classList.add('wangp-mode-full');
+                        full.setAttribute('aria-hidden', 'true');
+                        short = document.createElement('span');
+                        short.className = 'wangp-mode-short';
+                        short.setAttribute('aria-hidden', 'true');
+                        label.append(short);
+                    }
+                    if (short.textContent !== inputModeShortLabels[input.value]) short.textContent = inputModeShortLabels[input.value];
+                    if (input.getAttribute('aria-label') !== full.textContent) input.setAttribute('aria-label', full.textContent);
                 }
                 let dropdown = radio.querySelector('.wangp-input-dropdown');
                 if (!dropdown) {

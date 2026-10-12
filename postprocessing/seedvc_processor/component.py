@@ -10,7 +10,7 @@ import zipfile
 
 SEEDVC_COMPONENT_REPO = "deepbeepmeep/WanGP-SeedVC"
 # A new component revision needs both values: python -m postprocessing.seedvc_processor.component <commit>
-SEEDVC_COMPONENT_COMMIT = "c8e5dcfe089346b0a46645df4ebb121240f6eebe"
+SEEDVC_COMPONENT_COMMIT = "f59018fd909e06266790a20f4c4a5d67613d6101"
 SEEDVC_COMPONENT_DIGEST = "a923430ed55e137a7556dbc1fc48b8b48b63456493f33852e6ff70b3937cab4b"
 SEEDVC_COMPONENT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "seedvc")
 _REVISION_FILE = ".wangp_revision"

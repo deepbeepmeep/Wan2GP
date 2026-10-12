@@ -10,7 +10,7 @@ from triton.language.extra import libdevice
 
 from shared.kernels.triton_tuner import LaunchTuner
 
-_TUNER = LaunchTuner("wan2gp_ltx_vae_kernels", 1, "LTX VAE")
+_TUNER = LaunchTuner("wan2gp_ltx_vae_kernels", 2, "LTX VAE")
 _TUNE_ELEMENTS = 1 << 24  # calls writing at least this many elements tune the configurations
 _CL = torch.channels_last_3d
 
@@ -31,9 +31,9 @@ def _norm_silu_kernel(X, OUT, TOTAL, T, H, W, SB, SC, ST, SH, SW, EPS, INV_C, C:
     x = tl.load(X + (b * SB + t * ST + h * SH + w * SW)[:, None] + (c * SC)[None, :], mask, other=0.0).to(tl.float32)
     dtype = OUT.dtype.element_ty
     mean = (tl.sum((x * x).to(dtype).to(tl.float32), axis=1) * INV_C).to(dtype).to(tl.float32)
-    rms = libdevice.sqrt_rn((mean + EPS).to(dtype).to(tl.float32)).to(dtype).to(tl.float32)
-    x = libdevice.div_rn(x, rms[:, None]).to(dtype).to(tl.float32)
-    x = libdevice.div_rn(x, 1.0 + libdevice.exp(-x))
+    rms = tl.sqrt_rn((mean + EPS).to(dtype).to(tl.float32)).to(dtype).to(tl.float32)
+    x = tl.div_rn(x, rms[:, None]).to(dtype).to(tl.float32)
+    x = tl.div_rn(x, 1.0 + libdevice.exp(-x))
     tl.store(OUT + (p * C)[:, None] + c[None, :], x.to(dtype), mask)
 
 

@@ -23,7 +23,7 @@ from triton.language.extra import libdevice
 from shared.kernels.triton_tuner import LaunchTuner
 from shared.kernels.conv3d_triton import channels_last_weight, conv, conv_eligible, conv_supported, supported  # noqa: F401 (used through this module)
 
-_TUNER = LaunchTuner("wan2gp_wan_vae_kernels", 5, "Wan VAE")
+_TUNER = LaunchTuner("wan2gp_wan_vae_kernels", 6, "Wan VAE")
 _TUNE_ELEMENTS = 1 << 24  # calls writing at least this many elements tune the configurations
 _CL = torch.channels_last_3d
 _EPS = {dtype: torch.tensor(1e-12, dtype=dtype, device="cpu").item() for dtype in (torch.float16, torch.bfloat16, torch.float32)}  # F.normalize eps
@@ -56,12 +56,12 @@ def _causal_pad_kernel(X, CACHE, GAMMA, OUT, KEPT, TOTAL, T, H, W, NC, FRONT, PH
     dtype = OUT.dtype.element_ty
     if NORM:  # F.normalize(x, dim=1) * scale * gamma, then SiLU, rounded where the PyTorch path rounds
         x = x.to(tl.float32)
-        norm = libdevice.sqrt_rn(tl.sum(x * x, axis=1)).to(dtype).to(tl.float32)
+        norm = tl.sqrt_rn(tl.sum(x * x, axis=1)).to(dtype).to(tl.float32)
         norm = tl.maximum(norm, EPS).to(dtype).to(tl.float32)
-        x = libdevice.div_rn(x, norm[:, None]).to(dtype).to(tl.float32)
+        x = tl.div_rn(x, norm[:, None]).to(dtype).to(tl.float32)
         x = (x * SCALE).to(dtype).to(tl.float32)
         x = (x * tl.load(GAMMA + c, lanes, other=0.0).to(tl.float32)[None, :]).to(dtype).to(tl.float32)
-        x = libdevice.div_rn(x, 1.0 + libdevice.exp(-x))
+        x = tl.div_rn(x, 1.0 + libdevice.exp(-x))
     cached = tl.load(CACHE + ((((b * NC + t + NC) * H + h) * W + w) * C)[:, None] + c[None, :], from_cache[:, None] & lanes[None, :], other=0.0)
     out = tl.where(from_x[:, None], x.to(dtype), cached.to(dtype))
     tl.store(OUT + (p * C)[:, None] + c[None, :], out, valid[:, None] & lanes[None, :])

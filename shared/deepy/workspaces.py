@@ -136,7 +136,11 @@ class WorkspaceSupport:
                 changed = self.workspaces.save(self.workspace_id, captured)
                 record = self.workspaces.get(self.workspace_id)
                 if record['gallery'] != captured:
-                    self._state['gen'].update(load_gallery(record, self._workspace_settings))
+                    gallery = load_gallery(record, self._workspace_settings)
+                    # Retained missing files change the manifest, not the live view.
+                    # Keep its lists and metadata stable while generations record outputs.
+                    if capture_gallery(gallery) != captured:
+                        self._state['gen'].update(gallery)
                 if changed:
                     self.publish_workspaces()
 

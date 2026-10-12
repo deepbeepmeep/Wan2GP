@@ -100,7 +100,7 @@ def _swiglu_rn(X, OUT, N, D: tl.constexpr, BLOCK: tl.constexpr):
     offset = (i // D) * (2 * D) + i % D
     gate = tl.load(X + offset, i < N, 0).to(tl.float32)
     value = tl.load(X + offset + D, i < N, 0).to(tl.float32)
-    activated = libdevice.div_rn(gate, 1.0 + libdevice.exp(-gate)).to(X.dtype.element_ty).to(tl.float32)
+    activated = tl.div_rn(gate, 1.0 + libdevice.exp(-gate)).to(X.dtype.element_ty).to(tl.float32)
     tl.store(OUT + i, activated * value, i < N)
 
 

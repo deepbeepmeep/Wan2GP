@@ -95,6 +95,13 @@
                     "win": "https://github.com/deepbeepmeep/kernels/releases/download/Flash2/flash_attn-2.8.3-cp311-cp311-win_amd64.whl",
                     "linux": "flash-attn"
                 }
+            },
+            "v284_rocm": {
+                "label": "Flash Attention 2.8.4 (AMD ROCm / Triton)",
+                "cmd": {
+                    "win": "https://github.com/0xDELUXA/flash-attention/releases/download/v2.8.4_win-rocm/flash_attn-2.8.4-py3-none-win_amd64.whl",
+                    "linux": "FLASH_ATTENTION_TRITON_AMD_ENABLE=\"TRUE\" pip install --no-build-isolation git+https://github.com/Dao-AILab/flash-attention.git"
+                }
             }
         },
         "kernels": {
@@ -141,7 +148,7 @@
         "RTX_30":      { "python": "3.11", "torch": "cu130", "triton": "v37", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
         "RTX_40":      { "python": "3.11", "torch": "cu130", "triton": "v37", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
         "RTX_50":      { "python": "3.11", "torch": "cu130", "triton": "v37", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13","light2xv", "gguf"] },
-        "AMD":         { "python": "3.12", "torch": "rocm10", "triton": "v38", "sage": "v1", "sparge": null, "flash": null, "kernels": [], "attention": "sdpa" },
+        "AMD":         { "python": "3.12", "torch": "rocm10", "triton": "v38", "sage": "v1", "sparge": null, "flash": "v284_rocm", "kernels": [], "attention": "sdpa" },
         "MPS":         { "python": "3.11", "torch": "mps", "triton": null, "sage": null, "sparge": null, "flash": null, "kernels": [], "attention": "sdpa" }
     }
 }

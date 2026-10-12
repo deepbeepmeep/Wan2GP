@@ -503,6 +503,53 @@ def _quanto_forward(ctx, input, weight, bias=None):
     return _original_forward(ctx, input, weight, bias)
 
 
+class _Int8RowProjection:
+    """Preserve PyTorch weight-only or Triton blockwise activation arithmetic for output row ranges."""
+    @staticmethod
+    def supports(module, x):
+        qtype = getattr(module, "weight_qtype", None)
+        if (_backend not in ("pytorch", "triton") or qtype is None or qtype.name not in ("qint8", "qint8_convrot")
+                or triton._is_fake_tensor(x) or torch.compiler.is_compiling() or getattr(module, "activation_qtype", None) is not None):
+            return False
+        if qtype.name == "qint8" and getattr(module, "_router_forward_impl", None) is not None:
+            return False
+        if (_backend == "triton" and qtype.name == "qint8_convrot" and triton.FUSED_CONVROT_ENABLED
+                and getattr(module, "_convrot_group_size", 0) == 256 and x.shape[0] <= 4):
+            return False  # the separate tiny-M fused rotation has its own rounding
+        return type(x) is torch.Tensor and module.qweight._data.dtype == torch.int8 and module.qweight.dtype == x.dtype
+
+    @staticmethod
+    def key(module):
+        group = getattr(module, "_convrot_group_size", 0)
+        return ("int8_rows", _backend, group, module.out_features) if _backend == "triton" or group else None
+
+    @staticmethod
+    def prepare(module, x):
+        from shared.qtypes.int8_convrot import _rotate_activation
+        x = _rotate_activation(x, getattr(module, "_convrot_group_size", 0))
+        if (_backend == "triton" and x.is_cuda and not triton._RUNTIME_DISABLED and not triton._prefer_native_quanto_path(x)):
+            return triton._TRITON_MODULE.prepare_blockscale_input(x, module.out_features)
+        return x
+
+    @staticmethod
+    def rows(module, prepared, start, stop):
+        weight = module.qweight
+        data = weight._data[start:stop]
+        scale = weight._scale if weight._scale.numel() == 1 else weight._scale[start:stop]
+        if isinstance(prepared, tuple):
+            scale = triton._prepare_weight_scale(scale, stop - start, data.device)
+            out = triton._TRITON_MODULE.prepared_blockscale_mm(prepared, data, scale)
+            return out if module.bias is None else out.add_(module.bias[start:stop])
+        elif prepared.device.type == "mps":
+            out = prepared @ (data.to(prepared.dtype) * scale.to(prepared.dtype)).t()
+        else:
+            out = torch.ops.quanto.qbytes_mm(prepared, data, scale.to(prepared.dtype))
+        return triton._add_bias_in_place_or_fallback(out, None if module.bias is None else module.bias[start:stop])
+
+
+_INT8_ROW_PROJECTION = _Int8RowProjection()
+
+
 class _KitchenRowProjection:
     """mmgp row projection (offload.linear_rows) of the INT8 ConvRot and Quanto INT8 layers that kitchen_linear computes with
     _cutlass_linear_chunked: the input is quantized once, each range of output rows is the same CUTLASS GEMM on a view of the weight
@@ -615,6 +662,8 @@ def configure(selection, verbose_level=0, *, resolved=None):
         qbytes.WeightQBytesLinearFunction.forward = staticmethod(_quanto_forward)
     _backend = backend
     from mmgp import cuda_graphs, offload
+    from shared.qtypes import quanto_rows
+    offload.register_row_projection(_INT8_ROW_PROJECTION)
     (offload.register_row_projection if backend == "kitchen" else offload.unregister_row_projection)(_KITCHEN_ROW_PROJECTION)
     cuda_graphs.register_capture_setup(prepare_capture_stream)
     if backend != previous_backend:

@@ -62,6 +62,45 @@ def input_metadata(session, settings):
     return result
 
 
+def window_report(model_def, effective, fps, diagnostics, index, frames_maximum=None):
+    """Sliding windows of one video generation as WanGP plans them: frames, the pictures each window receives and its prompt head."""
+    from shared.prompt_enhancer.images import window_contexts, window_plan
+    from shared.utils import prompt_parser
+
+    mode = effective.get("multi_prompts_gen_type", "")
+    prompts = prompt_parser.split_prompt_units(effective["prompt"], mode)
+    if "W" not in mode:
+        prompts = prompts[:1]  # other modes start a new generation per prompt, each with this plan
+    def media(key, flag, flags_key):
+        value = effective.get(key) if flag in effective.get(flags_key, "") else None
+        return [item for item in (value if isinstance(value, list) else [value]) if item]
+
+    start, ends, refs = (media("image_start", "S", "image_prompt_type") or [None])[0], media("image_end", "E", "image_prompt_type"), media("image_refs", "I", "video_prompt_type")
+    windows, expanded, window_size, default_overlap, discard = window_plan(prompts, effective, model_def, fps=fps, source_frames=0, has_start=start is not None)
+    video_prompt_type = effective.get("video_prompt_type", "")
+    contexts = window_contexts(windows, start, ends, refs, fps=fps, window_size=window_size, positions=effective.get("frames_positions", "") if "F" in video_prompt_type else "", reset_alignment="T" in video_prompt_type,
+                               extract_from_window_start=model_def.get("extract_guide_from_window_start", False), discard_frames=discard, reuse_frames=default_overlap, main_reference="K" in video_prompt_type, picture_labels=model_def.get("prompt_enhancer_picture_labels", False))
+    plan = [{"window": number, "generated_frames": window["frame_num"], "generated_seconds": round(window["frame_num"] / fps, 3), "new_frames": window["output_frames"], "seconds": round(window["output_frames"] / fps, 3), "overlap_frames": window["overlap_frames"],
+             **({"new_shot": True} if window.get("new_shot") else {}), "pictures": [f"{label} ({Path(str(image)).name})" for image, label in zip(context.images, context.labels)], "prompt": prompt[:100]}
+            for number, (window, context, prompt) in enumerate(zip(windows, contexts, expanded), 1)]
+    warning = prompt_parser.validate_sliding_window_prompt_boundaries(prompts, mode, ends)
+    if "W" in mode and len(prompts) != len(windows):
+        warning += f" The prompt has {len(prompts)} window prompts for {len(windows)} planned windows: " + ("extra windows reuse the last prompt." if len(prompts) < len(windows) else "the extra prompts are not used; lengthen video_length or set window durations.")
+    unused = len(ends) - sum(label.endswith("end image") for context in contexts for label in context.labels)
+    if unused > 0:
+        warning += f" {unused} of the {len(ends)} end images are assigned to no window."
+    frames = sum(window["new_frames"] for window in plan)
+    if frames_maximum and frames_maximum > default_overlap and len(plan) > (needed := 1 + math.ceil(max(0, frames - frames_maximum) / (frames_maximum - default_overlap))):
+        warning += (f" {len(plan)} windows are planned where {needed} would cover {frames} frames at the model's {frames_maximum}-frame maximum: every window boundary is a transition."
+                    " Fewer, longer windows usually flow better; where the model supports injected frames (frames_positions), they anchor intermediate moments without a new window.")
+    if warning.strip():
+        diagnostics.append({"severity": "warning", "task": index, "message": warning.strip()})
+    report = {"windows": plan, "total_frames": frames, "total_seconds": round(frames / fps, 3)}
+    if frames != int(effective["video_length"]):
+        report["note"] = f"The output follows this plan: each window is rounded to the model's frame steps, so the total differs from the requested {int(effective['video_length'])} frames."
+    return report
+
+
 def validate_declared_settings(session, supplied):
     model_def, effective = effective_settings(session, supplied)
     resolution = effective.get("resolution")
@@ -138,6 +177,8 @@ def preflight(session, prepare_generation, prepare_postprocess, settings=None, m
                     block = model_def.get("vae_block_size", 16)
                     assessment = resolutions.assess_resolution(model_def, resolution, effective.get("guidance_phases", 1), effective.get("video_prompt_type", ""))
                     task["resolution_assessment"] = assessment
+                    if resolutions.parse_resolution(assessment["aligned"]) != resolutions.parse_resolution(resolution):
+                        report["diagnostics"].append({"severity": "warning", "task": index, "message": f"resolution {resolution} is generated at {assessment['aligned']} (multiples of {block} pixels); start/end images and references are fitted to that size."})
                     canvas = dict(zip(("width", "height"), resolutions.parse_resolution(assessment["aligned"])))
                     fit = config.get("fit_canvas", 0)
                     task["sizing"] = {"multiple": block, "mode": {0: "pixel_budget", 1: "outer_box", 2: "crop"}[fit], "canvas_dimensions": canvas}
@@ -146,17 +187,23 @@ def preflight(session, prepare_generation, prepare_postprocess, settings=None, m
                         task["checks_unavailable"].append("Initial dimensions with prompt scheduling or outpainting are resolved during generation.")
                     elif not visuals:
                         task["sizing"]["initial_dimensions"] = canvas.copy()
-                    elif len(visuals) == 1 and visuals[0]["role"] == "image_start" and "S" in effective.get("image_prompt_type", ""):
+                    elif len(visuals) == 1 and visuals[0]["role"] == "image_start" and "S" in effective.get("image_prompt_type", "") or "K" in effective.get("video_prompt_type", "") and all(item["role"] == "image_refs" for item in visuals):
                         from shared.utils.utils import calculate_new_dimensions
-                        source = visuals[0]
+                        source = visuals[0]  # the start image, or the first reference that K makes the main subject / landscape
                         height, width = calculate_new_dimensions(canvas["height"], canvas["width"], source["height"], source["width"], fit, block_size=block)
                         task["sizing"]["initial_dimensions"] = {"width": width, "height": height}
+                        task["sizing"]["dimensions_from"] = source["role"] if source["role"] == "image_start" else "image_refs[0] (video_prompt_type K: the first reference sets the canvas; use I to keep the requested resolution)"
                     else:
                         task["checks_unavailable"].append("Initial dimensions depend on reference/control inputs and are resolved during generation.")
                     task["sizing"]["scope"] = "Initial canvas/input sizing, before model-specific processing or optional upscaling; later windows may use other inputs."
                 fps = float(effective.get("force_fps") or 0) or schema.get("fps")
                 if effective.get("video_length") and fps and not (model_def.get("audio_only") or model_def.get("image_outputs") or model_def.get("mesh_outputs")):
                     task["requested_video"] = {"frames": int(effective["video_length"]), "fps": float(fps), "duration_seconds": int(effective["video_length"]) / float(fps)}
+                    if model_def.get("sliding_window") and effective.get("image_mode", 0) == 0:
+                        if any(flag in effective.get("image_prompt_type", "") for flag in "VL"):
+                            task["checks_unavailable"].append("The window plan of a continued video depends on its retained source frames and is resolved during generation.")
+                        else:
+                            task["window_plan"] = window_report(model_def, effective, float(fps), report["diagnostics"], index, schema.get("frames_maximum"))
                 if model_def.get("audio_only") and effective.get("duration_seconds"):
                     task["target_audio_duration_seconds"] = effective["duration_seconds"]
                 selected = effective.get("activated_loras") or []

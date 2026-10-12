@@ -486,6 +486,7 @@ def summarize_prompt(prompt: str, media_type: str) -> str:
         if not line or line.startswith("!"):
             continue
         line = re.sub(r"\[[^\]\r\n]*\]", " ", line)
+        line = re.sub(r"\(\s*(?:from\s*)?\)", " ", line)  # parentheses emptied by the removed labels
         line = re.sub(r"\s+", " ", line).strip()
         if line:
             meaningful_lines.append(line)

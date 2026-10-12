@@ -7,11 +7,12 @@ from shared.deepy import chat, media_registry, session_store
 from shared.deepy.errors import DeepyBusy
 from shared.utils.workspaces import ARCHIVE_AFTER_DAYS_KEY, WorkspaceStore, capture_gallery, load_gallery
 from shared.utils.media_settings import MediaSettingsCache
-from shared.utils.workspace_storage import STORAGE_KEY, register_host, output_config, execution_workspace
+from shared.utils.workspace_storage import STORAGE_KEY, background_gallery, register_host, output_config, execution_workspace
 
 
 class WorkspaceSupport:
     workspaces = None
+    background_agents = True  # external agents never switch the gallery a user is viewing
 
     def configure_workspaces(self, root):
         with self._mutation_lock:
@@ -59,6 +60,12 @@ class WorkspaceSupport:
     def deepy_workspace_id(self):
         owned = self.workspaces.for_session(self._session.storage_session_id)
         return owned['id'] if owned else self._session.gallery_workspace_id or self.workspace_id
+
+    def save_background(self, workspace_id, gallery):
+        if self.workspaces.save(workspace_id, capture_gallery(gallery)):
+            self.publish_workspaces()
+        if workspace_id == self.workspace_id:
+            self.publish('gallery', self.gallery_snapshot())
 
     def workspace_output_config(self, workspace_id=None):
         return output_config(self._deps.get_server_config(), binding=(self, workspace_id or self.workspace_id))
@@ -148,13 +155,17 @@ class WorkspaceSupport:
         record = self.workspaces.get(workspace_id)
         if 'folder' in record:
             self._deps.callbacks.emit('allow_workspace_media', str(self.workspaces._directory(record)))
-        gallery = load_gallery(record, self._workspace_settings)
+        # An agent recording in this workspace keeps its lists: share them so its outputs appear live.
+        gallery = background_gallery(self, workspace_id)
+        if gallery is None:
+            gallery = load_gallery(record, self._workspace_settings)
         self._state['gen'].update(gallery)
         self._state['gen']['refresh_tab'] = False
         self.workspace_id = workspace_id
         owned = self.workspaces.for_session(self._session.storage_session_id)
         if associate:
-            self._session.gallery_workspace_id = owned['id'] if owned else workspace_id
+            # A conversation awaiting its dedicated workspace has chosen no ordinary one.
+            self._session.gallery_workspace_id = owned['id'] if owned else '' if self._deps.controller.dedicated_workspace_enabled() else workspace_id
             media_registry.sync_tool_call_gallery_media(self._session, self._state['gen'])
 
     def validate_session_workspace(self, workspace_id):
@@ -183,6 +194,9 @@ class WorkspaceSupport:
             if self.generation_running:
                 raise DeepyBusy('Wait for the current generation before starting Deepy in another workspace.')
             self.activate_workspace(self.deepy_workspace_id(), execution=True)
+        if not self._deepy_workspace_locked() and not session.gallery_workspace_id:
+            # Deepy keeps the workspace shown when it starts working; later gallery browsing does not move it.
+            session.gallery_workspace_id = self.workspace_id
         if not session.storage_session_id:
             return
         with self._mutation_lock:
@@ -239,8 +253,12 @@ class WorkspaceSupport:
             if payload.get('context') == 'deepy' and self._deepy_workspace_locked():
                 raise DeepyBusy('Workspaces are assigned by Deepy session in dedicated mode. Change the Deepy session to use another workspace.')
             if action in ('select', 'create', 'delete'):
-                if self.generation_running or self._threads or self._session.worker_active or self._session.queued_job_count:
+                # An agent generation recording in its own workspace does not hold the gallery shown here.
+                running = self.generation_running and not self._state['gen'].get('api_active_queue_task', {}).get('workspace_background')
+                if running or self._threads or self._session.worker_active or self._session.queued_job_count:
                     raise DeepyBusy('Wait for Deepy and the current generation to finish before changing workspace.')
+                if action == 'delete' and background_gallery(self, workspace_id) is not None:
+                    raise DeepyBusy('An agent is recording media in this workspace. Delete it once the agent work finishes.')
                 self.save_workspace()
             if action == 'create':
                 self.workspaces.default_mode = self._deps.get_server_config().get(STORAGE_KEY, 'shared')
@@ -255,10 +273,12 @@ class WorkspaceSupport:
             elif action != 'select':
                 raise ValueError('Unknown workspace action.')
             if action != 'rename':
-                if workspace_id != self.workspace_id and not self.workspaces.for_session(self._session.storage_session_id):
+                # Only Deepy's own picker reassigns its conversation, or the loss of its workspace.
+                associate = payload.get('context') == 'deepy' or self._session.gallery_workspace_id not in ('', *self.workspaces.records)
+                if associate and workspace_id != self.deepy_workspace_id() and not self.workspaces.for_session(self._session.storage_session_id):
                     with self._session.turn_lock:
                         self._session.pending_chat_media.clear()
-                self._apply_workspace(workspace_id)
+                self._apply_workspace(workspace_id, associate=associate)
                 self._deps.callbacks.emit('save_workspace_choice', self.workspace_id)
                 self.publish('gallery', self.gallery_snapshot())
                 session_store.schedule_autosave(self._session)

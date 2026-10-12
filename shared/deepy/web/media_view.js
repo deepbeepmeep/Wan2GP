@@ -23,6 +23,20 @@
     node.src = item.thumbnail;
     return node;
   }
+  function mesh(item) {
+    const container = document.createElement('wangp-mesh-viewer');
+    container.className = 'mesh-viewer'; container.dataset.preview = item.thumbnail;
+    const viewer = document.createElement(item.format === 'ply' ? 'wangp-splat-viewer' : 'model-viewer');
+    viewer.setAttribute('src', item.url); viewer.setAttribute('aria-label', item.name);
+    if (item.format !== 'ply') {
+      viewer.setAttribute('alt', item.name);
+      for (const [key, value] of Object.entries({'camera-controls': '', 'touch-action': 'pan-y', 'interaction-prompt': 'none', 'shadow-intensity': '0.6', 'environment-image': 'neutral', exposure: '1', 'tone-mapping': 'neutral'})) viewer.setAttribute(key, value);
+    }
+    const actions = document.createElement('div'); actions.className = 'mesh-viewer-actions';
+    actions.innerHTML = '<button type="button" data-mesh-action="play" title="Play the Animation" aria-label="Play the Animation" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></button>';
+    container.append(viewer, actions);
+    return container;
+  }
   function playButton(play) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'media-play';
     button.title = 'Play video'; button.setAttribute('aria-label', button.title);
@@ -39,5 +53,5 @@
     };
     return button;
   }
-  window.WanGPMediaView = {documentHtml, media, thumbnail, playButton};
+  window.WanGPMediaView = {documentHtml, media, thumbnail, mesh, playButton};
 })();

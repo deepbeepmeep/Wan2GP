@@ -105,7 +105,7 @@ class DeepyStreamingSimulator:
 
         statement = (
             "Streaming stays escaped: <script>window.__unsafe_stream_executed = true</script> & <b>not raw HTML</b>.\n\n"
-            "Paths: `C:\\Users\\Example\\clip.mp4`, `/tmp/example.png`, and authorized `@workspace/docs/DEEPY_INCREMENTAL_STREAMING_SPEC.md`.\n\n"
+            "Paths: `C:\\Users\\Example\\clip.mp4`, `/tmp/example.png`, and authorized `@documents/docs/DEEPY_INCREMENTAL_STREAMING_SPEC.md`.\n\n"
             "Links: [OpenAI](https://openai.com), ![gallery image](/wangp_api/gallery/media/visual:0123456789ab), "
             "[video](/wangp_api/gallery/media/visual:abcdef012345), and [audio](/wangp_api/gallery/media/audio:abcdef012345)."
         )
@@ -118,13 +118,13 @@ class DeepyStreamingSimulator:
         if payload:
             yield payload
 
-        tool_id, payload = assistant_chat.add_tool_call(self.session, assistant_id, "list_files", {"path": "@workspace/docs", "pattern": "*.md"}, tool_label="Preparing Test File Listing", request_pending=True)
+        tool_id, payload = assistant_chat.add_tool_call(self.session, assistant_id, "list_files", {"path": "@documents/docs", "pattern": "*.md"}, tool_label="Preparing Test File Listing", request_pending=True)
         yield payload
-        yield assistant_chat.update_tool_call(self.session, assistant_id, tool_id, status="running", status_text="Running", tool_label="List Test Files", arguments={"path": "@workspace/docs", "pattern": "*.md"}, request_pending=False)
+        yield assistant_chat.update_tool_call(self.session, assistant_id, tool_id, status="running", status_text="Running", tool_label="List Test Files", arguments={"path": "@documents/docs", "pattern": "*.md"}, request_pending=False)
         result = {
             "status": "ok",
-            "entries": [{"index": index, "name": f"reference_{index}.md", "path": "@workspace/docs/DEEPY_INCREMENTAL_STREAMING_SPEC.md", "size_bytes": 1000 + index} for index in range(24 * max(1, scale))],
-            "output_file": "@workspace/docs/DEEPY_INCREMENTAL_STREAMING_SPEC.md",
+            "entries": [{"index": index, "name": f"reference_{index}.md", "path": "@documents/docs/DEEPY_INCREMENTAL_STREAMING_SPEC.md", "size_bytes": 1000 + index} for index in range(24 * max(1, scale))],
+            "output_file": "@documents/docs/DEEPY_INCREMENTAL_STREAMING_SPEC.md",
         }
         yield assistant_chat.complete_tool_call(self.session, assistant_id, tool_id, result)
 

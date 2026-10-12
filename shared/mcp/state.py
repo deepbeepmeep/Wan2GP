@@ -1,10 +1,9 @@
 # Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
-"""Small durable MCP receipts and transfer signing key; never stores media bytes."""
+"""Small durable MCP receipts and transfer grants; never stores media bytes."""
 
 import base64
 import contextlib
 import hashlib
-import hmac
 import json
 import os
 import sqlite3
@@ -21,8 +20,7 @@ class MCPState:
         with self.transaction() as db:
             db.execute("CREATE TABLE IF NOT EXISTS metadata (name TEXT PRIMARY KEY, value BLOB NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS requests (request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, job_id TEXT UNIQUE NOT NULL, snapshot TEXT NOT NULL)")
-            db.execute("INSERT OR IGNORE INTO metadata VALUES ('signing_key', ?)", (os.urandom(32),))
-            self.key = db.execute("SELECT value FROM metadata WHERE name='signing_key'").fetchone()[0]
+            db.execute("CREATE TABLE IF NOT EXISTS grants (token TEXT PRIMARY KEY, record TEXT NOT NULL, expires REAL NOT NULL)")
 
     @contextlib.contextmanager
     def transaction(self):
@@ -32,23 +30,21 @@ class MCPState:
                 yield db
 
     def seal(self, record):
-        payload = base64.urlsafe_b64encode(json.dumps(record, separators=(",", ":"), ensure_ascii=True).encode()).decode().rstrip("=")
-        signature = hmac.new(self.key, payload.encode(), hashlib.sha256).hexdigest()
-        return payload + "." + signature
+        """Store a transfer grant; its random token is the capability, so paths and other fields never leave the server."""
+        token = base64.urlsafe_b64encode(os.urandom(18)).decode()
+        with self.transaction() as db:
+            db.execute("DELETE FROM grants WHERE expires<=?", (time.time(),))
+            db.execute("INSERT INTO grants VALUES (?, ?, ?)", (token, json.dumps(record, separators=(",", ":"), ensure_ascii=False), record["expires"]))
+        return token
 
     def unseal(self, token, kind):
-        try:
-            if len(token) > 16384:
-                raise ValueError()
-            payload, signature = token.rsplit(".", 1)
-            if not hmac.compare_digest(signature, hmac.new(self.key, payload.encode(), hashlib.sha256).hexdigest()):
-                raise ValueError()
-            record = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-            if record["kind"] != kind or record["expires"] <= time.time():
-                raise ValueError()
-            return record
-        except (ValueError, KeyError, TypeError) as exc:
-            raise ValueError("Transfer expired or invalid; request a new transfer.") from exc
+        # a plain read: uploads look grants up while holding the write transaction of their own connection
+        with contextlib.closing(sqlite3.connect(self.path, timeout=30)) as db:
+            row = db.execute("SELECT record FROM grants WHERE token=?", (str(token),)).fetchone()
+        record = json.loads(row[0]) if row else None
+        if record is None or record["kind"] != kind or record["expires"] <= time.time():
+            raise ValueError("Transfer expired or invalid; request a new transfer.")
+        return record
 
     def save_job(self, job_id, snapshot):
         with self.transaction() as db:

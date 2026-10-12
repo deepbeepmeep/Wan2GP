@@ -25,11 +25,24 @@ def load_zero_system_prompt() -> str:
 ZERO_SYSTEM_PROMPT = load_zero_system_prompt()
 
 
-def load_prime_system_prompt() -> str:
+# Paragraphs of the Prime system prompt tagged with this prefix are Prime's own; the others are WanGP's agent instructions, shared with external MCP clients.
+_PRIME_ONLY = "[Prime only] "
+
+
+def _read_prime_system_prompt() -> str:
     try:
         return PRIME_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"Deepy Prime system prompt file not found: {PRIME_SYSTEM_PROMPT_PATH}") from exc
+
+
+def load_prime_system_prompt() -> str:
+    return _read_prime_system_prompt().replace(_PRIME_ONLY, "")
+
+
+def load_agent_instructions() -> str:
+    """WanGP's tool-calling and model choice rules for external MCP agents: the Prime system prompt without its Prime-only paragraphs."""
+    return "\n\n".join(paragraph for paragraph in _read_prime_system_prompt().split("\n\n") if not paragraph.startswith(_PRIME_ONLY))
 
 
 PRIME_SYSTEM_PROMPT = load_prime_system_prompt()

@@ -208,7 +208,9 @@ def _get_fp4_lut(device, dtype):
     key = (device, dtype)
     lut = _FP4_LUT_CACHE.get(key)
     if lut is None:
+        from mmgp import cuda_graphs
         lut = _FP4_LUT_BASE.to(device=device, dtype=dtype)
+        lut = cuda_graphs.register_constant(lut)
         _FP4_LUT_CACHE[key] = lut
     return lut
 
@@ -1603,3 +1605,10 @@ def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None)
 
 def apply_pre_quantization(model, state_dict, quantization_map, default_dtype=None, verboseLevel=1):
     return quantization_map or {}, []
+
+
+from mmgp import offload
+from .nunchaku_rows import NunchakuRowProjection
+
+_ROW_PROJECTION = NunchakuRowProjection(sys.modules[__name__])
+offload.register_row_projection(_ROW_PROJECTION)

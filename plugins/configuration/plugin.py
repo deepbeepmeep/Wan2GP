@@ -711,8 +711,18 @@ class ConfigTabPlugin(WAN2GPPlugin):
                     if mcp_workspace_mode == 'auto':
                         mcp_workspace_mode = 'per_agent' if self.server_config.get('workspace_storage_mode', 'shared') == 'dedicated' else 'shared'
                     self.mcp_workspace_mode_choice = gr.Dropdown(
-                        choices=[('Use Selected Workspace (agents use the current gallery workspace)', 'shared'), ('Create a Workspace per Agent (each agent automatically gets its own workspace)', 'per_agent')],
+                        choices=[('Use Selected Workspace (agents keep the workspace selected when they first connect)', 'shared'), ('Create a Workspace per Agent (each agent automatically gets its own workspace)', 'per_agent')],
                         value=mcp_workspace_mode, label='MCP Agent Workspace (requires restart)',
+                    )
+                    self.mcp_workspace_visibility_choice = gr.Dropdown(
+                        choices=[('Their Own Workspaces', 'own'), ('Their Own and Your Workspaces', 'own_and_user'), ('All Workspaces, Including Deepy Conversations and Other Agents', 'all')],
+                        value=self.server_config.get('mcp_workspace_visibility', 'own_and_user'), label='Workspaces Agents Can See',
+                        info='Agents can list and work in these workspaces. Your workspaces are the ones you created; Deepy conversation workspaces are named after your requests.',
+                    )
+                    self.mcp_visual_inspection_choice = gr.Dropdown(
+                        choices=[('Agents Look Themselves (they receive the images and video frames they choose)', 'agent'), ("WanGP's Visual Inspector Answers Their Questions (only text is sent back)", 'wangp'), ('Both', 'both')],
+                        value=self.server_config.get('mcp_visual_inspection', 'agent'), label='Visual Inspection by Agents',
+                        info="Agents with their own vision judge images best themselves. WanGP's Visual Inspector keeps images on this machine and saves network traffic: it uses the prompt enhancer's Qwen VL model (a running generation pauses briefly while it answers), or Deepy's remote engine when Deepy runs on one.",
                     )
 
                 with gr.Tab("Outputs"):
@@ -929,7 +939,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             self.video_container_choice, self.video_output_codec_choice, self.rgba_video_output_choice, self.hdr_video_crf_choice, self.image_output_codec_choice, self.audio_output_codec_choice, self.audio_stand_alone_output_codec_choice,
             self.metadata_choice, self.embed_source_images_choice,
             self.video_save_path_choice, self.image_save_path_choice, self.audio_save_path_choice, self.mesh_save_path_choice,
-            self.workspace_storage_choice, self.workspaces_root_choice, self.mcp_workspace_mode_choice, self.mcp_port_choice, self.mcp_webui_choice,
+            self.workspace_storage_choice, self.workspaces_root_choice, self.mcp_workspace_mode_choice, self.mcp_port_choice, self.mcp_webui_choice, self.mcp_workspace_visibility_choice, self.mcp_visual_inspection_choice,
             self.notification_sound_enabled_choice, self.notification_sound_volume_choice, self.notification_apprise_urls_choice, self.notification_secure_storage_choice, self.notification_on_generation_choice, self.notification_on_queue_complete_choice, self.notification_on_queue_interrupted_choice,
             *self.audio_processor_config_components,
             *self.temporal_upsampler_config_components,
@@ -1026,7 +1036,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             video_container_choice, video_output_codec_choice, rgba_video_output_choice, hdr_video_crf_choice, image_output_codec_choice, audio_output_codec_choice, audio_stand_alone_output_codec_choice,
             metadata_choice, embed_source_images_choice,
             save_path_choice, image_save_path_choice, audio_save_path_choice, mesh_save_path_choice,
-            workspace_storage_choice, workspaces_root_choice, mcp_workspace_mode_choice, mcp_port_choice, mcp_webui_choice,
+            workspace_storage_choice, workspaces_root_choice, mcp_workspace_mode_choice, mcp_port_choice, mcp_webui_choice, mcp_workspace_visibility_choice, mcp_visual_inspection_choice,
             notification_sound_enabled_choice, notification_sound_volume_choice, notification_apprise_urls_choice, notification_secure_storage_choice, notification_on_generation_choice, notification_on_queue_complete_choice, notification_on_queue_interrupted_choice,
             last_resolution_choice
         ) = fixed_args
@@ -1138,7 +1148,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
             "generation_preview": generation_preview_choice,
             "text_encoder_quantization": text_encoder_quantization_choice, "save_path": save_path_choice,
             "image_save_path": image_save_path_choice, "audio_save_path": audio_save_path_choice, "mesh_save_path": mesh_save_path_choice,
-            'workspace_storage_mode': workspace_storage_choice, 'workspaces_dir': workspaces_root_choice.strip() or 'workspaces', 'mcp_workspace_mode': mcp_workspace_mode_choice, 'mcp_port': mcp_port_choice, 'mcp_webui': mcp_webui_choice,
+            'workspace_storage_mode': workspace_storage_choice, 'workspaces_dir': workspaces_root_choice.strip() or 'workspaces', 'mcp_workspace_mode': mcp_workspace_mode_choice, 'mcp_port': mcp_port_choice, 'mcp_webui': mcp_webui_choice, 'mcp_workspace_visibility': mcp_workspace_visibility_choice, 'mcp_visual_inspection': mcp_visual_inspection_choice,
             "lm_decoder_engine": lm_decoder_engine_choice,
             "compile": compile_choice, "profile": video_profile_choice,
             "video_profile": video_profile_choice, "image_profile": image_profile_choice, "audio_profile": audio_profile_choice,
@@ -1262,7 +1272,7 @@ class ConfigTabPlugin(WAN2GPPlugin):
         changes = list(updates)
 
         no_reload_keys = [
-            'workspace_storage_mode', 'workspaces_dir', 'mcp_workspace_mode', 'mcp_port', 'mcp_webui',
+            'workspace_storage_mode', 'workspaces_dir', 'mcp_workspace_mode', 'mcp_port', 'mcp_webui', 'mcp_workspace_visibility', 'mcp_visual_inspection',
             VOICE_MODE_KEY,
             DEEPY_VOICE_LANGUAGE_KEY,
             "attention_mode", "vae_config", "boost", "int8_kernels", "fp8_kernels", "kernel_precision", "attention_head_split", "save_path", "image_save_path", "audio_save_path", "mesh_save_path",

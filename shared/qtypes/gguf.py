@@ -10,6 +10,7 @@ from enum import IntEnum
 from typing import List, Optional
 
 import torch
+from torch._subclasses.fake_tensor import is_fake
 from torch.utils import _pytree as pytree
 
 from optimum.quanto import QModuleMixin, register_qmodule
@@ -1597,6 +1598,40 @@ class GGUFWeightTensor(QTensor):
                 tensor_shape=getattr(t, "_tensor_shape", None),
             )
         return _gguf_qfallback(op, *args, **(kwargs or {}))
+
+
+class _GGUFRowProjection:
+    @staticmethod
+    def supports(module, x):
+        weight = getattr(module, "weight", None)
+        return (isinstance(weight, GGUFWeightTensor) and not is_fake(x) and len(weight._tensor_shape) == 2
+                and weight._data.numel() % weight.shape[0] == 0
+                and not (getattr(module, "_use_optimized_kernels", False) and x.shape[0] <= 8)
+                and not (getattr(module, "_prism_decode_enabled", False) and x.shape[0] == 1))
+
+    @staticmethod
+    def key(module):
+        transform = getattr(module, "prism_transform", None)
+        return ("prism_rows", transform) if transform is not None else None
+
+    @staticmethod
+    def prepare(module, x):
+        return module.prism_transform(x)
+
+    @staticmethod
+    def rows(module, x, start, stop):
+        source = module.weight
+        k = source.shape[1]
+        raw = source._data.reshape(source.shape[0], -1)[start:stop].reshape(-1)
+        weight = GGUFWeightTensor.create(raw, (stop - start, k), (k, 1), source.dtype,
+                                         tensor_type=source._tensor_type, tensor_shape=(stop - start, k))
+        return weight.linear(x, None if module.bias is None else module.bias[start:stop])
+
+
+from mmgp import offload
+
+_GGUF_ROW_PROJECTION = _GGUFRowProjection()
+offload.register_row_projection(_GGUF_ROW_PROJECTION)
 
 
 class GGUFFirstRowsLinear(torch.nn.Module):

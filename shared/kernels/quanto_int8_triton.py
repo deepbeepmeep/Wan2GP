@@ -1233,6 +1233,60 @@ if _TRITON_AVAILABLE:
         )
 
 
+if _TRITON_AVAILABLE:
+    @triton.jit
+    def _prepare_blockscale_kernel(x, q, scales, m, k, blocks: tl.constexpr, stride_m, stride_k, bm: tl.constexpr, bk: tl.constexpr):
+        rows = tl.program_id(0) * bm + tl.arange(0, bm)
+        block = tl.program_id(1)
+        cols = block * bk + tl.arange(0, bk)
+        values = tl.load(x + rows[:, None] * stride_m + cols[None, :] * stride_k,
+                         (rows[:, None] < m) & (cols[None, :] < k), 0).to(tl.float32)
+        scale = tl.max(tl.abs(values), 1) / 127.0
+        scale = tl.where(scale > 0.0, scale, 1.0)
+        values = tl_libdevice.nearbyint(values / scale[:, None])
+        values = tl.maximum(tl.minimum(values, 127.0), -128.0).to(tl.int8)
+        tl.store(q + rows[:, None] * k + cols[None, :], values, (rows[:, None] < m) & (cols[None, :] < k))
+        tl.store(scales + rows * blocks + block, scale, rows < m)
+
+    @triton.jit
+    def _prepared_blockscale_gemm_kernel(q, b, scales, ws, out, m, n, k, blocks: tl.constexpr, stride_bn, stride_bk,
+                                          bm: tl.constexpr, bn: tl.constexpr, bk: tl.constexpr):
+        rows = tl.program_id(0) * bm + tl.arange(0, bm)
+        cols = tl.program_id(1) * bn + tl.arange(0, bn)
+        offsets = tl.arange(0, bk)
+        acc = tl.zeros((bm, bn), tl.float32)
+        for block in range(blocks):
+            kk = block * bk + offsets
+            a = tl.load(q + rows[:, None] * k + kk[None, :], (rows[:, None] < m) & (kk[None, :] < k), 0)
+            w = tl.load(b + cols[None, :] * stride_bn + kk[:, None] * stride_bk, (cols[None, :] < n) & (kk[:, None] < k), 0)
+            scale = tl.load(scales + rows * blocks + block, rows < m, 1)
+            acc += tl.dot(a, w).to(tl.float32) * scale[:, None]
+        weight_scale = tl.load(ws + cols, cols < n, 0).to(tl.float32)
+        tl.store(out + rows[:, None] * n + cols[None, :], acc * weight_scale[None, :], (rows[:, None] < m) & (cols[None, :] < n))
+
+
+def prepare_blockscale_input(x, out_features):
+    """Keep the ordinary fused kernel's K blocks, rounding and launch configuration."""
+    m, k = x.shape
+    config = _select_triton_int8_config(m, k, out_features, device=x.device, kernel_kind="fused")
+    bm, _, bk, warps, _ = config
+    blocks = triton.cdiv(k, bk)
+    q = torch.empty((m, k), dtype=torch.int8, device=x.device)
+    scales = torch.empty((m, blocks), dtype=torch.float32, device=x.device)
+    _prepare_blockscale_kernel[(triton.cdiv(m, bm), blocks)](x, q, scales, m, k, blocks, *x.stride(), bm, bk, num_warps=warps)
+    return q, scales, x.dtype, config
+
+
+def prepared_blockscale_mm(prepared, weight, scale):
+    q, scales, dtype, (bm, bn, bk, warps, stages) = prepared
+    m, k = q.shape
+    n = weight.shape[0]
+    out = torch.empty((m, n), dtype=dtype, device=q.device)
+    _prepared_blockscale_gemm_kernel[(triton.cdiv(m, bm), triton.cdiv(n, bn))](
+        q, weight, scales, scale, out, m, n, k, scales.shape[1], *weight.stride(), bm, bn, bk, num_warps=warps, num_stages=stages)
+    return out
+
+
 def _flatten_scale(scale: torch.Tensor) -> torch.Tensor:
     if scale.ndim == 2 and scale.shape[1] == 1:
         return scale.view(-1)

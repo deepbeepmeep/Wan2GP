@@ -110,7 +110,7 @@ Deleting a file is the only workspace-manager action that removes the underlying
 
 Deepy's multisession setting controls how saved conversations use gallery workspaces:
 
-- **Multisessions with selectable Workspace** associates the conversation with whichever ordinary workspace you select. Use this when several sessions should share or switch among common media collections.
+- **Multisessions with selectable Workspace** associates the conversation with the ordinary workspace chosen in Deepy's own workspace selector, or with the workspace shown when the conversation starts working. Browsing another workspace in the main gallery does not move the conversation. Use this when several sessions should share or switch among common media collections.
 - **Multisessions with dedicated Workspace** creates a separate gallery workspace for each conversation. Use this when every Deepy project should stay self-contained.
 
 Dedicated workspaces display a robot icon; ordinary workspaces display a folder icon. In dedicated mode, Deepy's Web gallery is locked to its current session workspace. The main Gradio gallery may browse another workspace, but Deepy's next import or request returns its media workflow to the dedicated collection.
@@ -128,11 +128,19 @@ Session assignment and media storage are separate choices. A session-owned works
 
 ## MCP agent workspaces
 
-**Configuration > Agents > MCP Agent Workspace** offers two choices: **Use Selected Workspace** uses the workspace currently selected in the gallery; **Create a Workspace per Agent** automatically gives each agent its own workspace. Agents can still explicitly create or choose another workspace. New workspaces use the storage mode selected in Outputs. Existing workspaces keep their own storage mode until explicitly converted in Gallery Manager. Restart after changing agent assignment.
+**Configuration > Agents > MCP Agent Workspace** offers two choices: **Use Selected Workspace** gives agents the workspace selected in the gallery when the first agent call arrives, and keeps it even if you browse elsewhere afterwards; **Create a Workspace per Agent** automatically gives each agent its own workspace. Agents can still explicitly create or choose another workspace. New workspaces use the storage mode selected in Outputs. Existing workspaces keep their own storage mode until explicitly converted in Gallery Manager. Restart after changing agent assignment.
 
 Agents can query existing workspaces, create one, attach to an existing one, or resume an earlier context with `wangp_workspace`. Each connection gets its own automatic assignment. Clients multiplexing several logical agents must pass a separate returned `agent_context` on their calls. Keep this ID to resume after reconnecting; disconnecting does not delete files.
 
-Media creation and editing visibly activate the assigned workspace. Queued generation switches when its turn starts, so another agent's submission does not interrupt the current result. Agents can browse their assigned gallery, read media settings and inspect existing media while another generation owns the live gallery, without changing your view. Audio inspection that creates a preview, and other actions that add media, may report busy until the current generation or Deepy action finishes. Discovery, file IO and job polling also keep the current view. Deepy's saved workspace association remains unchanged.
+You can keep using WanGP while agents work: their generations and media edits are added to the agent's workspace without switching the workspace, gallery or gallery tab you are viewing. If you open that workspace meanwhile, new agent media appears in it as it is created. Agents can also edit or analyze media while a generation is running. You can switch workspaces during an agent generation, but not during your own generation or a Deepy action. A workspace cannot be deleted while an agent is adding media to it.
+
+This keeps agents out of your view, not out of your collections: when you ask an agent to work in a particular workspace, it attaches to that workspace and its media goes there. **Configuration > Agents > Workspaces Agents Can See** decides which workspaces agents can list and work in:
+
+- **Their Own Workspaces**: only the workspaces the agent was given or created.
+- **Their Own and Your Workspaces** (default): also the ordinary workspaces you created.
+- **All Workspaces**: also your Deepy conversation workspaces, named after your requests, and other agents' workspaces.
+
+The setting applies immediately, without restart. It also governs your selection: an agent asked about "the selected image" reads what you selected in the gallery you are viewing, when it may see that workspace. Browsing, reading media settings, inspecting media, discovery, file IO and job polling never change your view either, and media an agent adds never become your selection. Deepy's workspace association is not affected by agents, and Deepy still switches the gallery to its own workspace when it works.
 
 These are organizational boundaries, not private accounts. The current shared-user policy still permits workspace discovery/attachment, common queue visibility and cancellation of other agents' queued jobs. More granular permissions are planned separately.
 

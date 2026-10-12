@@ -13,12 +13,16 @@ import numpy as np
 from shared.deepy.video_tools import _get_ffmpeg_path
 
 
-def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, silence_db=-50.0, min_silence=0.2, preview_path=None, preview_seconds=10.0):
-    numbers = [start_time, silence_db, min_silence, preview_seconds, *([] if duration is None else [duration])]
+MAX_ENVELOPE_WINDOWS = 600
+_FRAME_LOG = re.compile(r"\bt:\s*([\d.]+)\s+TARGET:.*?\bM:\s*(-?[\d.]+|-?inf|nan)")
+
+
+def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, silence_db=-50.0, min_silence=0.2, preview_path=None, preview_seconds=10.0, window_s=None):
+    numbers = [start_time, silence_db, min_silence, preview_seconds, *([] if duration is None else [duration]), *([] if window_s is None else [window_s])]
     if not all(math.isfinite(value) for value in numbers) or start_time < 0 or duration is not None and duration <= 0:
         raise ValueError("Times must be finite; start_time must be non-negative and duration positive.")
-    if not -120 <= silence_db <= 0 or min_silence <= 0 or not 0 < preview_seconds <= 30:
-        raise ValueError("silence_db must be -120..0, min_silence positive and preview_seconds in (0, 30].")
+    if not -120 <= silence_db <= 0 or min_silence <= 0 or not 0 < preview_seconds <= 30 or window_s is not None and not 0.1 <= window_s <= 600:
+        raise ValueError("silence_db must be -120..0, min_silence positive, preview_seconds in (0, 30] and window_s in [0.1, 600].")
     binary = _get_ffmpeg_path()
     probe = ffmpeg.probe(str(path))
     streams = [stream for stream in probe.get("streams", []) if stream.get("codec_type") == "audio"]
@@ -40,7 +44,10 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
     if duration is not None:
         command += ["-t", str(duration)]
     window = max(1, round(rate * 0.02))
+    if window_s is not None and duration is not None and duration / window_s > MAX_ENVELOPE_WINDOWS:
+        raise ValueError(f"window_s gives more than {MAX_ENVELOPE_WINDOWS} windows for this range; use a larger window_s or a shorter duration.")
     peak, squares, clipped = np.zeros(channels), np.zeros(channels), np.zeros(channels, dtype=np.int64)
+    envelope = {}  # window index -> [sum of squares over all channels, samples, peak]
     frames, silence_start, silent_seconds, interval_count, intervals = 0, None, 0.0, 0, []
 
     def end_silence(end):
@@ -54,7 +61,7 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
 
     # ebur128 passes the original samples through; measurements below are not loudness-normalized.
     # Trim before metering: an output -t alone can let the filter inspect later frames.
-    filters = ([f"atrim=end_sample={round(duration * rate)}"] if duration is not None else []) + ["ebur128=peak=true:framelog=verbose"]
+    filters = ([f"atrim=end_sample={round(duration * rate)}"] if duration is not None else []) + [f"ebur128=peak=true:framelog={'info' if window_s is not None else 'verbose'}"]  # info logs the 100 ms frames
     with tempfile.TemporaryFile() as log:
         process = subprocess.Popen(command + ["-af", ",".join(filters), "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"], stdout=subprocess.PIPE, stderr=log)
         try:
@@ -67,6 +74,9 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
                 squares += np.square(samples).sum(axis=0)
                 clipped += (absolute >= 1.0).sum(axis=0)
                 quiet = np.sqrt(np.square(samples).mean()) <= 10 ** (silence_db / 20)
+                if window_s is not None:
+                    bucket = envelope.setdefault(int(frames / rate / window_s), [0.0, 0, 0.0])
+                    bucket[0] += float(np.square(samples).sum()); bucket[1] += samples.size; bucket[2] = max(bucket[2], float(absolute.max()))
                 if quiet and silence_start is None:
                     silence_start = frames / rate
                 elif not quiet:
@@ -117,4 +127,52 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
             Path(preview_path).unlink(missing_ok=True)
             raise ValueError(completed.stderr.decode(errors="replace")[-1500:])
         result.update(output_file=str(preview_path), preview={"start_time": start_time, "duration_seconds": seconds, "sample_rate": 24000, "channels": 2})
+    if window_s is not None:
+        if len(envelope) > MAX_ENVELOPE_WINDOWS:
+            raise ValueError(f"window_s gives more than {MAX_ENVELOPE_WINDOWS} windows for this range; use a larger window_s or a shorter duration.")
+        # Momentary (400 ms) EBU R128 loudness, logged every 100 ms; each window keeps its loudest value.
+        momentary = {}
+        for time_text, value in _FRAME_LOG.findall(diagnostics):
+            if math.isfinite(loudness := float(value)) and loudness > -70:
+                index = min(int(max(float(time_text) - 0.05, 0) / window_s), max(envelope))
+                momentary[index] = max(momentary.get(index, -math.inf), loudness)
+        result["envelope"] = {"window_seconds": window_s, "windows": [{"start": round(start_time + index * window_s, 3), "rms_dbfs": db(math.sqrt(total / count)), "peak_dbfs": db(top), "momentary_max_lufs": momentary.get(index)} for index, (total, count, top) in sorted(envelope.items())]}
     return result
+
+
+SPEECH_RATE, SPEECH_FRAME = 16000, 320  # 20 ms windows
+
+
+def speech_intervals(path, *, start_time=0.0, duration=None, isolated=None, margin_db=9.0, min_speech=0.06, min_gap=0.15):
+    """Spans of speech as [(start, end)] seconds from start_time, from speech-band (200-4000 Hz) energy in 20 ms windows.
+    In a mixture the energy must rise margin_db above the local background, the 10th percentile over the surrounding 10 s, so a
+    steady music bed or noise raises the threshold instead of counting as speech. An isolated voice, whose speech may not pause
+    for seconds, needs only to stay within 40 dB of its peak; by default a recording with real silence (5% of its windows below
+    -60 dBFS) is treated as isolated. Energy below -55 dBFS never counts."""
+    command = [_get_ffmpeg_path(), "-nostdin", "-hide_banner", "-loglevel", "error", "-ss", str(start_time), "-i", str(path), *(["-t", str(duration)] if duration else []),
+               "-vn", "-af", "highpass=f=200,lowpass=f=4000", "-ac", "1", "-ar", str(SPEECH_RATE), "-f", "f32le", "pipe:1"]
+    completed = subprocess.run(command, capture_output=True)
+    if completed.returncode:
+        raise ValueError(f"Audio decoding failed: {completed.stderr.decode(errors='replace')[-1500:]}")
+    samples = np.frombuffer(completed.stdout, dtype="<f4")
+    frames = samples[: len(samples) // SPEECH_FRAME * SPEECH_FRAME].reshape(-1, SPEECH_FRAME).astype(np.float64)
+    if not len(frames):
+        return []
+    energy = 10 * np.log10(np.square(frames).mean(axis=1) + 1e-12)
+    if isolated is None:
+        isolated = np.percentile(energy, 5) < -60
+    if isolated:
+        threshold = np.full(len(energy), max(-55.0, energy.max() - 40.0))
+    else:
+        block = 25  # the background is estimated per 0.5 s block, over the 10 s around it
+        blocks = [np.percentile(energy[max(0, index - 250): index + 250], 10) for index in range(0, len(energy), block)]
+        threshold = np.maximum(np.repeat(blocks, block)[: len(energy)] + margin_db, -55.0)
+    active = np.concatenate([[False], energy > threshold, [False]])
+    edges = np.flatnonzero(active[1:] != active[:-1]) * SPEECH_FRAME / SPEECH_RATE
+    spans = []
+    for start, end in zip(edges[::2], edges[1::2]):
+        if spans and start - spans[-1][1] < min_gap:
+            spans[-1][1] = end
+        else:
+            spans.append([start, end])
+    return [(round(float(start), 3), round(float(end), 3)) for start, end in spans if end - start >= min_speech]

@@ -31,10 +31,12 @@ class ResumableTransfers(_MediaTransferStore):
         self.scope = hashlib.sha256(repr((policy.mode, [str(root) for root in policy.output_roots])).encode()).hexdigest()
 
     def _seal(self, kind, **fields):
-        return self.state.seal({"kind": kind, "scope": self.scope, "expires": time.time() + TTL_SECONDS, **({'agent_context': self.session._agent_context} if getattr(self.session, '_agent_context', None) else {}), **fields})
+        context = getattr(self.session, '_agent_context', None)
+        token = self.state.seal({"kind": kind, "scope": self.scope, "expires": time.time() + TTL_SECONDS, **({'agent_context': context} if context else {}), **fields})
+        return f"{token}.{context}" if context else token  # the suffix routes HTTP transfers to the agent context holding the grant
 
     def _open(self, token, kind):
-        record = self.state.unseal(token, kind)
+        record = self.state.unseal(token.partition(".")[0], kind)
         if record["scope"] != self.scope:
             raise ValueError("Transfer permissions have changed; request a new transfer.")
         return record

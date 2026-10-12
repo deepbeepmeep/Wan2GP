@@ -10,6 +10,7 @@ from shared.utils.audio_metadata import save_audio_metadata
 from shared.utils.audio_video import save_image_metadata
 from shared.utils.gallery_sources import AUDIO, MESH, VIDEO, source_for_path
 from shared.utils.video_metadata import save_video_metadata
+from shared.utils.workspace_storage import recording_gallery
 
 
 def _ensure_creation_metadata(configs: Any) -> Any:
@@ -68,7 +69,7 @@ def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bo
             else:
                 file_list.append(path)
                 file_settings_list.append(saved_configs)
-            gen["last_gallery_source"] = source.id
+            recording_gallery(gen)["last_gallery_source"] = source.id
         if previous_path is not None and previous_path != path:
             if metadata_choice in ("json", "json_metadata"):
                 previous_json_path = os.path.splitext(previous_path)[0] + ".json"

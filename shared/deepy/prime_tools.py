@@ -22,7 +22,7 @@ from shared.api import WanGPSession
 from shared.deepy import media_registry
 from shared.deepy.config import DEEPY_CONTEXT_TOKENS_DEFAULT, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, get_deepy_config_value, get_deepy_runtime_config, normalize_deepy_context_tokens, normalize_deepy_mcp_auto_discover_paths, normalize_deepy_prime_mcp_servers
 from shared.gradio import assistant_chat
-from shared.mcp.server import build_inprocess_server, resolve_gallery_media_path
+from shared.mcp.server import _compact_job_snapshot, build_inprocess_server, resolve_gallery_media_path
 from shared.mcp.resources import RESOURCE_ALIASES, RESOURCE_DESCRIPTION, query_resources, resource_record, _extract_markdown_sections, _select_markdown_sections, _search_markdown_sections, _resource_read_blocks
 
 
@@ -464,7 +464,7 @@ class DeepyPrimeTools:
             generated_files = list(result.get("generated_files", []) or [])
             if generated_files:
                 snapshot["output_file"] = str(generated_files[-1])
-        return snapshot
+        return _compact_job_snapshot(snapshot, keep_paths=True)  # the chat attaches generated_files / output_file
 
     def _wait_for_generation(self, initial: dict[str, Any], timeout_s: float | None = None, event_limit: int = 0) -> dict[str, Any]:
         job_id = str(initial.get("job_id", "") or "").strip()
@@ -497,7 +497,7 @@ class DeepyPrimeTools:
                         continue
                     if deadline is not None and not self.assistant_session.pause_requested and time.monotonic() >= deadline:
                         self._watch_background_job(job_id, trigger_queue=not queue_triggered)
-                        return {**snapshot, "status": "timeout", "waiting_timed_out": True}
+                        return _compact_job_snapshot({**snapshot, "status": "timeout", "waiting_timed_out": True})
                     time.sleep(self._POLL_INTERVAL_SECONDS)
                     snapshot = self._server._wangp_jobs.get(job_id).snapshot(event_limit=event_limit)
         finally:
@@ -795,7 +795,7 @@ class DeepyPrimeTools:
         if toolbox and tool_name != "wangp_artifact" and arguments.get("arguments") is not None:
             nested = arguments["arguments"]
             if not isinstance(nested, dict):
-                hint = ' For rg, use {"action":"rg","arguments":{"command":"-n pattern -- @workspace/file.txt"}}.' if tool_name == "wangp_io" and arguments.get("action") == "rg" else ""
+                hint = ' For rg, use {"action":"rg","arguments":{"command":"-n pattern -- @documents/file.txt"}}.' if tool_name == "wangp_io" and arguments.get("action") == "rg" else ""
                 return 'arguments must be an object: {"action":"<action>","arguments":{...}}.' + hint
             if not arguments.get("action") and nested:
                 return 'action belongs at the top level, beside arguments: {"action":"<action>","arguments":{...}}. Nothing was executed.'
@@ -852,7 +852,10 @@ class DeepyPrimeTools:
                                 ignored.append(name)
         result = self._call_mcp_tool(tool_name, arguments)
         if tool_name in {"wangp_generate", "wangp_postprocess"} and result.get("job_id") and not result.get("recovered"):
-            action_arguments = arguments if tool_name == "wangp_generate" else arguments["arguments"]
+            from shared.mcp.v2 import JOB_CONTROLS
+
+            # job controls sit at the top level; post-processing calls may still carry them inside arguments
+            action_arguments = arguments if tool_name == "wangp_generate" else {**{key: value for key, value in arguments["arguments"].items() if key in JOB_CONTROLS}, **{key: arguments[key] for key in JOB_CONTROLS if key in arguments}}
             if action_arguments.get("wait", True):
                 result = self._wait_for_generation(result, action_arguments.get("timeout_s"), action_arguments.get("event_limit", 0))
             else:

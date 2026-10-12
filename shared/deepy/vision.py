@@ -26,6 +26,7 @@ VISION_VIDEO_MAX_IMAGE_EDGE = 256
 VISION_VIDEO_MID_RES_MAX_IMAGE_EDGE = 512
 VISION_VIDEO_MID_RES_SAMPLE_DIVISOR = 4
 VISION_VIDEO_MAX_SAMPLES_PER_SECOND = 2
+VISION_VIDEO_SHORT_RANGE_SECONDS, VISION_VIDEO_SHORT_RANGE_SAMPLES_PER_SECOND = 3.0, 8  # joins and cuts need dense frames
 VISION_VIDEO_DECODE_BATCH_SIZE = 8
 VISION_QA_SYSTEM_PROMPT = "Answer the user's question about the labeled visual inputs accurately and concisely. Inputs may be images or ordered frames from one or more videos. If the answer is uncertain, say so."
 _TEXT_MODEL_ID = "prompt_enhancer_llm_model"
@@ -237,6 +238,6 @@ def build_image_question_prompt(caption_model: Any, processor: Any, image: Any, 
 __all__ = [
     "VISION_ANSWER_MAX_NEW_TOKENS", "VISION_MAX_IMAGES", "VISION_MAX_VISUAL_TOKENS_PER_IMAGE", "VISION_QA_SYSTEM_PROMPT",
     "VISION_REMOTE_MAX_IMAGES", "VISION_REMOTE_MAX_IMAGE_EDGE", "VISION_VIDEO_MAX_IMAGE_EDGE", "VISION_VIDEO_MAX_IMAGES",
-    "VISION_VIDEO_MAX_SAMPLES_PER_SECOND", "VISION_VIDEO_MID_RES_MAX_IMAGE_EDGE", "VISION_VIDEO_MID_RES_SAMPLE_DIVISOR", "VISION_VIDEO_REMOTE_MAX_IMAGES", "build_image_question_prompt",
+    "VISION_VIDEO_MAX_SAMPLES_PER_SECOND", "VISION_VIDEO_SHORT_RANGE_SAMPLES_PER_SECOND", "VISION_VIDEO_SHORT_RANGE_SECONDS", "VISION_VIDEO_MID_RES_MAX_IMAGE_EDGE", "VISION_VIDEO_MID_RES_SAMPLE_DIVISOR", "VISION_VIDEO_REMOTE_MAX_IMAGES", "build_image_question_prompt",
     "decode_inspection_video_frames", "normalize_inspection_bbox", "prepare_inspection_image", "resize_inspection_image", "video_inspection_sample_count",
 ]

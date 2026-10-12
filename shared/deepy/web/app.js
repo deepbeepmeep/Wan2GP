@@ -96,7 +96,7 @@
   function tab(name) {
     if (currentTab === 'chat' && name !== 'chat') chatScrollState = WAC.captureAutoscrollState();
     currentTab = name;
-    workspaceHost.hidden = name !== 'visual' && name !== 'audio';
+    workspaceHost.hidden = !['visual', 'audio', 'mesh'].includes(name);
     $('.session-bar').hidden = name !== 'chat' || !WAC.multiSessionEnabled;
     if (name === 'chat') $('#answer-notice').hidden = true;
     document.querySelectorAll('.view').forEach(node => {node.hidden = node.id !== name + '-view';});
@@ -251,27 +251,30 @@
   function openMedia(item) {
     const viewer = $('#media-viewer');
     if (currentTab === 'chat') mediaScrollState = {sessionId: WAC.chatSessionId, scroll: WAC.captureAutoscrollState()};
-    const media = viewer.querySelector(item.kind === 'image' ? 'img' : item.kind);
+    viewer.querySelector('wangp-mesh-viewer')?.remove();
+    const media = item.kind === '3d' ? WanGPMediaView.mesh(item) : viewer.querySelector(item.kind === 'image' ? 'img' : item.kind);
     for (const node of viewer.querySelectorAll('img, video, audio')) node.hidden = node !== media;
     if (item.kind === 'video') media.poster = item.thumbnail || item.poster || '';
-    media.src = item.url;
+    if (item.kind !== '3d') media.src = item.url;
     media.setAttribute('aria-label', item.name);
     if (item.kind === 'image') media.alt = item.name;
     viewer.showModal();
-    if (item.kind !== 'image') media.play().catch(() => {});
+    if (item.kind === '3d') viewer.append(media);
+    else if (item.kind !== 'image') media.play().catch(() => {});
   }
   WAC.openAttachment = link => {
     const kind = link.dataset.mediaKind;
-    if (!['image', 'video', 'audio'].includes(kind)) return false;
-    openMedia({kind, url: link.href, name: link.querySelector('.chat__attachment-title').textContent, poster: link.querySelector('img')?.src || ''});
+    if (!['image', 'video', 'audio', '3d'].includes(kind)) return false;
+    const thumbnail = link.querySelector('img')?.src || '';
+    openMedia({kind, format: link.dataset.mediaFormat, url: link.href, name: link.querySelector('.chat__attachment-title').textContent, thumbnail, poster: thumbnail});
     return true;
   };
   let galleryItems = [];
   function gallery(items) {
     galleryItems = items;
-    for (const [scope, audio] of [['visual', false], ['audio', true]]) {
+    for (const [scope, kinds] of [['visual', ['image', 'video']], ['audio', ['audio']], ['mesh', ['3d']]]) {
       const container = $('#' + scope + '-gallery');
-      const wanted = items.filter(item => (item.kind === 'audio') === audio);
+      const wanted = items.filter(item => kinds.includes(item.kind));
       const previous = [...container.querySelectorAll('.media-card')];
       const followedLast = !previous.length || previous[previous.length - 1].classList.contains('selected');
       const view = $('#' + scope + '-view');
@@ -320,8 +323,8 @@
           stats.textContent = item.kind.toUpperCase() + ' · ' + (item.size < 1048576 ? Math.ceil(item.size / 1024) + ' KB' : (item.size / 1048576).toFixed(1) + ' MB');
           const actions = document.createElement('div'); actions.className = 'media-actions';
           {
-            const expand = document.createElement('button'); expand.type = 'button'; expand.title = item.kind === 'image' ? 'View full screen' : 'Play ' + item.kind; expand.setAttribute('aria-label', expand.title + ': ' + item.name);
-            expand.innerHTML = item.kind === 'image' ? '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 3H3v6M15 3h6v6M3 15v6h6M21 15v6h-6"/></svg>' : '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m8 4 12 8-12 8Z"/></svg>';
+            const expand = document.createElement('button'); expand.type = 'button'; expand.title = ['image', '3d'].includes(item.kind) ? 'View full screen' : 'Play ' + item.kind; expand.setAttribute('aria-label', expand.title + ': ' + item.name);
+            expand.innerHTML = ['image', '3d'].includes(item.kind) ? '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 3H3v6M15 3h6v6M3 15v6h6M21 15v6h-6"/></svg>' : '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m8 4 12 8-12 8Z"/></svg>';
             expand.onclick = () => openMedia(card.mediaItem); actions.append(expand);
           }
           const download = document.createElement('a'); const downloadUrl = new URL(item.url, location.href); downloadUrl.searchParams.set('download', 'true'); download.href = downloadUrl.href; download.download = item.name; download.title = 'Download'; download.setAttribute('aria-label', 'Download ' + item.name);
@@ -487,6 +490,7 @@
     $('#dismiss-answer').onclick = () => {dismissedAnswer = $('#answer-notice').dataset.answerId; $('#answer-notice').hidden = true;};
     $('#close-media-viewer').onclick = () => $('#media-viewer').close();
     $('#media-viewer').addEventListener('close', () => {
+      $('#media-viewer wangp-mesh-viewer')?.remove();
       for (const media of $('#media-viewer').querySelectorAll('img, video, audio')) {
         if (media.tagName !== 'IMG') media.pause();
         media.removeAttribute('src');
@@ -529,7 +533,7 @@
       } catch (error) { $('#rename-session-error').textContent = error.message; $('#rename-session-error').hidden = false; }
       finally { save.disabled = false; }
     };
-    for (const input of document.querySelectorAll('#visual-upload, #audio-upload')) input.onchange = async () => {
+    for (const input of document.querySelectorAll('#visual-upload, #audio-upload, #mesh-upload')) input.onchange = async () => {
       input.disabled = true;
       try { await WAC.uploadMediaFiles(Array.from(input.files), api, notice, gallery); notice('Import complete.'); }
       catch (error) {notice(error.message);} finally {input.disabled = false; input.value = '';}

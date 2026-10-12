@@ -650,9 +650,14 @@ def combine_and_concatenate_video_with_audio_tracks(
         raise Exception(f"FFmpeg error: {e.stderr}")
 
 
+def subtitle_stream_count(path):
+    return sum(stream['codec_type'] == 'subtitle' for stream in ffmpeg.probe(path, cmd=_ffprobe_binary())['streams'])
+
+
 def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
-                                     audio_metadata=None, audio_codec_key="aac_128", verbose=False, video_duration=None):
-    if not audio_tracks:
+                                     audio_metadata=None, audio_codec_key="aac_128", verbose=False, video_duration=None, subtitle_source=None):
+    """Mux audio tracks, and the subtitle tracks of subtitle_source when given, with the video stream of target_video."""
+    if not audio_tracks and subtitle_source is None:
         if verbose: print("No audio tracks to combine."); return False
 
     if video_duration is None:
@@ -664,10 +669,15 @@ def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
     cmd = [_ffmpeg_binary(), '-y', '-i', target_video]
     for path in audio_tracks:
         cmd += ['-i', path]
+    if subtitle_source is not None:
+        cmd += ['-i', subtitle_source]
 
     cmd += ['-map', '0:v']
     for i in range(len(audio_tracks)):
         cmd += ['-map', f'{i+1}:a']
+    if subtitle_source is not None:
+        # Text subtitles keep their language and title; MP4/MOV store them as mov_text, Matroska as SRT.
+        cmd += ['-map', f'{len(audio_tracks) + 1}:s', '-c:s', 'mov_text' if os.path.splitext(output_video)[1].lower() in ('.mp4', '.mov', '.m4v') else 'srt']
 
     for i, meta in enumerate(audio_metadata or []):
         if (lang := meta.get('language')):

@@ -12,13 +12,19 @@ from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
 
+from shared.utils.gallery_sources import GALLERY_SOURCES
+
 STORAGE_KEY = 'workspace_storage_mode'
 ROOT_KEY = 'workspaces_dir'
 MODES = ('shared', 'dedicated')
 OUTPUT_KEYS = ('save_path', 'image_save_path', 'audio_save_path', 'mesh_save_path')
+GALLERY_KEYS = ('current_gallery_source', 'selected_video_time', *(key for source in GALLERY_SOURCES for key in (source.files_key, source.settings_key, source.selected_key, source.last_selected_key)))
 _hosts = weakref.WeakValueDictionary()
 _execution = ContextVar('wangp_workspace', default=None)
+_background = ContextVar('wangp_workspace_background', default=None)
 _copy_lock = threading.RLock()
+_live_lock = threading.Lock()
+_live = {}  # (host id, workspace id) -> [gallery, users] while operations record outside the visible gallery
 
 
 def register_host(host):
@@ -35,6 +41,8 @@ def workspace_gallery(gen, workspace_id):
     host = host_for_gen(gen)
     if host is None:
         return gen
+    if (live := background_gallery(host, workspace_id)) is not None:
+        return live
     if callable(reader := getattr(host, 'read_workspace_gallery', None)):
         return reader(workspace_id)
     if host.workspace_id != workspace_id:
@@ -58,6 +66,48 @@ def execution_workspace(host, workspace_id):
         yield
     finally:
         _execution.reset(token)
+
+
+def background_gallery(host, workspace_id):
+    entry = _live.get((id(host), workspace_id))
+    return None if entry is None else entry[0]
+
+
+def recording_gallery(gen):
+    """Gallery receiving new outputs: the assigned workspace's own lists during a background operation."""
+    background = _background.get()
+    return background[1] if background is not None and background[0] is gen else gen
+
+
+@contextmanager
+def background_workspace(host, workspace_id):
+    """Execute in an assigned workspace while the host keeps showing the gallery its user selected.
+
+    Concurrent operations on one workspace share its lists, and so does the host when its user opens
+    that workspace meanwhile; outputs stay in this workspace if the user switches away.
+    """
+    from shared.utils.workspaces import load_gallery
+    key = id(host), workspace_id
+    with host._mutation_lock, _live_lock:
+        entry = _live.get(key)
+        if entry is None:
+            gen = host._state['gen']
+            gallery = {name: gen[name] for name in GALLERY_KEYS} if host.workspace_id == workspace_id else load_gallery(host.workspaces.get(workspace_id), host._workspace_settings)
+            entry = _live[key] = [gallery, 0]
+        entry[1] += 1
+    token = _background.set((host._state['gen'], entry[0]))
+    try:
+        with execution_workspace(host, workspace_id):
+            yield
+    finally:
+        _background.reset(token)
+        try:
+            host.save_background(workspace_id, entry[0])
+        finally:
+            with _live_lock:
+                entry[1] -= 1
+                if not entry[1]:
+                    del _live[key]
 
 
 def output_config(config, *, state=None, binding=None):
@@ -89,6 +139,8 @@ class HeadlessWorkspaceHost:
         state['_workspace_host'] = self
         register_host(self)
 
+    background_agents = False  # no user views this gallery
+
     def activate_workspace(self, workspace_id, *, execution=False):
         from shared.utils.workspaces import load_gallery
         record = self.workspaces.get(workspace_id)
@@ -115,7 +167,10 @@ def workspace_generation(function=None, *, headless=None):
                 raise ValueError('This queue needs its workspace store. Open it in WanGP with the original Workspaces Root.')
             return None
         workspace_id = task.get('workspace_id') or host.workspace_id
-        host.activate_workspace(workspace_id, execution=True)
+        # Agent jobs record in their own workspace and leave the host's user on the one they view.
+        task['workspace_background'] = bool(task.get('mcp_agent_id')) and host.background_agents
+        if not task['workspace_background']:
+            host.activate_workspace(workspace_id, execution=True)
         return host, workspace_id
 
     @wraps(function)
@@ -126,6 +181,9 @@ def workspace_generation(function=None, *, headless=None):
             if binding is None:
                 return function(task, *args, **kwargs)
             host, workspace_id = binding
+            if task['workspace_background']:
+                with background_workspace(host, workspace_id):
+                    return function(task, *args, **kwargs)
             with execution_workspace(host, workspace_id):
                 try:
                     return function(task, *args, **kwargs)

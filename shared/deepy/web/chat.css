@@ -2534,24 +2534,23 @@
 
 @media (max-width: 900px) {
     #assistant_chat_dock {
+        --dock-launcher-width: 24px;
         top: auto;
         bottom: 18px;
-        width: 36px;
         transform: none;
     }
 
     #assistant_chat_toggle {
         min-height: 152px;
-        width: 36px;
-        min-width: 36px;
-        padding: 14px 5px;
-        border-radius: 0 18px 18px 0;
+        padding: 14px 2px;
+        border-radius: 0 12px 12px 0;
+        transform: translateX(-2px);
     }
 
     #assistant_chat_panel {
         top: auto;
         bottom: 0;
-        left: calc(36px + var(--dock-gap));
+        left: calc(var(--dock-launcher-width) + var(--dock-gap));
         width: min(360px, calc(100vw - 72px));
         padding: 12px;
         transform: translateX(-20px) scale(0.98);

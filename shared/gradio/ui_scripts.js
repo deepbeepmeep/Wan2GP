@@ -1,5 +1,43 @@
 /* Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt) */ function() {
     console.log("[WanGP] main JS initialized");
+    function positionDropdown(menu) {
+        const trigger = menu.parentElement.querySelector('.wrap-inner');
+        if (!trigger) return;
+        const bounds = trigger.getBoundingClientRect();
+        const viewport = window.visualViewport;
+        const width = Math.min(document.documentElement.clientWidth, viewport?.width || window.innerWidth);
+        const left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
+        const height = viewport?.height || window.innerHeight;
+        menu.style.setProperty('--wangp-dropdown-viewport-width', width + 'px');
+        menu.style.setProperty('--wangp-dropdown-width', bounds.width + 'px');
+        menu.style.left = Math.max(left + 8, Math.min(bounds.left, left + width - menu.getBoundingClientRect().width - 8)) + 'px';
+        const anchorTop = Math.max(top, Math.min(bounds.top, top + height));
+        const anchorBottom = Math.max(top, Math.min(bounds.bottom, top + height));
+        const below = top + height - anchorBottom, above = anchorTop - top;
+        menu.style.top = below >= above ? anchorBottom + 'px' : 'auto';
+        menu.style.bottom = below >= above ? 'auto' : window.innerHeight - anchorTop + 'px';
+        menu.style.maxHeight = Math.max(0, Math.max(below, above) - 8) + 'px';
+    }
+    let dropdownFrame = 0;
+    function scheduleDropdownLayout() {
+        if (dropdownFrame) return;
+        dropdownFrame = requestAnimationFrame(() => {
+            dropdownFrame = 0;
+            document.querySelectorAll('.options[role="listbox"]').forEach(positionDropdown);
+        });
+    }
+    document.addEventListener('animationstart', event => {
+        if (event.animationName === 'wangp-dropdown-ready') scheduleDropdownLayout();
+    });
+    window.addEventListener('resize', scheduleDropdownLayout);
+    window.visualViewport?.addEventListener('resize', scheduleDropdownLayout);
+    window.visualViewport?.addEventListener('scroll', scheduleDropdownLayout);
+    document.addEventListener('scroll', event => {
+        if (!event.target.closest?.('.options[role="listbox"]')) scheduleDropdownLayout();
+    }, {capture: true, passive: true});
+    document.addEventListener('input', event => {
+        if (event.target.matches('input[role="listbox"]')) scheduleDropdownLayout();
+    });
     const settingsSeparatorRoots = new Set();
     let settingsSeparatorFrame = 0;
     function scheduleSettingsSeparators(root) {

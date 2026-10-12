@@ -425,7 +425,13 @@ for (const id of __STRIP_GALLERY_IDS__) SG.whenElement('#' + id + '_gallery_html
             .mesh-thumbnail {{ padding: 6px; }}
             .mesh-thumbnail .thumbnail-time {{ font-size: 11px; line-height: 1.2; text-align: center; white-space: nowrap; }}
             .mesh-thumbnail .thumbnail-detail {{ margin-top: 0; font-size: 10.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }}
-            .mesh-viewer {{ position: relative; border-radius: 8px; background: var(--studio-input); }}
+            @keyframes wangp-mesh-ready {{ from {{ opacity: .99; }} to {{ opacity: 1; }} }}
+            .mesh-viewer {{ display: block; position: relative; border-radius: 8px; background: var(--studio-input); }}
+            wangp-mesh-viewer {{ animation: wangp-mesh-ready 1ms; }}
+            .mesh-viewer-status {{ position: absolute; inset: auto 8px 8px; padding: 8px; border-radius: 6px; background: var(--background-fill-primary); color: var(--body-text-color); font-size: 14px; }}
+            .mesh-viewer-status[hidden] {{ display: none; }}
+            .mesh-viewer-status button {{ margin-left: 8px; text-decoration: underline; }}
+            .mesh-viewer-fallback {{ width: 100%; height: 100%; object-fit: contain; }}
             .mesh-viewer:fullscreen {{ height: 100vh !important; width: 100vw; border-radius: 0; }}
             .mesh-viewer-actions {{ position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; }}
             .mesh-viewer-actions > * {{
@@ -542,6 +548,10 @@ class MeshGallery(StripGallery):
     source = MESH
     viewer_height = 420
 
+    @staticmethod
+    def get_viewer_javascript(vendor_base):
+        return MeshGallery._own_javascript.replace("'/gradio_api/file=shared/gradio/vendor/'", f"new URL({json.dumps(vendor_base)}, document.baseURI).href")
+
     def _create_player(self, path):
         return gr.HTML(value=self._player_value(path), elem_id=self.element_id("viewer"))
 
@@ -560,7 +570,7 @@ class MeshGallery(StripGallery):
         fullscreen_icon = '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>'
         play_icon = '<path d="M8 5v14l11-7z"/>'
         icon = lambda drawing: f'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{drawing}</svg>'
-        return f"""<div class="mesh-viewer" data-path="{html.escape(path)}" data-preview="{preview_url}" style="height:{self.viewer_height}px">
+        return f"""<wangp-mesh-viewer class="mesh-viewer" data-path="{html.escape(path)}" data-preview="{preview_url}" style="height:{self.viewer_height}px">
 {viewer}
 <div class="mesh-viewer-actions" role="group" aria-label="3D Asset Actions">
 <button type="button" data-mesh-action="play" title="Play the Animation" aria-label="Play the Animation" hidden>{icon(play_icon)}</button>
@@ -568,7 +578,7 @@ class MeshGallery(StripGallery):
 <a href="{url}" download="{name}" title="Download the 3D Asset ({kind})" aria-label="Download {name}">{icon(download_icon)}</a>
 <button type="button" data-mesh-action="fullscreen" title="Full Screen (Esc to leave)" aria-label="Full Screen">{icon(fullscreen_icon)}</button>
 </div>
-</div>"""
+</wangp-mesh-viewer>"""
 
     @staticmethod
     def preview_path(path):
@@ -600,35 +610,40 @@ window.__meshGalleryNS = window.__meshGalleryNS || {};
 (function (MG) {
   if (MG.init) return;
   MG.init = true;
-  const SPARK = '/gradio_api/file=shared/gradio/vendor/spark/';
+  const VENDOR = '/gradio_api/file=shared/gradio/vendor/';
+  const SPARK = VENDOR + 'spark/';
+  MG.visible = element => {
+    const box = element.getBoundingClientRect();
+    return !document.hidden && box.width > 0 && box.height > 0 && box.bottom > 0 && box.right > 0
+      && box.top < window.innerHeight && box.left < window.innerWidth && getComputedStyle(element).visibility !== 'hidden';
+  };
   MG.webgl = function () {
-    if (MG.hasWebGL === undefined) {
+    if (MG.hasWebGL !== true) {
       const gl = document.createElement('canvas').getContext('webgl2');
       MG.hasWebGL = !!gl;
       gl?.getExtension('WEBGL_lose_context')?.loseContext();
     }
     return MG.hasWebGL;
   };
-  MG.showPreview = function (container) {
-    const fallback = document.createElement('div'), preview = container.dataset.preview;
-    fallback.className = 'mesh-viewer-fallback';
-    if (preview) fallback.appendChild(Object.assign(document.createElement('img'), {src: preview, alt: ''}));
-    fallback.appendChild(Object.assign(document.createElement('div'), {textContent: 'Interactive 3D view needs WebGL: enable hardware acceleration in the browser settings.'}));
-    container.querySelector('model-viewer, wangp-splat-viewer')?.replaceWith(fallback);
-  };
   MG.load = function () {
-    if (MG.loading || customElements.get('model-viewer')) return;
-    MG.loading = import('/gradio_api/file=shared/gradio/vendor/model-viewer.min.js').catch(error => { MG.loading = null; console.error('model-viewer', error); });
+    if (customElements.get('model-viewer')) return Promise.resolve();
+    const retry = MG.moduleAttempt ? '?retry=' + MG.moduleAttempt : '';
+    return MG.loading ||= import(VENDOR + 'model-viewer.min.js' + retry).catch(error => {
+      MG.loading = null; MG.moduleAttempt = (MG.moduleAttempt || 0) + 1; throw error;
+    });
   };
   // Gaussian splats: one WebGL context while the asset is shown, released when the viewer shows another asset.
   class SplatViewer extends HTMLElement {
-    async connectedCallback() {
+    async load() {
       const token = this.token = {};
       this.ready = this.inView = false;
       const [THREE, {SparkRenderer, SplatMesh}, {OrbitControls}] = await Promise.all([import(SPARK + 'three.module.js'), import(SPARK + 'spark.module.min.js'), import(SPARK + 'OrbitControls.js')]);
       if (this.token !== token) return;
       const renderer = new THREE.WebGLRenderer({antialias: false, alpha: true});
-      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.domElement.addEventListener('webglcontextlost', () => {
+        if (this.token === token) this.dispatchEvent(new Event('error'));
+      });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.domElement.style.cssText = 'width:100%;height:100%;display:block';
       this.appendChild(renderer.domElement);
       const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(40, 1, 0.01, 1000), controls = new OrbitControls(camera, renderer.domElement);
@@ -646,7 +661,6 @@ window.__meshGalleryNS = window.__meshGalleryNS || {};
       scene.add(spark, splat);
       this.state = {renderer, scene, camera, controls, splat, spark, requestRender};
       controls.addEventListener('change', requestRender);
-      document.addEventListener('visibilitychange', requestRender);
       const resize = () => {
         const width = this.clientWidth, height = this.clientHeight;
         if (!width || !height) return;
@@ -655,12 +669,7 @@ window.__meshGalleryNS = window.__meshGalleryNS || {};
         camera.updateProjectionMatrix();
         requestRender();
       };
-      (this.observer = new ResizeObserver(resize)).observe(this);
-      (this.visibilityObserver = new IntersectionObserver(([entry]) => {
-        this.inView = entry.isIntersecting;
-        requestRender();
-      })).observe(this);
-      resize();
+      this.state.resize = resize;
       await splat.initialized;
       if (this.token !== token) return;
       // Same 3/4 framing as the preview: the whole asset in view, seen from the front right and slightly above.
@@ -672,19 +681,23 @@ window.__meshGalleryNS = window.__meshGalleryNS || {};
       controls.target.copy(center);
       controls.update();
       this.ready = true;
-      requestRender();
+      this.refresh();
+    }
+    refresh() {
+      this.inView = MG.visible(this);
+      if (!this.inView) {
+        cancelAnimationFrame(this.renderFrame);
+        this.renderFrame = 0;
+      } else if (this.ready) this.state.resize();
     }
     disconnectedCallback() {
       this.token = null;
-      this.observer?.disconnect();
-      this.visibilityObserver?.disconnect();
       cancelAnimationFrame(this.renderFrame);
       this.renderFrame = 0;
       const state = this.state;
       if (!state) return;
       this.state = null;
       state.controls.removeEventListener('change', state.requestRender);
-      document.removeEventListener('visibilitychange', state.requestRender);
       state.controls.dispose();
       state.splat.dispose();
       state.spark.dispose();
@@ -694,10 +707,11 @@ window.__meshGalleryNS = window.__meshGalleryNS || {};
     }
     toBlob({mimeType = 'image/png', pixelRatio = window.devicePixelRatio} = {}) {
       const {renderer, scene, camera} = this.state;
+      const previousRatio = renderer.getPixelRatio();
       renderer.setPixelRatio(pixelRatio);
       renderer.render(scene, camera);  // the canvas is read in the same task as the render
       const blob = new Promise(resolve => renderer.domElement.toBlob(resolve, mimeType));
-      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setPixelRatio(previousRatio);
       return blob;
     }
   }
@@ -708,19 +722,101 @@ window.__meshGalleryNS = window.__meshGalleryNS || {};
     button.querySelector('svg').innerHTML = playing ? PAUSE_ICON : PLAY_ICON;
     button.title = button.ariaLabel = playing ? 'Pause the Animation' : 'Play the Animation';
   };
-  document.addEventListener('load', event => {
-    const viewer = event.target;
-    if (viewer.tagName !== 'MODEL-VIEWER' || !viewer.closest('#mesh_gallery_viewer')) return;
-    const button = viewer.closest('.mesh-viewer').querySelector('[data-mesh-action="play"]');
-    button.hidden = !viewer.availableAnimations.length;
-    setPlayButton(button, false);
-  }, true);
+  class MeshViewer extends HTMLElement {
+    connectedCallback() {
+      const mount = this.mount = {};
+      // HTML components insert their children in the same task as the host.
+      queueMicrotask(() => { if (this.isConnected && this.mount === mount) this.start(); });
+    }
+    disconnectedCallback() {
+      this.mount = null;
+      this.events?.abort();
+      this.viewer?.pause?.();
+    }
+    async start() {
+      this.events?.abort();
+      this.events = new AbortController();
+      const viewer = this.viewer = this.querySelector('model-viewer, wangp-splat-viewer');
+      this.playing = false;
+      const snapshot = this.querySelector('[data-mesh-action="snapshot"]');
+      if (snapshot) snapshot.disabled = true;
+      const status = this.status ||= this.appendChild(document.createElement('div'));
+      status.className = 'mesh-viewer-status'; status.setAttribute('role', 'status');
+      status.hidden = false; status.textContent = 'Loading 3D Asset…';
+      const fail = message => {
+        if (!this.isConnected || this.viewer !== viewer) return;
+        const replacement = viewer.cloneNode(false);
+        const preview = document.createElement('img'); preview.className = 'mesh-viewer-fallback'; preview.alt = '3D Asset Preview';
+        if (this.dataset.preview) preview.src = this.dataset.preview;
+        else preview.hidden = true;
+        viewer.pause?.();
+        viewer.replaceWith(preview);
+        this.viewer = null;
+        this.querySelector('[data-mesh-action="play"]').hidden = true;
+        if (snapshot) snapshot.disabled = true;
+        status.hidden = false; status.textContent = message;
+        const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = 'Retry 3D';
+        retry.onclick = () => {preview.replaceWith(replacement); this.start();};
+        status.append(retry);
+      };
+      const loaded = () => {
+        if (!this.isConnected || this.viewer !== viewer) return;
+        status.hidden = true;
+        if (snapshot) snapshot.disabled = false;
+        const play = this.querySelector('[data-mesh-action="play"]');
+        play.hidden = !viewer.availableAnimations?.length;
+        setPlayButton(play, false);
+        this.refresh();
+      };
+      viewer.addEventListener('error', () => fail('Unable to Load This 3D Asset. You Can Still Download It.'), {once: true, signal: this.events.signal});
+      viewer.addEventListener('load', loaded, {once: true, signal: this.events.signal});
+      try {
+        // A temporary context failure must not disable all later attempts.
+        if (!MG.webgl()) {fail('Interactive 3D Is Unavailable in This Browser. You Can Still Download the Asset.'); return;}
+        if (viewer.localName === 'model-viewer') {
+          await MG.load();
+          if (viewer.loaded) loaded();
+        } else {
+          await viewer.load();
+          loaded();
+        }
+      } catch (error) {
+        console.error('3D viewer', error);
+        fail('Unable to Start the 3D Viewer. You Can Still Download the Asset.');
+      }
+    }
+    refresh() {
+      const viewer = this.viewer;
+      if (!viewer) return;
+      if (viewer.localName === 'wangp-splat-viewer') viewer.refresh();
+      else if (typeof viewer.pause === 'function') {
+        if (this.playing && MG.visible(this)) { if (viewer.paused) viewer.play(); }
+        else if (!viewer.paused) viewer.pause();
+      }
+    }
+  }
+  customElements.define('wangp-mesh-viewer', MeshViewer);
+  let layoutFrame = 0;
+  MG.refresh = () => {
+    if (layoutFrame) return;
+    layoutFrame = requestAnimationFrame(() => {
+      layoutFrame = 0;
+      document.querySelectorAll('wangp-mesh-viewer').forEach(viewer => viewer.refresh());
+    });
+  };
+  window.addEventListener('resize', MG.refresh);
+  document.addEventListener('scroll', MG.refresh, {capture: true, passive: true});
+  document.addEventListener('fullscreenchange', MG.refresh);
+  document.addEventListener('visibilitychange', () => document.querySelectorAll('wangp-mesh-viewer').forEach(viewer => viewer.refresh()));
+  document.addEventListener('animationstart', event => {if (event.animationName === 'wangp-mesh-ready') MG.refresh();});
+  document.addEventListener('click', MG.refresh);
   document.addEventListener('click', event => {
     const button = event.target.closest('.mesh-viewer [data-mesh-action="play"]');
     if (!button) return;
-    const viewer = button.closest('.mesh-viewer').querySelector('model-viewer');
-    if (viewer.paused) viewer.play(); else viewer.pause();
-    setPlayButton(button, !viewer.paused);
+    const container = button.closest('wangp-mesh-viewer');
+    container.playing = !container.playing;
+    container.refresh();
+    setPlayButton(button, container.playing);
   });
   // Full screen: the viewer of the selected asset (both viewers follow their container's size)
   document.addEventListener('click', event => {
@@ -796,16 +892,6 @@ window.__meshGalleryNS = window.__meshGalleryNS || {};
     const container = button.closest('.mesh-viewer'), popup = container.querySelector('.mesh-snapshot-popup');
     if (popup) popup.remove();
     else MG.openSnapshotPopup(container);
-  });
-  window.__stripGalleryNS.whenElement('#mesh_gallery_viewer', viewer => {
-    const check = () => {
-      const container = viewer.querySelector('.mesh-viewer[data-path]');
-      if (!container?.querySelector('model-viewer, wangp-splat-viewer')) return;
-      if (!MG.webgl()) MG.showPreview(container);
-      else if (container.querySelector('model-viewer')) MG.load();
-    };
-    new MutationObserver(check).observe(viewer, { childList: true, subtree: true });
-    check();
   });
 })(window.__meshGalleryNS);
 // ===== end MeshGallery JS =====

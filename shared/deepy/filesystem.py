@@ -131,6 +131,7 @@ class FileAccessPolicy:
         else:
             return None
         alias, separator, remainder = reference.partition("/")
+        alias = re.sub(r"^workspace(\d*)$", r"documents\1", alias, flags=re.IGNORECASE)  # the documents root was named @workspace before
         root = next((path for name, path in self.mounts if name.casefold() == alias.casefold()), None)
         if root is None:
             raise ValueError(f"Unknown virtual filesystem root: {alias or '(empty)'}. List authorized roots without a path first.")
@@ -355,6 +356,21 @@ def _rate(value: Any) -> float | None:
     return _float(text)
 
 
+def _stream_summary(stream: dict[str, Any]) -> dict[str, Any]:
+    tags = stream.get("tags", {})
+    title = tags.get("title") or tags.get("handler_name", "")  # MP4 keeps track names as handler_name
+    summary = {"type": stream["codec_type"], "codec": stream.get("codec_name")}
+    if stream["codec_type"] == "audio":
+        summary.update(sample_rate=_integer(stream.get("sample_rate")), channels=_integer(stream.get("channels")), layout=stream.get("channel_layout"))
+    if tags.get("language", "und") != "und":
+        summary["language"] = tags["language"]
+    if title and not re.fullmatch(r"\w*Handler", title):  # FFmpeg's VideoHandler / SoundHandler defaults name nothing
+        summary["title"] = title
+    if stream["codec_type"] == "subtitle" and stream.get("disposition", {}).get("default"):
+        summary["default"] = True
+    return {key: value for key, value in summary.items() if value is not None}
+
+
 def _probe_media(path: Path, media_type: str) -> dict[str, Any]:
     probe = ffmpeg.probe(str(path), cmd=resolve_media_binary("ffprobe") or "ffprobe")
     streams = probe.get("streams", [])
@@ -364,6 +380,7 @@ def _probe_media(path: Path, media_type: str) -> dict[str, Any]:
     result = {
         "status": "done", "path": str(path), "filename": path.name, "size_bytes": path.stat().st_size, "file_type": media_type,
         "duration_seconds": duration, "has_audio": bool(audio_streams), "audio_track_count": len(audio_streams), "error": "",
+        "streams": [_stream_summary(stream) for stream in streams if stream.get("codec_type") in {"video", "audio", "subtitle"}],
     }
     if media_type == "video":
         video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
@@ -503,7 +520,7 @@ def write_text(policy: FileAccessPolicy, path: str, text: str, mode: str = "crea
     if policy.create_only(file_path):
         open_mode = "x"
     content = str(text)
-    with file_path.open(open_mode, encoding=_encoding(encoding)) as writer:
+    with file_path.open(open_mode, encoding=_encoding(encoding), newline="") as writer:  # the text as given: no Windows newline translation
         writer.write(content)
     digest = hashlib.sha256()
     with file_path.open("rb") as reader:

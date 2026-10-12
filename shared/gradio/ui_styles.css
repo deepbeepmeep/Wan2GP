@@ -16,16 +16,6 @@ gradio-app {
     from { --wangp-settings-separator-ready: 0; }
     to { --wangp-settings-separator-ready: 1; }
 }
-.wangp-settings-dropdown .wrap:has(> .wrap-inner) {
-    container-type: inline-size;
-}
-.wangp-settings-dropdown ul.options {
-    width: 100cqw !important;
-    min-width: 0;
-}
-.wangp-settings-dropdown ul.options > li {
-    width: 100% !important;
-}
 [data-testid="dropdown-option"][aria-label^="─"][aria-label$="─"] {
     animation: wangp-settings-separator-ready 1ms;
     position: relative;
@@ -220,6 +210,117 @@ font-size: calc(25px * var(--wangp-ui-scale))}
 :is(#family_list, #model_base_types_list, #model_list) > .container > .wrap {
     border-radius: var(--wangp-model-corners);
 }
+
+/* The menu can be wider than its trigger; opening/resizing positions it in the viewport. */
+@keyframes wangp-dropdown-ready { from { opacity: .99; } to { opacity: 1; } }
+.wangp-model-selector-tool { transition-property: background-color, border-color, color !important; }
+.options[role="listbox"] {
+    --wangp-dropdown-limit: calc(min(100vw, var(--wangp-dropdown-viewport-width, 100vw)) - 16px);
+    width: max-content !important;
+    min-width: min(var(--wangp-dropdown-limit), max(280px, var(--wangp-dropdown-width, 0px))) !important;
+    max-width: var(--wangp-dropdown-limit) !important;
+    box-sizing: border-box;
+}
+.options[role="listbox"] > li {
+    width: auto !important;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.options[role="listbox"] > li:first-child { animation: wangp-dropdown-ready 1ms; }
+.options[role="listbox"] > li:first-child[aria-label^="─"][aria-label$="─"] { animation: wangp-settings-separator-ready 1ms, wangp-dropdown-ready 1ms; }
+
+/* Safari zooms focused form inputs below 16px, including the Settings selector. */
+@media (max-width: 900px), (pointer: coarse) {
+    .block input[role="listbox"] { font-size: 16px !important; }
+}
+
+@media (max-width: 900px) {
+    .tabitem:has(#family_list) {
+        --wangp-selector-tab-inset: calc(var(--spacing-xl) + 2px);
+        padding-inline: var(--wangp-selector-tab-inset);
+    }
+    .row:has(> .form > #family_list) {
+        container-type: inline-size;
+        display: grid !important;
+        /* Equal outer tracks center both groups together; the middle track yields on phones. */
+        grid-template-columns: minmax(0, 1fr) max-content minmax(8px, 90px) max-content minmax(0, 1fr);
+        gap: 6px 0 !important;
+    }
+    .form:has(> #family_list) {
+        --wangp-selector-bleed: calc(var(--wangp-app-padding) + var(--wangp-selector-tab-inset, 0px) - max(4px, env(safe-area-inset-left), env(safe-area-inset-right)));
+        grid-column: 1 / -1;
+        grid-row: 1;
+        justify-self: center;
+        min-width: 0 !important;
+        width: calc(100% + 2 * var(--wangp-selector-bleed));
+        flex-wrap: nowrap !important;
+        border: 1px solid #a9bfd0;
+        box-sizing: border-box;
+        padding: 0 !important;
+        gap: 0 !important;
+    }
+    .dark .form:has(> #family_list) { border-color: #526a80; }
+    :is(#family_list, #model_base_types_list, #model_list) {
+        min-width: 0 !important;
+        flex-basis: 0 !important;
+        padding: 0 !important;
+    }
+    :is(#family_list, #model_base_types_list, #model_list) .wrap-inner { padding: 0 !important; }
+    :is(#family_list, #model_base_types_list, #model_list) .secondary-wrap { min-width: 0 !important; }
+    :is(#family_list, #model_base_types_list, #model_list) input[role="listbox"] {
+        width: 0;
+        min-width: 0;
+        flex: 1 1 0;
+        font-size: 16px !important;
+        padding: 10px 22px 10px 4px !important;
+        margin: 0;
+    }
+    :is(#model_base_types_list, #model_list) .secondary-wrap[data-wangp-availability] > input[role="listbox"] { padding-left: 24px !important; }
+    :is(#model_base_types_list, #model_list) .secondary-wrap[data-wangp-availability]::before { left: 4px !important; width: 12px !important; height: 12px !important; top: calc(50% - 6px) !important; }
+    :is(#family_list, #model_base_types_list, #model_list) .icon-wrap { right: 0; margin-right: 2px; }
+    .row:has(> .form > #family_list) > :is(.wangp-model-output-filter-wrap, .wangp-model-selector-tools) {
+        --wangp-compact-control-width: clamp(26px, calc((100cqw - 44px) / 9), 30px);
+        --wangp-compact-control-gap: clamp(4px, calc(4px + (100cqw - 320px) / 20), 12px);
+        grid-row: 2;
+        min-width: 0 !important;
+    }
+    .row:has(> .form > #family_list) > .wangp-model-output-filter-wrap { grid-column: 2; width: max-content; }
+    .row:has(> .form > #family_list) > .wangp-model-selector-tools {
+        grid-column: 4;
+        width: calc(4 * var(--wangp-compact-control-width) + 3 * var(--wangp-compact-control-gap));
+    }
+    /* Keep the replacement search field and its results inside the centered toolbar. */
+    .row:has(> .form > #family_list) #wangp_model_search_results {
+        max-width: calc(50cqw + 2 * var(--wangp-compact-control-width) + 1.5 * var(--wangp-compact-control-gap));
+    }
+    .row:has(> .form > #family_list) .wangp-model-output-filter {
+        grid-template-columns: none !important;
+        grid-auto-flow: column;
+        grid-auto-columns: var(--wangp-compact-control-width);
+        width: max-content !important;
+        gap: var(--wangp-compact-control-gap) !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    .row:has(> .form > #family_list) .wangp-model-output-filter-link { min-width: 0; }
+    .row:has(> .form > #family_list) .wangp-model-selector-tool-row {
+        width: max-content;
+        flex-wrap: nowrap;
+        gap: var(--wangp-compact-control-gap) !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    .row:has(> .form > #family_list) .wangp-model-selector-tool {
+        min-width: var(--wangp-compact-control-width) !important;
+        width: var(--wangp-compact-control-width) !important;
+        max-width: var(--wangp-compact-control-width) !important;
+        height: 40px !important;
+    }
+    #wangp-gallery-tabs > .tab-wrapper > .tab-container > button { padding-inline: 8px; }
+}
+/* Gradio only scopes media-rule selectors inside .contain, which excludes its outer padding. */
+gradio-app .app { --wangp-app-padding: clamp(8px, calc(10vw - 60px), 32px); padding-inline: var(--wangp-app-padding) !important; }
 
 .title-with-lines {
     display: flex;
@@ -592,10 +693,14 @@ user-select: text;
 .wangp-settings-upload > button[aria-dropeffect] {
     padding-left: 50%;
 }
-.wangp-settings-upload > button[aria-dropeffect] > .wrap {
-    margin-inline: 0;
-    max-width: 100%;
-    white-space: nowrap;
+/* The native 240px placeholder leaks part of its upload icon from a 41px field. */
+.wangp-settings-upload > button[aria-dropeffect] > .wrap { display: none; }
+.wangp-settings-upload > button[aria-dropeffect]::after {
+    content: attr(aria-label);
+    padding-inline: 4px;
+    font-size: var(--text-md);
+    white-space: normal;
+    line-height: 1.3;
 }
 .wangp-settings-upload > label.float {
     display: block;

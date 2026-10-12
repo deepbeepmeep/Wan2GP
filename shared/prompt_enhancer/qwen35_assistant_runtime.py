@@ -1152,16 +1152,19 @@ class Qwen35AssistantRuntime:
         return self._prefill_context(token_ids, seed=seed)
 
     def restore_or_replay(self, snapshot: dict[str, Any] | None, fallback_tokens: list[int], seed: int | None = None) -> tuple[str, str]:
+        replay_reason = "no exact runtime snapshot was available"
         if snapshot:
             try:
                 self.restore_snapshot(snapshot)
                 return "restored", "exact KV snapshot restored"
+            except torch.OutOfMemoryError:
+                raise
             except Exception as exc:
                 self._log(f"Exact restore failed, falling back to prefill: {exc}")
-                self.prime_context(fallback_tokens, seed=seed)
-                return "prefilled", f"exact KV restore failed: {exc}"
+                replay_reason = f"exact KV restore failed: {exc}"
+        # Leave the exception handler before replay so its traceback releases GPU temporaries.
         self.prime_context(fallback_tokens, seed=seed)
-        return "prefilled", "no exact runtime snapshot was available"
+        return "prefilled", replay_reason
 
     def extend_context(self, target_token_ids: list[int]) -> str:
         seq = self._get_active_sequence()

@@ -189,6 +189,29 @@ def prepare_auto(prompts, image_start, image_end, image_refs, *, windows, fps, w
     return prompts, contexts
 
 
+def window_plan(prompts, inputs, model_def, *, fps, source_frames, has_start):
+    """Sliding-window plan of a video generation: its windows (frames, overlap, trims), each window's prompt, the window size, default overlap and discarded frames."""
+    minimum, step = model_def.get("frames_minimum", 5), model_def.get("frames_steps", 4)
+    latent_size, offset = model_def.get("latent_size", step), model_def.get("frames_offset", 1)
+    total_frames = floor_frame_count(inputs["video_length"], minimum, latent_size, offset)
+    window_size = floor_frame_count(inputs["sliding_window_size"], minimum, latent_size, offset)
+    default_overlap = min(window_size - latent_size, inputs["sliding_window_overlap"])
+    defaults = model_def.get("sliding_window_defaults", {})
+    discard = inputs["sliding_window_discard_last_frames"]
+    geometry = dict(minimum=minimum, step=step, frame_offset=offset, overlap_offset=defaults.get("overlap_offset", 1), max_overlap=defaults.get("overlap_max"), preserve_exact_output_frames=model_def.get("image_end_frame_position", False), output_frame_policy=model_def.get("frame_scheduler_output_policy"))
+    scheduler, error = build_frame_scheduler(prompts, total_frames=total_frames, fps=fps, window_size=window_size, default_overlap=inputs["sliding_window_overlap"], supported_model_commands=model_def.get("prompt_slash_commands", []), allow_new_shot="T" in model_def.get("image_prompt_types_allowed", ""), first_window_overlap_frames=source_frames, initial_shared_frames=int(source_frames > 0), discard_last_frames=discard, **geometry)
+    if error is not None:
+        raise ValueError(error)
+    if scheduler["active"]:
+        windows = scheduler["windows"]
+        expanded = [prompts[index] if index < len(prompts) else window["prompt"] for index, window in enumerate(windows)]
+    else:
+        first_overlap = min(1 if has_start else max(1, default_overlap), source_frames)
+        windows = build_default_window_plan(total_frames=total_frames, window_size=window_size, default_overlap=default_overlap, discard_last_frames=discard, first_window_overlap=first_overlap, first_window_available_overlap=source_frames, initial_shared_frames=int(first_overlap > 0), **geometry)
+        expanded = [prompts[min(index, len(prompts) - 1)] for index in range(len(windows))]
+    return windows, expanded, window_size, default_overlap, discard
+
+
 def prepare_manual(prompts, inputs, model_def, *, fps, source_frames, open_image, multi_prompt_output, continuation_image=None):
     window_mode = "W" in inputs["multi_prompts_gen_type"]
     if not window_mode and len(prompts) > 1:
@@ -214,31 +237,15 @@ def prepare_manual(prompts, inputs, model_def, *, fps, source_frames, open_image
     if window_mode and len(starts) > 1:
         raise ValueError("Only one Start Image is supported in Sliding Window prompt modes.")
     sliding = model_def.get("sliding_window", False) and inputs["image_mode"] == 0 and not model_def.get("audio_only", False)
-    minimum, step = model_def.get("frames_minimum", 5), model_def.get("frames_steps", 4)
-    latent_size, offset = model_def.get("latent_size", step), model_def.get("frames_offset", 1)
-    total_frames = floor_frame_count(inputs["video_length"], minimum, latent_size, offset)
-    window_size = floor_frame_count(inputs["sliding_window_size"], minimum, latent_size, offset) if sliding else total_frames
-    default_overlap = min(window_size - latent_size, inputs["sliding_window_overlap"]) if sliding else 0
-    defaults = model_def.get("sliding_window_defaults", {})
-    discard = inputs["sliding_window_discard_last_frames"] if sliding else 0
     start = starts[0] if starts else None
     if model_def.get("fake_start_image", False):
         start, source_frames = None, 0
-    geometry = dict(minimum=minimum, step=step, frame_offset=offset, overlap_offset=defaults.get("overlap_offset", 1), max_overlap=defaults.get("overlap_max"), preserve_exact_output_frames=model_def.get("image_end_frame_position", False), output_frame_policy=model_def.get("frame_scheduler_output_policy"))
-    scheduler = None
     if sliding:
-        scheduler, error = build_frame_scheduler(prompts, total_frames=total_frames, fps=fps, window_size=window_size, default_overlap=inputs["sliding_window_overlap"], supported_model_commands=model_def.get("prompt_slash_commands", []), allow_new_shot="T" in model_def.get("image_prompt_types_allowed", ""), first_window_overlap_frames=source_frames, initial_shared_frames=int(source_frames > 0), discard_last_frames=discard, **geometry)
-        if error is not None:
-            raise ValueError(error)
-    if scheduler is not None and scheduler["active"]:
-        windows = scheduler["windows"]
-        expanded = [prompts[index] if index < len(prompts) else window["prompt"] for index, window in enumerate(windows)]
-    elif sliding:
-        first_overlap = min(1 if start is not None else max(1, default_overlap), source_frames)
-        windows = build_default_window_plan(total_frames=total_frames, window_size=window_size, default_overlap=default_overlap, discard_last_frames=discard, first_window_overlap=first_overlap, first_window_available_overlap=source_frames, initial_shared_frames=int(first_overlap > 0), **geometry)
-        expanded = [prompts[min(index, len(prompts) - 1)] for index in range(len(windows))]
+        windows, expanded, window_size, default_overlap, discard = window_plan(prompts, inputs, model_def, fps=fps, source_frames=source_frames, has_start=start is not None)
     else:
-        windows = [dict(frame_num=total_frames, output_frames=total_frames, overlap_frames=0, discard_last_frames=0, trim_last_frames=0)]
+        window_size = floor_frame_count(inputs["video_length"], model_def.get("frames_minimum", 5), model_def.get("latent_size", model_def.get("frames_steps", 4)), model_def.get("frames_offset", 1))
+        default_overlap = discard = 0
+        windows = [dict(frame_num=window_size, output_frames=window_size, overlap_frames=0, discard_last_frames=0, trim_last_frames=0)]
         expanded = prompts
     positions = inputs["frames_positions"] if "F" in inputs["video_prompt_type"] else ""
     control_image = control_image_input(inputs)

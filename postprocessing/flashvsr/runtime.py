@@ -7,6 +7,7 @@ from shared.utils.media_control import controlled_model_loading, loading_callbac
 import gc
 import math
 import os
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -317,36 +318,44 @@ def _wavelet_color_fix(frames: torch.Tensor, lq_video: torch.Tensor) -> torch.Te
     return frames
 
 
-def _wavelet_color_fix_from_sample(frames: torch.Tensor, sample: torch.Tensor, scale: float, output_height: int, output_width: int, padded_output_height: int, padded_output_width: int) -> torch.Tensor:
+def _wavelet_color_fix_from_sample(frames: torch.Tensor, sample: torch.Tensor, *, device: torch.device, abort_callback=None, progress_callback=None) -> torch.Tensor | None:
+    # Decoded videos stay in CPU RAM; only the current correction chunk runs on the GPU.
     step = 1 if frames.dtype == torch.uint8 else 4
-    for start in range(0, min(int(frames.shape[2]), int(sample.shape[1])), step):
-        end = min(start + step, int(frames.shape[2]), int(sample.shape[1]))
-        frame_chunk = frames[:, :, start:end]
-        if frames.dtype == torch.uint8:
-            frame_float = frame_chunk.float()
-            lq_chunk = sample[:, start:end].unsqueeze(0).to(device=frames.device, dtype=torch.float32)
-            if sample.dtype != torch.uint8:
+    total = min(int(frames.shape[2]), int(sample.shape[1]))
+    dtype = torch.float32 if frames.dtype == torch.uint8 else frames.dtype
+    _report_progress(progress_callback, "Color Correction", 0, total)
+    last_progress = time.monotonic()
+    with tqdm(total=total, desc="Color Correction", unit="frames", mininterval=1 / 3) as progress:
+        for start in range(0, total, step):
+            if _abort_requested(abort_callback):
+                return None
+            end = min(start + step, total)
+            frame_chunk = frames[:, :, start:end]
+            frame_float = frame_chunk.to(device=device, dtype=dtype, copy=True)
+            lq_chunk = sample[:, start:end].unsqueeze(0).to(device=device, dtype=dtype, copy=True)
+            if sample.dtype != torch.uint8 and frames.dtype == torch.uint8:
                 lq_chunk.clamp_(-1.0, 1.0).add_(1.0).mul_(127.5)
+            elif sample.dtype == torch.uint8 and frames.dtype != torch.uint8:
+                lq_chunk.div_(127.5).sub_(1.0)
+            elif sample.dtype != torch.uint8:
+                lq_chunk.clamp_(-1.0, 1.0)
             mean_frames = frame_float.mean(dim=(3, 4), keepdim=True)
             std_frames = frame_float.std(dim=(3, 4), keepdim=True).clamp_min_(1e-5)
             mean_lq = lq_chunk.mean(dim=(3, 4), keepdim=True)
             std_lq = lq_chunk.std(dim=(3, 4), keepdim=True).clamp_min_(1e-5)
-            frame_float.sub_(mean_frames).div_(std_frames).mul_(std_lq).add_(mean_lq).round_().clamp_(0, 255)
-            frame_chunk.copy_(frame_float.to(torch.uint8))
+            frame_float.sub_(mean_frames).div_(std_frames).mul_(std_lq).add_(mean_lq)
+            if frames.dtype == torch.uint8:
+                frame_float.round_().clamp_(0, 255)
+                frame_chunk.copy_(frame_float.to(torch.uint8))
+            else:
+                frame_chunk.copy_(frame_float.clamp_(-1.0, 1.0))
             del frame_float, lq_chunk, mean_frames, std_frames, mean_lq, std_lq
-            continue
-        lq_chunk = sample[:, start:end].unsqueeze(0).to(device=frames.device, dtype=frames.dtype)
-        if sample.dtype == torch.uint8:
-            lq_chunk.div_(127.5).sub_(1.0)
-        else:
-            lq_chunk.clamp_(-1.0, 1.0)
-        mean_frames = frame_chunk.mean(dim=(3, 4), keepdim=True)
-        std_frames = frame_chunk.std(dim=(3, 4), keepdim=True).clamp_min_(1e-5)
-        mean_lq = lq_chunk.mean(dim=(3, 4), keepdim=True)
-        std_lq = lq_chunk.std(dim=(3, 4), keepdim=True).clamp_min_(1e-5)
-        frame_chunk.sub_(mean_frames).div_(std_frames).mul_(std_lq).add_(mean_lq).clamp_(-1.0, 1.0)
-        del lq_chunk, mean_frames, std_frames, mean_lq, std_lq
-    return frames
+            progress.update(end - start)
+            now = time.monotonic()
+            if end == total or now - last_progress >= 1 / 3:
+                _report_progress(progress_callback, "Color Correction", end, total)
+                last_progress = now
+    return None if _abort_requested(abort_callback) else frames
 
 
 def _denoise_stream_chunk(
@@ -815,8 +824,8 @@ class FlashVSRRuntime:
             frames = _decoded_frames_to_cpu(decoded_frames, input_frames, output_height, output_width)
             del decoded_frames
         gc.collect()
-        _report_progress(progress_callback, "Color Correction")
-        _wavelet_color_fix_from_sample(frames.unsqueeze(0), sample, scale, output_height, output_width, output_height, output_width)
+        if _wavelet_color_fix_from_sample(frames.unsqueeze(0), sample, device=self.device, abort_callback=abort_callback, progress_callback=progress_callback) is None:
+            return abort_result()
         if frames.dtype != torch.uint8:
             frames.clamp_(-1.0, 1.0)
         frames = _apply_continue_cache(frames, continue_cache)

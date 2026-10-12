@@ -278,6 +278,16 @@ _PATCHES = {
         ('c[0]&1024&&n.value!==i[10]&&me(n,i[10])', 'c[0]&1024&&wangpModelInput(n,i[10])'),
     ],
     'Tabs-DtiML6DO.js': [
+        # Test whether all tabs fit without the overflow trigger first. Its
+        # existing width otherwise keeps the last tab trapped in overflow.
+        ('let p=s.width;const D=ye(b,J);', '''if (!s.width) return;
+        const overflowHidden = I.classList.contains("hide");
+        I.classList.remove("hide");
+        const overflowWidth = I.getBoundingClientRect().width + parseFloat(getComputedStyle(I).marginLeft);
+        if (overflowHidden) I.classList.add("hide");
+        let p=s.width + (overflowHidden ? 0 : overflowWidth);const D=ye(b,J);
+        if (b.some(tab => tab?.visible && D[tab.id] && D[tab.id].right - s.left > p)) p -= overflowWidth;'''),
+        ('le&&le.right-ze<p', 'le&&le.right-ze<=p'),
         # Overflow choices must keep the same visibility and availability as
         # their full-size tabs, including after model-dependent updates.
         ('l(8,T=b.slice(W+1))', 'l(8,T=b.slice(W+1).filter(tab=>tab?.visible))'),

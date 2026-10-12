@@ -56,6 +56,8 @@ def configure(selection, resolved=None):
     backend, scaled_backend = quanto, scaled
     if (quanto, scaled) != ("pytorch", "pytorch"):
         _register_ops()
+    from mmgp import offload
+    offload.register_row_projection(_FP8_ROW_PROJECTION)
     kernels = _LABELS[quanto] if quanto == scaled else f"{_LABELS[quanto]}, {_LABELS[scaled]} for scaled FP8 checkpoints"
     print(f"[FP8] Backend: {kernels} (setting: {selection}{'; ' + reason if reason else ''}).")
     return quanto, scaled
@@ -125,3 +127,70 @@ def linear(input, weight, bias=None):
     fused_bias = bias if bias is not None and bias.dtype == scale.dtype else None
     out = matmul(x, data, scale, fused_bias, backend == "cuda").reshape(*input.shape[:-1], data.shape[0])
     return out + bias if bias is not None and fused_bias is None else out
+
+
+class _FP8RowProjection:
+    @staticmethod
+    def supports(module, x):
+        qtype = getattr(module, "weight_qtype", None)
+        if qtype is None or qtype.name not in ("qfloat8_e4m3fn", "qfloat8_e4m3fnuz", "qfloat8_e5m2", "scaled_float8_e4m3fn", "scaled_float8_e5m2"):
+            return False
+        if is_fake(x) or torch.compiler.is_compiling() or getattr(module, "activation_qtype", None) is not None:
+            return False
+        weight = module.qweight
+        return (weight.dtype == x.dtype and weight._scale.numel() in (1, weight.shape[0])
+                and (module.bias is None or module.bias.dtype == x.dtype))
+
+    @staticmethod
+    def key(module):
+        from shared.qtypes.scaled_fp8 import ScaledFP8WeightTensor
+        weight = module.qweight
+        scaled = isinstance(weight, ScaledFP8WeightTensor)
+        mode = scaled_backend if scaled else backend
+        if not weight.is_cuda:
+            mode = "pytorch"
+        elif mode == "cuda" and ((scaled and weight._force_full_precision_mm) or not _cuda_runs(weight._data, weight._data)):
+            mode = "triton"
+        return "fp8_rows", mode, weight.dtype, weight._data.dtype
+
+    @staticmethod
+    def prepare(module, x):
+        from shared.qtypes.scaled_fp8 import _quantize_activation
+        _, mode, dtype, fp8_dtype = _FP8RowProjection.key(module)
+        x = x.to(dtype).contiguous()
+        return (*_quantize_activation(x, fp8_dtype), dtype) if mode == "cuda" else x
+
+    @staticmethod
+    def rows(module, prepared, start, stop):
+        from shared.qtypes.scaled_fp8 import _scaled_mm_weight_scale
+        weight = module.qweight
+        data = weight._data[start:stop]
+        scale = weight._scale if weight._scale.numel() == 1 else weight._scale.reshape(-1)[start:stop]
+        bias = None if module.bias is None else module.bias[start:stop]
+        mode = _FP8RowProjection.key(module)[1]
+        if mode == "cuda":
+            x, xs, dtype = prepared
+            count = stop - start
+            ws, output_scale = _scaled_mm_weight_scale(scale, data)
+            # cuBLASLt requires an aligned N; pad only the requested row range.
+            if count % 16:
+                padded = data.new_zeros(((count + 15) // 16 * 16, data.shape[1]))
+                padded[:count].copy_(data)
+                data = padded
+            fused_bias = bias if output_scale is None and dtype != torch.float32 and count % 16 == 0 else None
+            out = torch._scaled_mm(x, data.t(), xs, ws.to(torch.float32), bias=fused_bias, out_dtype=dtype)[:, :count]
+            if output_scale is not None:
+                out.mul_(output_scale.to(dtype).view(1, -1))
+            if bias is not None and fused_bias is None:
+                out.add_(bias)
+            return out
+        if mode == "triton":
+            return matmul(prepared, data, scale.to(prepared.dtype), bias, False)
+        dense = data.to(prepared.dtype) * scale.to(prepared.dtype).reshape(-1, 1)
+        out = prepared @ dense.t()
+        if bias is not None:
+            out.add_(bias)
+        return out
+
+
+_FP8_ROW_PROJECTION = _FP8RowProjection()

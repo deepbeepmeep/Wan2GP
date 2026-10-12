@@ -95,7 +95,7 @@ from .quant_router import (
     get_extension_handler,
     normalize_extension_path,
 )
-from optimum.quanto import freeze,  qfloat8, qint4 , qint8, quantize, QModuleMixin, QLinear, QTensor,  quantize_module, register_qmodule
+from optimum.quanto import freeze,  qfloat8, qint2, qint4 , qint8, quantize, QModuleMixin, QLinear, QTensor,  quantize_module, register_qmodule
 # support for Embedding module quantization that is not supported by default by quanto
 @register_qmodule(torch.nn.Embedding)
 class QEmbedding(QModuleMixin, torch.nn.Embedding):
@@ -543,7 +543,7 @@ def _unwrap_quantized_tensor(tensor):
 
 def _qtensor_get_quantized_subtensors(self):
     subtensors = []
-    if getattr(self, "_qtype", None) == qint4:
+    if getattr(self, "_qtype", None) in (qint2, qint4):
         data = _unwrap_quantized_tensor(self._data)
         subtensors.append(("data", data))
         if hasattr(self, "_scale_shift") and self._scale_shift is not None:
@@ -575,7 +575,7 @@ def _qtensor_set_quantized_subtensors(self, sub_tensors):
         else:
             self._data = data
 
-    if getattr(self, "_qtype", None) == qint4:
+    if getattr(self, "_qtype", None) in (qint2, qint4):
         if "scale_shift" in sub_map and sub_map["scale_shift"] is not None:
             self._scale_shift = sub_map["scale_shift"]
         else:
@@ -3776,7 +3776,7 @@ class offload:
         for tensor in builtins.list(module.parameters()) + builtins.list(module.buffers()):
             subtensors = _get_quantized_subtensors(tensor)
             yield from (t for _, t in subtensors) if subtensors else (tensor,)
-            yield from (value for value in tensor.__dict__.values() if torch.is_tensor(value))
+            yield from (_unwrap_quantized_tensor(value) for value in tensor.__dict__.values() if torch.is_tensor(value))
 
     def _graph_state(self, model, module):
         # per block, for its active adapters: the holders of its tensors (parameter and buffer dictionaries), the LoRA dictionaries with the

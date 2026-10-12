@@ -15,6 +15,7 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from mmgp import offload
 
 from shared.deepy import video_tools as deepy_video_tools
+from shared.deepy.audio_inspection import speech_intervals
 from shared.deepy.assets import (
     WHISPER_MEDIUM_CONFIG_FILENAME,
     WHISPER_MEDIUM_FOLDER,
@@ -171,23 +172,33 @@ def _round_timestamp(value: Any) -> float | None:
         return None
 
 
-def _serialize_segments(segments: list[dict[str, Any]], timestamp_type: str | None) -> list[dict[str, Any]]:
+def _tighten(start: float | None, end: float | None, speech: list[tuple[float, float]], min_pause: float = 0.15) -> tuple[float | None, float | None]:
+    """Whisper attaches a pause to the following word: move each bound past a pause of at least min_pause inside the span."""
+    inside = [(max(a, start), min(b, end)) for a, b in speech if start is not None and end is not None and b > start and a < end]
+    if not inside:
+        return start, end
+    return (inside[0][0] if inside[0][0] - start >= min_pause else start), (inside[-1][1] if end - inside[-1][1] >= min_pause else end)
+
+
+def _serialize_segments(segments: list[dict[str, Any]], timestamp_type: str | None, speech: list[tuple[float, float]]) -> list[dict[str, Any]]:
     serialized = []
     include_words = timestamp_type == "word"
     for segment in segments:
+        start, end = _tighten(_round_timestamp(segment.get("start", None)), _round_timestamp(segment.get("end", None)), speech)
         item = {
-            "start": _round_timestamp(segment.get("start", None)),
-            "end": _round_timestamp(segment.get("end", None)),
+            "start": start,
+            "end": end,
             "text": str(segment.get("text", "") or "").strip(),
         }
         if include_words:
             words = []
             for word in list(segment.get("words", []) or []):
+                word_start, word_end = _tighten(_round_timestamp(word.get("start", None)), _round_timestamp(word.get("end", None)), speech)
                 words.append(
                     {
                         "word": str(word.get("word", "") or ""),
-                        "start": _round_timestamp(word.get("start", None)),
-                        "end": _round_timestamp(word.get("end", None)),
+                        "start": word_start,
+                        "end": word_end,
                         "probability": None if word.get("probability", None) is None else round(float(word["probability"]), 4),
                     }
                 )
@@ -232,6 +243,7 @@ def transcribe_media(source_path: str, *, timestamp_type: str | None = None, aud
             language=language,
         )
         check_cancelled()
+        speech = speech_intervals(audio_path) if normalized_timestamp_type is not None else []
         transcribed = time.perf_counter()
         print(f"[Whisper {model_name}] Audio preparation {prepared - started:.2f}s; model loading {loaded - prepared:.2f}s; transcription {transcribed - loaded:.2f}s.", flush=True)
     finally:
@@ -256,5 +268,6 @@ def transcribe_media(source_path: str, *, timestamp_type: str | None = None, aud
     }
     if normalized_timestamp_type is not None:
         payload["timestamp_type"] = normalized_timestamp_type
-        payload["segments"] = _serialize_segments(segments, normalized_timestamp_type)
+        payload["segments"] = _serialize_segments(segments, normalized_timestamp_type, speech)
+        payload["speech_intervals"] = [list(span) for span in speech[:300]]
     return payload

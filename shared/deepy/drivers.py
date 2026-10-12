@@ -81,6 +81,8 @@ class AppGallery(Gallery):
                 item = {'id': media_id, 'name': Path(path).name, 'kind': kind, 'url': base + '/file' + version, 'size': stat.st_size, 'selected': index == gen[source.selected_key], 'active': gen['current_gallery_source'] == source.id}
                 if kind in ('image', 'video', '3d'):
                     item['thumbnail'] = base + '/thumbnail' + version
+                if kind == '3d':
+                    item['format'] = Path(path).suffix.lower().lstrip('.')
                 cached = peek_settings(settings, index)
                 item['name'] = _label_from_settings(cached, path) or labels.get(os.path.normcase(os.path.abspath(path)), item['name'])
                 if cached:

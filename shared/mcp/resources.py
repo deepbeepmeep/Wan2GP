@@ -5,11 +5,54 @@ import fnmatch
 import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any
 
+WORKFLOWS_URI = "wangp://guides/workflows"
+GUIDE_PATH = Path(__file__).parents[1] / "deepy" / "prime_guide.md"
+INDEXED_DOCUMENTS = {WORKFLOWS_URI: GUIDE_PATH}  # index resources whose searches and section reads cover the whole document
 RESOURCE_ALIASES = {"wangp://guides/v2": "wangp://guides/workflows"}
 RESOURCE_DESCRIPTION = "Find documentation, skills and workflows. Without uri, query filters the resource index (e.g. 'skills' or a task). With uri, query searches passages ('*' lists headings), section reads matching headings; omit both for full text. User skills include a revision for updates with wangp_io(action='save_skill'). limit caps results/text blocks per page; cursor continues unchanged filters. Follow next_call for more."
 _MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+
+
+GUIDE_SECTIONS = {  # heading -> when to read it; the workflows index lists these, each section is its own resource
+    "Templates and generation": "choosing a template or model and building settings: defaults, accelerator profiles, presets, LoRAs, batches",
+    "Media selection and inputs": "giving a generation images, videos or audio: start/end frames, references, control videos, masks, selected Gallery media",
+    "Post-processing and media utilities": "upscaling, frame interpolation, sound treatments, and the toolbox utilities (extract, merge, remux, resize, 3D views, SVG drawings)",
+    "Speech and chained media": "speech, songs and media made from other generated media, such as talking videos driven by a speech clip",
+    "Extraction by spoken words": "cutting audio or video where given words are spoken",
+    "Visual verification": "checking produced images or videos: content, text spelling, anatomy, artifacts",
+    "Long video and sliding windows": "videos longer than one window: window planning, key frames and end-frame anchors, injected frames, continuation",
+    "Prompt files and long documents": "skills, long prompts kept in files, and writing long documents",
+    "File search and pagination": "finding files and paging through listings and searches",
+    "Audio quality checks and preflight": "validating settings before a job, and measuring audio levels, loudness and silences",
+}
+
+
+def guide_sections() -> dict[str, tuple[str, str]]:
+    """slug -> (heading, Markdown) of each section of the workflows guide, with its introduction under "introduction"."""
+    guide = GUIDE_PATH.read_text(encoding="utf-8")
+    parts = re.split(r"^## (.+)$", guide, flags=re.M)
+    sections = {"introduction": ("Introduction", parts[0].strip())}
+    for heading, body in zip(parts[1::2], parts[2::2]):
+        sections[re.sub(r"[^a-z0-9]+", "-", heading.lower()).strip("-")] = (heading, f"## {heading}\n{body.rstrip()}")
+    return sections
+
+
+def guide_index() -> str:
+    sections = guide_sections()
+    lines = [sections.pop("introduction")[1], "", "## Sections", "", "Read only the sections the task needs; each URI returns one section:", ""]
+    lines += [f"- {heading} ({len(text) / 1000:.1f} KB): {GUIDE_SECTIONS[heading]}. `{WORKFLOWS_URI}/{slug}`" for slug, (heading, text) in sections.items()]
+    return "\n".join(lines) + "\n"
+
+
+def indexed_section_record(uri: str) -> dict[str, Any] | None:
+    """The record of a workflows guide section URI: served by a resource template, it is absent from resource listings."""
+    slug = uri.removeprefix(WORKFLOWS_URI + "/")
+    if slug == uri or slug not in (sections := guide_sections()):
+        return None
+    return {"server": "wangp", "uri": uri, "name": slug, "title": sections[slug][0], "description": "A section of the WanGP workflows guide.", "mime_type": "text/markdown"}
 
 
 def resource_record(item, server="wangp"):
@@ -41,6 +84,8 @@ async def query_resources(pages, resources, read_resource, arguments, *, servers
         if query and section:
             raise ValueError("query and section are mutually exclusive")
         matches = [resource for resource in resources if resource["uri"] == uri and (not server or resource["server"] == server)]
+        if not matches and (not server or server == "wangp") and (section_record := indexed_section_record(uri)) is not None:
+            matches = [section_record]
         if not matches:
             raise ValueError(f"Unknown MCP resource: {uri}")
         matching_servers = sorted({resource["server"] for resource in matches})
@@ -53,7 +98,8 @@ async def query_resources(pages, resources, read_resource, arguments, *, servers
         if arguments.get("cursor"):
             page = pages.page(page_query, cursor=arguments["cursor"], **page_options)
         else:
-            contents = await read_resource(server, uri)
+            indexed = INDEXED_DOCUMENTS.get(uri) if server == "wangp" and (query or section) else None
+            contents = [{"uri": uri, "mime_type": "text/markdown", "text": indexed.read_text(encoding="utf-8")}] if indexed else await read_resource(server, uri)
             metadata = {"server": server, "uri": uri}
             if server == "wangp" and uri.startswith("wangp://skills/user/"):
                 metadata["revision"] = hashlib.sha256(contents[0]["text"].encode("utf-8")).hexdigest()

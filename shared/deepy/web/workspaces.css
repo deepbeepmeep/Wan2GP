@@ -10,8 +10,26 @@
 .wangp-workspaces button:hover {background:var(--background-fill-secondary,#e3edf3);}
 .wangp-workspaces button:disabled {opacity:.45; cursor:wait;}
 .wangp-workspaces svg {width:19px; height:19px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;}
-#wangp-gallery-tabs [role=tablist] {flex-wrap:wrap; align-items:center;}
-#wangp-gallery-tabs [role=tablist] .wangp-workspaces {position:relative;top:-3px;order:1;flex:1 1 214px;max-width:294px;}
+#wangp-gallery-tabs [role=tablist] {flex-wrap:nowrap; align-items:center; min-width:0;}
+@keyframes wangp-workspace-ready {from {opacity:.99;} to {opacity:1;}}
+.wangp-workspace-tools {display:flex;align-items:center;flex-shrink:0;animation:wangp-workspace-ready 1ms;}
+.wangp-workspace-tools[hidden] {display:none;}
+.wangp-workspace-toggle {display:none;}
+.wangp-workspace-tools .wangp-workspaces {padding-left:6px;}
+.wangp-workspace-tools.is-compact {margin-left:4px;}
+.wangp-workspace-tools.is-compact .wangp-workspace-toggle {display:flex;align-items:center;justify-content:center;flex:0 0 36px;width:36px;height:36px;padding:6px;border:0;outline:0;box-shadow:none;border-radius:7px;background:transparent;color:#175a79;cursor:pointer;}
+.wangp-workspace-tools.is-compact .wangp-workspace-toggle:hover {background:var(--background-fill-secondary);}
+.wangp-workspace-tools.is-compact .wangp-workspace-toggle:focus-visible {box-shadow:inset 0 0 0 2px currentColor;}
+.wangp-workspace-toggle svg {width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
+.wangp-workspace-tools.is-compact .wangp-workspaces {display:none;}
+#wangp-gallery-tabs .tab-wrapper:has(> .wangp-workspace-tools.is-open) > :is([role=tablist], .overflow-menu) {display:none;}
+.wangp-workspace-tools.is-compact.is-open {width:100%;min-width:0;margin-left:0;gap:4px;}
+.wangp-workspace-tools.is-compact.is-open .wangp-workspaces {display:flex;flex:1;min-width:0;padding:0;gap:3px;}
+.wangp-workspace-tools.is-open .wangp-workspace-toggle {order:1;}
+.wangp-workspace-tools.is-open .wangp-workspace-toggle svg {display:none;}
+.wangp-workspace-tools.is-open .wangp-workspace-toggle::before {content:"";width:16px;height:16px;background:currentColor;clip-path:polygon(10% 0,50% 40%,90% 0,100% 10%,60% 50%,100% 90%,90% 100%,50% 60%,10% 100%,0 90%,40% 50%,0 10%);}
+.wangp-workspace-tools.is-compact .wangp-workspaces select {flex:1 1 70px;width:0;max-width:none;min-width:70px;height:36px;font-size:16px;}
+.wangp-workspace-tools.is-compact .wangp-workspaces button {height:36px;}
 .wangp-workspace-dialog {padding:0; width:min(420px,calc(100vw - 32px)); border:1px solid var(--border-color-primary,#b9d0dd); border-radius:18px; background:var(--background-fill-primary,#fff); color:var(--body-text-color,#174a67); box-shadow:0 28px 62px #071f303d;}
 .wangp-workspace-dialog::backdrop {background:#071f3066;}
 .wangp-workspace-dialog h2 {margin:0; padding:14px 20px; font:700 17px system-ui; color:#f3fbff; background:linear-gradient(180deg,#105679,#0a3b54);}
@@ -25,4 +43,4 @@
 .wangp-workspace-actions button[type=submit] {color:#fff; background:#105679;}
 .wangp-workspace-error {color:#b02c2c; margin-top:12px;}
 #workspace-toolbar {padding:0 14px 5px;}
-@media(max-width:600px) {.wangp-workspaces {padding-left:4px;} .wangp-workspaces select {max-width:34vw;} #wangp-gallery-tabs > [role=tablist] .wangp-workspaces {flex-basis:100%; justify-content:flex-end;}}
+@media(max-width:600px) {.wangp-workspaces {padding-left:4px;} .wangp-workspaces select {max-width:34vw;} .wangp-workspace-tools .wangp-workspaces select {max-width:none;}}

@@ -74,7 +74,7 @@ from shared.utils.loras_mutipliers import preparse_loras_multipliers, parse_lora
 from shared.utils.utils import convert_tensor_to_image, convert_video_tensor_to_uint8_chunked, save_image, get_video_info, get_file_creation_date, convert_image_to_video, calculate_new_dimensions, convert_image_to_tensor, calculate_dimensions_and_resize_image, rescale_and_crop, get_video_frame, resize_and_remove_background, rgb_bw_to_rgba_mask, image_editor_layer_to_rgb_mask, to_rgb_tensor, get_resampled_video_transparent, get_video_summary_extras
 from shared.utils.utils import calculate_new_dimensions, get_outpainting_dims, get_outpainting_frame_location, get_outpainting_full_area_dimensions, resolve_outpainting_dims
 from shared.utils.utils import has_video_file_extension, has_image_file_extension, has_audio_file_extension, has_mesh_file_extension, MESH_IMPORT_EXTENSIONS, guide_to_float, guide_mask_to_float
-from shared.utils.audio_video import extract_audio_tracks, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_volumes_to_temp_files, save_video, save_hdr_video, save_image, get_image_format, get_media_duration_and_audio_layouts
+from shared.utils.audio_video import extract_audio_tracks, subtitle_stream_count, combine_video_with_audio_tracks, combine_and_concatenate_video_with_audio_tracks, cleanup_temp_audio_files, normalize_audio_volumes_to_temp_files, save_video, save_hdr_video, save_image, get_image_format, get_media_duration_and_audio_layouts
 from shared.utils.audio_video import append_sliding_window_audio, audio_overlap_repair_seconds, read_image_metadata, extract_audio_track_to_wav, write_wav_file, save_audio_file, get_audio_codec_extension, create_silent_wav_file
 from shared.utils.audio_video import truncate_audio, shift_audio_trim_ranges, trim_audio_ranges, trim_audio_file_ranges, slice_audio_window, resolve_mux_audio_sampling_rate
 from shared.utils.audio_metadata import read_audio_metadata, extract_creation_datetime_from_metadata, resolve_audio_creation_datetime
@@ -82,7 +82,7 @@ from shared.utils.media_recording import record_file_metadata as shared_record_f
 from shared.utils.settings_bundle import is_wangp_settings_filename
 from shared.utils.video_decode import decode_video_frames_ffmpeg, probe_video_stream_metadata
 from shared.utils.virtual_media import get_virtual_image, get_virtual_media_entry, get_virtual_media_vsource, media_source_exists, parse_virtual_media_path, replace_virtual_media_source, strip_virtual_media_suffix
-from shared.utils.frame_scheduler import build_default_window_plan, build_extension_window, build_frame_scheduler, floor_frame_count, has_slash_commands, normalize_frame_count, prepare_loras_mult_windows
+from shared.utils.frame_scheduler import SLASH_BLOCK_RE, build_default_window_plan, build_extension_window, build_frame_scheduler, floor_frame_count, has_slash_commands, normalize_frame_count, prepare_loras_mult_windows
 from shared.match_archi import match_nvidia_architecture
 from shared.attention import ATTENTION_MODE_AVAILABILITY, get_attention_modes, get_supported_attention_modes, get_default_attention_mode, get_override_attention_modes, get_supported_override_attention_modes
 from shared.utils.utils import truncate_for_filesystem, sanitize_file_name, process_images_multithread, get_default_workers, resize_lanczos_frames, expand_or_shrink_mask, prepare_binary_mask_frame
@@ -183,7 +183,7 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-WanGP_version = "18.02"
+WanGP_version = "18.05"
 settings_version = 2.80
 max_source_video_frames = 3000
 prompt_enhancer_image_caption_model, prompt_enhancer_image_caption_processor, prompt_enhancer_llm_model, prompt_enhancer_llm_tokenizer = None, None, None, None
@@ -2290,7 +2290,8 @@ def load_queue_action(filepath, state, evt:gr.EventData):
 
         # Update state (Gradio-specific)
         with lock:
-            gen["prompts_max"] = len(merged_queue)
+            # A running queue counts every task since it started (prompt_no), so admitted tasks extend its total.
+            gen["prompts_max"] = gen.get("prompts_max", 0) + len(newly_loaded_queue) if gen.get("in_progress", False) else len(merged_queue)
         update_global_queue_ref(merged_queue)
         if verbose_output:
             print(f"[load_queue_action] {action_msg}.")
@@ -6124,6 +6125,7 @@ def edit_media(
     soundtrack_meta = audio_processor_api.method_metadata(soundtrack_method)
     configs, _ , _ = get_settings_from_file(state, video_source, False, False, False)
     configs = configs.copy() if configs is not None else { "type" : get_model_record("Post Processing") }
+    configs.pop("window_no", None)  # the source's sliding-window position does not describe the processed copy
     reference_images = None
     if not source_is_image and source_image_conditioning:
         reference_images = clean_image_list(spatial_upsampler_reference_images or image_refs or [])
@@ -6134,6 +6136,7 @@ def edit_media(
         configs["client_id"] = client_id
 
     has_already_audio = False
+    has_subtitles = not source_is_image and subtitle_stream_count(video_source) > 0
     audio_tracks = []
     audio_metadata = None
     download_requested_postprocessing_assets(
@@ -6169,9 +6172,7 @@ def edit_media(
     if soundtrack_method and soundtrack_meta["needs_audio_source"] and audio_source is not None:
         audio_tracks = [audio_source]
 
-    with lock:
-        file_list = gen["file_list"]
-        file_settings_list = gen["file_settings_list"]
+    file_list, file_settings_list = get_processed_queue(gen)[VIDEO.id]
 
 
 
@@ -6267,7 +6268,7 @@ def edit_media(
             send_cmd("output")
             clear_status(state)
             return
-        video_path = get_available_filename(save_path, video_source, "_tmp", force_extension=video_extension) if any_soundtrack_processor or has_already_audio else get_available_filename(save_path, video_source, "_post", force_extension=video_extension)
+        video_path = get_available_filename(save_path, video_source, "_tmp", force_extension=video_extension) if any_soundtrack_processor or has_already_audio or has_subtitles else get_available_filename(save_path, video_source, "_post", force_extension=video_extension)
         video_path = save_video( tensor=sample[None], save_file=video_path, fps=output_fps, nrow=1, normalize=True, value_range=(-1, 1), codec_type= server_config.get("video_output_codec", None), container=server_config.get("video_container", "mp4"))
         saved_video_duration = sample.shape[1] / output_fps
         api_video_tensor = sample if api_return_video_uint8 else None
@@ -6275,7 +6276,7 @@ def edit_media(
             sample = None
             gc.collect()
 
-        if any_soundtrack_processor or has_already_audio: tmp_path = video_path
+        if any_soundtrack_processor or has_already_audio or has_subtitles: tmp_path = video_path
         any_change = True
     else:
         video_path = video_source
@@ -6340,7 +6341,7 @@ def edit_media(
             )
             if gen.get("abort", False) or generated_audio_path is None:
                 return
-            combine_video_with_audio_tracks(video_path, [generated_audio_path], new_video_path, audio_codec_key=server_config.get("audio_output_codec", "aac_128"), video_duration=saved_video_duration)
+            combine_video_with_audio_tracks(video_path, [generated_audio_path], new_video_path, audio_codec_key=server_config.get("audio_output_codec", "aac_128"), video_duration=saved_video_duration, subtitle_source=video_source if has_subtitles else None)
             if generated_audio_path is not None and generated_audio_path != audio_source and os.path.isfile(generated_audio_path):
                 os.remove(generated_audio_path)
             configs["postprocess_audio"] = postprocess_audio
@@ -6348,7 +6349,7 @@ def edit_media(
             configs["postprocess_audio_neg_prompt"] = postprocess_audio_neg_prompt
             configs["postprocess_audio_seed"] = seed
             any_change = True
-        elif len(audio_tracks) > 0:
+        elif len(audio_tracks) > 0 or has_subtitles:
             new_video_path = get_available_filename(save_path, video_source, suffix, force_extension=video_extension)
             if any_voice_replacement:
                 replaced_audio_tracks, replace_voice_temp_tracks = audio_processor_api.replace_voice_tracks(
@@ -6377,7 +6378,7 @@ def edit_media(
                 )
                 cleanup_temp_audio_files(replace_voice_temp_tracks)
             else:
-                combine_video_with_audio_tracks(video_path, audio_tracks, new_video_path, audio_metadata=audio_metadata, audio_codec_key=server_config.get("audio_output_codec", "aac_128"), video_duration=saved_video_duration)
+                combine_video_with_audio_tracks(video_path, audio_tracks, new_video_path, audio_metadata=audio_metadata, audio_codec_key=server_config.get("audio_output_codec", "aac_128"), video_duration=saved_video_duration, subtitle_source=video_source if has_subtitles else None)
         else:
             new_video_path = video_path
 
@@ -6414,7 +6415,7 @@ def edit_media(
                     output_fps,
                     flashvsr_continue_cache=flashvsr_continue_cache if return_flashvsr_continue_cache else None,
                 )
-            gen["last_gallery_source"] = VIDEO.id
+            workspace_storage.recording_gallery(gen)["last_gallery_source"] = VIDEO.id
             send_cmd("output")
             seed = set_seed(-1)
     if tmp_path is not None and os.path.isfile(tmp_path):
@@ -7773,7 +7774,7 @@ def generate_media(
                     task["prompt"] = prompt_parser.ENHANCED_PROMPT_PREFIX + prompt_parser.serialize_prompt_units("", enhanced_prompts, multi_prompts_gen_type)
                     prompts = enhanced_prompts
                     prompt_was_enhanced = True
-                gen["last_gallery_source"] = "audio" if audio_only else MESH.id if model_def.get("mesh_outputs", False) else VIDEO.id
+                workspace_storage.recording_gallery(gen)["last_gallery_source"] = "audio" if audio_only else MESH.id if model_def.get("mesh_outputs", False) else VIDEO.id
                 send_cmd("output")
                 if scheduler_active:
                     for idx, window in enumerate(scheduled_windows):
@@ -8393,6 +8394,7 @@ def generate_media(
 
                 reraise = isinstance(e, (DownloadCancelled, DownloadError, MediaProcessingAborted))
                 tb = traceback.format_exc().split('\n')[:-1]
+                last_frame = traceback.extract_tb(e.__traceback__)[-1]
                 exc = None if reraise else e
                 while exc is not None:  # the failed generation's frames, and the generators and closures they ran, still hold its tensors
                     exc.__traceback__, exc = None, exc.__context__
@@ -8413,7 +8415,7 @@ def generate_media(
                 elif crash_type == "RAM":
                     new_error = "The generation of the video has encountered an error: it is likely that you have unsufficient RAM and / or Reserved RAM allocation should be reduced using 'perc_reserved_mem_max' or using a different Profile."
                 else:
-                    new_error =  gr.Error(f"The generation of the video has encountered an error, please check your terminal for more information. '{s}'")
+                    new_error =  gr.Error(f"The generation has encountered an error ({type(e).__name__} in {os.path.basename(last_frame.filename)}:{last_frame.lineno} {last_frame.name}): '{s}'. The full traceback is in the WanGP console.")
                 print('\n'.join(tb))
                 send_cmd("error", new_error)
                 clear_status(state)
@@ -8644,7 +8646,7 @@ def generate_media(
                     soundtrack_error = audio_processor_api.validate_method(postprocess_audio, audio_processor_api.AUDIO_PROCESSOR_TYPE_SOUNDTRACK, frames_count=output_frame_count, fps=fps, audio_source=audio_source, media_source_exists=media_source_exists, has_audio_file_extension=has_audio_file_extension) if audio_processor_api.AUDIO_PROCESSOR_TYPE_SOUNDTRACK in postprocess_audio_meta["types"] else ""
                     any_soundtrack_processor = bool(postprocess_audio and not soundtrack_error and audio_processor_api.AUDIO_PROCESSOR_TYPE_SOUNDTRACK in postprocess_audio_meta["types"])
                 time_flag = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%Hh%Mm%Ss")
-                save_prompt = original_prompts[0]
+                save_prompt = SLASH_BLOCK_RE.sub("", original_prompts[0]).strip()  # file names show the prompt, not window commands
                 if audio_only:
                     audio_codec = server_config.get("audio_stand_alone_output_codec", "wav")
                     extension = get_audio_codec_extension(audio_codec)
@@ -9122,7 +9124,7 @@ def _process_tasks(state):
             gen["last_progress_args"] = [0, status_text] if len(status_text) > 0 else None
         elif cmd == "output":
             gen["preview"] = None
-            gen["refresh_tab"] = True
+            gen["refresh_tab"] = not gen.get("api_active_queue_task", {}).get("workspace_background")  # agent outputs leave the shown gallery tab alone
             yield time.time(), time.time(), gr.update()
         elif cmd == "progress":
             gen["last_progress_args"] = gen["progress_args"] = data
@@ -11830,6 +11832,7 @@ def set_gallery_tab(state, video_info_tab, evt:gr.SelectData):
 
 def get_processed_queue(gen):
     """Files and settings of every gallery: {gallery source id: (files, settings)}."""
+    gen = workspace_storage.recording_gallery(gen)
     with lock:
         return {source.id: (gen.setdefault(source.files_key, []), gen.setdefault(source.settings_key, [])) for source in GALLERY_SOURCES}
 

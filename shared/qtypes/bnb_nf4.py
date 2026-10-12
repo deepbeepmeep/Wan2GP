@@ -524,6 +524,33 @@ class BNBNF4WeightTensor(QTensor):
         return _bnb_nf4_qfallback(op, *args, **(kwargs or {}))
 
 
+class _NF4RowProjection:
+    @staticmethod
+    def supports(module, x):
+        weight = getattr(module, "weight", None)
+        return isinstance(weight, BNBNF4WeightTensor) and weight.shape[1] % weight._blocksize == 0 and not _is_fake_tensor(x)
+
+    @staticmethod
+    def key(module):
+        return None
+
+    @staticmethod
+    def rows(module, x, start, stop):
+        source = module.weight
+        k, count = source.shape[1], stop - start
+        data = source._data.reshape(-1)[start * k // 2:stop * k // 2].view(-1, 1)
+        absmax = source._absmax.reshape(-1)[start * k // source._blocksize:stop * k // source._blocksize]
+        weight = BNBNF4WeightTensor.create(data, absmax, source._quant_map, source._quant_state, (count, k), (k, 1), source.dtype,
+                                           parsed=((count, k), source._blocksize, source._quant_dtype))
+        return _bnb_nf4_linear(x, weight, None if module.bias is None else module.bias[start:stop])
+
+
+from mmgp import offload
+
+_NF4_ROW_PROJECTION = _NF4RowProjection()
+offload.register_row_projection(_NF4_ROW_PROJECTION)
+
+
 class QLinearBNBNF4(QModuleMixin, torch.nn.Linear):
     def __init__(
         self,

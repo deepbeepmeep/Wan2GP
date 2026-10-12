@@ -11,6 +11,8 @@ import io
 import json
 import logging
 import mimetypes
+import os
+import re
 import sys
 import threading
 import time
@@ -33,6 +35,8 @@ _REQUEST_ID = contextvars.ContextVar("wangp_mcp_request_id", default="inprocess"
 _REQUEST_TIMING = contextvars.ContextVar("wangp_mcp_request_timing", default=None)
 _MEDIA_TRANSFER_TTL_SECONDS = 600
 _MAX_UPLOAD_BYTES = 8 * 1024**3
+mimetypes.add_type("model/gltf-binary", ".glb")  # 3D outputs; Python's table lacks the glTF types
+mimetypes.add_type("model/gltf+json", ".gltf")
 _TRANSPORT_ALIASES = {
     "stdio": "stdio",
     "sse": "sse",
@@ -44,6 +48,8 @@ _AUDIO_EXTENSIONS = {".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus"}
 _VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
 _MESH_EXTENSIONS = set(MESH_EXTENSIONS)
 _AGENT_GUIDE_PATH = Path(__file__).resolve().parents[2] / "wangp-agent" / "SKILL.md"
+_AGENT_INSTRUCTIONS_HEADER = ("WanGP MCP API 2.1: generate and edit images, video, audio and 3D assets with WanGP's models, post-processing and media tools. "
+                              "These instructions are also readable as wangp://guides/agent; wangp://guides/workflows indexes workflow sections to read on demand.")
 _AGENT_SKILLS_DIR = _AGENT_GUIDE_PATH.parent / "skills"
 _DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
 _DEEPY_VISUAL_TOOL_IDS = {"gen_image", "edit_image", "gen_video", "gen_video_with_speech", "gen_video_with_refs"}
@@ -78,6 +84,7 @@ _TOOLBOX_MEDIA_PARAMETERS = {
     "add_to_gallery": ("path", "paths"),
     "inspect_media": ("media_id", "media_ids"),
     "inspect_video": ("media_id",),
+    "view_media": ("media_ids",),
     "inspect_audio": ("media_id",),
     "extract_image": ("media_id",),
     "extract_video": ("media_id",),
@@ -90,7 +97,7 @@ _TOOLBOX_MEDIA_PARAMETERS = {
     "resize_crop": ("media_id",),
     "side_by_side": ("media_ids",),
     "render_3d_views": ("media_id",),
-    "merge_videos": ("video_first", "video_second"),
+    "merge_videos": ("video_ids",),
     "get_media_details": ("media_id",),
     "image_channels": ("media_id",),
     "create_mask": ("media_id",),
@@ -324,7 +331,8 @@ def _prune_deleted_gallery_files(session, source: Path, assistant_session) -> bo
     return changed
 
 
-def _gallery_records(session, media_type: str = "all", limit: int = 50) -> list[dict[str, Any]]:
+def _gallery_records(session, media_type: str = "all", limit: int = 50, *, viewed: bool = False) -> list[dict[str, Any]]:
+    """viewed registers only the selection of the gallery shown in WanGP: the user's, for an agent recording elsewhere."""
     requested_type = str(media_type or "all").strip().lower()
     if requested_type not in {"all", "image", "video", "audio", "3d"}:
         raise ValueError("media_type must be all, image, video, audio, or 3d")
@@ -332,12 +340,14 @@ def _gallery_records(session, media_type: str = "all", limit: int = 50) -> list[
     gen = session._state["gen"]
     current_records = []
     workspace_id = getattr(session, '_workspace_id', None)
-    if workspace_id:
+    if workspace_id and not viewed:
         from shared.utils.workspace_storage import workspace_gallery
         gen = workspace_gallery(gen, workspace_id)
     gallery_defs = [(source.media_ids, list(gen.get(source.files_key, []) or []), list(gen.get(source.settings_key, []) or []), int(gen.get(source.selected_key, -1))) for source in GALLERY_SOURCES]
     for gallery, paths, settings_list, selected_index in gallery_defs:
         for index, path in enumerate(paths):
+            if viewed and index != selected_index:
+                continue
             resolved_path = str(path or "").strip()
             item_type = _gallery_media_type(resolved_path, gallery)
             settings = settings_list[index] if index < len(settings_list) and isinstance(settings_list[index], dict) else {}
@@ -360,6 +370,9 @@ def _gallery_records(session, media_type: str = "all", limit: int = 50) -> list[
         for media_id, record in list(history.items()):
             if not _gallery_path_exists(session, record.get("path", "")):
                 history.pop(media_id, None)
+                continue
+            if viewed:  # the agent's own media stay as listed; only the user's selection counts
+                record["selected"] = False
                 continue
             record.update({"index": None, "selected": False, "in_gallery": False})
             record.pop("current_time_seconds", None)
@@ -428,13 +441,15 @@ def _compact_gallery_record(record: dict[str, Any]) -> dict[str, Any]:
     media_type = str(record.get("media_type", "") or "").strip()
     settings = record.get("settings") if isinstance(record.get("settings"), dict) else {}
     prompt = str(settings.get("prompt", "") or "").strip()
+    client_id = str(settings.get("client_id", "") or "").strip().lower()
     result = {
         "media_id": media_id,
         "gallery": record.get("gallery", ""),
         "media_type": media_type,
         "filename": Path(str(record.get("path", "") or "")).name,
-        "description": summarize_prompt(prompt, media_type),
-        "source": "Deepy" if str(settings.get("client_id", "") or "").strip().lower().startswith("ai") else "WanGP",
+        # Media made by a media tool describe the operation, also once post-processed; they keep their source's prompt in their settings.
+        "description": summarize_prompt(settings.get("comments") or prompt, media_type),
+        "source": "MCP" if client_id.startswith(("ai_mcp", "mcp_")) else "Deepy" if client_id.startswith("ai") else "WanGP",
         "selected": bool(record.get("selected", False)),
         "in_gallery": bool(record.get("in_gallery", False)),
     }
@@ -448,6 +463,11 @@ def _compact_gallery_record(record: dict[str, Any]) -> dict[str, Any]:
         result["window_no"] = settings["window_no"]
     result.update(_compact_gallery_stats(media_type, str(record.get("path", "") or "")))
     return result
+
+
+def _output_record(item):
+    """A produced output, without the Gallery's live selection and player position."""
+    return {key: value for key, value in item.items() if key not in ("selected", "in_gallery", "current_time_seconds")}
 
 
 def _gallery_item(session, media_id: str) -> dict[str, Any]:
@@ -530,23 +550,38 @@ def _compact_deepy_model_schema(schema: dict[str, Any] | None) -> dict[str, Any]
     return {"metadata": compact}
 
 
-def _mcp_model_definition(model_def: dict[str, Any] | None, property_name: str | None = None, string_limit: int | None = None, deepy_help: bool = False) -> dict[str, Any] | None:
+# Loading, packaging and UI-enhancer declarations: listed by name in previewed root definitions, still readable by property.
+_INTERNAL_DEFINITION_KEYS = {"URLs", "URLs2", "path", "architecture", "metadata", "profiles_dir", "text_encoder_URLs", "text_encoder_folder", "finetune_custom_urls",
+                             "finetunes_infos", "finetunes_params", "dtype", "device_explicit", "cuda_graphs", "tiny_vae_architecture", "qkv_splitting", "qkv_layout"}
+
+
+def _internal_declaration(key: str, value: Any) -> bool:
+    return key in _INTERNAL_DEFINITION_KEYS or key.startswith(("_", "system_configs")) or "prompt_enhancer" in key or isinstance(value, str) and value.startswith(("http://", "https://"))
+
+
+def _mcp_model_definition(model_def: dict[str, Any] | None, property_name: str | None = None, string_limit: int | None = None, help_detail: str | None = None) -> dict[str, Any] | None:
+    """help_detail "agent" serves deepy_infos / deepy_prompt_infos under the canonical names, "full" the UI help alone; None keeps both declarations."""
     if model_def is None:
         return None
     result = copy.deepcopy(model_def)
     result.pop("settings", None)
-    if deepy_help:
+    if help_detail is not None:
         for key in ("infos", "prompt_infos"):
-            if f"deepy_{key}" in result:
-                result[key] = result.pop(f"deepy_{key}")
+            agent_text = result.pop(f"deepy_{key}", None)
+            if help_detail == "agent" and agent_text is not None:
+                result[key] = agent_text
     if property_name is not None:
         if property_name not in result:
             raise KeyError(f"Unknown model definition property: {property_name}")
         return {property_name: result[property_name]}
     if string_limit is not None:
+        internal = sorted(key for key, value in result.items() if _internal_declaration(key, value))
+        result = {key: value for key, value in result.items() if key not in internal}
         for key, value in result.items():
             if isinstance(value, str) and len(value) > string_limit:
                 result[key] = f'{value[:string_limit]} [Truncated, query property "{key}" for full {len(value)} characters]'
+        if internal:
+            result["other_declarations"] = internal
     return result
 
 
@@ -863,51 +898,58 @@ def _resolve_artifact_references(value: Any, artifact_workspace, *, require_fina
 
 
 def _register_gallery_media(session, path: str) -> dict[str, Any]:
+    from shared.utils.workspace_storage import background_workspace, host_for_gen, recording_gallery
+
     resolved_path = _resolve_existing_path(path, "uploaded media")
     workspace_id = getattr(session, '_workspace_id', None)
-    if workspace_id:
-        from shared.utils.workspace_storage import host_for_gen
-        host = host_for_gen(session._state['gen'])
-        host.activate_workspace(workspace_id)
-        resolved_path = host.workspaces.adopt(workspace_id, [resolved_path])[0]
-    media_type = _mcp_media_type(resolved_path)
-    if not media_type:
-        raise ValueError(f"Unsupported media file extension: {Path(resolved_path).suffix}")
-    if media_type == "image":
-        from PIL import Image
+    host = host_for_gen(session._state['gen']) if workspace_id else None
+    background = host is not None and host.background_agents
+    with background_workspace(host, workspace_id) if background else contextlib.nullcontext():
+        if host is not None:
+            if not background:
+                host.activate_workspace(workspace_id)
+            resolved_path = host.workspaces.adopt(workspace_id, [resolved_path])[0]
+        media_type = _mcp_media_type(resolved_path)
+        if not media_type:
+            raise ValueError(f"Unsupported media file extension: {Path(resolved_path).suffix}")
+        if media_type == "image":
+            from PIL import Image
 
-        with Image.open(resolved_path) as image:
-            image.verify()
-    elif media_type == "video":
-        from shared.utils.video_decode import probe_video_stream_metadata
+            with Image.open(resolved_path) as image:
+                image.verify()
+        elif media_type == "video":
+            from shared.utils.video_decode import probe_video_stream_metadata
 
-        if probe_video_stream_metadata(resolved_path) is None:
-            raise ValueError(f"Unable to read uploaded video: {Path(resolved_path).name}")
-    elif media_type == "3d":
-        from shared.utils.mesh_outputs import asset_stats
+            if probe_video_stream_metadata(resolved_path) is None:
+                raise ValueError(f"Unable to read uploaded video: {Path(resolved_path).name}")
+        elif media_type == "3d":
+            from shared.utils.mesh_outputs import asset_stats
 
-        asset_stats(resolved_path)
-    else:
-        from shared.utils.audio_video import get_audio_file_sample_rate
-
-        get_audio_file_sample_rate(resolved_path)
-    runtime = session._ensure_runtime()
-    with contextlib.chdir(runtime.root):
-        settings, _any_visual, _any_audio = runtime.module.get_settings_from_file(session._state, resolved_path, False, False, False)
-    settings = settings if isinstance(settings, dict) else {}
-    gen = session._state["gen"]
-    with _GALLERY_LOCK:
-        source = source_for_kind(media_type)
-        paths, settings_list, selected_key = gen[source.files_key], gen[source.settings_key], source.selected_key
-        if resolved_path in paths:
-            index = paths.index(resolved_path)
-            if index < len(settings_list) and settings and not settings_list[index]:
-                settings_list[index] = settings
+            asset_stats(resolved_path)
         else:
-            paths.append(resolved_path)
-            settings_list.append(settings)
-            index = len(paths) - 1
-        gen[selected_key] = index
+            from shared.utils.audio_video import get_audio_file_sample_rate
+
+            get_audio_file_sample_rate(resolved_path)
+        runtime = session._ensure_runtime()
+        with contextlib.chdir(runtime.root):
+            settings, _any_visual, _any_audio = runtime.module.get_settings_from_file(session._state, resolved_path, False, False, False)
+        settings = settings if isinstance(settings, dict) else {}
+        gen = recording_gallery(session._state["gen"])
+        with _GALLERY_LOCK:
+            source = source_for_kind(media_type)
+            paths, settings_list, selected_key = gen[source.files_key], gen[source.settings_key], source.selected_key
+            # the media tools record configured paths, which resolve() may spell in another case on Windows
+            index = next((index for index, path in enumerate(paths) if os.path.normcase(os.path.abspath(path)) == os.path.normcase(resolved_path)), None)
+            if index is not None:
+                resolved_path = paths[index]
+                if index < len(settings_list) and settings and not settings_list[index]:
+                    settings_list[index] = settings
+            else:
+                paths.append(resolved_path)
+                settings_list.append(settings)
+                index = len(paths) - 1
+            if gen is session._state["gen"]:  # an agent recording in the background leaves the selection to the user
+                gen[selected_key] = index
     return next(record for record in _gallery_records(session, limit=500) if record["path"] == resolved_path)
 
 
@@ -1089,7 +1131,7 @@ def _build_mcp_postprocessing_task(source_path: str, process: dict[str, Any], pa
     return task
 
 
-def _build_default_toolbox(session, assistant_session=None, *, native_inspection=False):
+def _build_default_toolbox(session, assistant_session=None, *, native_inspection=False, client_id_prefix="ai"):
     from shared.deepy.engine import AssistantSessionState, DeepyZeroTools
 
     runtime = session._ensure_runtime()
@@ -1099,10 +1141,11 @@ def _build_default_toolbox(session, assistant_session=None, *, native_inspection
         assistant_session = AssistantSessionState()
         session._state["assistant_session"] = assistant_session
     toolbox = DeepyZeroTools(session._state["gen"], runtime.module.get_processed_queue, lambda *_args, **_kwargs: None, session=assistant_session, get_output_filepath=runtime.module.get_output_filepath, record_file_metadata=runtime.module.record_file_metadata, get_server_config=lambda: runtime.module.server_config)
-    if native_inspection:
-        from .media import inspection_images
+    toolbox.client_id_prefix = client_id_prefix
+    if native_inspection:  # external agents: WanGP's Visual Inspector answers, or the agent views images itself (view_media)
+        from .media import bind_visual_inspector
 
-        toolbox.bind_runtime_tools(vision_query_callback=inspection_images, vision_is_remote=True)
+        bind_visual_inspector(toolbox, runtime, session._state)
     return toolbox
 
 
@@ -1203,7 +1246,8 @@ def _register_toolbox_result_media(session, result: Any) -> Any:
         output_paths.extend(path for path in result["output_files"] if isinstance(path, str) and path.strip())
     if isinstance(result.get("paths"), list):
         output_paths.extend(path for path in result["paths"] if isinstance(path, str) and path.strip())
-    gallery_items = [_register_gallery_media(session, path) for path in output_paths if Path(path).is_file() and _mcp_media_type(path)]
+    records = [_register_gallery_media(session, path) for path in output_paths if Path(path).is_file() and _mcp_media_type(path)]
+    gallery_items = [{**_output_record(_compact_gallery_record(record)), "path": record["path"]} for record in records]
     if gallery_items:
         result = dict(result)
         result["gallery_items"] = gallery_items
@@ -1285,6 +1329,28 @@ def _run_io_action(session, file_access_policy, action: str, arguments: dict[str
     raise ValueError(f"Unknown IO action: {action}")
 
 
+_UI_PROMPT_COUNTER = re.compile(r"^Prompt \d+/\d+(?:, | - |$)")
+
+
+def _compact_job_snapshot(snapshot: dict[str, Any], *, keep_webui: bool = False, keep_paths: bool = False) -> dict[str, Any]:
+    """Agent view of a job snapshot: no browser-queue handshake (unless kept for Prime's queue trigger), timestamps, empty events or false cancel
+    flag; a finished job gets a top-level status and drops its last progress, and its generated_files when Gallery records name every file."""
+    done = snapshot.get("done")  # recovered receipts are read back from disk
+    hidden = {"created_at", "updated_at"} | (set() if keep_webui and not done else {"webui_submission_ready", "webui_load_queue_token"})
+    compact = {key: value for key, value in snapshot.items() if key not in hidden and not (key in ("events", "cancel_requested") and not value)}
+    progress = compact.get("progress")
+    if done:
+        compact.pop("progress", None)
+        result = compact.get("result")
+        if isinstance(result, dict):
+            compact.setdefault("status", "done" if result.get("success") else "interrupted" if result.get("cancelled") else "error")
+            if not keep_paths and {Path(path).name for path in result.get("generated_files", [])} <= {item["filename"] for item in result.get("gallery_items", [])}:
+                compact["result"] = {key: value for key, value in result.items() if key != "generated_files"}
+    elif isinstance(progress, dict) and isinstance(progress.get("status"), str):
+        compact["progress"] = {**progress, "status": _UI_PROMPT_COUNTER.sub("", progress["status"])}  # the counter numbers the whole UI queue, not this job's tasks
+    return compact
+
+
 class _JobRecord:
     def __init__(self, job_id: str, job: "SessionJob", session, file_store=None, state=None) -> None:
         self.job_id = job_id
@@ -1338,9 +1404,9 @@ class _JobRecord:
         if generated_paths:
             for record in _gallery_records(self.session, limit=500):
                 if (self.session._root / record["path"]).resolve() in generated_paths:
-                    item = _compact_gallery_record(record)
-                    for key in ("selected", "in_gallery", "current_time_seconds"):
-                        item.pop(key, None)  # job outputs are immutable; live selection belongs to the Gallery
+                    item = _output_record(_compact_gallery_record(record))
+                    if self.file_store is not None and self.file_store.policy is not None:
+                        item["path"] = self.file_store.policy.virtualize_path((self.session._root / record["path"]).resolve())
                     result["gallery_items"].append(item)
         if self.file_store is not None:
             policy = self.file_store.policy
@@ -1378,6 +1444,47 @@ class _JobRecord:
         }
 
 
+class _ToolJob:
+    """A toolbox action running in the background, followed with get_job / wait_jobs like a generation job."""
+
+    def __init__(self, action: str, run) -> None:
+        self.job_id, self.action = uuid.uuid4().hex, action
+        self.created_at = self.updated_at = time.time()
+        self.result: dict[str, Any] | None = None
+        self.error: str | None = None
+        self._done = threading.Event()
+        threading.Thread(target=self._run, args=(run,), daemon=True, name=f"wangp-mcp-tool-{self.job_id}").start()
+
+    @property
+    def job(self):  # polled like a generation's SessionJob
+        return self
+
+    @property
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def _run(self, run) -> None:
+        try:
+            self.result = run()
+        except Exception as error:
+            self.error = str(error)
+        finally:
+            self.updated_at = time.time()
+            self._done.set()
+
+    def cancel(self) -> None:
+        raise ValueError(f"The {self.action} toolbox job cannot be cancelled; it runs to completion.")
+
+    def snapshot(self, event_limit: int = 0) -> dict[str, Any]:
+        done = self.done
+        snapshot = {"job_id": self.job_id, "action": self.action, "done": done, "status": ("error" if self.error is not None else "done") if done else "running", "created_at": self.created_at, "updated_at": self.updated_at}
+        if done:
+            snapshot["result"] = {"error": self.error} if self.error is not None else self.result
+        else:
+            snapshot["progress"] = {"status": f"Running {self.action}", "elapsed_seconds": round(time.time() - self.created_at, 1)}
+        return snapshot
+
+
 class _JobStore:
     def __init__(self, session) -> None:
         self._session = session
@@ -1405,6 +1512,12 @@ class _JobStore:
         with self._lock:
             self._jobs[record.job_id] = record
         record.start()
+        return record
+
+    def start_tool(self, action: str, run) -> _ToolJob:
+        record = _ToolJob(action, run)
+        with self._lock:
+            self._jobs[record.job_id] = record
         return record
 
     def get(self, job_id: str) -> _JobRecord:
@@ -1485,10 +1598,14 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
         raise RuntimeError("WanGP MCP server requires the 'mcp' Python package. Install project requirements or run `pip install mcp`.") from exc
 
     jobs = _JobStore(session)
+    agent_instructions = None
     if api_version == "2.1":
         from .skills import SkillMCP
 
-        mcp = SkillMCP("WanGP", skills_root=session._root / "user_skills", **dict(settings or {}))
+        if not compact_model_tools:  # Prime already carries these rules in its system prompt
+            from shared.deepy import load_agent_instructions
+            agent_instructions = f"{_AGENT_INSTRUCTIONS_HEADER}\n\n{load_agent_instructions()}"
+        mcp = SkillMCP("WanGP", instructions=agent_instructions, skills_root=session._root / "user_skills", **dict(settings or {}))
     else:
         mcp = FastMCP("WanGP", **dict(settings or {}))
     default_job_event_limit = max(0, min(int(default_job_event_limit), _MAX_STORED_EVENTS))
@@ -1516,6 +1633,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
         from .transfers import ResumableTransfers
         transfer_store = ResumableTransfers(session, file_access_policy, jobs.state, http=http_media_transfer)
     mcp._wangp_file_store = transfer_store if api_version == "2.1" else None
+    mcp._wangp_file_policy = file_access_policy
     mcp._wangp_api_version = api_version
     jobs.file_store = mcp._wangp_file_store
     toolbox_instance = toolbox
@@ -1618,13 +1736,20 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
     def get_toolbox():
         nonlocal toolbox_instance
         if toolbox_instance is None:
-            toolbox_instance = _build_default_toolbox(session, native_inspection=api_version == "2.1" and not compact_model_tools)
+            toolbox_instance = _build_default_toolbox(session, native_inspection=api_version == "2.1" and not compact_model_tools, client_id_prefix="ai" if compact_model_tools else "ai_mcp")
             if api_version == "2.1":
                 toolbox_instance.file_access_policy_override = file_access_policy
         return toolbox_instance
 
-    @mcp.prompt(name="wangp_agent", title="WanGP Agent Guide", description="Instructions for discovering WanGP models, building settings, running jobs, and handling media.")
+    if agent_instructions:
+        @mcp.resource("wangp://guides/agent", name="agent", title="WanGP agent instructions", description="Tool-calling conventions, model choice concepts and rules, settings layering, prompt separators, media input roles, Gallery and workspace use; also sent as the server instructions.", mime_type="text/markdown")
+        def agent_guide() -> str:
+            return agent_instructions
+
+    @mcp.prompt(name="wangp_agent", title="WanGP Agent Guide", description="Instructions for discovering WanGP models, building settings, running jobs, and handling media" + (": the server instructions, for clients that do not show them." if agent_instructions else "."))
     def wangp_agent_prompt() -> str:
+        if agent_instructions:
+            return agent_instructions
         if api_version != "1":
             return f"WanGP MCP API {api_version}. Use toolbox descriptions to choose a domain. Use declared shortcuts and known call recipes directly; otherwise discover actions, read the selected contract, then execute. Reuse known contracts. Specialized workflows are available in wangp://guides/workflows."
         guide = _AGENT_GUIDE_PATH.read_text(encoding="utf-8")
@@ -2032,7 +2157,8 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                 if api_version == "2.1":
                     from .preflight import validate_declared_settings
                     validate_declared_settings(session, settings)
-                if compact_model_tools:  # Deepy writes final prompts itself; a template's enhancer must not rewrite them
+                # Agents write final prompts: WanGP's automatic enhancer mode must not rewrite them through a template's or model default's enhancer
+                if compact_model_tools or api_version != "1" and "prompt_enhancer" not in settings and session.get_default_settings(model_type.strip()).get("prompt_enhancer"):
                     settings["prompt_enhancer"] = ""
         if api_version != "1" or long_text_active:
             resolved_source = deepy_long_text.resolve_prompt_references(resolved_source, file_access_policy, read_only=api_version != "1")
@@ -2149,7 +2275,7 @@ def build_webui_server(service, args):
     session = WanGPSession(webui_state=service._state, console_output=False, console_isatty=False, webui_append=True)
     session._gradio_webui_context = {"load_queue": service.load_inline_queue}
     # The toolbox gets its own media registry: Deepy's chat session is not shared with external agents.
-    server = build_server_for_session(session, _http_settings(transport, args.mcp_host.strip() or None, port, oauth), toolbox=_build_default_toolbox(session, AssistantSessionState(), native_inspection=str(args.mcp_api_version) == "2.1"), allow_read_file_system=args.mcp_allow_read_file_system, file_access_policy=_external_file_policy(session, args.mcp_allow_read_file_system) if str(args.mcp_api_version) == "2.1" else None, http_media_transfer=True, api_version=args.mcp_api_version, allow_async=True)
+    server = build_server_for_session(session, _http_settings(transport, args.mcp_host.strip() or None, port, oauth), toolbox=_build_default_toolbox(session, AssistantSessionState(), native_inspection=str(args.mcp_api_version) == "2.1", client_id_prefix="ai_mcp"), allow_read_file_system=args.mcp_allow_read_file_system, file_access_policy=_external_file_policy(session, args.mcp_allow_read_file_system) if str(args.mcp_api_version) == "2.1" else None, http_media_transfer=True, api_version=args.mcp_api_version, allow_async=True)
     if str(args.mcp_api_version) == '2.1':
         from .workspaces import AgentWorkspaces
         AgentWorkspaces(server, session, config, host=service, allow_read=args.mcp_allow_read_file_system, http=True).install()

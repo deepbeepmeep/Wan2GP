@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.websockets import WebSocketState
@@ -23,6 +23,8 @@ from shared.deepy.gallery import _AUDIO_EXTENSIONS, _IMAGE_EXTENSIONS, _VIDEO_EX
 from shared.deepy.voice import mount_voice_routes, save_upload
 from shared.utils.downloads import _install_routes_on_app
 from shared.utils.media_imports import persist_gallery_import
+from shared.utils.gallery_sources import MESH_IMPORT_EXTENSIONS
+from shared.utils.mesh_outputs import import_mesh_file
 from shared.authentication import password
 from shared.authentication.web import WebAuthentication, WebAuthMiddleware
 from shared.authentication.tls import HTTPSRedirect, run_http_and_https, tls_options
@@ -72,6 +74,8 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
         def version_asset(match):
             name = match[1]
             path = WEB.parents[1] / 'gradio' / name if name in {'form_sync.js', 'progress.css'} else WEB / name
+            if name == 'mesh_viewer.js':
+                path = WEB.parents[1] / 'gradio/strip_gallery.py'
             return f'assets/{name}?v={path.stat().st_mtime_ns}'
         page = re.sub(r'assets/([\w.-]+\.(?:js|css))', version_asset, page)
         if https_port is not None:
@@ -80,6 +84,9 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
 
     @app.get("/assets/{name}")
     def asset(name: str):
+        if name == 'mesh_viewer.js':
+            from shared.gradio.strip_gallery import MeshGallery
+            return Response(MeshGallery.get_viewer_javascript('assets/mesh/'), media_type='text/javascript')
         if name in {'form_sync.js', 'progress.css'}:
             return FileResponse(WEB.parents[1] / 'gradio' / name)
         if name == "icon.png":
@@ -87,6 +94,12 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
         if name not in {"chat.js", "compact_actions.js", "chat.css", "voice.js", "app.js", "app.css", "gradio_transport.js", "manifest.webmanifest", "icon.svg", "transport.js", "hybrid_transport.js", "workspaces.js", "workspaces.css", "media_view.js"}:
             raise HTTPException(404)
         return FileResponse(WEB / name, media_type="application/manifest+json" if name == "manifest.webmanifest" else None)
+
+    @app.get('/assets/mesh/{name:path}')
+    def mesh_asset(name: str):
+        if name not in {'model-viewer.min.js', 'spark/three.module.js', 'spark/three.core.js', 'spark/spark.module.min.js', 'spark/OrbitControls.js', 'spark/Pass.js'}:
+            raise HTTPException(404)
+        return FileResponse(WEB.parents[1] / 'gradio/vendor' / name, media_type='text/javascript')
 
     @app.get("/deepy_api/state")
     def state():
@@ -239,12 +252,15 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
             output = Path(service.workspace_output_config(workspace_id)['save_path'])
         output.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix='.import-', dir=output) as directory:
-            source = await save_upload(file, Path(directory), limit=1024 * 1024 * 1024, extensions=_IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS, preserve_filename=True)
+            source = await save_upload(file, Path(directory), limit=1024 * 1024 * 1024, extensions=_IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS | set(MESH_IMPORT_EXTENSIONS), preserve_filename=True)
             def add():
                 with service._mutation_lock:
                     if service.workspace_id != workspace_id:
                         raise ValueError('The workspace changed during upload. Please import the file again.')
-                    path, reused = persist_gallery_import(source, output, move=True)
+                    if Path(source).suffix.lower() in MESH_IMPORT_EXTENSIONS:
+                        path, reused = import_mesh_file(source, service.workspace_output_config(workspace_id)['mesh_save_path'])
+                    else:
+                        path, reused = persist_gallery_import(source, output, move=True)
                     try:
                         return service.import_media(path, session_epoch=session_epoch, from_chat=from_chat)
                     except Exception:

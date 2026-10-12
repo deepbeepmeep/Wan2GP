@@ -603,7 +603,7 @@ class family_handler:
                 "video_prompt_type": "G",
             }, {
                 "id": H3_AUDIO_REFINEMENT_SETTING,
-                "name": "Audio Refinement Extra Phase",
+                "name": "Audio Refinement",
                 "label": "Audio Refinement Extra Phase",
                 "type": "dropdown",
                 "default": "none",

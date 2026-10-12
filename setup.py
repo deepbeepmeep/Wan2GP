@@ -419,6 +419,7 @@ def install_logic(env_name, env_type, env_path, py_k, torch_k, triton_k, sage_k,
 
     if sage_k:
         cmd = resolve_cmd(config['components']['sage'][sage_k]['cmd'])
+        cmd = cmd.replace("{py}", "cp" + py_k.replace(".", ""))  # wheels built for each Python version
         if cmd.startswith("http") or cmd.startswith("sageattention"):
             run_cmd(f"{pip} {cmd}")
         else:
@@ -1011,7 +1012,7 @@ def create_wgp_config(profile_key, config_data):
         elif "20" in profile_key:
             attn_mode = "sage"
 
-    compile_mode = ""
+    compile_mode = "disabled"
     # triton_key = prof_settings.get('triton')
     # if triton_key and triton_key != "none":
     #     compile_mode = "transformer"

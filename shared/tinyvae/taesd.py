@@ -1,3 +1,5 @@
+# TAESD decoder architecture (https://github.com/madebyollin/taesd), Copyright (c) 2023 Ollin Boer Bohan,
+# MIT License (see shared/tinyvae/LICENSES/taesd-MIT.txt). Modified for WanGP.
 from __future__ import annotations
 
 from typing import Any

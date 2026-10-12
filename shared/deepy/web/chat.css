@@ -1,3 +1,4 @@
+/* Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt) */
 
 #assistant_chat_dock {
     --dock-gap: 14px;
@@ -145,6 +146,7 @@
 #assistant_chat_panel.has-fixed-composer-layout {
     display: flex !important;
     flex-direction: column !important;
+    gap: 0 !important;
     min-height: 0 !important;
     max-height: calc(100vh - 36px);
 }
@@ -965,6 +967,10 @@
     flex-direction: column;
     gap: 16px;
     padding: 22px 18px calc(var(--chat-status-offset) + var(--chat-status-reserved-height) + var(--chat-status-gap));
+}
+
+.chat__transcript:empty {
+    display: none;
 }
 
 #assistant_chat_html > .chat.is-replaying *,

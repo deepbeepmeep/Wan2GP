@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """One persistent Deepy service shared by Gradio and the standalone browser client."""
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 from shared.deepy.drivers import GradioGallery
 from shared.deepy.runtime import GenerationRuntime
 from shared.deepy.service import DeepyService
+from shared.utils.gallery_sources import GALLERY_SOURCES, SOURCES, STRIP_SOURCES, VIDEO
 
 
 class SharedState(dict):
@@ -85,20 +87,20 @@ class HybridService(DeepyService):
             if payload['workspace'] != self.workspace_id:
                 return
             source = payload['source']
-            if source not in ('video', 'audio'):
+            if source not in SOURCES:
                 raise ValueError('Invalid gallery source.')
             gen = self._state['gen']
             path = payload['path']
             if path is None:
                 gen['current_gallery_source'] = source
-                if source == 'audio':
+                if source != VIDEO.id:
                     gen['selected_video_time'] = None
             else:
-                paths, _ = self.gallery._resolve_lists(source == 'audio')
+                paths, _ = self.gallery._resolve_lists(source)
                 index = payload['index']
                 if not isinstance(index, int) or index < 0 or index >= len(paths) or paths[index] != path:
                     return
-                self.gallery._select_index(index, source == 'audio')
+                self.gallery._select_index(index, source)
             self.host_changed()
 
     def publish_workspaces(self):
@@ -114,13 +116,13 @@ class HybridService(DeepyService):
             try:
                 with self._mutation_lock:
                     gen = self._state['gen']
-                    if gen['last_selected']:
-                        gen['selected'] = len(gen['file_list']) - 1
-                    if gen['audio_last_selected']:
-                        gen['audio_selected'] = len(gen['audio_file_list']) - 1
+                    for source in GALLERY_SOURCES:
+                        if gen[source.last_selected_key]:
+                            gen[source.selected_key] = len(gen[source.files_key]) - 1
                     if gen.pop('refresh_tab', False):
-                        gen['current_gallery_source'] = 'audio' if gen['last_was_audio'] else 'video'
-                    signature = (tuple(gen['file_list']), tuple(gen['audio_file_list']), gen['selected'], gen['audio_selected'], gen['current_gallery_source'], tuple(map(id, list.__iter__(gen['file_settings_list']))), tuple(map(id, list.__iter__(gen['audio_file_settings_list']))), self._deps.get_server_config().get('clear_file_list', 5))
+                        gen['current_gallery_source'] = gen['last_gallery_source']
+                    # (files of every gallery, selections, active gallery, settings identities, gallery size limit)
+                    signature = (tuple(tuple(gen[source.files_key]) for source in GALLERY_SOURCES), tuple(gen[source.selected_key] for source in GALLERY_SOURCES), gen['current_gallery_source'], tuple(tuple(map(id, list.__iter__(gen[source.settings_key]))) for source in GALLERY_SOURCES), self._deps.get_server_config().get('clear_file_list', 5))
                     gallery_view = (signature, self.generation_running, self._gallery_update)
                     settings = (json.dumps(self._session.tool_ui_settings, sort_keys=True), self._session.storage_session_id, self._session.storage_title, self._catalog_revision)
                     changed = False
@@ -130,7 +132,7 @@ class HybridService(DeepyService):
                         self.preview_revision += 1
                         changed = True
                     if signature != self._gallery_signature:
-                        media_changed = self._gallery_signature is None or signature[:2] != self._gallery_signature[:2]
+                        media_changed = self._gallery_signature is None or signature[0] != self._gallery_signature[0]
                         self._gallery_signature = signature
                         self.publish('gallery', self.gallery_snapshot())
                         if media_changed:
@@ -195,6 +197,7 @@ class HybridService(DeepyService):
             return self._queue_worker
 
     def _run_generation(self):
+        queue = self._state['gen']['queue']
         before = self.gallery.counts()
         self._state["gen"]["status_display"] = True
         self._state["gen"]["last_progress_args"] = None
@@ -228,6 +231,9 @@ class HybridService(DeepyService):
                     self._condition.notify_all()
                 self._generation_event('exit', None)
                 self.host_changed()
+        # Tasks loaded after this worker emptied its queue went to a new list it never read.
+        if self._state['gen']['queue'] is not queue:
+            self.start_generation()
 
     def generation_event(self, command, data):
         queue = self._state['gen']['queue']
@@ -237,6 +243,11 @@ class HybridService(DeepyService):
             self._generation_event(command, data)
         elif command == 'output':
             self.host_changed()
+
+    def load_inline_queue(self):
+        """Admit API submissions into the live queue without a browser request or waiting for running work."""
+        self._deps.load_queue_action(None, self._state, SimpleNamespace(target=1))
+        self.start_generation()
 
     def _process_inline_queue(self, payload=None):
         self._deps.load_queue_action(None, self._state, SimpleNamespace(target=1))
@@ -267,7 +278,8 @@ class HybridService(DeepyService):
         import gradio as gr
         # The revisioned view refresh publishes current state to every browser.
         # A late Gradio callback must not replay an earlier generation's selection.
-        return (gr.update(),) * 12
+        # Gallery tabs, current tab, image/video gallery, 3 values per strip gallery, then 6 generation controls.
+        return (gr.update(),) * (3 + 3 * len(STRIP_SOURCES) + 6)
 
     def close(self):
         super().close()
@@ -291,10 +303,21 @@ class HybridService(DeepyService):
 def launch_gradio(demo, service, args, **kwargs):
     """Use Gradio's supported lifespan hook to mount the shared Web application."""
     from shared.deepy.server import server_options
+    if service.workspaces is not None:
+        def allow_workspace_media(directory):
+            if directory not in demo.allowed_paths:
+                demo.allowed_paths.append(directory)
+        service._deps.callbacks.handlers['allow_workspace_media'] = allow_workspace_media
+        kwargs['allowed_paths'] = [*kwargs.get('allowed_paths', []), *(str(service.workspaces._directory(record)) for record in service.workspaces.records.values() if 'folder' in record)]
+    if args.mcp_webui is None:
+        args.mcp_webui = service._deps.get_server_config().get('mcp_webui', False)
     host, port, cert, key, https_port, auth = server_options(args)
     print("WanGP web authentication disabled." if auth.gate is None else "WanGP web authentication enabled.")
     scheme = 'https' if cert and https_port is None else 'http'
     print(f"Deepy Web app: {scheme}://{host}:{port}/deepy/")
+    if args.mcp_webui:
+        from shared.mcp.server import build_webui_server
+        mcp_server = build_webui_server(service, args)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -302,6 +325,9 @@ def launch_gradio(demo, service, args, **kwargs):
         await demo.run_extra_startup_events()
         app.startup_events_triggered = True
         async with service.lifespan(app, auth=auth, voice_language=args.deepy_voice_language, https_port=https_port):
+            # Agents start after the saved queue has been restored.
+            if args.mcp_webui:
+                threading.Thread(target=mcp_server.run, name='WanGP MCP server', daemon=True).start()
             yield
 
     from starlette.middleware import Middleware

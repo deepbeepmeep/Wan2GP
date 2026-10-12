@@ -1,3 +1,4 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import ast
 import os
 import torch
@@ -338,12 +339,14 @@ def _nvfp4_can_use_kernel(input, weight):
         return False
     if _is_fake_tensor(input):
         return True
-    try:
-        if not torch.isfinite(weight._input_global_scale).all():
-            return False
-    except Exception:
-        return False
-    return True
+    finite = weight.__dict__.get("_finite_input_scale")
+    if finite is None:  # checked once per weight: a device sync on every call otherwise, which CUDA graphs cannot capture
+        try:
+            finite = bool(torch.isfinite(weight._input_global_scale).all())
+        except Exception:
+            finite = False
+        weight._finite_input_scale = finite
+    return finite
 
 
 def _nvfp4_get_act_scale(device):

@@ -1,3 +1,6 @@
+# TAEH3 decoder (https://huggingface.co/Kijai/MiniMax-H3-TAE), Apache License 2.0 (see shared/tinyvae/LICENSES/taeh3-Apache-2.0.txt),
+# in the TAESD / TAEHV architecture family by Ollin Boer Bohan (MIT, see shared/tinyvae/LICENSES/taehv-MIT.txt). Modified for WanGP.
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from typing import Any
 
 def build_h3_decoder(state_dict: dict[str, Any]) -> Any:

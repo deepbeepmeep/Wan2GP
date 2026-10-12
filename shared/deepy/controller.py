@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import json
@@ -112,7 +113,7 @@ class DeepyDeps:
     clear_gpu_resident: Callable[[Any], None]
     get_new_refresh_id: Callable[[], Any]
     get_gen_info: Callable[[Any], dict[str, Any]]
-    get_processed_queue: Callable[[dict[str, Any]], tuple[list[Any], list[Any], list[Any], list[Any]]]
+    get_processed_queue: Callable[[dict[str, Any]], dict[str, tuple[list[Any], list[Any]]]]
     get_output_filepath: Callable[[str, bool, bool], str]
     record_file_metadata: Callable[..., Any]
     exec_prompt_enhancer_engine: Callable[..., Any]
@@ -703,6 +704,16 @@ class DeepyController:
         if self.get_deepy_type() == DEEPY_TYPE_PRIME:
             from shared.deepy.prime_tools import DeepyPrimeTools
 
+            if active_session.prime_toolbox is not None and self.workspace_host is not None:
+                from shared.deepy.filesystem import build_file_access_policy
+                workspace_id = self.workspace_host.deepy_workspace_id()
+                config = self.workspace_host.workspace_output_config(workspace_id)
+                expected_roots = build_file_access_policy(config).output_roots
+                current = active_session.prime_toolbox
+                if getattr(current._api_session, '_workspace_id', None) != workspace_id or current.file_access_policy.output_roots != expected_roots:
+                    current.close()
+                    active_session.prime_toolbox = None
+
             if active_session.prime_toolbox is None:
                 gen = self._deps.get_gen_info(state)
                 zero_tools = DeepyZeroTools(gen, self._deps.get_processed_queue, send_cmd, session=active_session, get_output_filepath=self._deps.get_output_filepath, record_file_metadata=self._deps.record_file_metadata, get_server_config=self._server_config)
@@ -725,7 +736,8 @@ class DeepyController:
         )
 
     def _build_session_system_prompt(self, session, tools) -> tuple[str, str]:
-        server_config = self._server_config()
+        host = getattr(self, 'workspace_host', None)
+        server_config = host.workspace_output_config(host.deepy_workspace_id()) if host is not None else self._server_config()
         if self.get_deepy_type() == DEEPY_TYPE_PRIME:
             session.file_access_policy = tools.file_access_policy
             scope = "Reading may extend outside these roots; writing does not." if tools.file_access_policy.read_everywhere else "Use authorized @alias paths from IO discovery."
@@ -1111,9 +1123,10 @@ class DeepyController:
                 raise
             from shared.deepy.filesystem import build_file_access_policy
 
-            media_registry.sync_context_media_paths(session, build_file_access_policy(self._server_config()))
             if workspace_host is not None:
                 workspace_host.restore_session_workspace(session.gallery_workspace_id)
+            config = workspace_host.workspace_output_config(workspace_host.deepy_workspace_id()) if workspace_host is not None else self._server_config()
+            media_registry.sync_context_media_paths(session, build_file_access_policy(config))
             gallery = session_store.inject_session_media(session, self._deps.get_gen_info(state))
             saved_mcp = {str(item.get("name", "")) for item in list(loaded["environment"].get("mcp_servers", []) or []) if isinstance(item, dict)}
             current_mcp = set(normalize_deepy_prime_mcp_servers(self._server_config().get(DEEPY_PRIME_MCP_SERVERS_KEY, {}))) if self.get_deepy_type() == DEEPY_TYPE_PRIME else set()

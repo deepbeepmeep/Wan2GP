@@ -1,3 +1,4 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import ast
 import os
 import sys
@@ -751,11 +752,9 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
         out = torch.empty(qx.shape[0], self.shape[0], dtype=self._proj_up.dtype, device=qx.device)
         if bias is not None and bias.dtype != out.dtype:
             bias = bias.to(out.dtype)
-        alpha = 1.0
-        if torch.is_tensor(self._wtscale):
-            alpha = float(self._wtscale.item())
-        elif self._wtscale is not None:
-            alpha = float(self._wtscale)
+        alpha = self.__dict__.get("_alpha")
+        if alpha is None:  # read once: a device sync on every call otherwise, which CUDA graphs cannot capture
+            alpha = self._alpha = float(self._wtscale.item()) if torch.is_tensor(self._wtscale) else 1.0 if self._wtscale is None else float(self._wtscale)
         ops.svdq_gemm_w4a4_cuda(
             act=qx,
             wgt=self._qweight,
@@ -807,6 +806,7 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
             self._wscales = sub_map["wscales"]
         if "wtscale" in sub_map and sub_map["wtscale"] is not None:
             self._wtscale = sub_map["wtscale"]
+            self.__dict__.pop("_alpha", None)
         if "wcscales" in sub_map and sub_map["wcscales"] is not None:
             self._wcscales = sub_map["wcscales"]
         if "smooth_factor" in sub_map and sub_map["smooth_factor"] is not None:
@@ -1515,6 +1515,8 @@ def _view_shape_from_args(args, numel):
 
 
 def _copy_mod_flags(src, dst):
+    if src.__dict__.get("_alpha") is not None:  # the scale already read, carried to the copies and moves of the weight
+        dst._alpha = src._alpha
     if getattr(src, "_nunchaku_mod_reorder", False):
         dst._nunchaku_mod_reorder = True
     if getattr(src, "_nunchaku_mod_scale_shift", False):

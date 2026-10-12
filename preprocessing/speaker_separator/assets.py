@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 def query_speaker_separator_download_def(use_sherpa=None):
     definitions = [
         {

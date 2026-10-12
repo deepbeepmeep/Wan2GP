@@ -1,3 +1,6 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .infos import qwen_help
 import torch
 import gradio as gr
 from shared.utils.hf import build_hf_url
@@ -12,6 +15,7 @@ class family_handler():
         extra_model_def = {
             "image_outputs" : True,
             "device_explicit": base_model_type in ("qwen_image_20B", "qwen_image_edit_20B", "qwen_image_edit_plus_20B", "qwen_image_edit_plus2_20B", "qwen_image_layered_20B"),
+            "cuda_graphs": ["transformer"],
             "sample_solvers":[
                             ("Default", "default"),
                             ("Lightning", "lightning")],
@@ -108,7 +112,7 @@ class family_handler():
                     "selection": ["", "A"],
                     "visible": True,
                 }
-        return extra_model_def
+        return merge_help(extra_model_def, qwen_help(base_model_type))
 
     @staticmethod
     def query_supported_types():

@@ -1,3 +1,4 @@
+# Modified for WanGP.
 from shared.utils.media_control import inference_checkpoint
 """
 MIT License

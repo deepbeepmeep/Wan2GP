@@ -1,0 +1,34 @@
+{
+    "source": "tencent/HY-World-2.0, HY-WorldMirror-2.0/config.json (model_size large, patch_embed dinov2_vitl14_reg, normalized_rope, rope_normalize_coords separate)",
+    "trunk": {
+        "embed_dim": 1024,
+        "depth": 24,
+        "num_heads": 16,
+        "mlp_ratio": 4.0,
+        "num_register_tokens": 4,
+        "patch_size": 14,
+        "img_size": 518,
+        "rope_base": 100.0,
+        "intermediate_layers": [4, 11, 17, 23]
+    },
+    "heads": {
+        "dim_in": 2048,
+        "patch_size": 14,
+        "features": 256,
+        "gs_features": 256,
+        "out_channels": [256, 512, 1024, 1024],
+        "camera_depth": 4,
+        "camera_heads": 16,
+        "camera_steps": 4
+    },
+    "postprocess": {
+        "max_resolution": 952,
+        "sky_threshold": 0.45,
+        "edge_normal_degrees": 1.0,
+        "edge_depth_tolerance": 0.03,
+        "voxel_size": 0.002,
+        "max_gaussians": 5000000,
+        "max_points": 2000000,
+        "scale_quantile": 0.98
+    }
+}

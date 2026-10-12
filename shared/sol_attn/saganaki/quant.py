@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Bundled from ComfyUI-sol-attn v0.6.2 (commit 930a4d6).
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """INT8 quantization for the optional SageAttention-style q/k path.
 
 k is quantized per token after centering by its 64-token block mean, so only
@@ -25,7 +26,7 @@ def _round_to_int8(x):
     return tl.where(x >= 0, (x + 0.5).to(tl.int32), (x - 0.5).to(tl.int32)).to(tl.int8)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['T', 's_b', 's_t', 's_h', 'NB'], do_not_specialize_on_alignment=['T', 's_b', 's_t', 's_h', 'NB'])
 def _reduce_quant_k_kernel(
     k_ptr,
     kc_ptr,
@@ -79,7 +80,7 @@ def _reduce_quant_k_kernel(
         tl.store(k_scale + (batch * T + rows) * H + head, scale, mask=valid)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['T', 's_b', 's_t', 's_h', 'NB'], do_not_specialize_on_alignment=['T', 's_b', 's_t', 's_h', 'NB'])
 def _quantize_k_kernel(
     k_ptr,
     kc_ptr,
@@ -115,7 +116,7 @@ def _quantize_k_kernel(
     tl.store(k_scale + (batch * T + rows) * H + head, scale, mask=valid)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['T', 's_b', 's_t', 's_h', 'N'], do_not_specialize_on_alignment=['T', 's_b', 's_t', 's_h', 'N'])
 def _q_quant_threshold_kernel(
     q_ptr,
     kc_mean_ptr,
@@ -127,7 +128,7 @@ def _q_quant_threshold_kernel(
     T,
     s_b, s_t, s_h,
     H: tl.constexpr,
-    N: tl.constexpr,
+    N,
     D: tl.constexpr,
     BLOCK: tl.constexpr,
     TAU,
@@ -252,7 +253,7 @@ def quantize_q_with_threshold(q, kc_mean, kc_var, *, scale, tau):
     return q8, q_scale, threshold
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['T', 's_b', 's_t', 's_h'], do_not_specialize_on_alignment=['T', 's_b', 's_t', 's_h'])
 def _quantize_v_kernel(
     v_ptr,
     scale_ptr,
@@ -313,3 +314,7 @@ def quantize_v_per_channel(v, rows=16, absmax=None):
 
 
 __all__ = ["quantize_k", "reduce_quantize_k", "quantize_q_with_threshold", "quantize_v_per_channel"]
+
+
+from shared.kernels.triton_compilation_log import install_triton_compilation_logger
+install_triton_compilation_logger()

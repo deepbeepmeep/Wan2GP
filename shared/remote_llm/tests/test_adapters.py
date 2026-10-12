@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import asyncio
@@ -24,7 +25,7 @@ from shared.gradio import assistant_chat
 from shared.remote_llm.codex_backend import CodexAuthenticationRequired, CodexBackend, _codex_launch_command, _resolve_codex_executable
 from shared.remote_llm.claude_backend import CLAUDE_PROGRESS_INSTRUCTIONS, ClaudeAuthenticationRequired, ClaudeBackend, _resolve_claude_executable, _restore_mcp_content_contract
 from shared.remote_llm.images import temporary_image_paths
-from shared.remote_llm.mcp_bridge import build_tool_proxy
+from shared.mcp.bridge import build_tool_proxy
 from shared.remote_llm.opencode_backend import OpenCodeBackend
 from shared.remote_llm.base import BackendEvent
 from shared.remote_llm.deepy_runner import _visual_query, run_remote_deepy_turn
@@ -161,7 +162,7 @@ class _FakeToolbox:
         return name.removeprefix("wangp_").replace("_", " ").title()
 
     def call(self, name, _arguments):
-        return {"status": "done", "tool": name, "output_file": "done.png"}
+        return {"status": "done", "tool": name}
 
 
 class RemoteLLMAdapterTests(unittest.TestCase):

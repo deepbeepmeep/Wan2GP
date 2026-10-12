@@ -1,9 +1,78 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 from typing import Any
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
+from time import perf_counter
 
 
 _LOGGER_MARKER = "_wangp_triton_compilation_logger"
+_TUNING = ContextVar("wangp_triton_tuning", default=None)
+
+
+class _CompilationGroup:
+    def __init__(self):
+        self.started = {}
+        self.winner = None
+
+    def start(self, name):
+        if name not in self.started:
+            self.started[name] = perf_counter()
+            print(f"[WanGP][Triton] Preparing {name} (compiling and tuning, please wait)...", flush=True)
+
+    def finish(self, failed=False):
+        for name, started in self.started.items():
+            elapsed = perf_counter() - started
+            if failed:
+                print(f"[WanGP][Triton] Compilation/tuning failed for {name} after {elapsed:.2f} s.", flush=True)
+            else:
+                print(f"[WanGP][Triton] Compiled {name} in {elapsed:.2f} s; winner: {self.winner}.", flush=True)
+
+
+@contextmanager
+def compilation_tuning():
+    """Group candidate compilations; a fully cached search remains silent."""
+    group = _CompilationGroup()
+    token = _TUNING.set(group)
+    try:
+        yield group
+    except BaseException:
+        group.finish(failed=True)
+        raise
+    else:
+        group.finish()
+    finally:
+        _TUNING.reset(token)
+
+
+def log_compilation_tuning(function):
+    """Wrap a custom tuning search which returns its selected configuration."""
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with compilation_tuning() as group:
+            result = function(*args, **kwargs)
+            group.winner = result
+            return result
+    return wrapped
+
+
+def _install_autotune_logger(triton):
+    autotuner = getattr(getattr(getattr(triton, "runtime", None), "autotuner", None), "Autotuner", None)
+    if autotuner is None or getattr(autotuner.run, _LOGGER_MARKER, False):
+        return
+    original = autotuner.run
+
+    @wraps(original)
+    def run(self, *args, **kwargs):
+        with compilation_tuning() as group:
+            result = original(self, *args, **kwargs)
+            group.winner = self.best_config
+            return result
+
+    setattr(run, _LOGGER_MARKER, True)
+    autotuner.run = run
 
 
 def _compile_duration_ms(times: Any) -> float:
@@ -40,6 +109,7 @@ def install_triton_compilation_logger() -> bool:
         return False
 
     previous_listener = compilation.listener
+    _install_autotune_logger(triton)
     if not getattr(previous_listener, _LOGGER_MARKER, False):
         def listener(**event):
             if previous_listener is not None:
@@ -48,10 +118,17 @@ def install_triton_compilation_logger() -> bool:
             kernel_name = str(getattr(source, "name", "") or type(source).__name__)
             if event.get("cache_hit", True):
                 return
+            group = _TUNING.get()
+            if group is not None:
+                group.start(kernel_name)
+                return
             duration_ms = _compile_duration_ms(event.get("times"))
             variant = _compile_variant(source)
             details = f" [{variant}]" if variant else ""
-            print(f"[WanGP][Triton] Compiled {kernel_name}{details} in {duration_ms:.0f} ms.", flush=True)
+            metadata = event.get("metadata") or {}
+            launch = " ".join(f"{key}={metadata[key]}" for key in ("num_warps", "num_stages") if key in metadata)
+            selected = f"; configuration: {launch}" if launch else ""
+            print(f"[WanGP][Triton] Compiled {kernel_name}{details} in {duration_ms:.0f} ms{selected}.", flush=True)
 
         setattr(listener, _LOGGER_MARKER, True)
         compilation.listener = listener
@@ -68,7 +145,11 @@ def install_triton_compilation_logger() -> bool:
                 def get_group(self, filename):
                     group = cache_manager.get_group(filename)
                     if filename.endswith(".json") and (compilation.always_compile or not group or group.get(filename) is None):
-                        print(f"[WanGP][Triton] Preparing {filename[:-5]} (compiling, please wait)...", flush=True)
+                        tuning = _TUNING.get()
+                        if tuning is not None:
+                            tuning.start(filename[:-5])
+                        else:
+                            print(f"[WanGP][Triton] Preparing {filename[:-5]} (compiling, please wait)...", flush=True)
                     return group
 
             return CompilationCacheManager()

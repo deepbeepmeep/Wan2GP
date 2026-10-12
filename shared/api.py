@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Lightweight in-process API wrapper around WanGP generation."""
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from PIL import Image
 from shared.tinyvae.media import VideoPreview
 
 from shared.utils.frame_scheduler import normalize_output_frame_count
+from shared.utils.gallery_sources import GALLERY_SOURCES, gallery_state_defaults
 from shared.utils.process_locks import set_main_generation_running
 from shared.utils.virtual_media import get_virtual_media_vsource, parse_virtual_media_path, replace_virtual_media_source
 
@@ -187,6 +189,11 @@ class ProgressUpdate:
     total_steps: int | None
     raw_phase: str | None = None
     unit: str | None = None
+    task_id: str | None = None
+    task_index: int | None = None
+    task_count: int | None = None
+    window_index: int | None = None
+    window_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -580,6 +587,7 @@ class WanGPSession:
         console_output: bool = True,
         console_isatty: bool = True,
         webui_state: dict[str, Any] | None = None,
+        webui_append: bool = False,
     ) -> None:
         self._root = Path(root or Path(__file__).resolve().parents[1]).resolve()
         self._config_path = Path(config_path).resolve() if config_path is not None else (self._root / "wgp_config.json").resolve()
@@ -589,6 +597,8 @@ class WanGPSession:
         self._console_output = bool(console_output)
         self._console_isatty = bool(console_isatty)
         self._use_webui_queue = isinstance(webui_state, dict)
+        # Like the UI's Add to Queue: jobs append in order and several may wait, instead of one priority job.
+        self._webui_append = self._use_webui_queue and webui_append
         self._state = webui_state if isinstance(webui_state, dict) else self._create_headless_state()
         self._active_job: SessionJob | None = None
         self._job_lock = threading.Lock()
@@ -598,7 +608,10 @@ class WanGPSession:
         self._ensure_runtime()
         return self
 
-    def list_model_defs(self, *, family: str | Sequence[str] | None = None, base_model_type: str | Sequence[str] | None = None, finetune: bool | str | None = None, model_type: str | Sequence[str] | None = None, main_output: str | Sequence[str] | None = None, inputs: str | Sequence[str] | None = None, name: str | Sequence[str] | None = None, query: str | None = None, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+    def list_model_defs(self, *, family: str | Sequence[str] | None = None, base_model_type: str | Sequence[str] | None = None, finetune: bool | str | None = None, model_type: str | Sequence[str] | None = None, main_output: str | Sequence[str] | None = None, inputs: str | Sequence[str] | None = None, name: str | Sequence[str] | None = None, query: str | None = None, resolution: str | None = None, include_resolution_unknown: bool = False, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+        from shared.resolutions import assess_resolution, parse_resolution
+        if resolution is not None:
+            parse_resolution(resolution)
         runtime = self._ensure_runtime()
         with _pushd(runtime.root):
             records = _strip_model_def_callables(runtime.module.list_model_defs(family=family, base_model_type=base_model_type, finetune=finetune, model_type=model_type, main_output=main_output, inputs=inputs))
@@ -617,6 +630,16 @@ class WanGPSession:
                     )
                 )
             ]
+        if resolution is not None:
+            selected = []
+            for record in records:
+                if not any(kind in ("image", "video") for kind in record["metadata"]["main_output"]):
+                    continue
+                assessment = assess_resolution(record, resolution)
+                if assessment["status"] == "recommended" or include_resolution_unknown and assessment["status"] == "unknown":
+                    record["metadata"]["resolution_assessment"] = assessment
+                    selected.append(record)
+            records = selected
         offset = max(0, int(offset or 0))
         if limit is None:
             return records[offset:]
@@ -868,6 +891,16 @@ class WanGPSession:
     def _queue_lock(self):
         return self._ensure_runtime().module.lock if self._use_webui_queue else self._job_lock
 
+    def _workspace_gallery(self):
+        from shared.utils.workspace_storage import host_for_gen
+        from shared.utils.workspaces import load_gallery
+        gen = self._state['gen']
+        workspace_id = getattr(self, '_workspace_id', None)
+        host = host_for_gen(gen)
+        if workspace_id and host is not None and host.workspace_id != workspace_id:
+            return load_gallery(host.workspaces.get(workspace_id), host._workspace_settings)
+        return gen
+
     def list_queue(self) -> dict[str, Any]:
         """List all pending/running tasks in this session's generation queue, including UI tasks."""
         gen = self._state["gen"]
@@ -880,6 +913,7 @@ class WanGPSession:
                 cancelling = running and bool(gen.get("abort", False))
                 entries.append({
                     "queue_id": queue_id, "position": index + 1, "task_id": task.get("id"),
+                    **{key: task[key] for key in ('workspace_id', 'mcp_agent_id') if key in task},
                     "client_id": str(params.get("client_id", "") or ""),
                     "model_type": str(params.get("model_type", "") or ""),
                     "prompt": str(params.get("prompt", "") or "")[:320],
@@ -927,12 +961,7 @@ class WanGPSession:
             "gen": {
                 "queue": [],
                 "in_progress": False,
-                "file_list": [],
-                "file_settings_list": [],
-                "audio_file_list": [],
-                "audio_file_settings_list": [],
-                "selected": 0,
-                "audio_selected": 0,
+                **gallery_state_defaults(0),
                 "prompt_no": 0,
                 "prompts_max": 0,
                 "repeat_no": 0,
@@ -948,12 +977,21 @@ class WanGPSession:
 
     def _submit_tasks(self, tasks: list[dict[str, Any]], callbacks: object | None = None) -> SessionJob:
         with self._job_lock:
-            if self._active_job is not None and not self._active_job.done:
+            if not self._webui_append and self._active_job is not None and not self._active_job.done:
                 raise RuntimeError("WanGP session already has a generation in progress")
             job = SessionJob(self)
             self._bind_callbacks_to_job(job, callbacks)
             prepared_tasks = copy.deepcopy(tasks)
-            client_ids = self._ensure_task_client_ids(prepared_tasks, priority=self._use_webui_queue)
+            from shared.utils.workspace_storage import capture_task
+            for task in prepared_tasks:
+                if getattr(self, '_workspace_id', None):
+                    task['workspace_id'] = self._workspace_id
+                if getattr(self, '_agent_context', None):
+                    task['mcp_agent_id'] = self._agent_context
+                capture_task(task, self._state)
+            if self._output_dir is not None and any(task.get('workspace_id') for task in prepared_tasks):
+                raise ValueError('An explicit output_dir cannot be combined with a workspace-bound queue. Use its original Workspaces Root.')
+            client_ids = self._ensure_task_client_ids(prepared_tasks, priority=self._use_webui_queue and not self._webui_append)
             if self._use_webui_queue:
                 prepared_tasks, manifest, load_queue_token = self._prepare_webui_bridge(prepared_tasks)
                 job._set_webui_bridge(manifest=manifest, client_ids=client_ids, load_queue_token=load_queue_token)
@@ -985,7 +1023,7 @@ class WanGPSession:
 
     @staticmethod
     def _ensure_task_client_ids(tasks: list[dict[str, Any]], *, priority: bool = False) -> tuple[str, ...]:
-        client_seed = time.time_ns()
+        client_seed = uuid.uuid4().hex[:16]  # unique across sessions and jobs submitted within one clock tick
         client_ids: list[str] = []
         for index, task in enumerate(tasks, start=1):
             params = copy.deepcopy(WanGPSession._get_task_settings(task))
@@ -1006,10 +1044,12 @@ class WanGPSession:
         manifest = []
         for index, task in enumerate(tasks, start=1):
             params = copy.deepcopy(self._get_task_settings(task))
-            params["priority"] = True
+            params["priority"] = not self._webui_append
             task["params"] = params
             manifest.append({
                 "id": task.get("id", index),
+                **({"workspace_id": task['workspace_id']} if task.get('workspace_id') else {}),
+                **({"mcp_agent_id": task['mcp_agent_id']} if task.get('mcp_agent_id') else {}),
                 "params": copy.deepcopy(params),
                 "plugin_data": copy.deepcopy(task.get("plugin_data", {})),
             })
@@ -1028,7 +1068,7 @@ class WanGPSession:
 
         run_webui_job(self, job, tasks)
 
-    def _build_progress_update(self, data: Any, *, include_state_fallback: bool = True) -> ProgressUpdate:
+    def _build_progress_update(self, data: Any, *, include_state_fallback: bool = True, task_id: str | None = None, task_index: int | None = None, task_count: int | None = None) -> ProgressUpdate:
         current_step: int | None = None
         total_steps: int | None = None
         status = ""
@@ -1086,6 +1126,11 @@ class WanGPSession:
             total_steps=total_steps,
             raw_phase=display_phase or None,
             unit=unit,
+            task_id=task_id,
+            task_index=task_index,
+            task_count=task_count,
+            window_index=(self._state["gen"].get("window_no") or None) if phase != "loading_model" else None,
+            window_count=(self._state["gen"].get("total_windows") or None) if phase != "loading_model" else None,
         )
 
     def _build_preview_update(self, wgp, tasks: list[dict[str, Any]], payload: Any) -> PreviewUpdate | None:
@@ -1128,13 +1173,16 @@ class WanGPSession:
             runtime.module.server_config["save_path"] = str(self._output_dir)
             runtime.module.server_config["image_save_path"] = str(self._output_dir)
             runtime.module.server_config["audio_save_path"] = str(self._output_dir)
+            runtime.module.server_config["mesh_save_path"] = str(self._output_dir)
             runtime.module.save_path = str(self._output_dir)
             runtime.module.image_save_path = str(self._output_dir)
             runtime.module.audio_save_path = str(self._output_dir)
+            runtime.module.mesh_save_path = str(self._output_dir)
         for output_path in (
             runtime.module.save_path,
             runtime.module.image_save_path,
             runtime.module.audio_save_path,
+            runtime.module.mesh_save_path,
         ):
             Path(output_path).mkdir(parents=True, exist_ok=True)
 
@@ -1168,11 +1216,13 @@ class WanGPSession:
         gen.pop("in_progress", None)
         self._ensure_runtime().module.gen_in_progress = False
 
-    def _collect_outputs(self, base_file_count: int, base_audio_count: int) -> list[str]:
+    def _gallery_counts(self) -> dict[str, int]:
         gen = self._state["gen"]
-        files = gen["file_list"][base_file_count:]
-        audio_files = gen["audio_file_list"][base_audio_count:]
-        return [str(Path(path).resolve()) for path in [*files, *audio_files]]
+        return {source.id: len(gen[source.files_key]) for source in GALLERY_SOURCES}
+
+    def _collect_outputs(self, base_counts: dict[str, int]) -> list[str]:
+        gen = self._state["gen"]
+        return [str(Path(path).resolve()) for source in GALLERY_SOURCES for path in gen[source.files_key][base_counts[source.id]:]]
 
     def _consume_output_artifact(self, client_id: str) -> GeneratedArtifact | None:
         gen = self._state["gen"]

@@ -1,0 +1,32 @@
+{
+    "model": {
+        "name": "Wan2.2 Prism Alpha 14B",
+        "architecture": "prism",
+        "description": "Prism Alpha image-to-video with jointly generated audio, based on MOVA's two video experts and audio transformer.",
+        "group": "wan2_2",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Prism_Alpha_high_int8_convrot.safetensors"
+        ],
+        "URLs2": [
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Prism_Alpha_low_int8_convrot.safetensors"
+        ],
+        "modules": [[
+            "https://huggingface.co/DeepBeepMeep/Wan2.2/resolve/main/Prism_Alpha_audio_module_int8_convrot.safetensors"
+        ]]
+    },
+    "prompt": "A close-up of the woman in the starting image. She looks toward the camera, smiles naturally and says in a calm voice <speech>It is wonderful to see you again.</speech> The camera remains steady. <sfx>Quiet room ambience.</sfx> No background music.",
+    "negative_prompt": "blurred, distorted face, unnatural motion, flickering, subtitles, background music",
+    "num_inference_steps": 50,
+    "guidance_scale": 5.0,
+    "guidance2_scale": 5.0,
+    "guidance_phases": 2,
+    "switch_threshold": 900,
+    "model_switch_phase": 1,
+    "flow_shift": 7.0,
+    "sample_solver": "euler",
+    "video_length": 205,
+    "resolution": "1280x720",
+    "image_prompt_type": "S",
+    "model_mode": 0,
+    "prompt_enhancer": ""
+}

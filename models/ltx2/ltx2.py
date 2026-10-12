@@ -14,6 +14,7 @@ from accelerate import init_empty_weights
 from safetensors.torch import load_file
 from shared.utils import files_locator as fl
 from shared.utils.phase_progress import generation_progress
+from shared.cuda_memory import mmgp_vram_allocator
 from shared.utils.hdr import VIDEO_PROMPT_HDR_OUTPUT_FLAG, hdr_linear_to_vae_range, sdr_to_vae_range
 
 from .ltx_core.conditioning import AudioConditionByLatent, AudioConditionByLatentPrefix, AudioConditionByReferenceLatent
@@ -69,6 +70,7 @@ from .ltx2_runtime import (
 from .ltx_pipelines.distilled import DistilledPipeline
 from .ltx_pipelines.hdr_ic_lora import convert_sdr_to_hdr
 from .ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline
+from .ltx_pipelines.utils.media_io import UInt8Guide
 from .ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE, DEFAULT_NEGATIVE_PROMPT, DISTILLED_SIGMA_VALUES
 
 
@@ -350,8 +352,8 @@ class LTX2SuperModel(torch.nn.Module):
         object.__setattr__(self, "_ltx2", ltx2_model)
 
         transformer = ltx2_model.model
-        velocity_model = getattr(transformer, "velocity_model", transformer)
-        self.velocity_model = velocity_model
+        # MMGP registers LoRA slots on the X0Model, not its inner velocity model.
+        self.model = transformer
         split_map = getattr(transformer, "split_linear_modules_map", None)
         if split_map is not None:
             self.split_linear_modules_map = split_map
@@ -395,6 +397,8 @@ class _LTX2VAEHelper:
         output_height: int | None = None,
         output_width: int | None = None,
     ) -> int | tuple[int, int]:
+        if mmgp_vram_allocator():  # no allocator fragmentation to guard against: Default and Low VRAM levels
+            return 256 if vae_config == 3 or device_mem_capacity < 8000 else 512
         if vae_config >= 4:
             vae_config = 0
 
@@ -478,7 +482,7 @@ def _attach_lora_preprocessor(transformer: torch.nn.Module) -> None:
             if module_name.startswith("feature_extractor_linear."):
                 module_name = f"text_embedding_projection.{module_name[len('feature_extractor_linear.') :]}"
             if module_name not in module_names:
-                prefixed_name = f"velocity_model.{module_name}"
+                prefixed_name = f"model.{module_name}" if module_name.startswith("velocity_model.") else f"model.velocity_model.{module_name}"
                 if module_name.endswith(".to_out") and f"{prefixed_name}.0" in module_names:
                     module_name = f"{prefixed_name}.0"
                 elif prefixed_name in module_names:
@@ -1405,6 +1409,7 @@ class LTX2:
         input_ref_images=None,
         input_waveform=None,
         input_waveform_sample_rate=None,
+        audio_conditioning_end=None,
         audio_scale: float | None = None,
         outpainting_dims: list[int] | None = None,
         frame_num: int = 121,
@@ -1597,22 +1602,21 @@ class LTX2:
                     input_frames2, input_masks2 = _pad_ltx2_masked_control_video_tail(input_frames2, input_masks2, target_control_frames)
 
                 conditioning_entries = []
-                if input_frames is not None:
-                    conditioning_entries.append((input_frames, control_start_frame, control_strength))
-                if input_frames2 is not None:
-                    conditioning_entries.append((input_frames2, control_start_frame, control_strength))
+                for control_frames in (input_frames, input_frames2):
+                    if control_frames is not None:
+                        conditioning_entries.append((UInt8Guide(control_frames) if control_frames.dtype == torch.uint8 else control_frames, control_start_frame, control_strength))
                 if conditioning_entries:
                     video_conditioning = conditioning_entries
                 if masking_strength > 0.0:
                     if input_masks is not None and input_frames is not None:
                         masking_source = {
-                            "video": input_frames,
+                            "video": UInt8Guide(input_frames) if input_frames.dtype == torch.uint8 else input_frames,
                             "mask": input_masks,
                             "start_frame": control_start_frame,
                         }
                     elif input_masks2 is not None and input_frames2 is not None:
                         masking_source = {
-                            "video": input_frames2,
+                            "video": UInt8Guide(input_frames2) if input_frames2.dtype == torch.uint8 else input_frames2,
                             "mask": input_masks2,
                             "start_frame": control_start_frame,
                         }
@@ -1781,6 +1785,11 @@ class LTX2:
                         4,
                     )
                     audio_latent = audio_latent.to(device=self.device, dtype=self.dtype)
+                    if audio_conditioning_end is not None and "1" not in audio_prompt_type:
+                        # Keep the reliable prefix fixed; the remaining target tokens retain their noise.
+                        token_seconds = self.audio_encoder.mel_hop_length * audio_downsample / self.audio_encoder.sample_rate
+                        prefix_tokens = max(0, math.floor(audio_conditioning_end / token_seconds + 1e-9))
+                        audio_latent = audio_latent[:, :, :prefix_tokens, :]
                     if "1" in audio_prompt_type:
                         audio_conditionings = [AudioConditionByReferenceLatent(audio_latent)]
                         audio_conditionings_stage2 = []
@@ -1801,7 +1810,9 @@ class LTX2:
                             audio_latent_downsample_factor=audio_downsample,
                         )
                         target_frames = target_shape.frames
-                        if audio_latent.shape[2] < target_frames:
+                        if audio_latent.shape[2] == 0:
+                            audio_conditionings = None
+                        elif audio_latent.shape[2] < target_frames:
                             audio_conditionings = [AudioConditionByLatentPrefix(audio_latent)]
                         else:
                             if audio_latent.shape[2] > target_frames:

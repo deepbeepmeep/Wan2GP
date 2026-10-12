@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import json
 import os
 import re
@@ -355,7 +356,9 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        return {**get_qwen3_model_def(base_model_type), "device_explicit": True}
+        from models.help_shared import specialities
+        strengths = ("voice cloning", "speech dialogue") if base_model_type == "qwen3_tts_base" else ("voice design",) if base_model_type == "qwen3_tts_voicedesign" else ()
+        return {**get_qwen3_model_def(base_model_type), "device_explicit": True, "specialities": specialities(*strengths)}
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

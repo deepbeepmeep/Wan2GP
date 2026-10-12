@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Choose the GGUF short-batch linear kernel per shape before CUDA graph capture.
 
 Speculative verification runs Q4_K and PTQ1_0 linears on 2-8 activation rows.

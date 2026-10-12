@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Adapted from NVlabs/Sana Sol-Attn commit 46031940ba8af5d18054217e571149579424c0b1.
+# Modified for WanGP.
 """Architecture-aware Triton Sol-Attn forward implementation."""
 
 import torch
 import triton
+from shared.kernels.triton_autotune import model_autotune
 import triton.language as tl
 
 try:
@@ -30,15 +32,33 @@ def _use_tma(device) -> bool:
     return capability[0] >= 9 and TensorDescriptor is not None
 
 
-@triton.autotune(
+# sol_attn(recycle_q=True) writes the output into q: each benchmark launch of the autotuner would read the previous one's output as q.
+# q is saved before each of them and restored after (Triton's restore_value takes tensors, not descriptors).
+_saved_q = []
+
+
+def _save_q(kwargs, reset_only=False):
+    q = kwargs["q_desc"].base
+    if not reset_only and kwargs["o_desc"].base.data_ptr() == q.data_ptr():
+        _saved_q.append(q.clone())
+
+
+def _restore_q(kwargs, exception):
+    if _saved_q:
+        kwargs["q_desc"].base.copy_(_saved_q.pop())
+
+
+@model_autotune(
     configs=[
         triton.Config({}, num_warps=warps, num_stages=stages)
         for warps in (4, 8)
         for stages in (1, 2, 3, 4)
     ],
     key=["T"],
+    pre_hook=_save_q,
+    post_hook=_restore_q,
 )
-@triton.jit
+@triton.jit(do_not_specialize=['T', 'query_start_block', 'sink_start_block', 'sink_end_block', 'NT'], do_not_specialize_on_alignment=['T', 'query_start_block', 'sink_start_block', 'sink_end_block', 'NT'])
 def _forward_tma(
     q_desc,
     k_desc,
@@ -55,7 +75,7 @@ def _forward_tma(
     HAS_SINK: tl.constexpr,
     H: tl.constexpr,
     D: tl.constexpr,
-    NT: tl.constexpr,
+    NT,
     BV: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
@@ -178,13 +198,13 @@ def _forward_tma(
     )
 
 
-@triton.autotune(
+@model_autotune(
     # This was the winner at both 22,263 and 38,247 H3 tokens on SM89.
     # A single config also avoids first-use benchmarking on the pointer path.
     configs=[triton.Config({"BV": 128}, num_warps=4, num_stages=1)],
     key=["T"],
 )
-@triton.jit
+@triton.jit(do_not_specialize=['T', 'query_start_block', 'sink_start_block', 'sink_end_block', 'NT'], do_not_specialize_on_alignment=['T', 'query_start_block', 'sink_start_block', 'sink_end_block', 'NT'])
 def _forward_ptr(
     q_ptr,
     k_ptr,
@@ -214,7 +234,7 @@ def _forward_ptr(
     HAS_SINK: tl.constexpr,
     H: tl.constexpr,
     D: tl.constexpr,
-    NT: tl.constexpr,
+    NT,
     BV: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
@@ -492,3 +512,7 @@ def sol_attn(
 
 
 __all__ = ["sol_attn"]
+
+
+from shared.kernels.triton_compilation_log import install_triton_compilation_logger
+install_triton_compilation_logger()

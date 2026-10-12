@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Workspace lifecycle shared by native Gradio and standalone Web access."""
 import logging
 from contextlib import nullcontext
@@ -6,6 +7,7 @@ from shared.deepy import chat, media_registry, session_store
 from shared.deepy.errors import DeepyBusy
 from shared.utils.workspaces import ARCHIVE_AFTER_DAYS_KEY, WorkspaceStore, capture_gallery, load_gallery
 from shared.utils.media_settings import MediaSettingsCache
+from shared.utils.workspace_storage import STORAGE_KEY, register_host, output_config, execution_workspace
 
 
 class WorkspaceSupport:
@@ -13,7 +15,8 @@ class WorkspaceSupport:
 
     def configure_workspaces(self, root):
         with self._mutation_lock:
-            self.workspaces = WorkspaceStore(root)
+            self.workspaces = WorkspaceStore(root, self._deps.get_server_config().get(STORAGE_KEY, 'shared'))
+            register_host(self)
             self._archive_old_workspaces()
             self._deps.controller.workspace_host = self
             self._workspace_settings = MediaSettingsCache(lambda path: self._deps.get_settings_from_file(self._state, path, False, False, False)[0])
@@ -51,25 +54,56 @@ class WorkspaceSupport:
         with self._mutation_lock:
             owned = self.workspaces.for_session(self._session.storage_session_id)
             locked = self._deepy_workspace_locked()
-            return {'revision': self.workspace_revision, 'selected': self.workspace_id, 'items': self.workspaces.catalog(), 'session_workspace_id': owned['id'] if owned else None, 'deepy_locked': locked, 'deepy_selected': (owned['id'] if owned else None) if locked else self.workspace_id}
+            return {'revision': self.workspace_revision, 'selected': self.workspace_id, 'items': self.workspaces.catalog(), 'session_workspace_id': owned['id'] if owned else None, 'deepy_locked': locked, 'deepy_selected': (owned['id'] if owned else None) if locked else self.deepy_workspace_id()}
+
+    def deepy_workspace_id(self):
+        owned = self.workspaces.for_session(self._session.storage_session_id)
+        return owned['id'] if owned else self._session.gallery_workspace_id or self.workspace_id
+
+    def workspace_output_config(self, workspace_id=None):
+        return output_config(self._deps.get_server_config(), binding=(self, workspace_id or self.workspace_id))
+
+    def activate_workspace(self, workspace_id, *, execution=False):
+        """Activate a bound operation without reassigning Deepy's conversation."""
+        with self._mutation_lock:
+            self.workspaces.get(workspace_id)
+            if workspace_id == self.workspace_id:
+                return
+            if not execution:
+                self.require_idle()
+            self.save_workspace()
+            self._apply_workspace(workspace_id, associate=False)
+            self._deps.callbacks.emit('save_workspace_choice', workspace_id)
+            self.publish_workspaces()
+            self.publish('gallery', self.gallery_snapshot())
+            if hasattr(self, 'host_changed'):
+                self.host_changed()
 
     def gallery_snapshot(self):
         with self._mutation_lock:
-            if self.workspaces is None or not self._deepy_workspace_locked():
+            if self.workspaces is None:
                 return self.gallery.snapshot()
             owned = self.workspaces.for_session(self._session.storage_session_id)
+            if not self._deepy_workspace_locked():
+                workspace_id = self.deepy_workspace_id()
+                if workspace_id == self.workspace_id:
+                    return self.gallery.snapshot()
+                return self.gallery.snapshot(load_gallery(self.workspaces.get(workspace_id), self._workspace_settings))
             if owned is None:
                 return self.gallery.snapshot(self._empty_gallery)
             if owned['id'] == self.workspace_id:
                 return self.gallery.snapshot()
             # Main Gradio browsing does not redirect Deepy's gallery. Reuse the
             # same lazy adapter and reload this view only when its manifest changes.
-            if self._web_gallery_cache is None or self._web_gallery_cache[0] is not owned:
+            if self._web_gallery_cache is None or self._web_gallery_cache[0] != owned:
                 self._web_gallery_cache = (owned, load_gallery(owned, self._workspace_settings))
             return self.gallery.snapshot(self._web_gallery_cache[1])
 
     def prepare_media_workspace(self):
-        if self.workspaces is None or not self._deepy_workspace_locked():
+        if self.workspaces is None:
+            return
+        if not self._deepy_workspace_locked():
+            self.activate_workspace(self.deepy_workspace_id())
             return
         controller, session = self._deps.controller, self._session
         owned = self.workspaces.for_session(session.storage_session_id)
@@ -98,17 +132,26 @@ class WorkspaceSupport:
     def save_workspace(self):
         if self.workspaces is not None:
             with self._mutation_lock:
-                if self.workspaces.save(self.workspace_id, capture_gallery(self._state['gen'])):
+                captured = capture_gallery(self._state['gen'])
+                changed = self.workspaces.save(self.workspace_id, captured)
+                record = self.workspaces.get(self.workspace_id)
+                if record['gallery'] != captured:
+                    self._state['gen'].update(load_gallery(record, self._workspace_settings))
+                if changed:
                     self.publish_workspaces()
 
-    def _apply_workspace(self, workspace_id):
-        gallery = load_gallery(self.workspaces.get(workspace_id), self._workspace_settings)
+    def _apply_workspace(self, workspace_id, *, associate=True):
+        record = self.workspaces.get(workspace_id)
+        if 'folder' in record:
+            self._deps.callbacks.emit('allow_workspace_media', str(self.workspaces._directory(record)))
+        gallery = load_gallery(record, self._workspace_settings)
         self._state['gen'].update(gallery)
         self._state['gen']['refresh_tab'] = False
         self.workspace_id = workspace_id
         owned = self.workspaces.for_session(self._session.storage_session_id)
-        self._session.gallery_workspace_id = owned['id'] if owned else workspace_id
-        media_registry.sync_tool_call_gallery_media(self._session, self._state['gen'])
+        if associate:
+            self._session.gallery_workspace_id = owned['id'] if owned else workspace_id
+            media_registry.sync_tool_call_gallery_media(self._session, self._state['gen'])
 
     def validate_session_workspace(self, workspace_id):
         if workspace_id is not None and not isinstance(workspace_id, str):
@@ -132,6 +175,10 @@ class WorkspaceSupport:
 
     def ensure_session_workspace(self):
         session = self._session
+        if not self._deepy_workspace_locked() and self.deepy_workspace_id() != self.workspace_id:
+            if self.generation_running:
+                raise DeepyBusy('Wait for the current generation before starting Deepy in another workspace.')
+            self.activate_workspace(self.deepy_workspace_id(), execution=True)
         if not session.storage_session_id:
             return
         with self._mutation_lock:
@@ -141,6 +188,7 @@ class WorkspaceSupport:
                     return
                 # A new conversation gets an empty collection; never adopt the
                 # previous session's gallery, even when restoring an old session.
+                self.workspaces.default_mode = self._deps.get_server_config().get(STORAGE_KEY, 'shared')
                 workspace_id = self.workspaces.create(session.storage_title, deepy_session_id=session.storage_session_id)
             else:
                 workspace_id = owned['id']
@@ -150,6 +198,8 @@ class WorkspaceSupport:
             if workspace_id == self.workspace_id and session.gallery_workspace_id == workspace_id:
                 return
             if workspace_id != self.workspace_id:
+                if self.generation_running:
+                    raise DeepyBusy('Wait for the current generation before starting Deepy in another workspace.')
                 self.save_workspace()
                 self._apply_workspace(workspace_id)
                 self._deps.callbacks.emit('save_workspace_choice', workspace_id)
@@ -189,6 +239,7 @@ class WorkspaceSupport:
                     raise DeepyBusy('Wait for Deepy and the current generation to finish before changing workspace.')
                 self.save_workspace()
             if action == 'create':
+                self.workspaces.default_mode = self._deps.get_server_config().get(STORAGE_KEY, 'shared')
                 workspace_id = self.workspaces.create(payload.get('name'))
             elif action == 'rename':
                 self.workspaces.rename(workspace_id, payload.get('name'))

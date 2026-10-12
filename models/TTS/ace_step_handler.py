@@ -1,3 +1,6 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .help import ACE1_HELP
 import os
 import re
 
@@ -384,8 +387,10 @@ class family_handler:
             if _ace_step15_has_lm_definition(model_def):
                 extra_model_def["model_modes"] = ACE_STEP15_MODEL_MODES.copy()
             extra_model_def["device_explicit"] = True
+            from models.help_shared import specialities
+            extra_model_def["specialities"] = specialities("music generation")
             return extra_model_def
-        return {
+        return merge_help({
             "group": "music",
             "device_explicit": True,
             "audio_only": True,
@@ -424,7 +429,7 @@ class family_handler:
             "duration_slider": dict(ACE_STEP_DURATION_SLIDER),
             "text_prompt_enhancer_instructions": HEARTMULA_LYRIC_PROMPT,
             "prompt_enhancer_button_label": "Compose Lyrics",
-        }
+        }, ACE1_HELP)
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

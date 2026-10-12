@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Runtime monkey patch that keeps WanGP's main tab responsive across tab switches and backgrounding."""
 
 from __future__ import annotations
@@ -198,23 +199,41 @@ def get_javascript() -> str:
       return;
     }}
     patch.keepAliveObserverInstalled = true;
-    const target = document.body || document.documentElement;
-    if (!target) {{
-      return;
-    }}
-    const observer = new MutationObserver(() => {{
+    let observedTab = null, observedPanel = null;
+    function invalidateComponentIds() {{
       patch.targetComponentIds = null;
       patch.targetComponentIdsPanelId = null;
-      scheduleMainTabKeepAliveSync();
-    }});
-    observer.observe(target, {{
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["aria-selected", "class", "style"],
+    }}
+    function observeMainTab() {{
+      const tab = getMainTab(), panel = getMainTabPanel();
+      if (tab === observedTab && panel === observedPanel) return false;
+      observer.disconnect();
+      observedTab = tab;
+      observedPanel = panel;
+      invalidateComponentIds();
+      if (tab && panel) {{
+        observer.observe(tab, {{attributes: true, attributeFilter: ["aria-selected", "aria-controls"]}});
+        observer.observe(panel, {{childList: true, subtree: true}});
+        // Detect replacement of the tab or panel without watching other panels.
+        observer.observe(tab.parentElement, {{childList: true}});
+        observer.observe(panel.parentElement, {{childList: true}});
+        scheduleMainTabKeepAliveSync();
+      }} else {{
+        observer.observe(document.body || document.documentElement, {{childList: true, subtree: true}});
+      }}
+      return true;
+    }}
+    const hasComponent = node => node.nodeType === 1 && (node.matches('[id^="component-"]') || node.querySelector('[id^="component-"]'));
+    const observer = new MutationObserver(records => {{
+      if (observeMainTab() || !observedPanel) return;
+      if (records.some(record => record.type === "attributes" && record.target === observedTab)) scheduleMainTabKeepAliveSync();
+      if (records.some(record => record.type === "childList" && observedPanel.contains(record.target) &&
+          [...record.addedNodes, ...record.removedNodes].some(hasComponent))) invalidateComponentIds();
     }});
     patch.keepAliveObserver = observer;
-    scheduleMainTabKeepAliveSync();
+    // The bootstrap watch ends as soon as Gradio mounts the main tab.
+    observer.observe(document.body || document.documentElement, {{childList: true, subtree: true}});
+    observeMainTab();
   }}
 
   function getTargetComponentIds() {{

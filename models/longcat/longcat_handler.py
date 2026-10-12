@@ -1,3 +1,6 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .infos import longcat_help
 import torch
 from shared.utils.hf import build_hf_url
 
@@ -109,7 +112,7 @@ class family_handler:
                 )
 
 
-        return extra_model_def
+        return merge_help(extra_model_def, longcat_help(base_model_type))
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):

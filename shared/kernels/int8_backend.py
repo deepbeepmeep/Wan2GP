@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Optional INT8 backends shared by Quanto and ConvRot linear layers."""
 from __future__ import annotations
 
@@ -11,8 +12,8 @@ import torch
 from shared.kernels import quanto_int8_inject as triton
 
 
-CHOICES = [("Disabled (PyTorch)", "disabled"), ("Auto", "auto"),
-           ("Triton", "triton"), ("Comfy Kitchen Kernels", "kitchen")]
+CHOICES = [("Disabled: PyTorch (slowest, most precise)", "disabled"), ("Auto (fastest available, less precise)", "auto"),
+           ("Triton (fast, less precise)", "triton"), ("Comfy Kitchen Kernels (fastest, least precise)", "kitchen")]
 _backend = "pytorch"
 revision = 0
 _kitchen = None
@@ -28,6 +29,7 @@ _wide_convrot_triton = None
 _blockwise_triton = None
 _blockwise_required = False
 _kitchen_dlpack_export = None  # (Kitchen module, its own DLPack exporter) while the direct exporter replaces it
+_prepared_capture_streams = set()
 # Bump when changes to INT8 custom operators invalidate compiled graphs.
 _COMPILE_CACHE_VERSION = 3
 # Includes row quantization, a possible INT32 GEMM result, and a temporary output.
@@ -168,7 +170,10 @@ def _weight_scale(weight, n, device):
         return triton._prepare_weight_scale(weight._scale, n, device)
     scale = weight.__dict__.get("_kitchen_scale", None)
     if scale is None:
-        scale = weight._kitchen_scale = triton._prepare_weight_scale(weight._scale, n, device)
+        from mmgp import allocator
+        # A converted weight scale outlives this block. A later block's warmup must not place it in scratch used by an earlier graph.
+        with allocator.normal_allocations():
+            scale = weight._kitchen_scale = triton._prepare_weight_scale(weight._scale, n, device)
     return scale
 
 
@@ -248,6 +253,49 @@ def kitchen_linear_prequantized(weight, bias, q, scales, out):
     if not used:
         raise RuntimeError("Comfy Kitchen rejected the shared-input INT8 output tile")
     return out
+
+
+def linear_grouped(modules, x):
+    """Independent small projections with batched input preparation and normal module hooks.
+
+    Group-64 ConvRot normally launches rotation and quantization for each module.
+    Retain its BF16 rotation boundary, but prepare all input rows together. No
+    weights are packed or cached, so MMGP retains their lifetime and residency.
+    """
+    from shared.kernels import kernel_policy
+    supported = (kernel_policy.allow_approximate() and kitchen_enabled() and _direct_cutlass
+                 and torch.is_inference_mode_enabled() and not torch.compiler.is_compiling()
+                 and not triton._is_fake_tensor(x) and x.is_cuda and x.dtype == torch.bfloat16
+                 and x.ndim == 3 and x.is_contiguous() and len(modules) == x.shape[0]
+                 and x.shape[1] > 2 and x.shape[2] % 64 == 0
+                 and x.numel() * 4 <= _SCRATCH_BYTES
+                 and all(getattr(module, '_convrot_group_size', 0) == 64
+                         and getattr(getattr(module, 'weight_qtype', None), 'name', None) == 'qint8_convrot'
+                         and module.in_features == x.shape[2]
+                         and module.out_features == modules[0].out_features and module.out_features % 8 == 0
+                         and not getattr(module, '_wangp_linear_fusion', None)
+                         and not getattr(module, '_wangp_prequantized_input', None)
+                         and (not getattr(module, '_mm_lora_old_forward', None)
+                              or getattr(module, '_mm_lora_data', None) == {}) for module in modules))
+    if not supported:
+        return torch.stack([module(part) for module, part in zip(modules, x.unbind())])
+    from shared.qtypes.int8_convrot import _rotate_activation
+    rotated = _rotate_activation(x, 64).reshape(-1, x.shape[-1])
+    q, scales = _kitchen.quantize_int8_rowwise(rotated)
+    del rotated
+    q, scales = q.reshape_as(x), scales.reshape(x.shape[0], x.shape[1], -1)
+    output = x.new_empty((x.shape[0], x.shape[1], modules[0].out_features))
+    for module, part, quantized, scale, out in zip(modules, x.unbind(), q.unbind(), scales.unbind(), output.unbind()):
+        previous = getattr(module, '_wangp_prequantized_input', None)
+        module._wangp_prequantized_input = (quantized, scale, out)
+        try:
+            module(part)
+        finally:
+            if previous is None:
+                del module._wangp_prequantized_input
+            else:
+                module._wangp_prequantized_input = previous
+    return output
 
 
 def kitchen_linear_fused(input, weight, bias, input_act, act_weight, act_eps, residual, residual_scale, out=None):
@@ -349,6 +397,32 @@ def _cutlass_linear_chunked(x, weight, scale, bias, convrot):
             raise RuntimeError("Comfy Kitchen rejected the INT8 CUTLASS output tile")
         del q, scales
     return out
+
+
+def prepare_capture_stream(stream):
+    """Kitchen's stream-K GEMMs keep a workspace per stream that they allocate on first need and enlarge later: a CUDA graph capture
+    cannot allocate it, and an enlargement would free the workspace of the graphs captured before. The capture stream gets the largest
+    one once (a block per SM with the widest stream-K tile); a capture that would still need more fails instead of replaying stale memory."""
+    key = (stream.cuda_stream, revision)
+    if _backend != "kitchen" or _kitchen_hip or _kitchen._DISABLE_CUTLASS_INT8 or key in _prepared_capture_streams:
+        return
+    device = stream.device
+    if torch.cuda.get_device_capability(device) >= (8, 0):
+        sms = torch.cuda.get_device_properties(device).multi_processor_count
+        m, k = 128 * (2 * sms - 1), 512  # one wave plus all the SMs but one: the most stream-K tiles and blocks
+        wrap = _kitchen._wrap_for_dlpack
+        with torch.inference_mode():
+            a = torch.zeros((m, k), dtype=torch.int8, device=device)
+            xs = torch.ones((m, 1), dtype=torch.float32, device=device)
+            calls = [(config, torch.zeros((n, k), dtype=torch.int8, device=device), torch.ones(n, dtype=torch.float32, device=device),
+                      torch.empty((m, n), dtype=torch.bfloat16, device=device)) for config, n in ((12, 128), (13, 256))]  # stream-K tiles
+            stream.wait_stream(torch.cuda.current_stream(device))
+            for config, b, ws, out in calls:
+                if not _kitchen._C.cutlass_int8_dequant_config(wrap(a), wrap(b), wrap(xs), wrap(ws), wrap(out),
+                                                               _kitchen.DTYPE_TO_CODE[torch.bfloat16], config, stream.cuda_stream):
+                    raise RuntimeError(f"Comfy Kitchen could not prepare the stream-K workspace of tile config {config} for CUDA graphs")
+            torch.cuda.current_stream(device).wait_stream(stream)
+    _prepared_capture_streams.add(key)
 
 
 @torch.inference_mode()
@@ -540,8 +614,9 @@ def configure(selection, verbose_level=0, *, resolved=None):
         _original_forward = qbytes.WeightQBytesLinearFunction.forward
         qbytes.WeightQBytesLinearFunction.forward = staticmethod(_quanto_forward)
     _backend = backend
-    from mmgp import offload
+    from mmgp import cuda_graphs, offload
     (offload.register_row_projection if backend == "kitchen" else offload.unregister_row_projection)(_KITCHEN_ROW_PROJECTION)
+    cuda_graphs.register_capture_setup(prepare_capture_stream)
     if backend != previous_backend:
         revision += 1
     label = {"kitchen": "Comfy Kitchen HIP" if _kitchen_hip else "Comfy Kitchen CUDA", "triton": "Triton", "pytorch": "PyTorch"}[backend]

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import argparse
@@ -5,6 +6,7 @@ import sys
 from collections.abc import Sequence
 
 from shared.lora_paths import load_lora_config
+from shared.mcp.config import server_port
 
 
 def _arg_provided(argv: Sequence[str], name: str) -> bool:
@@ -40,7 +42,7 @@ def parse_wgp_args(config_filename: str, argv: Sequence[str] | None = None):
     add("--verbose", type=str, default=1, help="Verbose level")
     add("--debug-deepy", type=str, default=None, help="Enable Deepy verbose debug logging and write it to the given folder")
     add("--deepy-sessions-dir", type=str, default="", metavar="FOLDER", help="Store persistent Deepy sessions in FOLDER (default: ./deepy_sessions)")
-    add("--workspaces-dir", type=str, default="", metavar="FOLDER", help="Store gallery workspaces in FOLDER (default: ./workspaces)")
+    add("--workspaces-dir", type=str, default="", metavar="FOLDER", help="Workspace manifests and dedicated media folders (overrides Configuration / Outputs; default: ./workspaces)")
     add("--llm-io", type=str, default="", metavar="FOLDER", help="Write a plain-text transcript of all local and remote LLM input/output to FOLDER")
     add("--steps", type=int, default=0, help="default denoising steps")
     add("--frames", type=int, default=0, help="default number of frames")
@@ -52,8 +54,10 @@ def parse_wgp_args(config_filename: str, argv: Sequence[str] | None = None):
     add("--theme", type=str, default="", help="set UI Theme")
     add("--perc-reserved-mem-max", type=float, default=0, help="Share of RAM that pinning may lock, as a fraction, e.g. 0.4 (default: the Configuration setting, else 0.4 on Windows and 0.6 on Linux)")
     add("--vram-debug", type=float, default=0, metavar="MIN_MB", help="Debug mode of the MMGP VRAM allocator: records the allocations of MIN_MB and more (module, tags, Python stack) and writes after each generation a report of the tensors alive at the peak of each phase in <outputs>/vram_debug")
+    add("--ram-debug", type=float, nargs="?", const=16, default=0, metavar="MIN_MB", help="RAM debug mode (MIN_MB 16 when omitted): after each generation and each model release, writes in <outputs>/ram_debug a report of where the process's RAM goes (PyTorch and C allocators with what they keep free, pinned memory, CUDA, mapped files, the objects alive and what holds them) with the peak of each phase; CPU allocations of MIN_MB and more are traced to their source")
+    add("--ram-allocator", choices=["default", "mmgp"], default=None, help="RAM allocator for CPU tensors, applied at startup: mmgp (MMGP RAM Allocator, the default: the RAM of freed tensors goes back to the system when the queue is done, a model is released or the RAM runs short) or default (PyTorch's, which keeps it for reuse). Overrides the Configuration setting")
     add("--vram-allocator", choices=["default", "vmm", "vmm_spill"], default=None, help="VRAM allocator, applied at startup: vmm_spill (MMGP Optimized VRAM Allocator, the default, with RAM spilling: a generation slightly too large for the VRAM can finish, slowly), vmm (the same, an out of memory error when no VRAM is left) or default (PyTorch's). Overrides the Configuration setting")
-    add("--prevent-power-throttling", action=argparse.BooleanOptionalAction, default=True, help="Windows: keep full CPU speed while WanGP is in the background or minimized (--no-prevent-power-throttling lets Windows save power instead)")
+    add("--prevent-power-throttling", action=argparse.BooleanOptionalAction, default=None, help="Windows: override Configuration / Performance to keep full CPU speed in the background (enabled by default; --no-prevent-power-throttling lets Windows save power instead)")
     add("--server-name", type=str, default="", help="Server name")
     add("--gpu", type=str, default="", help="Default GPU Device")
     add("--open-browser", action="store_true", help="open browser")
@@ -76,11 +80,12 @@ def parse_wgp_args(config_filename: str, argv: Sequence[str] | None = None):
     add("--deepy-voice-language", default=None, type=normalize_deepy_voice_language, help="Override the configured Whisper dictation language, e.g. fr, en or auto (default: Deepy configuration)")
     add("--ask-deepy", action="store_true", help="Start an interactive Deepy console session without launching the web UI")
     add("--mcp", action="store_true", help="Start WanGP as an MCP server without launching the web UI")
-    add("--mcp-transport", type=str, default="stdio", help="MCP transport: stdio, sse, or streamable-http")
+    add("--mcp-webui", action=argparse.BooleanOptionalAction, default=None, help="Override Configuration > Agents MCP autostart for this launch; --mcp-webui enables it and --no-mcp-webui disables it")
+    add("--mcp-transport", type=str, default="", help="MCP transport: stdio (default with --mcp), sse, or streamable-http (default with the web UI)")
     add("--mcp-host", type=str, default="", help="Optional MCP host for non-stdio transports")
-    add("--mcp-port", type=int, default=None, help="Optional MCP port for non-stdio transports")
-    add("--mcp-api-version", type=int, choices=(1, 2), default=2, help="WanGP MCP API version (latest: 2); use 1 for historical compatibility")
-    add("--mcp-async", action="store_true", help="Allow asynchronous generation/post-processing in MCP API v2; disabled by default")
+    add("--mcp-port", type=server_port, default=None, help="Override the Agents configuration MCP server port for HTTP transports (default: 8000)")
+    add("--mcp-api-version", choices=("1", "2", "2.1"), default="2.1", help="WanGP MCP API version (latest: 2.1); pin 1 or 2 for earlier contracts")
+    add("--mcp-async", action="store_true", help="Allow asynchronous generation/post-processing in MCP API v2/v2.1; disabled by default")
     add("--mcp-console-output", action="store_true", help="Mirror WanGP stdout/stderr while serving MCP requests")
     add("--mcp-allow-read-file-system", action="store_true", help="Allow MCP agents to reference arbitrary server filesystem paths; disabled by default")
     add("--dry-run", action="store_true", help="Validate file without generating (use with --process)")

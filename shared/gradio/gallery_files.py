@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import os
@@ -42,7 +43,7 @@ def _is_authorized_gallery_path(path: Any) -> bool:
         return False
     with _lock:
         policy = _file_access_policy
-    return detect_media_type(str(candidate)) in {"image", "video", "audio"} and policy is not None and policy.can_read(candidate)
+    return detect_media_type(str(candidate)) in {"image", "video", "audio", "3d"} and policy is not None and policy.can_read(candidate)
 
 
 def _is_gallery_static_file(path: Any) -> bool:

@@ -32,8 +32,7 @@ IDEOGRAM4_PROMPT_ENHANCER = _load_sections()["system"]
 IDEOGRAM4_PROMPT_INFOS = """
 # Ideogram 4 Prompt Notes
 
-Ideogram 4 accepts plain text, but it was trained on structured JSON captions. For best quality and layout control, use
-JSON or use **Magic Prompt** to turn a short idea into JSON.
+Ideogram 4 was trained on structured JSON captions. Supply JSON directly, or optionally use **Magic Prompt** to turn a short idea into JSON. Direct plain text is not the upstream-supported prompting workflow.
 
 ## Recommended JSON Shape
 
@@ -70,11 +69,12 @@ Use these top-level keys in this order:
 
 - In `style_description`, use either `photo` for photographic prompts or `art_style` for non-photo prompts, not both.
 - Include `aesthetics`, `lighting`, and `medium` when you include `style_description`.
+- Preserve style key order: `aesthetics`, `lighting`, `photo`, `medium` for photos; `aesthetics`, `lighting`, `medium`, `art_style` otherwise. Optional `color_palette` comes last.
 - Use uppercase hex colors like `#1B1B2F`. Up to 16 colors can guide the whole image; up to 5 can guide one element.
 
 ## Practical Tips
 
-- JSON is optional, but it usually improves typography, composition, color control, and repeatability.
+- `compositional_deconstruction` is required, with `background` before `elements`. `high_level_description` is recommended; `style_description` is optional.
 - Keep object descriptions positive and concrete.
 - Serialize compactly when possible, with no comments or markdown fences in the prompt itself.
 - If writing JSON by hand is tedious, enable **Magic Prompt** and start from a short natural-language idea.

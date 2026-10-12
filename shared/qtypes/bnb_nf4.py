@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import ast
 import json
 import os
@@ -315,11 +316,12 @@ def _bnb_nf4_linear(input, weight, bias=None):
 
 class BNBNF4WeightTensor(QTensor):
     @staticmethod
-    def create(weight_u8, absmax, quant_map, quant_state, size, stride, dtype, device=None, requires_grad=False):
-        state = _state_from_tensor(quant_state)
-        shape = _state_shape(state) or tuple(size)
-        blocksize = int(state.get("blocksize", 64) or 64)
-        qdtype = _dtype_from_state(state.get("dtype", dtype), dtype)
+    def create(weight_u8, absmax, quant_map, quant_state, size, stride, dtype, device=None, requires_grad=False, parsed=None):
+        # parsed: (shape, blocksize, quant dtype) of a weight copied or moved, whose quant state is not decoded again (a device sync on the GPU)
+        if parsed is None:
+            state = _state_from_tensor(quant_state)
+            parsed = (_state_shape(state) or tuple(size), int(state.get("blocksize", 64) or 64), _dtype_from_state(state.get("dtype", dtype), dtype))
+        shape, blocksize, qdtype = parsed
         if dtype is None:
             dtype = qdtype
         device = weight_u8.device if device is None else device
@@ -344,10 +346,11 @@ class BNBNF4WeightTensor(QTensor):
             blocksize=blocksize,
             dtype=dtype,
             requires_grad=requires_grad,
+            quant_dtype=qdtype,
         )
 
     @staticmethod
-    def __new__(cls, qtype, axis, size, stride, weight_u8, absmax, quant_map, quant_state, original_shape, blocksize, dtype, requires_grad=False):
+    def __new__(cls, qtype, axis, size, stride, weight_u8, absmax, quant_map, quant_state, original_shape, blocksize, dtype, requires_grad=False, quant_dtype=None):
         return torch.Tensor._make_wrapper_subclass(
             cls,
             size,
@@ -357,7 +360,7 @@ class BNBNF4WeightTensor(QTensor):
             requires_grad=requires_grad,
         )
 
-    def __init__(self, qtype, axis, size, stride, weight_u8, absmax, quant_map, quant_state, original_shape, blocksize, dtype, requires_grad=False):
+    def __init__(self, qtype, axis, size, stride, weight_u8, absmax, quant_map, quant_state, original_shape, blocksize, dtype, requires_grad=False, quant_dtype=None):
         super().__init__(qtype, axis)
         self._data = weight_u8
         self._absmax = absmax
@@ -365,6 +368,7 @@ class BNBNF4WeightTensor(QTensor):
         self._quant_state = quant_state
         self._original_shape = tuple(original_shape)
         self._blocksize = int(blocksize)
+        self._quant_dtype = dtype if quant_dtype is None else quant_dtype  # the dtype of bitsandbytes' quant state, decoded once
 
     def __repr__(self):
         return f"BNBNF4WeightTensor(shape={tuple(self.shape)}, dtype={self.dtype}, device={self.device})"
@@ -392,15 +396,13 @@ class BNBNF4WeightTensor(QTensor):
         device = torch.device(device)
         absmax = self._absmax if self._absmax.device == device else self._absmax.to(device)
         quant_map = self._quant_map if self._quant_map.device == device else self._quant_map.to(device)
-        state = _state_from_tensor(self._quant_state)
-        qdtype = _dtype_from_state(state.get("dtype", self.dtype), self.dtype)
         return _BNBQuantState(
             absmax=absmax,
             shape=torch.Size(self._original_shape),
             code=quant_map,
             blocksize=self._blocksize,
             quant_type="nf4",
-            dtype=qdtype,
+            dtype=self._quant_dtype,
         )
 
     def get_quantized_subtensors(self):
@@ -424,6 +426,7 @@ class BNBNF4WeightTensor(QTensor):
             state = _state_from_tensor(self._quant_state)
             self._original_shape = _state_shape(state) or self._original_shape
             self._blocksize = int(state.get("blocksize", self._blocksize) or self._blocksize)
+            self._quant_dtype = _dtype_from_state(state.get("dtype", self.dtype), self.dtype)
 
     def __tensor_flatten__(self):
         inner_tensors = ["_data", "_absmax", "_quant_map", "_quant_state"]
@@ -435,6 +438,7 @@ class BNBNF4WeightTensor(QTensor):
             "dtype": str(self.dtype),
             "original_shape": str(list(self._original_shape)),
             "blocksize": str(self._blocksize),
+            "quant_dtype": str(self._quant_dtype),
         }
         return inner_tensors, meta
 
@@ -448,6 +452,7 @@ class BNBNF4WeightTensor(QTensor):
         dtype = getattr(torch, dtype_name, torch.bfloat16)
         original_shape = ast.literal_eval(meta.get("original_shape", str(size)))
         blocksize = int(meta.get("blocksize", "64"))
+        quant_dtype = getattr(torch, meta.get("quant_dtype", str(dtype)).removeprefix("torch."), dtype)
         return BNBNF4WeightTensor(
             qtype=qtype,
             axis=axis,
@@ -460,6 +465,7 @@ class BNBNF4WeightTensor(QTensor):
             original_shape=original_shape,
             blocksize=blocksize,
             dtype=dtype,
+            quant_dtype=quant_dtype,
         )
 
     @classmethod
@@ -495,6 +501,7 @@ class BNBNF4WeightTensor(QTensor):
                 dtype=t.dtype,
                 device=t.device,
                 requires_grad=t.requires_grad,
+                parsed=(t._original_shape, t._blocksize, t._quant_dtype),
             )
         if op in (torch.ops.aten._to_copy, torch.ops.aten.to):
             t = args[0]
@@ -512,6 +519,7 @@ class BNBNF4WeightTensor(QTensor):
                 dtype=t.dtype,
                 device=device,
                 requires_grad=t.requires_grad,
+                parsed=(t._original_shape, t._blocksize, t._quant_dtype),
             )
         return _bnb_nf4_qfallback(op, *args, **(kwargs or {}))
 

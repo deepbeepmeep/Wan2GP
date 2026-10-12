@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 
 import torch
 from PIL import Image
@@ -10,7 +11,6 @@ _ARCHITECTURE = "sensenova_u1_5_8b_mot"
 _PROJECT_REPO = "DeepBeepMeep/SenseNova"
 _PROJECT_FOLDER = "sensenova_u1_5"
 _PROFILE_FOLDER = _ARCHITECTURE
-_KV_CACHE_SETTING = "sensenova_kv_cache"
 
 SENSENOVA_INFOS = """## SenseNova-U1.5
 
@@ -23,7 +23,6 @@ SenseNova-U1.5 is a unified model for text-to-image generation and image editing
 - **Resolution:** `2048x2048` is a good general-purpose choice. Native 4K improves space for detail and typography but requires substantially more time and memory. WanGP keeps both dimensions aligned to the model's 32-pixel image grid.
 - **Reference mode:** the default treats the first image as the main subject or landscape and derives output dimensions from it. Select **Use Reference Images** instead when every image is an ordinary reference and the chosen output resolution should be kept.
 - **Reference quality:** use clean, high-resolution source images when possible. WanGP sends multiple references in their displayed order, so describe each image's role in the prompt.
-- **KV Cache:** leave it **Disabled** when memory is limited or when generating large images such as 4K; generation will take longer but is more likely to fit. Choose **Enabled** when you have ample memory and want faster generation. This setting does not change image quality.
 
 ### Current Limitations
 
@@ -77,6 +76,7 @@ class family_handler:
         return {
             "image_outputs": True,
             "device_explicit": True,
+            "cuda_graphs": ["transformer"],
             "dtype": "bf16",
             "no_negative_prompt": True,
             "no_background_removal": True,
@@ -99,6 +99,8 @@ class family_handler:
             "infos": SENSENOVA_INFOS,
             "specialities": [{"name": "infographics", "aliases": ["information graphics", "information posters"]}, {"name": "text rendering", "description": "Chinese and English lettering within images."}, {"name": "precise layouts"}],
             "prompt_infos": SENSENOVA_PROMPT_INFOS,
+            "deepy_infos": "### SenseNova-U1.5\n\nText-to-image and editing with ordered references. First-reference main-scene mode derives dimensions from that image; ordinary-reference mode keeps chosen resolution. Start at 50 steps, guidance 4, shift 3, 2048px; the official 8-step profile is a separate accelerated choice. Strengths: infographics, Chinese/English text, layouts. Proofread text, counts and placement; complex edits can affect untouched content.",
+            "deepy_prompt_infos": '### Prompt\n\nDescribe subject, composition, style, palette and light. For infographics specify layout/panels, hierarchy and every exact string in quotes. For edits, state change and preservation constraints; number reference roles. Example: `Replace "CLOSED" with "OPEN", retaining the sign material and perspective.` Enhancement is optional; use it for short briefs needing design detail.',
             "preview_all_images": True,
             "prompt_enhancer_button_label": "Enhance",
             "prompt_enhancer_def": {
@@ -119,20 +121,8 @@ class family_handler:
             "image_prompt_enhancer_max_tokens": 1024,
             "text_prompt_enhancer_max_tokens1": 1536,
             "image_prompt_enhancer_max_tokens1": 1536,
-            "custom_settings": [{
-                "id": _KV_CACHE_SETTING,
-                "name": "KV Cache",
-                "label": "KV Cache",
-                "type": "dropdown",
-                "default": "Disabled",
-                "choices": [
-                    ("Disabled (Slower but lower VRAM/RAM)", "Disabled"),
-                    ("Enabled (Faster but requires more VRAM/RAM)", "Enabled"),
-                ],
-                "info": "Disabled retains only compact prompt/reference K/V and builds the active layer's attention workspace on demand. Enabled preallocates full per-layer K/V buffers for faster denoising.",
-            }],
             "profiles_dir": [_PROFILE_FOLDER],
-            "resolutions_categories": ["<=4096p"],
+            "resolutions_categories": ["<=4096sq"],
             "skip_prompt_template": True,
             "vae_block_size": 32,
         }

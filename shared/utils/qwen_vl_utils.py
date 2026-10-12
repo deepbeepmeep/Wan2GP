@@ -1,5 +1,6 @@
 # Copied from https://github.com/kq-chen/qwen-vl-utils
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+# Modified for WanGP.
 from __future__ import annotations
 
 import base64

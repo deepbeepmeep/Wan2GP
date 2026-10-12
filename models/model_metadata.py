@@ -1,7 +1,9 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import copy
 import fnmatch
 import os
 import re
+from .help_shared import normalize_specialities
 
 
 METADATA_KEY = "metadata"
@@ -60,7 +62,7 @@ def _normalized_choices(choice_def):
     seen = set()
 
     def add_choice(label, value):
-        value = str(value or "")
+        value = "" if value is None else str(value)
         if value in seen:
             return
         seen.add(value)
@@ -92,6 +94,8 @@ def normalize_choice_def(choice_def):
 def infer_main_outputs(model_def):
     if model_def.get("audio_only", False):
         return ["audio"]
+    if model_def.get("mesh_outputs", False):
+        return ["3d"]
     if model_def.get("image_outputs", False):
         return ["image"]
     if model_def.get("v2i_switch_supported", False) or model_def.get("inpaint_support", False):
@@ -119,11 +123,24 @@ def infer_inputs(model_def):
         inputs.append("audio")
     if "S" in image_prompt_types_allowed or "E" in image_prompt_types_allowed or model_def.get("end_frames_always_enabled", False) or model_def.get("inpaint_support", False) or _choice_values_contain(image_refs, "IKF") or _choice_values_contain(alt_guide_refs, "IKF"):
         inputs.append("image")
-    if image_outputs and (_choice_values_contain(guide_preprocessing, "V") or _choice_values_contain(alt_guide_refs, "V")) and "image" not in inputs:
+    # The video guide of an image / 3D model with reference videos is a video input, not a control image.
+    if image_outputs and not model_def.get("reference_video_enabled", False) and (_choice_values_contain(guide_preprocessing, "V") or _choice_values_contain(alt_guide_refs, "V")) and "image" not in inputs:
         inputs.append("image")
     if model_def.get("reference_video_enabled", False) or "V" in image_prompt_types_allowed or "L" in image_prompt_types_allowed or (not image_outputs and (_choice_values_contain(guide_preprocessing, "V") or _choice_values_contain(alt_guide_refs, "V") or _choice_values_contain(custom_video_selection, "V"))):
         inputs.append("video")
+    if custom_guide_kinds(model_def):
+        inputs.extend(custom_guide_kinds(model_def))
     return list(dict.fromkeys(inputs))
+
+
+def custom_guide_kinds(model_def):
+    """Media kinds of the custom_guide file input ("3d", "audio", ...; "file" for other formats such as MIDI or scores)."""
+    from shared.utils.gallery_sources import MESH_IMPORT_EXTENSIONS
+    custom_guide = model_def.get("custom_guide")
+    if custom_guide is None:
+        return []
+    kinds = ["3d" if file_type.lower() in MESH_IMPORT_EXTENSIONS else "file" for file_type in custom_guide.get("file_types", [])]
+    return list(dict.fromkeys(kinds or ["file"]))
 
 
 def infer_media_inputs(model_def):
@@ -137,7 +154,10 @@ def infer_media_inputs(model_def):
     single_reference = bool(model_def.get("one_image_ref_needed", False) or model_def.get("one_image_ref_only", False))
     has_control = _choice_values_contain(guide_preprocessing, "V") or _choice_values_contain(guide_custom_choices, "V") or _choice_values_contain(custom_video_selection, "V")
     image_outputs = bool(model_def.get("image_outputs", False))
+    image_control = image_outputs and not model_def.get("reference_video_enabled", False)
+    custom_guide = model_def.get("custom_guide")
     return {
+        **({"custom_file": {"name": custom_guide.get("name", "Custom Guide"), "kinds": custom_guide_kinds(model_def), "file_types": list(custom_guide.get("file_types", [])), "required": bool(custom_guide.get("required", False))}} if custom_guide is not None else {}),
         "image": {
             "start": "S" in image_prompt_types_allowed,
             "end": "E" in image_prompt_types_allowed or bool(model_def.get("end_frames_always_enabled", False)),
@@ -146,7 +166,7 @@ def infer_media_inputs(model_def):
             "multiple_references": has_reference and not single_reference,
             "background": any("K" in value for value in reference_choices),
             "injected_frames": _choice_values_contain(image_refs, "F") or _choice_values_contain(guide_custom_choices, "F"),
-            "control": image_outputs and has_control,
+            "control": image_control and has_control,
             "mask": image_outputs and (_choice_values_contain(model_def.get("mask_preprocessing", None), "A") or bool(model_def.get("inpaint_support", False))),
         },
         "video": {
@@ -191,6 +211,8 @@ def infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs):
         "video_continuation": video_inputs["continue"],
         "sliding_window": bool(model_def.get("sliding_window", False)),
         "lora": not bool(model_def.get("no_lora", False)),
+        # 3D capabilities are only listed for 3D models, which keeps the other models' metadata unchanged.
+        **({"image_to_3d": image_inputs["reference"], "text_to_3d": "text" in inputs and not model_def.get("one_image_ref_needed", False), "video_to_3d": video_inputs["reference"], "3d_to_3d": "3d" in inputs} if "3d" in main_outputs else {}),
         # Specialized workflows can narrow capabilities inferred from shared controls.
         **model_def.get("capability_overrides", {}),
     }
@@ -229,6 +251,9 @@ def infer_setting_values(model_def):
 
 
 def store_metadata(model_type, model_def, model_types_handlers, families_infos):
+    from shared.resolutions import resolution_metadata
+    if "specialities" in model_def:
+        model_def["specialities"] = normalize_specialities(model_def["specialities"])
     base_model_type = model_def.get("architecture", None) or model_type
     family = get_model_family(base_model_type, model_def, model_types_handlers, families_infos, for_ui=True)
     family_label = families_infos.get(family, families_infos.get("unknown", (100, "Unknown")))[1]
@@ -248,6 +273,7 @@ def store_metadata(model_type, model_def, model_types_handlers, families_infos):
         "media_inputs": media_inputs,
         "capabilities": infer_capabilities(model_def, main_outputs, outputs, inputs, media_inputs),
         "setting_values": infer_setting_values(model_def),
+        **(resolution_metadata(model_def) if any(output in ("image", "video") for output in main_outputs) else {}),
         **{key: copy.deepcopy(model_def[key]) for key in ("accelerated", "size", "specialities") if key in model_def},
     }
     return model_def

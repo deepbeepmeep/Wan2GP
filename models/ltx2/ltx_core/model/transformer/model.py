@@ -2,6 +2,7 @@ from collections.abc import Callable
 from enum import Enum
 
 import torch
+from mmgp import cuda_graphs
 
 from ...guidance.perturbations import BatchedPerturbationConfig
 from .adaln import AdaLayerNormSingle, adaln_embedding_coefficient
@@ -389,27 +390,28 @@ class LTXModel(torch.nn.Module):
         """Process transformer blocks for LTXAV."""
 
         # Process transformer blocks
-        for block in self.transformer_blocks:
-            if self.interrupt_check is not None and self.interrupt_check():
-                self.interrupted = True
-                return None, None
-            if self._enable_gradient_checkpointing and self.training:
-                # Use gradient checkpointing to save memory during training.
-                # With use_reentrant=False, we can pass dataclasses directly -
-                # PyTorch will track all tensor leaves in the computation graph.
-                video, audio = torch.utils.checkpoint.checkpoint(
-                    block,
-                    video,
-                    audio,
-                    perturbations,
-                    use_reentrant=False,
-                )
-            else:
-                video, audio = block(
-                    video=video,
-                    audio=audio,
-                    perturbations=perturbations,
-                )
+        with cuda_graphs.scope():
+            for block in self.transformer_blocks:
+                if self.interrupt_check is not None and self.interrupt_check():
+                    self.interrupted = True
+                    return None, None
+                if self._enable_gradient_checkpointing and self.training:
+                    # Use gradient checkpointing to save memory during training.
+                    # With use_reentrant=False, we can pass dataclasses directly -
+                    # PyTorch will track all tensor leaves in the computation graph.
+                    video, audio = torch.utils.checkpoint.checkpoint(
+                        block,
+                        video,
+                        audio,
+                        perturbations,
+                        use_reentrant=False,
+                    )
+                else:
+                    video, audio = block(
+                        video=video,
+                        audio=audio,
+                        perturbations=perturbations,
+                    )
 
         return video, audio
 
@@ -423,20 +425,21 @@ class LTXModel(torch.nn.Module):
         perturbations_list = perturbations if isinstance(perturbations, list) else None
         if perturbations_list is not None and len(perturbations_list) != len(video_list):
             raise ValueError("Perturbations list must match number of joint-pass conditions.")
-        for block in self.transformer_blocks:
-            if self.interrupt_check is not None and self.interrupt_check():
-                self.interrupted = True
-                return [None] * len(video_list), [None] * len(audio_list)
+        with cuda_graphs.scope():
+            for block in self.transformer_blocks:
+                if self.interrupt_check is not None and self.interrupt_check():
+                    self.interrupted = True
+                    return [None] * len(video_list), [None] * len(audio_list)
 
-            for idx in range(len(video_list)):
-                condition_perturbations = (
-                    perturbations_list[idx] if perturbations_list is not None else perturbations
-                )
-                video_list[idx], audio_list[idx] = block(
-                    video=video_list[idx],
-                    audio=audio_list[idx],
-                    perturbations=condition_perturbations,
-                )
+                for idx in range(len(video_list)):
+                    condition_perturbations = (
+                        perturbations_list[idx] if perturbations_list is not None else perturbations
+                    )
+                    video_list[idx], audio_list[idx] = block(
+                        video=video_list[idx],
+                        audio=audio_list[idx],
+                        perturbations=condition_perturbations,
+                    )
 
         return video_list, audio_list
 

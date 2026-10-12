@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import ast
 import os
 import re
@@ -205,7 +206,7 @@ def _probe_gguf_cuda_runtime(force=False):
     except Exception as exc:
         _GGUF_CUDA_KERNELS_ENABLED_CACHE = False
         _GGUF_CUDA_MODULE = None
-        _GGUF_CUDA_LOAD_ERROR = exc
+        _GGUF_CUDA_LOAD_ERROR = f"{type(exc).__name__}: {exc}"  # not the exception: its traceback would keep the callers' frames (the models being loaded) alive
         _gguf_log_once("gguf_cuda_probe_failed", f"[GGUF][llama.cpp CUDA] kernels unavailable, using fallback")
         return False
     _GGUF_CUDA_KERNELS_ENABLED_CACHE = True
@@ -558,7 +559,7 @@ def load_gguf_state_dict(
     file_path,
     filters=None,
     keep_prefixes=False,
-    writable_tensors=True,
+    writable_tensors=False,
     verboseLevel=1,
     default_dtype=None,
     pin_to_memory=False,

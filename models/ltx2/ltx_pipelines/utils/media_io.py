@@ -4,6 +4,7 @@ import math
 from collections.abc import Generator, Iterator
 from fractions import Fraction
 from io import BytesIO
+from typing import NamedTuple
 
 import numpy as np
 import torch
@@ -12,10 +13,18 @@ from PIL import Image
 from torch._prims_common import DeviceLikeType
 from tqdm import tqdm
 
+from shared.utils.utils import guide_to_float
+
 from .constants import DEFAULT_IMAGE_CRF
 
 # Control videos are prepared on the device by chunks of frames and kept in RAM; the VAE encoder uploads each tile.
 CONDITIONING_CHUNK_FRAMES = 16
+
+
+class UInt8Guide(NamedTuple):
+    """A control video WanGP passed in uint8 (model_def "uint8_guides"). It is loaded by chunks through the [-1, 1] float values WanGP gives
+    float control videos, so that the conditioning is identical without a float copy of the whole video."""
+    video: torch.Tensor
 
 
 def _get_av():
@@ -237,13 +246,17 @@ def load_video_conditioning(
             result = frame if result is None else torch.cat([result, frame], dim=2)
         return result
 
+    uint8_guide = isinstance(video_path, UInt8Guide)
+    if uint8_guide:
+        video_path = video_path.video
     video = _normalize_video_tensor(video_path.detach() if torch.is_tensor(video_path) else _coerce_video_input(video_path))
     if frame_cap is not None and video.shape[0] > frame_cap:
         video = video[:frame_cap]
-    value_range = float(video.min()), float(video.max())
+    value_range = (-1.0, 1.0) if uint8_guide else (float(video.min()), float(video.max()))
     result = None
     for start in range(0, video.shape[0], CONDITIONING_CHUNK_FRAMES):
-        chunk = _scale_to_255(video[start : start + CONDITIONING_CHUNK_FRAMES].to(device=device, dtype=torch.float32), value_range)
+        chunk = video[start : start + CONDITIONING_CHUNK_FRAMES]
+        chunk = _scale_to_255((guide_to_float(chunk) if uint8_guide else chunk).to(device=device, dtype=torch.float32), value_range)
         chunk = normalize_latent(resize_and_center_crop(chunk, height, width), device, dtype)
         if result is None:
             result = torch.empty((*chunk.shape[:2], video.shape[0], *chunk.shape[3:]), dtype=dtype, device="cpu")

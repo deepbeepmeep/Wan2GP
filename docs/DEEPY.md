@@ -79,9 +79,12 @@ You can ask Deepy to:
 - generate video from a prompt, image, or compatible media inputs
 - create a talking video from a still image and speech audio
 - create speech from a description or voice sample, generate songs, and generate sound from a description
-- inspect images and video frames or compare several visuals
-- report useful media details such as dimensions, duration, FPS, frame count, and audio tracks
+- inspect images, video frames, and 3D assets, or compare several visuals
+- report useful media details such as dimensions, duration, FPS, frame count, and audio tracks, and for 3D assets their size and animation frames
 - extract images, clips, or audio; transcribe audio or video; mute or replace a video soundtrack; resize or crop media; compose assets side by side; and merge videos
+- render views of a 3D asset at one consistent scale (front, sides, back, any angle, any animation frame, close-ups, and depth or normal images to guide other models)
+- draw images from a precise layout, with shapes, text, and gallery images placed where needed
+- build a character sheet: the same character from several angles with a title and labels, which then helps keep the character consistent in later images and videos
 - find available LoRAs, explain the active tool defaults, and answer WanGP usage questions
 
 Prime is especially useful for requests with dependencies. It can create an intermediate asset, inspect it, revise it if necessary, and use the accepted result in the next stage.
@@ -210,6 +213,12 @@ Save the setting and restart WanGP if Deepy has already started. In a dedicated 
 
 Sessions save automatically. There is no separate Save Session action. A saved session includes its conversation, completed actions, displayed results, workspace association, and media references. When resuming a long session, the conversation may appear before Deepy finishes preparing it.
 
+Saved sessions use readable folders based on their names, with a numbered suffix only when needed. Duplicates and imported sessions follow the same rule. On upgrade, old identifier-named folders are renamed once, keeping the session identity and workspace links intact. Locked folders, folders that cannot be renamed, and folders used as an explicit dedicated workspace location stay in place and remain usable; later startups do not retry them. Renaming a session afterwards changes its displayed name and keeps its folder unchanged.
+
+A one-time corrective upgrade handles folders previously skipped because an old session lock file remained. Locks belonging to processes that have exited no longer block renaming. Active sessions are still skipped, and the startup warning explains the reason.
+
+Unavailable media do not prevent resuming a conversation or opening its gallery. When a saved session includes a copy of an unavailable source file, Deepy uses that copy.
+
 In Gradio you can resume, rename, duplicate, export, import, or delete sessions. In Web, use the session selector in the top bar. In CLI, use `/sessions` and `/resume <ref>`. Wait for active or paused work to finish before switching sessions. If an automatic or manually entered session name is already used, Deepy adds an available number, such as **My video (2)**. Names differing only in capitalization count as duplicates.
 
 ### Keep links or copy media
@@ -221,7 +230,9 @@ The **Gallery Media** session setting controls portability:
 
 ### Organize workspaces
 
-A gallery workspace remembers gallery contents, media order, selected items, and the active gallery tab. It stores references to the original files rather than duplicating them. Ordinary workspaces use a folder icon; session-owned workspaces use a robot icon. Creating, renaming, or deleting a workspace changes its organization only; deleting a workspace does not delete its media files.
+A gallery workspace remembers gallery contents, media order, selected items, and the active gallery tab. Shared storage keeps references to existing files. Dedicated storage keeps independent media in a folder derived from the workspace name. Choose the default for new workspaces and the Workspaces Root in **Configuration > Outputs**; convert existing workspaces with the manager's **Shared Storage / Folder Storage** button. Conversion to a dedicated folder copies media and known companion files, retaining originals.
+
+Ordinary workspaces use a folder icon; session-owned and MCP agent workspaces use a robot icon. A **Folder** suffix indicates dedicated storage. Renaming keeps the folder stable, and deleting a workspace retains its media. Session ownership and media storage are independent options. Deepy's output filesystem mounts follow its assigned workspace; explicit selected-folder and Read Everywhere grants still apply. External MCP actions can visibly switch the main gallery without changing Deepy's association. **Configuration > Agents** controls MCP assignment; workspace visibility and queue cancellation still follow the current shared-user policy.
 
 In Gradio, the magnifier beside the workspace selector opens the full workspace viewer. Use it to:
 
@@ -515,6 +526,7 @@ Create a portrait for an introduction video, generate a short speech explaining 
 ## Practical tips
 
 - State the final goal, the source media to reuse, and any details that must not change.
+- Give an exact resolution such as **1920×1080** when size matters. Prime filters models by pixel budget and can suggest an available tiled two-phase mode. Missing or ambiguous limits use a shared 1080p budget (1920×1088 to include aligned presets). Deepy rejects generation requests above the active maximum or below the minimum; the global UI 3K/4K+ option does not bypass this check. Input fitting or block alignment may still affect final dimensions. The Presets / MP switch does not change an agent's requested size.
 - Use Zero for a direct task and Prime for planning, model comparison, validation, or a chain of dependent actions.
 - Ask Deepy which template, defaults, or LoRAs are active when you want to confirm the setup.
 - Put recurring model-specific choices in a linked template instead of repeating them in every prompt.

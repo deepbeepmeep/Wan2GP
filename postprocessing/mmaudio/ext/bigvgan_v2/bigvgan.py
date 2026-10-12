@@ -1,3 +1,4 @@
+# Modified for WanGP.
 from shared.utils.media_control import inference_checkpoint
 # Copyright (c) 2024 NVIDIA CORPORATION.
 #   Licensed under the MIT license.

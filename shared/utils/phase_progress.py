@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Layer/tile progress scoped to one generation, with throttled UI and abort polling."""
 from shared.utils.media_control import current_control, inference_checkpoint, checkpoint_modules, MediaProcessingAborted
 

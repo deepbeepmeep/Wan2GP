@@ -1,3 +1,6 @@
+# Adapted from DiffSynth-Studio (https://github.com/modelscope/DiffSynth-Studio, diffsynth/schedulers/flow_match.py), Copyright (c) ModelScope,
+# Apache License 2.0 (see docs/third_party_licenses/Apache-2.0.txt). Modified for WanGP.
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """
 The following code is copied from https://github.com/modelscope/DiffSynth-Studio/blob/main/diffsynth/schedulers/flow_match.py
 """

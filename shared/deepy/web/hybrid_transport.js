@@ -1,3 +1,4 @@
+// Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 (() => {
   const WAC = window.__wangpAssistantChatNS;
   // Gradio's hidden textbox can still contain an earlier session snapshot.

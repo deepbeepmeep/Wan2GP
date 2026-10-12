@@ -1,6 +1,8 @@
 # Models
 
-WanGP brings video, image, speech, music and sound generation into one workspace. This guide covers the main families and how to choose between their workflows. The model selector and each model's **Help** describe the variants, controls and settings available in your installation.
+WanGP brings video, image, audio and 3D creation into one workspace. This guide covers the main families and how to choose between their workflows. The model selector and each model's **Help** describe the variants, controls and settings available in your installation.
+
+**Browse models: [Video](#video-models) / [Image](#image-models) / [Audio](#audio-models) / [3D](#3d-models)**
 
 Model links below select a model when this guide is opened inside WanGP. When reading on GitHub, select the same name in WanGP's model selector or toolbar search.
 
@@ -8,6 +10,7 @@ Model links below select a model when this guide is opened inside WanGP. When re
 - [Video models](#video-models)
 - [Image models](#image-models)
 - [Speech, music and sound](#audio-models)
+- [3D generation, reconstruction and mesh tools](#3d-models)
 - [Upscaling and finishing](#upscaling-and-finishing)
 - [Choose a variant for your hardware](#choosing-variants)
 
@@ -16,6 +19,8 @@ Model links below select a model when this guide is opened inside WanGP. When re
 | Goal | Models to try | How to choose |
 | --- | --- | --- |
 | Video with a synchronized soundtrack | [MiniMax H3 FL2VA Pruned](modeltype:minimax_h3_fl2va_pruned), [LTX 2.5 Distilled](modeltype:ltx2_25_22B_distilled) | H3 offers text and first/last-frame direction with stereo audio. LTX 2.5 Distilled is an eight-step starting point with keyframes, controls and continuation. |
+| Short audio-video clips with a smaller model | [Kandinsky 6 Lite Distilled](modeltype:k6_lite_distill) | A 3B generator for text or a start image, with speech, music and effects. Start with five seconds and the supplied ten-step settings. |
+| A planned camera move from an image | [Fun Control-Camera 1.3B](modeltype:fun_camera_1.3B), [Uni3C 14B](modeltype:uni3c) | Pick a camera preset or supply a custom path. Fun is smaller; Uni3C uses the start image's estimated geometry to guide the shot. |
 | Video following reference subjects, scenes or voices | [MiniMax H3 Ref2VA Pruned](modeltype:minimax_h3_ref2va_pruned), [LTX 2.5 MSR](modeltype:ltx2_25_22B_msr) | Ref2VA accepts image, video and audio references. MSR combines subject/object references, with an optional background reference. |
 | Character animation and replacement | [SCAIL-2](modeltype:scail2_14B), [Wan 2.2 Animate 2](modeltype:animate2), [Viggle Animate](modeltype:viggle_animate) | SCAIL-2 and Animate 2 are Wan-derived workflows. Viggle is H3-derived and needs an edited frame from the original driving video. |
 | General text-to-video or image-to-video | [Wan 2.2 T2V](modeltype:t2v_2_2), [Wan 2.2 I2V](modeltype:i2v_2_2) | General-purpose generation with a broad choice of LoRAs and specialist variants. |
@@ -31,6 +36,10 @@ Model links below select a model when this guide is opened inside WanGP. When re
 | Songs with lyrics | [YuE2](modeltype:yue2), [MiniMax Music 3](modeltype:minimax_music3), [ACE-Step 1.5 XL](modeltype:ace_step_v1_5_xl) | YuE2 adds composition, cover and score workflows. MiniMax Music 3 generates songs from lyrics and a description. ACE-Step offers fast music generation with optional planning models. |
 | A song from a hummed melody | [YuE2 Hum-to-Song](modeltype:yue2_hum) | Supply a clear hum, your lyrics and a musical style. It follows the melody, not the humming voice's identity. |
 | Instrumentals, ambience and sound effects | [Stable Audio 3](modeltype:stable_audio3_small), [YuE2](modeltype:yue2) in instrumental mode | Stable Audio covers descriptive sound and music prompts; YuE2 supports structured instrumental composition. |
+| A textured 3D asset from one image | [TRELLIS.2](modeltype:trellis2), [Hunyuan3D 2.1](modeltype:hunyuan3d_21) | Both create meshes with PBR materials. Hunyuan3D can also texture a mesh you already have. |
+| An untextured mesh or separate object parts | [TripoSG](modeltype:triposg), [PartCrafter](modeltype:partcrafter) | TripoSG produces one detailed shape; PartCrafter generates separate part meshes from the same image. |
+| A 3D scene from photos or video | [WorldMirror 2.0](modeltype:worldmirror_2), [MapAnything](modeltype:mapanything), [Depth Anything 3 Points](modeltype:da3_points) | Use overlapping views of a static scene. Choose Gaussian splats for viewing or point clouds with camera information for further work. |
+| Split or animate an existing mesh | [GeoSAM2](modeltype:geosam2), [AnimateAnyMesh](modeltype:animate_any_mesh) | GeoSAM2 separates parts; AnimateAnyMesh creates a short animation from a motion description without a rig. |
 
 <a id="video-models"></a>
 
@@ -49,6 +58,8 @@ Both main workflows support continuation, reference or frame guidance as appropr
 H3's **Two Phases** option generates at a lower resolution before refining at the target size. This can accelerate high-resolution work, but does not by itself lower peak VRAM. **Two Phases with Tiling** lowers the high-resolution phase's memory requirement, with a possible trade-off in tile seams.
 
 Acceleration choices have different trade-offs. **PDD** variants use a fixed eight-step Euler workflow. **VDN** variants accelerate longer video and work best with the required Triton support. Spectrum, First Block Cache and supported sparse attention settings offer other speed/quality choices; start with the selected variant's defaults before combining them.
+
+**Veda Sparse** adds learned sparse attention to **[FL2VA 33B](modeltype:minimax_h3_fl2va_veda) / [Pruned 20B](modeltype:minimax_h3_fl2va_pruned_veda)** and **[Ref2VA 33B](modeltype:minimax_h3_ref2va_veda) / [Pruned 20B](modeltype:minimax_h3_ref2va_pruned_veda)**. It reuses the corresponding standard model's settings, LoRAs and step counts, with the largest speed benefits on longer or higher-resolution videos. It requires Triton and an NVIDIA GPU with compute capability 8.0 or newer. Sparse attention can change fine detail or motion, so compare results with the standard variant. Veda uses its own attention mode and runs without CUDA Graphs or transformer compilation.
 
 **[Viggle Animate](modeltype:viggle_animate) is an H3-derived character-replacement model.** Supply the original control video and one frame from it in which an image editor has replaced the character. Preserve that frame's pose, background, framing and dimensions. Viggle follows the original motion in a fixed three-step workflow, using sliding windows for longer footage. Its text generation prompt is ignored: express the change in the edited frame. Large pose changes, interacting characters and cuts are more challenging.
 
@@ -72,6 +83,12 @@ LTX 2.5 uses **Ingredients** when reference images are supplied in its compatibl
 
 **[JoyAI-Echo](modeltype:joyai_echo)** and **[JoyAI-Echo Surgical](modeltype:joyai_echo_surgical)** are LTX-2 variants for connected shots with reusable memories. They are useful when the same people, voices or locations must recur.
 
+LTX 2.5 also offers finishing and visual-effects workflows:
+
+- **[Layout to Render](modeltype:ltx2_25_22B_layout_to_render)** turns a viewport animation or playblast into a finished shot. Supply the layout video and an appearance reference made from its first frame; the layout guides placement and camera movement, while the image guides the look.
+- **[Alpha Gen](modeltype:ltx2_25_22B_alpha_gen)** extracts a soft alpha matte from a source video, optionally restricted by a mask. Save transparent footage as PNG frames in a ZIP or ProRes 4444 using **Config → Outputs → RGBA Video Output**.
+- **Convert SDR to HDR** uses the compatible LTX 2.5 workflow to produce HDR10 video from a control video. The conversion follows the footage rather than the text prompt.
+
 Decoder choices affect both memory and appearance. The optional **NAD** decoder for LTX 2.3/2.5 trades additional time and VRAM for a different quality profile. Use the original decoder as the initial baseline, and choose only decoder/LoRA combinations offered by the selected model. LTX-based upscaling and detail refinement are also available in postprocessing and Media Flow.
 
 ### Wan 2.1 and Wan 2.2
@@ -87,8 +104,16 @@ The Wan family covers general generation and many specialist animation, editing 
 - **[Lynx](modeltype:lynx)** and **[VACE Lynx](modeltype:vace_lynx_14B)**: identity-guided face replacement.
 - **[MultiTalk](modeltype:multitalk)** and **[InfiniteTalk](modeltype:infinitetalk)**: audio-driven talking characters and dialogue.
 - **[Vista4D](modeltype:vista4d)**: reshoot a dynamic scene along a new camera trajectory.
+- **[Fun Control-Camera 1.3B](modeltype:fun_camera_1.3B)** and **[Uni3C 14B](modeltype:uni3c)**: animate a start image along a camera preset or custom path. Fun also accepts text alone; Uni3C requires a start image and uses its estimated geometry. Begin with a modest move: hidden areas must be invented, and neither workflow supports sliding windows.
+- **[Prism Video / Prism Alpha](modeltype:prism)**: Wan 2.2-based image-to-video with jointly generated audio. Supply a start image and describe the motion and sound; an optional separate audio prompt can direct the soundtrack. Use the supplied defaults first. This preview generates each clip in one pass, without end images, supplied audio or continuation.
 
 Names such as FusioniX, FastWan, Lightning and Self-Forcing identify particular variants or acceleration workflows. NVFP4 names identify a weight format. Check the underlying model before choosing compatible LoRAs or assuming that two variants expose the same controls.
+
+### Kandinsky 6
+
+**[Kandinsky 6 Pro Distilled 30B](modeltype:k6_pro_distill)** and **[Lite Distilled 3B](modeltype:k6_lite_distill)** generate video and a synchronized mono soundtrack from text or a start image. Pro offers greater capacity for detailed prompts; Lite is the smaller option. Both use ten distilled steps, without guidance or a negative prompt.
+
+Start with **five seconds at 832×480 and 24 fps**. Longer clips, up to ten seconds, are possible but can lose consistency. Describe the scene, action, camera and sound; the optional Prompt Enhancer can help with Kandinsky's speech and audio tags. There is no end-image, supplied-audio or continuation workflow. Kandinsky 5 remains available separately.
 
 ### Other video families
 
@@ -205,6 +230,44 @@ For supported three-voice modes in **H3 Audio, Qwen3 TTS Base, OmniVoice, KugelA
 
 FLAC import and 16-bit lossless export let you keep audio quality and embedded generation settings. WAV/MP3 and other offered output choices remain available.
 
+<a id="3d-models"></a>
+
+## 3D models
+
+WanGP supports creating objects from images, reconstructing scenes from photos or video, and working on existing meshes. Choose the output for your next step: a **mesh** has surfaces you can edit or texture; **Gaussian splats** render a scene from coloured 3D points and need a compatible viewer; a **point cloud** records sampled geometry and colour.
+
+### Create an object from one image
+
+| Model | Output and when to use it |
+| --- | --- |
+| **[TRELLIS.2](modeltype:trellis2)** | A GLB mesh with PBR textures, including base colour, metallic and roughness. Start with **1024 Cascade** for a balance of shape and detail; 512 is faster, while 1536 Cascade needs more time and memory. Vertex-colour and shape-only outputs are also available. |
+| **[Hunyuan3D 2.1](modeltype:hunyuan3d_21)** | Generate **Shape + PBR Texture**, generate **Shape Only**, or **Texture a Mesh** to paint a supplied mesh from the reference image. The separate [Shape model](modeltype:hunyuan3d_21_shape) produces geometry only. Texturing replaces the mesh's existing UVs and materials. |
+| **[TripoSG](modeltype:triposg)** | A detailed, untextured GLB mesh. Useful when you want to edit the shape or texture it separately. Higher mesh resolution preserves finer detail but increases extraction time and face count. |
+| **[PartCrafter](modeltype:partcrafter)** | A GLB containing separate, untextured part meshes generated together. Choose the number of parts to suit the object. Parts can be moved or edited individually, but their order and colours are arbitrary and small parts may overlap or be missing. |
+| **[TripoSplat](modeltype:triposplat)** | A Gaussian-splat PLY for viewing objects with fine, fuzzy or thin details. It produces splats rather than an editable mesh, so choose another model for mesh texturing or rigging. |
+
+Use one whole, uncropped object on a plain or transparent background, preferably in a three-quarter view with even lighting. Hidden sides are inferred and may differ from the real object. For these models, **Asset Name / Description** names the output; the reference image determines its appearance. To start from text, generate an image first, then use it as the 3D reference.
+
+### Reconstruct a scene from photos or video
+
+| Model | Inputs and result |
+| --- | --- |
+| **[WorldMirror 2.0](modeltype:worldmirror_2)** | Photos, a reference video, or both, producing Gaussian splats or a point cloud with camera information. Use overlapping views around a static scene. Areas no view shows remain empty; a single image gives only a depth-based view of the visible surfaces. |
+| **[MapAnything](modeltype:mapanything)** | Photos and/or video frames, producing a merged point cloud with estimated camera poses and metric scale. Useful for reconstructing a scene from multiple viewpoints. |
+| **[Depth Anything 3 Points](modeltype:da3_points)** | Photos and/or video frames, producing a point cloud and cameras at relative scale. A lighter depth-based reconstruction choice when metric scale is unnecessary. |
+| **[MoGe-2](modeltype:moge2)** | One photo, producing a metric point cloud or a textured GLB of its visible surface. It creates a depth relief, not a complete object with reconstructed hidden sides. |
+
+Sharp, overlapping views with a moving camera and a static scene work best. Moving subjects, reflections and textureless surfaces are harder to reconstruct. More views and higher working resolution increase memory use and processing time. The text field names the scene; it does not alter the reconstruction.
+
+### Split and animate existing meshes
+
+- **[GeoSAM2](modeltype:geosam2)** splits an input mesh into separate parts within one GLB. Use automatic segmentation or optional point prompts to guide it. Existing textures are retained; small or hidden parts can be merged.
+- **[AnimateAnyMesh](modeltype:animate_any_mesh)** animates an input mesh from an English motion description, such as `The dragon flaps its wings and flies`. It needs no skeleton or rig and retains the mesh's textures. Motion is limited to 16 generated frames, with an optional forward-and-backward loop. It deforms the existing shape, so it cannot split a closed mesh into new pieces. Start with an upright mesh and try a few seeds.
+
+### Reuse 3D assets
+
+Open results in the **3D gallery** to rotate, zoom and inspect them. Save a view at your chosen resolution, then use that image as a reference or the start of a video. Compatible mesh results can also become inputs for texturing, segmentation or animation. [Deepy](DEEPY.md) can inspect 3D assets from different angles and help turn a character into a turnaround sheet.
+
 ## Upscaling and finishing
 
 Generation models and finishing tools are separate choices. Select a processor in **Post Processing**, use **Late Post Processing** on a gallery result, or use **Media Flow** for supported batch workflows.
@@ -238,10 +301,10 @@ WanGP downloads models on demand. Optional preprocessing and postprocessing file
 
 Use the model selector or toolbar search, save reusable settings, and organize media in [Workspaces](WORKSPACES.md). The refreshed browser interface lets you check progress, inspect galleries and add generation jobs from another device connected to the same running WanGP server. The queue and galleries stay synchronized; each Gradio page keeps its own unsent prompts and draft settings. See [Authentication and network access](AUTHENTICATION.md) for remote setup.
 
-[Deepy](DEEPY.md) can help select models and connect generation/editing steps. Its language-model engine is a separate choice from the image, video or audio model doing the generation; the phone-friendly Deepy Web App controls that same local workspace.
+[Deepy](DEEPY.md) can help select models and connect generation/editing steps. Its language-model engine is a separate choice from the image, video, audio or 3D model doing the generation; the phone-friendly Deepy Web App controls that same local workspace.
 
 User-provided checkpoints belong in `finetunes/`, while model plugins can add other families. Refresh the model list after adding definitions. See [Finetunes](FINETUNES.md), [LoRAs](LORAS.md) and [Plugins](PLUGINS.md) for compatibility and setup.
 
 ---
 
-> Applies to: Choosing WanGP video, image, speech, music and sound models; model-family and variant relationships; compatible references and workflows; upscaling and finishing choices; hardware-dependent memory and acceleration trade-offs. The model selector and model Help provide the current available variants and settings.
+> Applies to: Choosing WanGP video, image, speech, music, sound and 3D models; model-family and variant relationships; compatible references and workflows; image-to-3D generation, scene reconstruction, mesh segmentation and animation; upscaling and finishing choices; hardware-dependent memory and acceleration trade-offs. The model selector and model Help provide the current available variants and settings.

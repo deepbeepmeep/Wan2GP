@@ -1,15 +1,16 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from shared.utils.config_store import write_config
 from decimal import Decimal, InvalidOperation
 
 from postprocessing.mmaudio import MMAUDIO_DEFAULT_MODE
 from postprocessing.mmaudio.audio_processor import MMAudioProcessor
-from postprocessing.seedvc.audio_processor import SeedVCProcessor
+from postprocessing.seedvc_processor.audio_processor import SeedVCProcessor
 from shared.deepy.config import DEEPY_ENABLED_KEY, DEEPY_TEMPLATE_CONFIG_MIGRATIONS
 
 
 LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
 EXTENSIONS_DEFAULTS_VERSION_KEY = "extensions_defaults_version"
-EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.25")
+EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.28")
 EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT = str(EXTENSIONS_DEFAULTS_TARGET_VERSION)
 INSTALLED_REMOTE_PLUGINS_KEY = "installed_remote_plugins"
 
@@ -221,7 +222,7 @@ def _migrate_int8_kernels(server_config) -> bool:
     return changed
 
 
-def migrate_extension_defaults(server_config, server_config_filename="") -> bool:
+def migrate_extension_defaults(server_config, server_config_filename="", *, workspace_root=None) -> bool:
     if not isinstance(server_config, dict):
         return False
 
@@ -296,6 +297,17 @@ def migrate_extension_defaults(server_config, server_config_filename="") -> bool
             value = _to_int(server_config.setdefault(f"{output_type}_preload_in_VRAM", preload))
             server_config[f"{output_type}_preload_mode"] = "manual" if value > 0 else "default"
         changed = True
+
+    if version < Decimal("1.26") and server_config.get("compile", "") == "":
+        server_config["compile"] = "disabled"
+        changed = True
+
+    if workspace_root is not None and version < Decimal('1.28'):
+        # Also correct 1.27's overly broad skip of stale session lock files.
+        from shared.deepy.session_store import migrate_session_folders
+        from shared.utils.workspaces import migrate_session_references
+        blocked = migrate_session_references(workspace_root)
+        migrate_session_folders(blocked=blocked)
 
     changed = _migrate_audio_processors_config(server_config, version) or changed
     changed = _migrate_temporal_upsamplers_config(server_config) or changed

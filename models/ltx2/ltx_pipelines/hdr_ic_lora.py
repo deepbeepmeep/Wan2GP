@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 Lightricks. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Modified for WanGP.
 """LTX-2.5 SDR-to-HDR IC-LoRA conversion.
 
 The SDR clip is moved to the ACEScct working space and appended as a frozen full-length reference. Every segment
@@ -15,6 +16,7 @@ import torch
 from shared.utils.hdr import sdr_to_vae_range
 from shared.utils.loras_mutipliers import update_loras_slists
 from shared.utils.phase_progress import control_video_encoding
+from shared.utils.utils import guide_to_float
 
 from ..ltx_core.components.diffusion_steps import EulerDiffusionStep
 from ..ltx_core.components.noisers import GaussianNoiser
@@ -45,7 +47,7 @@ def _sdr_to_working_space(video: torch.Tensor, dtype: torch.dtype, device: torch
     """``(C, F, H, W)`` sRGB SDR in [-1, 1] to ``(1, C, F, H, W)`` ACEScct in the VAE range on ``device``, converted by frame chunks."""
     out = torch.empty((1, *video.shape), dtype=dtype, device=device)
     for start in range(0, video.shape[1], _CONVERSION_CHUNK_FRAMES):
-        out[0, :, start:start + _CONVERSION_CHUNK_FRAMES] = sdr_to_vae_range(video[:, start:start + _CONVERSION_CHUNK_FRAMES].to(device), transform=HDR_TRANSFORM, channel_dim=0)
+        out[0, :, start:start + _CONVERSION_CHUNK_FRAMES] = sdr_to_vae_range(guide_to_float(video[:, start:start + _CONVERSION_CHUNK_FRAMES]).to(device), transform=HDR_TRANSFORM, channel_dim=0)
     return out
 
 

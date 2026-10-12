@@ -1,3 +1,4 @@
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from shared.utils.media_control import inference_checkpoint
 from functools import reduce, partial
 from packaging import version

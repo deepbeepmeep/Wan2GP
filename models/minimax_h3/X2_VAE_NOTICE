@@ -1,0 +1,16 @@
+NOTICE
+
+MiniMax H3 X2 Detail VAE
+
+MiniMax H3 is licensed under the MiniMax H3 Community License Agreement, Copyright В© 2026 MiniMax. All Rights Reserved.
+
+This repository contains a modified/derivative work based on MiniMax H3.
+The underlying MiniMax H3 model remains subject to the MiniMax H3 Community License Agreement and all applicable notices, restrictions, and territorial limitations in that Agreement.
+
+Modifications in this release include an experimental 2X VAE reconstruction path, the packaged B32 early-encoder spatial-detail branch, and supporting ComfyUI integration for the two operating modes documented in the accompanying README. These modifications were created independently and are not official MiniMax releases.
+
+The starting 2X VAE used in this research was also created by the author of this release. The process used to create that original 2X VAE is outside the scope of the accompanying research report.
+
+No endorsement by MiniMax is implied.
+
+See LICENSE for the governing MiniMax H3 Community License Agreement.

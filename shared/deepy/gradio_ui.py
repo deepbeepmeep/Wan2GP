@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import html
@@ -148,7 +149,7 @@ class DeepyChatUI:
 
 @dataclass(slots=True)
 class DeepyChatHandlers:
-    prepare_request_context: Callable[[Any, Any, Any, Any, Any], Any]
+    prepare_request_context: Callable[[Any, Any, Any], Any]
     update_tool_ui_settings: Callable[..., Any]
     store_selected_video_time: Callable[[Any, Any], Any]
     ask_ai: Callable[[Any, str], Any]
@@ -533,8 +534,6 @@ def bind_deepy_chat_ui(
     state: Any,
     output: Any,
     last_choice: Any,
-    audio_files_paths: Any,
-    audio_file_selected: Any,
     selected_video_time_input: Any,
     load_queue_trigger: Any,
     output_trigger: Any,
@@ -812,8 +811,6 @@ def bind_deepy_chat_ui(
         state_value,
         output_value,
         last_choice_value,
-        audio_files_paths_value,
-        audio_file_selected_value,
         ask_request,
         client_submission_id,
         auto_cancel_queue_tasks,
@@ -839,7 +836,7 @@ def bind_deepy_chat_ui(
             hybrid.submit(ask_request, client_submission_id, steering=False)
             yield gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update(), gr.update()
             return
-        handlers.prepare_request_context(state_value, output_value, last_choice_value, audio_files_paths_value, audio_file_selected_value)
+        handlers.prepare_request_context(state_value, output_value, last_choice_value)
         update_session_ui_settings(
             state_value,
             auto_cancel_queue_tasks,
@@ -867,8 +864,6 @@ def bind_deepy_chat_ui(
         state_value,
         output_value,
         last_choice_value,
-        audio_files_paths_value,
-        audio_file_selected_value,
         ask_request,
         client_submission_id,
         auto_cancel_queue_tasks,
@@ -894,7 +889,7 @@ def bind_deepy_chat_ui(
             hybrid.submit(ask_request, client_submission_id, steering=False)
             yield gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update(), gr.update()
             return
-        handlers.prepare_request_context(state_value, output_value, last_choice_value, audio_files_paths_value, audio_file_selected_value)
+        handlers.prepare_request_context(state_value, output_value, last_choice_value)
         update_session_ui_settings(
             state_value,
             auto_cancel_queue_tasks,
@@ -922,8 +917,6 @@ def bind_deepy_chat_ui(
         state_value,
         output_value,
         last_choice_value,
-        audio_files_paths_value,
-        audio_file_selected_value,
         ask_request,
         client_submission_id,
         auto_cancel_queue_tasks,
@@ -949,7 +942,7 @@ def bind_deepy_chat_ui(
             hybrid.submit(ask_request, client_submission_id, steering=True)
             yield gr.update(), gr.update(), gr.update(value=""), gr.update(), gr.update(), gr.update()
             return
-        handlers.prepare_request_context(state_value, output_value, last_choice_value, audio_files_paths_value, audio_file_selected_value)
+        handlers.prepare_request_context(state_value, output_value, last_choice_value)
         update_session_ui_settings(
             state_value,
             auto_cancel_queue_tasks,
@@ -1378,8 +1371,6 @@ def bind_deepy_chat_ui(
             state,
             output,
             last_choice,
-            audio_files_paths,
-            audio_file_selected,
             ui.request,
             ui.submission_id,
             ui.auto_cancel_queue_tasks,
@@ -1411,8 +1402,6 @@ def bind_deepy_chat_ui(
             state,
             output,
             last_choice,
-            audio_files_paths,
-            audio_file_selected,
             ui.busy_queue_request,
             ui.busy_queue_submission_id,
             ui.auto_cancel_queue_tasks,
@@ -1444,8 +1433,6 @@ def bind_deepy_chat_ui(
             state,
             output,
             last_choice,
-            audio_files_paths,
-            audio_file_selected,
             ui.steer_request,
             ui.steer_submission_id,
             ui.auto_cancel_queue_tasks,

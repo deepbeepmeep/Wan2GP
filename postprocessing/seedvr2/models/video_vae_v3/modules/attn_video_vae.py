@@ -8,6 +8,7 @@
 # available at http://www.apache.org/licenses/LICENSE-2.0.
 #
 # This modified file is released under the same license.
+# Modified for WanGP.
 
 
 from contextlib import nullcontext

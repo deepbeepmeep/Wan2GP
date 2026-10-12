@@ -1,3 +1,6 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+# Portions adapted from flash-linear-attention (https://github.com/fla-org/flash-linear-attention),
+# Copyright (c) 2023-2026 Songlin Yang, Yu Zhang, Zhiyuan Li, MIT License (see docs/third_party_licenses/MIT.txt).
 """Qwen GDN decode fusions, with numerical probes on other NVIDIA targets."""
 import torch
 import triton
@@ -101,18 +104,19 @@ def install_gdn_decode(model):
 from fla.ops.utils.op import exp
 
 
-@triton.jit
+@triton.jit(do_not_specialize=("T", "BATCH", "QS0", "QS1", "QS2", "KS0", "KS1", "KS2", "VS0", "VS1", "VS2", "AS0", "AS1", "BS0", "BS1", "SAVE_TOKENS"),
+            do_not_specialize_on_alignment=("T", "BATCH", "QS0", "QS1", "QS2", "KS0", "KS1", "KS2", "VS0", "VS1", "VS2", "AS0", "AS1", "BS0", "BS1", "SAVE_TOKENS"))
 def _recurrent_raw_kernel(Q, K, V, A, BETA_IN, SSM_A, DT, STATE, STATE_OUT, OUT, SNAPSHOTS,
                           PRE, K_SAVE, V_SAVE, A_SAVE, B_SAVE,
-                          T: tl.constexpr, H: tl.constexpr, HV: tl.constexpr,
+                          T, H: tl.constexpr, HV: tl.constexpr,
                           DK: tl.constexpr, DV: tl.constexpr,
-                          QS0: tl.constexpr, QS1: tl.constexpr, QS2: tl.constexpr,
-                          KS0: tl.constexpr, KS1: tl.constexpr, KS2: tl.constexpr,
-                          VS0: tl.constexpr, VS1: tl.constexpr, VS2: tl.constexpr,
-                          AS0: tl.constexpr, AS1: tl.constexpr,
-                          BS0: tl.constexpr, BS1: tl.constexpr,
-                          BATCH: tl.constexpr, BK: tl.constexpr, BV: tl.constexpr,
-                          SAVE_PREFIX: tl.constexpr, SAVE_INPUTS: tl.constexpr, SAVE_TOKENS: tl.constexpr,
+                          QS0, QS1, QS2,
+                          KS0, KS1, KS2,
+                          VS0, VS1, VS2,
+                          AS0, AS1,
+                          BS0, BS1,
+                          BATCH, BK: tl.constexpr, BV: tl.constexpr,
+                          SAVE_PREFIX: tl.constexpr, SAVE_INPUTS: tl.constexpr, SAVE_TOKENS,
                           V_HEADS_TILED: tl.constexpr, SSM_PARAMS_TILED: tl.constexpr,
                           INTERLEAVE_AB: tl.constexpr):
     vb, bh = tl.program_id(0), tl.program_id(1)
@@ -134,9 +138,14 @@ def _recurrent_raw_kernel(Q, K, V, A, BETA_IN, SSM_A, DT, STATE, STATE_OUT, OUT,
     sa = tl.load(SSM_A + param_head).to(tl.float32)
     dt = tl.load(DT + param_head).to(tl.float32)
     for token in range(T):
-        q = tl.load(Q + batch * QS0 + token * QS1 + kh * QS2 + keys, keys < DK, 0).to(tl.float32)
-        raw_k = tl.load(K + batch * KS0 + token * KS1 + kh * KS2 + keys, keys < DK, 0)
-        raw_v = tl.load(V + batch * VS0 + token * VS1 + value_head * VS2 + values, values < DV, 0)
+        # Projection and replay strides contain whole heads. Keep their known
+        # alignment with dynamic strides to preserve the norm reduction order.
+        q_offset = tl.multiple_of(batch * QS0 + token * QS1 + kh * QS2, DK)
+        k_offset = tl.multiple_of(batch * KS0 + token * KS1 + kh * KS2, DK)
+        v_offset = tl.multiple_of(batch * VS0 + token * VS1 + value_head * VS2, DV)
+        q = tl.load(Q + q_offset + keys, keys < DK, 0).to(tl.float32)
+        raw_k = tl.load(K + k_offset + keys, keys < DK, 0)
+        raw_v = tl.load(V + v_offset + values, values < DV, 0)
         raw_a = tl.load(A + batch * AS0 + token * AS1 + gate_head)
         raw_beta = tl.load(BETA_IN + batch * BS0 + token * BS1 + gate_head)
         if SAVE_INPUTS:  # stored at the indices read, so a replay reads them back through the same head mapping

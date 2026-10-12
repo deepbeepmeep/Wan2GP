@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Keep callback layout construction out of Gradio's global startup context."""
 from gradio import blocks, context
 

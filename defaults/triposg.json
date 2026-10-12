@@ -1,0 +1,22 @@
+{
+    "model": {
+        "name": "TripoSG 1.5B",
+        "architecture": "triposg",
+        "description": "TripoSG (VAST) turns one picture of an object into a detailed 3D mesh (GLB, geometry only).",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/triposg_fp16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/triposg_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "red toy robot",
+    "image_mode": 1,
+    "video_prompt_type": "I",
+    "num_inference_steps": 50,
+    "guidance_scale": 7.0,
+    "batch_size": 1,
+    "seed": 42,
+    "custom_settings": {
+        "mesh_resolution": 512,
+        "max_faces": 0
+    }
+}

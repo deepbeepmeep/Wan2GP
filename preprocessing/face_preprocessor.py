@@ -1,3 +1,6 @@
+# Adapted from Stand-In (https://github.com/WeChatCV/Stand-In, preprocessor/image_input_preprocessor.py), Copyright (c) the Stand-In authors,
+# Apache License 2.0 (see docs/third_party_licenses/Apache-2.0.txt). Modified for WanGP.
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import os
 import cv2
 import requests

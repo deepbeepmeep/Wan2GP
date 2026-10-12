@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Modified for WanGP.
 """In-place Q/K RMSNorm + RoPE for strided fused-projection views."""
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ def _round_bf16(value):
     return tl.inline_asm_elementwise("cvt.rn.bf16.f32 $0, $1;", "=h,f", [value], dtype=tl.bfloat16, is_pure=True, pack=1)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['SXB', 'SXT', 'SXH', 'SRB', 'SRT', 'SRP', 'SRC', 'T'], do_not_specialize_on_alignment=['SXB', 'SXT', 'SXH', 'SRB', 'SRT', 'SRP', 'SRC', 'T'])
 def _rms_norm_rope_kernel(
     x,
     weight,
@@ -26,7 +27,7 @@ def _rms_norm_rope_kernel(
     SRT,
     SRP,
     SRC,
-    T: tl.constexpr,
+    T,
     H: tl.constexpr,
     D: tl.constexpr,
     PAIRS: tl.constexpr,
@@ -91,3 +92,7 @@ def qk_rms_norm_rope_(q: torch.Tensor, k: torch.Tensor, q_weight: torch.Tensor, 
 
 
 __all__ = ["qk_rms_norm_rope_", "rms_norm_rope_"]
+
+
+from shared.kernels.triton_compilation_log import install_triton_compilation_logger
+install_triton_compilation_logger()

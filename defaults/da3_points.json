@@ -1,0 +1,10 @@
+{
+    "model": {
+        "name": "Depth Anything 3 Points",
+        "architecture": "da3_points",
+        "description": "Depth Anything 3 (DA3-LARGE-1.1, the checkpoint of WanGP's depth preprocessor) estimates depth and cameras for photos or video frames and merges them into a point cloud shown as Gaussian splats (relative scale), fast and light.",
+        "group": "recon3d"
+    },
+    "prompt": "Room walkthrough scan",
+    "batch_size": 1
+}

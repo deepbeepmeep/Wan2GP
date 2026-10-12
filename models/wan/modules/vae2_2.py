@@ -1,13 +1,15 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import logging
 
 import torch
 from shared.utils.phase_progress import vae_encoding_progress, PhaseProgress, check_abort, set_phase_status
+from shared.cuda_memory import mmgp_vram_allocator
 import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from .vae import _blend_h_edge_, _blend_v_edge_, _vae_float_to_cpu_uint8
+from .vae import _blend_h_edge_, _blend_v_edge_, _vae_float_to_cpu_uint8, _kernels, _use_fast, _causal_input, _residual_fast, _resample_fast, _run_part, _exact_segments, _exact_calls, _exact_decode, _exact_encode, _attention_fast
 
 __all__ = [
     "Wan2_2_VAE",
@@ -33,7 +35,12 @@ class CausalConv3d(nn.Conv3d):
         )
         self.padding = (0, 0, 0)
 
-    def forward(self, x, cache_x=None):
+    def forward(self, x, cache_x=None, padded=False, residual=None):
+        if padded:  # fast path: x is already the padded channels-last input; residual is added to the output
+            if _kernels.conv_eligible(x, self):
+                return _kernels.conv(x, self.weight, self.bias, residual)
+            x = F.conv3d(x, _kernels.channels_last_weight(self.weight), self.bias, self.stride)  # cuDNN, without PyTorch's slower weight layout copy
+            return x if residual is None else x.add_(residual)
         padding = list(self._padding)
         if cache_x is not None and self._padding[4] > 0:
             cache_x = cache_x.to(x.device)
@@ -74,7 +81,9 @@ class RMS_norm(nn.Module):
         self.gamma = nn.Parameter(torch.ones(shape))
         self.bias = nn.Parameter(torch.zeros(shape)) if bias else 0.0
 
-    def forward(self, x):
+    def forward(self, x, pad=None, cache=None, keep=0):
+        if pad is not None:  # fast path: silu(norm(x)) as the padded input of the next causal convolution
+            return _kernels.causal_pad(x, pad, cache, self, keep)
         return (F.normalize(x, dim=(1 if self.channel_first else -1)) *
                 self.scale * self.gamma + self.bias)
 
@@ -129,7 +138,9 @@ class Resample(nn.Module):
         else:
             self.resample = nn.Identity()
 
-    def forward(self, x, feat_cache=None, feat_idx=[0]):
+    def forward(self, x, feat_cache=None, feat_idx=[0], fast=False):
+        if fast:
+            return _resample_fast(self, x, feat_cache, feat_idx)
         b, c, t, h, w = x.size()
         if self.mode == "upsample3d":
             if feat_cache is not None:
@@ -231,7 +242,9 @@ class ResidualBlock(nn.Module):
             CausalConv3d(in_dim, out_dim, 1)
             if in_dim != out_dim else nn.Identity())
 
-    def forward(self, x, feat_cache=None, feat_idx=[0]):
+    def forward(self, x, feat_cache=None, feat_idx=[0], fast=False):
+        if fast:
+            return _residual_fast(self, x, feat_cache, feat_idx)
         h = self.shortcut(x)
         for layer in self.residual:
             if isinstance(layer, CausalConv3d) and feat_cache is not None:
@@ -272,7 +285,9 @@ class AttentionBlock(nn.Module):
         # zero out the last layer params
         nn.init.zeros_(self.proj.weight)
 
-    def forward(self, x):
+    def forward(self, x, fast=False):
+        if fast:
+            return _attention_fast(self, x)
         identity = x
         b, c, t, h, w = x.size()
         x = rearrange(x, "b c t h w -> (b t) c h w")
@@ -464,7 +479,12 @@ class Down_ResidualBlock(nn.Module):
 
         self.downsamples = nn.Sequential(*downsamples)
 
-    def forward(self, x, feat_cache=None, feat_idx=[0]):
+    def forward(self, x, feat_cache=None, feat_idx=[0], fast=False):
+        if fast:  # the modules leave their input unchanged: no copy, the shortcut added in place
+            shortcut = x
+            for module in self.downsamples:
+                x = module(x, feat_cache, feat_idx, fast=True)
+            return x.add_(self.avg_shortcut(shortcut))
         x_copy = x.clone()
         for module in self.downsamples:
             x = module(x, feat_cache, feat_idx)
@@ -506,7 +526,12 @@ class Up_ResidualBlock(nn.Module):
 
         self.upsamples = nn.Sequential(*upsamples)
 
-    def forward(self, x, feat_cache=None, feat_idx=[0], first_chunk=False):
+    def forward(self, x, feat_cache=None, feat_idx=[0], first_chunk=False, fast=False):
+        if fast:  # the modules leave their input unchanged: no copy, the shortcut added in place
+            x_main = x
+            for module in self.upsamples:
+                x_main = module(x_main, feat_cache, feat_idx, fast=True)
+            return x_main if self.avg_shortcut is None else x_main.add_(self.avg_shortcut(x, first_chunk))
         x_main = x.clone()
         for module in self.upsamples:
             x_main = module(x_main, feat_cache, feat_idx)
@@ -576,7 +601,23 @@ class Encoder3d(nn.Module):
             CausalConv3d(out_dim, z_dim, 3, padding=1),
         )
 
-    def forward(self, x, feat_cache=None, feat_idx=[0]):
+    def _stages(self):
+        return [self.conv1, *self.downsamples, *self.middle, self.head]
+
+    def _forward_fast(self, x, feat_cache, feat_idx):
+        x = self.conv1(_causal_input(x, self.conv1, feat_cache, feat_idx), padded=True)
+        for layer in self.downsamples:
+            x = layer(x, feat_cache, feat_idx, fast=True)
+        for layer in self.middle:
+            x = layer(x, feat_cache, feat_idx, fast=True) if isinstance(layer, ResidualBlock) else layer(x, fast=True)
+        x = self.head[2](_causal_input(x, self.head[2], feat_cache, feat_idx, self.head[0]), padded=True)
+        return x.contiguous()
+
+    def forward(self, x, feat_cache=None, feat_idx=[0], part=None):
+        if part is not None:  # exact tiled encoding: some stages, on the whole frame or a region
+            return _run_part(self, x, part, feat_cache, feat_idx)
+        if _use_fast(x):
+            return self._forward_fast(x, feat_cache, feat_idx)
 
         if feat_cache is not None:
             idx = feat_idx[0]
@@ -689,7 +730,26 @@ class Decoder3d(nn.Module):
             CausalConv3d(out_dim, 12, 3, padding=1),
         )
 
-    def forward(self, x, feat_cache=None, feat_idx=[0], first_chunk=False):
+    def _stages(self):
+        return [self.conv1, *self.middle, *self.upsamples, self.head]
+
+    def _forward_fast(self, x, feat_cache, feat_idx, first_chunk):
+        x = self.conv1(_causal_input(x, self.conv1, feat_cache, feat_idx), padded=True)
+        for layer in self.middle:
+            check_abort()
+            x = layer(x, feat_cache, feat_idx, fast=True) if isinstance(layer, ResidualBlock) else layer(x, fast=True)
+        for layer in self.upsamples:
+            check_abort()
+            x = layer(x, feat_cache, feat_idx, first_chunk, fast=True)
+        check_abort()
+        x = self.head[2](_causal_input(x, self.head[2], feat_cache, feat_idx, self.head[0]), padded=True)
+        return x.contiguous()
+
+    def forward(self, x, feat_cache=None, feat_idx=[0], first_chunk=False, part=None):
+        if part is not None:  # exact tiled decoding: some stages, on the whole frame or a region
+            return _run_part(self, x, part, feat_cache, feat_idx)
+        if _use_fast(x):
+            return self._forward_fast(x, feat_cache, feat_idx, first_chunk)
         if feat_cache is not None:
             idx = feat_idx[0]
             cache_x = x[:, :, -CACHE_T:, :, :].clone()
@@ -895,6 +955,10 @@ class WanVAE_(nn.Module):
             b[:, :, :, :, x] = a[:, :, :, :, -blend_extent + x] * (1 - x / blend_extent) + b[:, :, :, :, x] * (x / blend_extent)
         return b
     
+    def spatial_tiled_encode(self, x, scale, tile_size, any_end_frame=False):
+        """Tiled encoding equal to the untiled one, fast path only (tiles in patches, half the pixels)."""
+        return _exact_encode(self, patchify(x, patch_size=2), scale, tile_size // 2, any_end_frame)
+
     def spatial_tiled_decode(self, z, scale, tile_size, any_end_frame= False):
         tile_sample_min_size = tile_size
         tile_latent_min_size = int(tile_sample_min_size / 16)
@@ -907,7 +971,13 @@ class WanVAE_(nn.Module):
                 1, self.z_dim, 1, 1, 1)
         else:
             z = z / scale[1] + scale[0]
+        if _use_fast(z):  # tiles with halos: the untiled result (decoder tiles in patches, half the pixels)
+            out = torch.empty((z.shape[0], 3, (z.shape[2] - 2) * 4 + 2 if any_end_frame else (z.shape[2] - 1) * 4 + 1, z.shape[-2] * 16, z.shape[-1] * 16), dtype=z.dtype, device=z.device)
 
+            def sink(i, offset, region, y):
+                out[:, :, offset:offset + y.shape[2], region[0][0] * 2:region[0][1] * 2, region[1][0] * 2:region[1][1] * 2] = unpatchify(y.contiguous(), patch_size=2)
+            _exact_decode(self, z, _exact_segments(self.decoder, tuple(z.shape[-2:]), tile_size // 2, True), any_end_frame, sink)
+            return out
 
         overlap_size = int(tile_latent_min_size * (1 - tile_overlap_factor)) #8 0.75
         blend_extent = int(tile_sample_min_size * tile_overlap_factor) #256 0.25
@@ -977,7 +1047,10 @@ class WanVAE_(nn.Module):
         if target_frames <= 0:
             return torch.empty((latent_source.shape[0], 3, 0, target_height, target_width), dtype=torch.uint8, device="cpu")
         spatial_tiles = 1
-        if tile_size > 0:
+        segments = _exact_segments(self.decoder, tuple(latent_source.shape[-2:]), tile_size // 2, True) if tile_size > 0 and _use_fast(torch.empty(0, dtype=dtype, device=device)) else None
+        if segments is not None:  # tiles with halos (the untiled result): whole-frame calls, then the tiles
+            spatial_tiles = _exact_calls(segments, 1)
+        elif tile_size > 0:
             stride = max(1, int(max(1, tile_size // 16) * 0.75))
             row_limit = max(1, tile_size - int(tile_size * 0.25))
             rows = min(len(range(0, latent_source.shape[-2], stride)), (target_height + row_limit - 1) // row_limit)
@@ -987,6 +1060,19 @@ class WanVAE_(nn.Module):
             try:
                 if scale is not None and isinstance(scale[0], torch.Tensor):
                     scale = [u.to(device=device) for u in scale]
+                if segments is not None:
+                    z = latent_source.to(device=device, dtype=dtype)
+                    if scale is not None:
+                        z = z / scale[1].view(1, self.z_dim, 1, 1, 1) + scale[0].view(1, self.z_dim, 1, 1, 1) if isinstance(scale[0], torch.Tensor) else z / scale[1] + scale[0]
+                    decoded = torch.empty((latent_source.shape[0], 3, target_frames, target_height, target_width), dtype=torch.uint8, device="cpu")
+
+                    def sink(i, offset, region, y):
+                        (r0, r1), (c0, c1) = ((lo * 2, min(hi * 2, limit)) for (lo, hi), limit in zip(region, (target_height, target_width)))
+                        b = min(offset + y.shape[2], target_frames)
+                        if offset < b and r0 < r1 and c0 < c1:
+                            decoded[:, :, offset:b, r0:r1, c0:c1] = _vae_float_to_cpu_uint8(unpatchify(y[:, :, :b - offset].contiguous(), patch_size=2)[..., :r1 - r0, :c1 - c0])
+                    _exact_decode(self, z, segments, any_end_frame, sink)
+                    return decoded
                 if tile_size <= 0:
                     z = latent_source.to(device=device, dtype=dtype)
                     frames = self.decode(z, scale, any_end_frame=any_end_frame)[:, :, :target_frames, :target_height, :target_width]
@@ -1062,47 +1148,6 @@ class WanVAE_(nn.Module):
 
             finally:
                 self.clear_cache()
-
-    def spatial_tiled_encode(self, x, scale, tile_size, any_end_frame = False) :
-        tile_sample_min_size = tile_size
-        tile_latent_min_size = int(tile_sample_min_size / 16)
-        tile_overlap_factor = 0.25
-
-        overlap_size = int(tile_sample_min_size * (1 - tile_overlap_factor))
-        blend_extent = int(tile_latent_min_size * tile_overlap_factor)
-        row_limit = tile_latent_min_size - blend_extent
-
-        # Split video into tiles and encode them separately.
-        rows = []
-        for i in range(0, x.shape[-2], overlap_size):
-            row = []
-            for j in range(0, x.shape[-1], overlap_size):
-                tile = x[:, :, :, i: i + tile_sample_min_size, j: j + tile_sample_min_size]
-                tile = self.encode(tile, any_end_frame= any_end_frame)
-                row.append(tile)
-            rows.append(row)
-        result_rows = []
-        for i, row in enumerate(rows):
-            result_row = []
-            for j, tile in enumerate(row):
-                # blend the above tile and the left tile
-                # to the current tile and add the current tile to the result row
-                if i > 0:
-                    tile = self.blend_v(rows[i - 1][j], tile, blend_extent)
-                if j > 0:
-                    tile = self.blend_h(row[j - 1], tile, blend_extent)
-                result_row.append(tile[:, :, :, :row_limit, :row_limit])
-            result_rows.append(torch.cat(result_row, dim=-1))
-
-        mu = torch.cat(result_rows, dim=-2)
-
-        if isinstance(scale[0], torch.Tensor):
-            mu = (mu - scale[0].view(1, self.z_dim, 1, 1, 1)) * scale[1].view(
-                1, self.z_dim, 1, 1, 1)
-        else:
-            mu = (mu - scale[0]) * scale[1]
-
-        return mu
 
     def reparameterize(self, mu, log_var):
         std = torch.exp(0.5 * log_var)
@@ -1299,6 +1344,8 @@ class Wan2_2_VAE:
 
     @staticmethod
     def get_VAE_tile_size(vae_config, device_mem_capacity, mixed_precision):
+        if mmgp_vram_allocator():  # no allocator fragmentation to guard against: Default and Low VRAM levels
+            return 256 if vae_config == 3 or device_mem_capacity < 8000 else 512
         # VAE Tiling
         if vae_config == 0:
             if mixed_precision:
@@ -1326,17 +1373,21 @@ class Wan2_2_VAE:
         videos: A list of videos each with shape [C, T, H, W].
         """
         set_phase_status("VAE Encoding")
+        # tiles with halos (the untiled result) only with the MMGP allocator: Low VRAM (256) always, Default (512) for frames large for the GPU
+        # (untiled up to 1280x720 from 12 GB, up to 1920x1088 from 24 GB); PyTorch's allocator: untiled as before
+        fast = tile_size > 0 and mmgp_vram_allocator() and _use_fast(torch.empty(0, dtype=self.dtype, device=self.device))
+        memory = torch.cuda.get_device_properties(self.device).total_memory if fast else 0
+        tiling = [0 if not fast or tile_size > 256 and (memory >= 12e9 and u.shape[-2] * u.shape[-1] <= 1280 * 720 or memory >= 24e9 and u.shape[-2] * u.shape[-1] <= 1920 * 1088) else tile_size for u in videos]
         tiles = 0
-        for video in videos:
+        for video, tile in zip(videos, tiling):
             temporal_tiles = 2 + (video.shape[1] - 2) // 4 if any_end_frame else 1 + (video.shape[1] - 1) // 4
+            if tile:
+                temporal_tiles = _exact_calls(_exact_segments(self.model.encoder, tuple(s // 2 for s in video.shape[-2:]), tile // 2, False), temporal_tiles)
             tiles += temporal_tiles
         with vae_encoding_progress(tiles, self.model.encoder, cleanup=self.model.clear_cache, enabled=any(video.shape[1] > 1 for video in videos)):
             scale = [u.to(device = self.device) for u in self.scale]
-
-            if tile_size > 0 and False :
-                return [ self.model.spatial_tiled_encode(u.to(self.dtype).unsqueeze(0), scale, tile_size, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
-            else:
-                return [ self.model.encode(u.to(self.dtype).unsqueeze(0), scale, any_end_frame=any_end_frame).float().squeeze(0) for u in videos ]
+            return [(self.model.spatial_tiled_encode(u.to(self.dtype).unsqueeze(0), scale, tile, any_end_frame=any_end_frame) if tile else
+                     self.model.encode(u.to(self.dtype).unsqueeze(0), scale, any_end_frame=any_end_frame)).float().squeeze(0) for u, tile in zip(videos, tiling)]
 
 
     def decode(self, zs, tile_size = 256, any_end_frame = False):

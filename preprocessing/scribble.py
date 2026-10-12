@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Alibaba, Inc. and its affiliates.
+# Modified for WanGP.
 import numpy as np
 import torch
 import torch.nn as nn

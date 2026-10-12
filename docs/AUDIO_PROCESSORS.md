@@ -219,8 +219,8 @@ use the normalized method ids.
 | `custom` | `soundtrack` | `postprocessing/custom_soundtrack/audio_processor.py` |
 | `mmaudio` | `soundtrack` | `postprocessing/mmaudio/audio_processor.py` |
 | `prismaudio` | `soundtrack` | `postprocessing/prismaudio/audio_processor.py` |
-| `seedvc_one_speaker` | `voice_replacement`, `audio_edit` | `postprocessing/seedvc/audio_processor.py` |
-| `seedvc_two_speakers` | `voice_replacement`, `audio_edit` | `postprocessing/seedvc/audio_processor.py` |
+| `seedvc_one_speaker` | `voice_replacement`, `audio_edit` | `postprocessing/seedvc_processor/audio_processor.py` |
+| `seedvc_two_speakers` | `voice_replacement`, `audio_edit` | `postprocessing/seedvc_processor/audio_processor.py` |
 | `remove_background` | `audio_edit` | `postprocessing/audio_background_removal/audio_processor.py` |
 | `remove_vocals` | `audio_edit` | `postprocessing/audio_background_removal/audio_processor.py` |
 

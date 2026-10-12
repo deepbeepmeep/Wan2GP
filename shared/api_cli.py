@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import contextlib
 import inspect
 import sys
@@ -5,7 +6,7 @@ import threading
 import time
 from typing import Any
 
-from shared.api import GenerationError, GenerationResult, SessionJob, _GENERATION_LOCK, _OutputCapture, _pushd
+from shared.api import GenerationError, GenerationResult, ProgressUpdate, SessionJob, _GENERATION_LOCK, _OutputCapture, _pushd
 from shared.utils.thread_utils import AsyncStream
 
 
@@ -13,8 +14,7 @@ def run_cli_job(session, job: SessionJob, tasks: list[dict[str, Any]]) -> None:
     stream = AsyncStream()
     gen = session._state["gen"]
     worker_done = threading.Event()
-    base_file_count = len(gen["file_list"])
-    base_audio_count = len(gen["audio_file_list"])
+    base_counts = session._gallery_counts()
     total_tasks = len(tasks)
     runtime = None
     task_summary: dict[str, Any] = {
@@ -23,6 +23,8 @@ def run_cli_job(session, job: SessionJob, tasks: list[dict[str, Any]]) -> None:
         "failed_tasks": 0,
         "total_tasks": total_tasks,
     }
+    if any(task.get('workspace_id') for task in tasks):
+        task_summary['workspace_outputs'] = []
 
     try:
         runtime = session._ensure_runtime()
@@ -75,7 +77,7 @@ def run_cli_job(session, job: SessionJob, tasks: list[dict[str, Any]]) -> None:
                 _handle_command(session, job, runtime.module, tasks, command, data)
 
             worker_thread.join(timeout=0.1)
-            outputs = session._collect_outputs(base_file_count, base_audio_count)
+            outputs = task_summary['workspace_outputs'] if 'workspace_outputs' in task_summary else session._collect_outputs(base_counts)
             artifacts = session._consume_output_artifacts(tasks)
             if job.cancel_requested and not task_summary["errors"]:
                 task_summary["errors"].append(GenerationError(message="Generation was cancelled", stage="cancelled"))
@@ -134,6 +136,8 @@ def _run_tasks_worker(session, wgp, tasks: list[dict[str, Any]], stream: AsyncSt
         success = False
 
         def send_cmd(command: str, data: Any = None) -> None:
+            if command == "progress":
+                data = session._build_progress_update(data, task_id=session._get_task_settings(task)["client_id"], task_index=task_index, task_count=len(tasks))
             if command == "error":
                 failure = session._make_generation_error(data, task_index=task_index, task_id=task_id, stage="generation")
                 task_errors.append(failure)
@@ -154,12 +158,19 @@ def _run_tasks_worker(session, wgp, tasks: list[dict[str, Any]], stream: AsyncSt
                 if wgp._is_edit_task_params(task_settings):
                     filtered_params.setdefault("model_type", "")
                 plugin_data = task.get("plugin_data", {})
+                workspace_counts = None
                 try:
+                    if 'workspace_outputs' in task_summary:
+                        wgp.generate_media.prepare_workspace(task, session._state)
+                        workspace_counts = session._gallery_counts()
                     success = wgp.generate_media(task, send_cmd, plugin_data=plugin_data, **filtered_params)
                 except BaseException as exc:
                     if not task_errors:
                         task_errors.append(session._make_generation_error(exc, task_index=task_index, task_id=task_id, stage="generation"))
                         stream.output_queue.push("error", task_errors[-1])
+                finally:
+                    if workspace_counts is not None:
+                        task_summary['workspace_outputs'].extend(session._collect_outputs(workspace_counts))
 
         # Complete the selected task under the same lock used by queue cancellation.
         # A late request must never set the abort flag for the next task.
@@ -187,7 +198,7 @@ def _run_tasks_worker(session, wgp, tasks: list[dict[str, Any]], stream: AsyncSt
 
 def _handle_command(session, job: SessionJob, wgp, tasks: list[dict[str, Any]], command: str, data: Any) -> None:
     if command == "progress":
-        progress = session._build_progress_update(data)
+        progress = data if isinstance(data, ProgressUpdate) else session._build_progress_update(data)
         job.events.put("progress", progress)
         session._emit_callback("on_progress", progress, job=job)
         return

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Convolutions of large images by bands of rows (stride 1, kernel height 3 with padding 1, or 1 without), optionally after a nearest x2
 upsampling.
 
@@ -8,6 +9,7 @@ not fall back to a smaller one when memory runs out). cuDNN may choose another k
 """
 import functools
 
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -30,8 +32,9 @@ def conv_bands(x, conv, upsample=False, mode="nearest", band_bytes=BAND_BYTES):
         first = 1 if start > 0 else 0  # the halo row above the band's first output row
         band = band[:, :, scale * (start - lo) - first:scale * (stop - lo) + (stop < h)]
         band = conv(band)[:, :, first:first + scale * (stop - start)]
-        if out is None:
-            out = band.new_empty((n, band.shape[1], scale * h, band.shape[-1]))
+        if out is None:  # in the layout of the input (channels_last stays channels_last)
+            layout = torch.channels_last if not x.is_contiguous() and x.is_contiguous(memory_format=torch.channels_last) else torch.contiguous_format
+            out = torch.empty((n, band.shape[1], scale * h, band.shape[-1]), dtype=band.dtype, device=band.device, memory_format=layout)
         out[:, :, scale * start:scale * stop].copy_(band)
         del band
     return out

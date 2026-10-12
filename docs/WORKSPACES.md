@@ -20,7 +20,7 @@ A workspace saves the state of the **Image / Video Gallery** and **Audio Gallery
 - the active gallery tab
 - the selected video time, when available
 
-The workspace stores references to the original media files. It does not move or duplicate those files. This has several useful consequences:
+**Shared Output Folders** is the default storage mode. These workspaces store references to the original media files:
 
 - the same file can appear in more than one workspace without using additional disk space
 - copying an item to another workspace adds another reference, not another file
@@ -28,6 +28,20 @@ The workspace stores references to the original media files. It does not move or
 - moving or deleting a referenced file outside WanGP makes it unavailable when the workspace is restored
 
 This is different from a **Deepy Prime session workspace**, which is a real folder where Prime can create drafts, plans, prompts, and other project files. A dedicated Deepy session may have both: a private file workspace for working documents and a gallery workspace for media.
+
+### Dedicated media folders
+
+In **Configuration > Outputs**, set **Default Storage for New Workspaces** to **Dedicated Folder per Workspace** to give new workspaces independent media folders. Images, videos, audio and 3D outputs go into that workspace's folder. Imports and copies from other workspaces create independent files, including known companion files. This uses more disk space but makes projects easier to back up independently. Existing workspaces keep their current mode.
+
+The **Shared Video/Image/Audio/3D Output Folder** fields remain visible: existing shared workspaces continue using them even when new workspaces use dedicated folders.
+
+**Workspaces Root** contains the workspace definitions and the default dedicated folders. New folders use the workspace name, with a number such as **My Project (2)** only when necessary. Characters that cannot be used in filenames are replaced. Renaming a workspace updates its name and JSON filename while keeping its media folder stable. **Folder** in the workspace selector identifies dedicated storage.
+
+Open the manager's **Shared Storage / Folder Storage** button to convert an existing workspace. The preview shows media/file counts and size. Converting to dedicated storage copies and verifies files, retaining the originals. Missing media must be restored first. Converting back to shared references keeps existing files in place; subsequent generations use the shared output folders. Finish or clear queued work before converting.
+
+Gallery Manager shows **Shared references** or **Dedicated folder**. Dedicated workspaces display their full server folder path. Use **Change Folder**, enter an absolute folder path on the WanGP server, preview the copy, then choose **Copy and Use Folder**. WanGP copies and verifies the gallery media and companion files, switches future outputs and agent file access to the new location, and retains the originals. Existing target files are preserved; unrelated files are not added to the gallery. Agents assigned to the workspace can access the target folder’s contents. A target cannot overlap another workspace’s folder. Finish or clear queued jobs first. Custom folders can be outside Workspaces Root and must be backed up separately.
+
+Folders do not automatically populate galleries: use Import to add files. Ejected files stay on disk without reappearing. Deleting or archiving a workspace always retains its media folder.
 
 ## Create and switch workspaces
 
@@ -84,9 +98,10 @@ Order matters because the normal gallery shows the last N items in workspace ord
 ### Workspace actions
 
 - **Eject** removes the selected entries from the current workspace but leaves their files on disk. Use this to clean up a collection safely.
-- **Copy to workspace** adds the selected entries to another workspace. Both workspaces reference the same files; no media is duplicated.
-- **ZIP** downloads the selected files together. WanGP packages the originals without re-encoding them.
-- **Import** copies selected local uploads into WanGP's configured output folder and adds them to the active workspace. Original filenames are preserved when possible. Reimporting the same file reuses it; a different file with the same name receives a numbered suffix.
+- **Copy to workspace** adds references to a shared destination or independent file copies to a dedicated destination.
+- **Move to workspace** performs the same destination import, then ejects the source entries. Original files remain on disk for other collections that may reference them.
+- **ZIP** downloads selected media and known companions together, without re-encoding.
+- **Import** copies uploads into the workspace's dedicated folder or the configured shared output folder. Original filenames are preserved when possible. Reimporting the same file reuses it; a different file with the same name receives a numbered suffix.
 - **Delete files** permanently deletes the selected files and removes their references from every workspace. It requires confirmation and waits for Deepy and generation to become idle. Use **Eject** instead unless the files themselves should be erased.
 
 Deleting a file is the only workspace-manager action that removes the underlying media from disk.
@@ -108,6 +123,18 @@ A dedicated workspace is owned by its Deepy session:
 - manage the session rather than trying to rename or delete its workspace directly
 
 Deleting a Deepy session or dedicated workspace does not delete the referenced media files. Session media portability is a separate choice: **Keep links to Gallery files** relies on the originals, while **Copy Gallery files into each session** keeps session-owned copies. See [Deepy sessions and workspaces](DEEPY.md#sessions-and-workspaces).
+
+Session assignment and media storage are separate choices. A session-owned workspace may use either storage mode. With dedicated media storage, Deepy's output filesystem root is that workspace's folder. Prime retains a separate writable folder for documents and drafts, and existing output files retain their create-only protection. Explicit selected-folder and Read Everywhere permissions still apply.
+
+## MCP agent workspaces
+
+**Configuration > Agents > MCP Agent Workspace** offers two choices: **Use Selected Workspace** uses the workspace currently selected in the gallery; **Create a Workspace per Agent** automatically gives each agent its own workspace. Agents can still explicitly create or choose another workspace. New workspaces use the storage mode selected in Outputs. Existing workspaces keep their own storage mode until explicitly converted in Gallery Manager. Restart after changing agent assignment.
+
+Agents can query existing workspaces, create one, attach to an existing one, or resume an earlier context with `wangp_workspace`. Each connection gets its own automatic assignment. Clients multiplexing several logical agents must pass a separate returned `agent_context` on their calls. Keep this ID to resume after reconnecting; disconnecting does not delete files.
+
+Media creation and editing visibly activate the assigned workspace. Queued generation switches when its turn starts, so another agent's submission does not interrupt the current result. Agents can browse their assigned gallery, read media settings and inspect existing media while another generation owns the live gallery, without changing your view. Audio inspection that creates a preview, and other actions that add media, may report busy until the current generation or Deepy action finishes. Discovery, file IO and job polling also keep the current view. Deepy's saved workspace association remains unchanged.
+
+These are organizational boundaries, not private accounts. The current shared-user policy still permits workspace discovery/attachment, common queue visibility and cancellation of other agents' queued jobs. More granular permissions are planned separately.
 
 ## Synchronization between pages
 
@@ -146,9 +173,13 @@ The workspace and session reappear if their referenced media still exist.
 
 ## Storage and backups
 
-Workspace definitions are stored in `workspaces/` at the WanGP installation root. Launch WanGP with `--workspaces-dir FOLDER` to use another location.
+Workspace definitions are stored under **Configuration > Outputs > Workspaces Root**, normally `workspaces/`, with readable filenames such as `My Project.json`. Names receive a numbered suffix only when needed. On upgrade, existing workspace JSON files, including archived ones, are renamed automatically. Existing dedicated media folders and workspace associations remain unchanged. Deepy session folders receive readable names separately; links from shared workspaces follow the session.
 
-A backup of this folder preserves workspace names, ordering, selections, and media references, but not the media itself. Back up the referenced output/media folders too when you need a complete, portable archive. For one selected collection, the workspace manager's **ZIP** action is the simpler option.
+Missing files and unavailable Deepy sessions are skipped when opening a gallery. Saving the gallery retains those references, so restoring the files or session makes them available again when you reopen the workspace. The manager also handles files that disappear while it is open. Storage conversion reports missing media and waits for it to be restored; it does not silently discard it. Explicitly deleting media through the manager still removes its references.
+
+`--workspaces-dir FOLDER` overrides the configured root for Gradio, Deepy Web and standalone MCP. Move the complete root before changing its location and restart WanGP. Include archives and agent context records.
+
+A backup of the complete root includes dedicated workspace media. Shared workspaces still reference files elsewhere: back up those folders separately. Relative paths keep dedicated media usable when the complete root is relocated. Deepy conversations and their document folders have their own session storage and backup requirements. For selected media, the manager's **ZIP** action is the simpler option.
 
 ## Recommended workflows
 

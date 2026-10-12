@@ -1,9 +1,13 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import ast
 import json
 import os
 
 import torch
+from torch._subclasses.fake_tensor import is_fake
 from torch.utils import _pytree as pytree
+
+from shared.kernels import fp8_backend
 
 from optimum.quanto import QModuleMixin
 from optimum.quanto.tensor.qtensor import QTensor
@@ -273,7 +277,6 @@ class ScaledFP8WeightTensor(QTensor):
         self._scale = scale
         self._force_full_precision_mm = force_full_precision_mm
         self._scaled_mm_static_ok = _scaled_mm_static_ok(self._data, self._scale)
-        self._set_linear_impl()
 
     def __repr__(self):
         cls_name = self.__class__.__name__
@@ -295,18 +298,8 @@ class ScaledFP8WeightTensor(QTensor):
 
     __str__ = __repr__
 
-    def _set_linear_impl(self):
-        if not self._force_full_precision_mm and self._scaled_mm_static_ok and _scaled_mm_available(self._data.dtype):
-            self._linear_impl = ScaledFP8WeightTensor._linear_scaled
-        else:
-            self._linear_impl = ScaledFP8WeightTensor._linear_fallback
-
     def linear(self, input, bias=None):
-        impl = getattr(self, "_linear_impl", None)
-        if impl is None:
-            self._set_linear_impl()
-            impl = self._linear_impl
-        return impl(self, input, bias)
+        return scaled_fp8_linear(self, input, bias)
 
     def dequantize(self, dtype=None, device=None):
         if dtype is None:
@@ -407,7 +400,6 @@ class ScaledFP8WeightTensor(QTensor):
         if scale is not None:
             self._scale = scale
         self._scaled_mm_static_ok = _scaled_mm_static_ok(self._data, self._scale)
-        self._set_linear_impl()
 
     def __tensor_flatten__(self):
         inner_tensors = ["_data", "_scale"]
@@ -453,7 +445,7 @@ class ScaledFP8WeightTensor(QTensor):
             weight = args[1] if len(args) > 1 else kwargs.get("weight", None)
             bias = args[2] if len(args) > 2 else kwargs.get("bias", None)
             if isinstance(weight, ScaledFP8WeightTensor):
-                return weight.linear(input, bias=bias)
+                return scaled_fp8_linear(weight, input, bias)
         with torch._C.DisableTorchFunctionSubclass():
             return func(*args, **kwargs)
 
@@ -466,7 +458,7 @@ class ScaledFP8WeightTensor(QTensor):
             weight = args[1]
             bias = args[2] if len(args) > 2 else None
             if isinstance(weight, ScaledFP8WeightTensor):
-                return weight.linear(input, bias=bias)
+                return scaled_fp8_linear(weight, input, bias)
         if op is torch.ops.aten.detach:
             t = args[0]
             return ScaledFP8WeightTensor.create(
@@ -498,6 +490,43 @@ class ScaledFP8WeightTensor(QTensor):
                 force_full_precision_mm=t._force_full_precision_mm,
             )
         return _scaled_fp8_qfallback(op, *args, **(kwargs or {}))
+
+
+def scaled_fp8_linear(weight, input, bias=None):
+    """The linear of a scaled FP8 weight with the FP8 math kernels selected in the configuration (shared.kernels.fp8_backend): FP8
+    tensor cores (cuda, except the layers kept in full precision), the Triton weight-only kernel (triton: the same weights as
+    _linear_fallback, the FP8 values times the scale rounded to the compute dtype, never materialized), or the dequantized weight
+    (pytorch). A plain function, not a method of the tensor subclass: torch.compile traces it (the kernels stay opaque custom ops)."""
+    if is_fake(input) and not torch.compiler.is_compiling():
+        # traced below Dynamo (a compiled F.linear(x, weight): Dynamo sees the weight as a plain tensor), in a graph that PyTorch caches
+        # without the selected kernels: one op that chooses them when the graph runs
+        return torch.ops.wan2gp_fp8.scaled_linear(input, weight._data, weight._scale, bias, weight.dtype, weight._force_full_precision_mm)
+    backend = fp8_backend.scaled_backend
+    if backend == "cuda" and not weight._force_full_precision_mm and weight._scaled_mm_static_ok and _scaled_mm_available(weight._data.dtype):
+        if torch.compiler.is_compiling() and input.is_cuda and input.dtype in (torch.float16, torch.bfloat16):  # the same kernels as eager
+            x = input.reshape(-1, input.shape[-1])
+            out = fp8_backend.matmul(x, weight._data, weight._scale, None if bias is None else bias.to(x.dtype), True)
+            return out.reshape(*input.shape[:-1], weight._data.shape[0])
+        return ScaledFP8WeightTensor._linear_scaled(weight, input, bias)
+    if (backend != "pytorch" and torch.is_tensor(input) and input.is_cuda and input.is_floating_point() and weight._data.ndim == 2
+            and input.device == weight._data.device and weight._scale.numel() in (1, weight._data.shape[0])):
+        dtype = _normalize_default_dtype(weight.dtype)
+        x = input.reshape(-1, input.shape[-1]).to(dtype)
+        out = fp8_backend.matmul(x, weight._data, weight._scale.to(device=x.device, dtype=dtype), bias, False)
+        return out.reshape(*input.shape[:-1], weight._data.shape[0])
+    return ScaledFP8WeightTensor._linear_fallback(weight, input, bias)
+
+
+@torch.library.custom_op("wan2gp_fp8::scaled_linear", mutates_args=())
+def _scaled_linear_op(input: torch.Tensor, data: torch.Tensor, scale: torch.Tensor, bias: torch.Tensor | None, dtype: torch.dtype,
+                      force_full_precision_mm: bool) -> torch.Tensor:
+    weight = ScaledFP8WeightTensor.create(data, scale, data.shape, data.stride(), dtype, force_full_precision_mm=force_full_precision_mm)
+    return scaled_fp8_linear(weight, input, bias).to(dtype)  # cuda computes in the input's dtype
+
+
+@_scaled_linear_op.register_fake
+def _(input, data, scale, bias, dtype, force_full_precision_mm):
+    return input.new_empty((*input.shape[:-1], data.shape[0]), dtype=dtype)
 
 
 class QLinearScaledFP8(QModuleMixin, torch.nn.Linear):
@@ -557,21 +586,7 @@ class QLinearScaledFP8(QModuleMixin, torch.nn.Linear):
         return super().qweight
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        qweight = self.qweight
-        if (
-            getattr(qweight, "_scaled_mm_static_ok", False)
-            and not getattr(qweight, "_force_full_precision_mm", False)
-            and _scaled_mm_available(qweight._data.dtype)
-            and torch.is_tensor(input)
-            and input.is_floating_point()
-            and input.dtype in (torch.float16, torch.bfloat16, torch.float32)
-            and input.ndim >= 2
-            and input.device.type == "cuda"
-            and input.device == qweight._data.device
-            and input.shape[-1] == qweight._data.shape[1]
-        ):
-            return ScaledFP8WeightTensor._linear_scaled(qweight, input, bias=self.bias)
-        return ScaledFP8WeightTensor._linear_fallback(qweight, input, bias=self.bias)
+        return scaled_fp8_linear(self.qweight, input, self.bias)
 
     def _load_from_state_dict(
         self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs

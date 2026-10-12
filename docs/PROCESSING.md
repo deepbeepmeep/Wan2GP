@@ -149,6 +149,12 @@ Choose how window prompts are separated with **How to Process each Line of the T
 
 Each window prompt may begin with optional `[/...]` commands. Use `[/overlap=9]` to select a different overlap for that transition, or `[/overlap]` to restore the model's default overlap. On text-to-video-capable models, `[/overlap=0]` creates a hard cut by preventing the preceding window from conditioning the new one; `[/new_shot]` is its more explicit alias. Different window lengths can be requested with `[/duration=121]`, `[/duration=5s]`, or `[/duration=20%]`. When duration commands are present, they define the window schedule and predicted final length instead of treating the UI's Number of Frames as a strict final cap; windows without an explicit duration consume the remaining requested frames, up to the configured Sliding Window Size. Commands can be combined, for example `[/duration=4s,/new_shot]`.
 
+When generating sound with LTX-2, MiniMax H3 or Ovi, WanGP aligns each window's audio to the video timeline and replaces a short ending of the preceding soundtrack with newly generated overlap. This also applies to Continue Video: the source's ending may be replaced even if it came from another model or was never padded. Keep the model's default overlap; if WanGP reports that it is too short for audio repair, increase it to an allowed value. This prevents accumulated timing drift; Ovi still generates each window's sound independently, so sound or voice continuity is not guaranteed.
+
+A control or source soundtrack selected for preservation keeps its original audio. Audio supplied only as a generation reference does not imply preservation. A deliberate cut without overlap can retain a short silent gap if the preceding generated soundtrack ends early.
+
+With these models, if the generated soundtrack ends slightly before the final video frame, WanGP fills the remaining ending with silence when saving. This keeps the complete video; that export padding is not reused to condition the next sliding window. H3 native continuation requires the source soundtrack to reach close to the video's end; WanGP reports when the gap is too long to repair.
+
 Sliding-window settings:
 
 - **Window Size:** choose a duration that fits the motion and model quality.
@@ -169,6 +175,8 @@ Common postprocessing jobs:
 - Audio postprocessing, voice replacement, or soundtrack remuxing.
 - Cropping, resizing, or importing existing media for a later workflow.
 - Applying a system postprocessing model through MediaFlow.
+
+SeedVC voice replacement, also used by Scenema Audio for reference voices, is distributed separately under the GPL-3.0 license. WanGP downloads it automatically from https://github.com/deepbeepmeep/WanGP-SeedVC the first time you use it, so that first use needs internet access.
 
 Late postprocessing is useful when you want to improve existing media without regenerating the original scene.
 

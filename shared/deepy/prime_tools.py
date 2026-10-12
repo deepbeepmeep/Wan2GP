@@ -1,6 +1,6 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
-import fnmatch
 import json
 import logging
 import os
@@ -22,11 +22,10 @@ from shared.api import WanGPSession
 from shared.deepy import media_registry
 from shared.deepy.config import DEEPY_CONTEXT_TOKENS_DEFAULT, DEEPY_CONTEXT_TOKENS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT, DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_PRIME_MCP_SERVERS_KEY, get_deepy_config_value, get_deepy_runtime_config, normalize_deepy_context_tokens, normalize_deepy_mcp_auto_discover_paths, normalize_deepy_prime_mcp_servers
 from shared.gradio import assistant_chat
-from shared.mcp_server import build_inprocess_server, resolve_gallery_media_path
-from shared.mcp_v2 import RESOURCE_ALIASES
+from shared.mcp.server import build_inprocess_server, resolve_gallery_media_path
+from shared.mcp.resources import RESOURCE_ALIASES, RESOURCE_DESCRIPTION, query_resources, resource_record, _extract_markdown_sections, _select_markdown_sections, _search_markdown_sections, _resource_read_blocks
 
 
-_MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 PRIME_ASYNC_ENABLED = False
 
 
@@ -76,105 +75,6 @@ def _mcp_connection_error_message(error: BaseException) -> str:
     return "; ".join(dict.fromkeys(leaves)) or type(error).__name__
 
 
-def _extract_markdown_sections(markdown: str) -> list[dict[str, Any]]:
-    content = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    content = re.sub(r"\n\n---\n\n> Applies to: [^\n]*\Z", "", content)
-    lines = content.split("\n") if content else []
-    headings = []
-    in_code_block = False
-    for line_no, line in enumerate(lines):
-        if line.strip().startswith("```"):
-            in_code_block = not in_code_block
-            continue
-        if in_code_block:
-            continue
-        match = _MARKDOWN_HEADING_RE.match(line)
-        if match is not None:
-            headings.append((line_no, len(match.group(1)), match.group(2).strip()))
-    include_top_level = not any(level > 1 for _line_no, level, _heading in headings)
-    stack = []
-    sections = []
-    for heading_no, (start_line, level, heading) in enumerate(headings):
-        while stack and stack[-1][0] >= level:
-            stack.pop()
-        stack.append((level, heading))
-        if not include_top_level and level == 1:
-            continue
-        end_line = len(lines)
-        for next_line, next_level, _next_heading in headings[heading_no + 1:]:
-            if next_level <= level:
-                end_line = next_line
-                break
-        section_path = " > ".join(title for heading_level, title in stack if include_top_level or heading_level > 1)
-        sections.append({"section": section_path or heading, "heading": heading, "heading_level": level, "content": "\n".join(lines[start_line:end_line]).strip(), "body": "\n".join(lines[start_line + 1:end_line]).strip()})
-    if not sections and content:
-        sections.append({"section": "Document", "heading": "Document", "heading_level": 1, "content": content, "body": content})
-    return sections
-
-
-def _select_markdown_sections(markdown: str, section_filter: str) -> tuple[str, list[str]]:
-    sections = _extract_markdown_sections(markdown)
-    pattern = str(section_filter or "").strip().casefold()
-    wildcard = "*" in pattern or "?" in pattern
-    if wildcard:
-        matches = [section for section in sections if any(fnmatch.fnmatchcase(str(section[key]).casefold(), pattern) for key in ("section", "heading"))]
-    else:
-        matches = [section for section in sections if any(pattern == str(section[key]).casefold() for key in ("section", "heading"))]
-        if not matches:
-            matches = [section for section in sections if any(pattern in str(section[key]).casefold() for key in ("section", "heading"))]
-    if not matches:
-        raise ValueError(f"Markdown section not found: {section_filter}")
-    return "\n\n".join(str(section["content"]) for section in matches), [str(section["section"]) for section in matches]
-
-
-def _search_markdown_sections(markdown: str, query: str, title: str = "") -> list[dict[str, Any]]:
-    from shared.deepy.engine import _build_doc_excerpt, _score_doc_section, _tokenize_doc_query
-
-    query = str(query or "").strip()
-    if not query:
-        raise ValueError("query is empty.")
-    query_tokens = _tokenize_doc_query(query)
-    matches = []
-    sections = _extract_markdown_sections(markdown)
-    exact_rows = []
-    for section in sections:
-        rows = [line for line in section["body"].splitlines() if line.startswith("|") and line.split("|", 2)[1].strip().strip("`").casefold() == query.casefold()]
-        if rows:
-            excerpt = "\n".join(rows)
-            exact_rows.append({"section": section["section"], "heading": section["heading"], "heading_level": section["heading_level"], "excerpt": excerpt if len(excerpt) <= 1000 else excerpt[:1000] + "…", "score": 100})
-    if exact_rows:
-        return exact_rows
-    for section in sections:
-        score = _score_doc_section(query, query_tokens, str(title or ""), section)
-        if score <= 0:
-            continue
-        matches.append({"section": section["section"], "heading": section["heading"], "heading_level": section["heading_level"], "excerpt": _build_doc_excerpt(section, query, query_tokens), "score": int(score)})
-    matches.sort(key=lambda item: (-int(item["score"]), len(str(item["section"]))))
-    return matches
-
-
-def _resource_read_blocks(contents, max_chars):
-    """Split oversized text records without omitting or duplicating source text."""
-    for item in contents:
-        if "text" not in item or len(json.dumps(item, ensure_ascii=False, separators=(",", ":"))) + 1 <= max_chars:
-            yield item
-            continue
-        text, start = item["text"], 0
-        text_budget = max_chars - len(json.dumps({**item, "text": ""}, ensure_ascii=False, separators=(",", ":"))) - 1
-        if text_budget < 1:
-            raise ValueError("Resource metadata exceeds the read page budget.")
-        while start < len(text):
-            end = min(len(text), start + text_budget)
-            while (encoded_chars := len(json.dumps(text[start:end], ensure_ascii=False)) - 2) > text_budget:
-                end = start + (end - start) * text_budget // encoded_chars
-                if end == start:
-                    raise ValueError("Resource metadata exceeds the read page budget.")
-            if end < len(text) and (newline := text.rfind("\n", start, end)) >= start:
-                end = newline + 1
-            yield {**item, "text": text[start:end]}
-            start = end
-
-
 class DeepyPrimeTools:
     _POLL_INTERVAL_SECONDS = 0.2
     _plugin_tools_by_name = {}
@@ -190,6 +90,10 @@ class DeepyPrimeTools:
 
         base_policy = build_file_access_policy(zero_tools._server_config() if zero_tools is not None else get_deepy_runtime_config())
         self._api_session = WanGPSession(webui_state=state, console_output=False, console_isatty=False)
+        from shared.utils.workspace_storage import host_for_gen
+        host = host_for_gen(state['gen'])
+        if host is not None:
+            self._api_session._workspace_id = host.deepy_workspace_id()
         self._api_session._gradio_webui_context = {"defer_load_queue_trigger": True}
 
         workspace = session_store.session_workspace(assistant_session)
@@ -207,7 +111,7 @@ class DeepyPrimeTools:
 
         self._plugin_tools_by_name = {definition.name: definition for definition in get_deepy_prime_plugin_tools() if not definition.requires_file_system or base_policy.read_enabled}
         self._tool_progress_callback: Callable[..., None] | None = None
-        self._server = build_inprocess_server(self._api_session, toolbox=zero_tools, default_job_event_limit=0, file_access_policy=self.file_access_policy, artifact_workspace=self.assistant_session.artifact_workspace, api_version=2, allow_async=PRIME_ASYNC_ENABLED)
+        self._server = build_inprocess_server(self._api_session, toolbox=zero_tools, default_job_event_limit=0, file_access_policy=self.file_access_policy, artifact_workspace=self.assistant_session.artifact_workspace, api_version="2.1", allow_async=PRIME_ASYNC_ENABLED)
         self._background_jobs = {}
         self._external_servers = normalize_deepy_prime_mcp_servers(get_deepy_config_value(DEEPY_PRIME_MCP_SERVERS_KEY, {}))
         self._auto_discover_mcp_paths = normalize_deepy_mcp_auto_discover_paths(get_deepy_config_value(DEEPY_MCP_AUTO_DISCOVER_PATHS_KEY, DEEPY_MCP_AUTO_DISCOVER_PATHS_DEFAULT))
@@ -344,14 +248,7 @@ class DeepyPrimeTools:
                         while True:
                             listed_resources = await client.list_resources(cursor=cursor)
                             for resource in listed_resources.resources:
-                                self._resource_defs.append({
-                                    "server": server_name,
-                                    "uri": str(resource.uri),
-                                    "name": str(getattr(resource, "name", "") or ""),
-                                    "title": str(getattr(resource, "title", "") or ""),
-                                    "description": str(getattr(resource, "description", "") or ""),
-                                    "mime_type": str(getattr(resource, "mimeType", "") or ""),
-                                })
+                                self._resource_defs.append(resource_record(resource, server_name))
                             cursor = getattr(listed_resources, "nextCursor", None)
                             if not cursor:
                                 break
@@ -367,6 +264,8 @@ class DeepyPrimeTools:
                         print(f"[DeepyPrimeTools] Ignoring tools from unavailable external MCP server '{server_name}': {message}")
                         continue
                     for tool in listed_tools.tools:
+                        if server_name == "wangp" and tool.name == "mcp_resource":
+                            continue  # Prime federates the same resource browser across all connected servers.
                         exposed_name = str(tool.name) if server_name == "wangp" else f"mcp_{self._safe_tool_name(server_name)}_{self._safe_tool_name(tool.name)}"
                         if exposed_name in self._tool_routes:
                             raise RuntimeError(f"Duplicate Deepy Prime MCP tool name: {exposed_name}")
@@ -375,7 +274,7 @@ class DeepyPrimeTools:
                         if server_name != "wangp":
                             description = f"External MCP server '{server_name}'. {description}".strip()
                         self._tool_defs.append({"type": "function", "function": {"name": exposed_name, "description": description, "parameters": dict(tool.inputSchema or {"type": "object", "properties": {}})}})
-                self._tool_defs.append({"type": "function", "function": {"name": "mcp_resource", "description": "Find documentation and workflows. Without uri, query filters the resource index. With uri, query searches passages ('*' lists headings), section reads matching headings; omit both for full text. limit caps results/text blocks per page; cursor continues unchanged filters. Follow next_call for more.", "parameters": {"type": "object", "properties": {"server": {"type": "string"}, "uri": {"type": "string"}, "query": {"type": "string"}, "section": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}, "cursor": {"type": "string"}}, "additionalProperties": False}}})
+                self._tool_defs.append({"type": "function", "function": {"name": "mcp_resource", "description": RESOURCE_DESCRIPTION, "parameters": {"type": "object", "properties": {"server": {"type": "string"}, "uri": {"type": "string"}, "query": {"type": "string"}, "section": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}, "cursor": {"type": "string"}}, "additionalProperties": False}}})
                 self._ready_event.set()
 
                 while True:
@@ -385,85 +284,14 @@ class DeepyPrimeTools:
                     tool_name, arguments, future = request
                     try:
                         if tool_name == "mcp_resource":
-                            server_name = str(arguments.get("server", "") or "").strip()
-                            uri = str(arguments.get("uri", "") or "").strip()
-                            if not server_name or server_name == "wangp":
-                                uri = RESOURCE_ALIASES.get(uri, uri)
-                            query = str(arguments.get("query", "") or "").strip()
-                            section_filter = str(arguments.get("section", "") or "").strip()
-                            if not uri:
-                                if section_filter:
-                                    raise ValueError("uri is required when section is provided")
-                                resources = [resource for resource in self._resource_defs if not server_name or resource["server"] == server_name]
-                                if query:
-                                    from shared.deepy.engine import _score_doc_section, _tokenize_doc_query
+                            local_resources = (await clients["wangp"].list_resources()).resources
+                            self._resource_defs = [item for item in self._resource_defs if item["server"] != "wangp"] + [resource_record(item) for item in local_resources]
+                            async def read_resource(server_name, uri):
+                                response = await clients[server_name].read_resource(uri)
+                                return [{"uri": str(item.uri), "mime_type": str(item.mimeType or ""), **({"text": item.text} if hasattr(item, "text") else {"blob": item.blob})} for item in response.contents]
 
-                                    tokens = _tokenize_doc_query(query)
-                                    ranked = [(_score_doc_section(query, tokens, resource["title"] or resource["name"], {"section": resource["uri"], "body": resource["description"]}), resource) for resource in resources]
-                                    resources = [resource for score, resource in sorted(ranked, key=lambda item: -item[0]) if score > 0]
-                                resources = ({key: resource[key] for key in ("server", "uri", "description")} for resource in resources)
-                                future.set_result(self._server._wangp_pages.page(["resources", server_name, query], resources, key="resources", limit=arguments.get("limit", 20), cursor=arguments.get("cursor"), metadata={"unavailable_servers": dict(self._external_server_errors)}))
-                                continue
-                            if query and section_filter:
-                                raise ValueError("query and section are mutually exclusive")
-                            if server_name and server_name not in clients:
-                                raise ValueError(f"Unknown MCP server: {server_name}")
-                            resource_matches = [resource for resource in self._resource_defs if resource["uri"] == uri and (not server_name or resource["server"] == server_name)]
-                            if not resource_matches:
-                                raise ValueError(f"Unknown MCP resource{f' for server {server_name!r}' if server_name else ''}: {uri}")
-                            matching_servers = sorted({resource["server"] for resource in resource_matches})
-                            if not server_name:
-                                if len(matching_servers) != 1:
-                                    raise ValueError(f"Resource URI is exposed by multiple MCP servers; specify one of: {', '.join(matching_servers)}")
-                                server_name = matching_servers[0]
-                            page_query = ["resource", server_name, uri, query, section_filter]
-                            page_key = "sections" if query == "*" else "matches" if query else "contents"
-                            read_page_chars = min(16000, normalize_deepy_context_tokens(get_deepy_config_value(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT)) // 2)
-                            page_options = {"key": page_key, "limit": arguments.get("limit", 100 if query == "*" else 5 if query else 20), "max_chars": 6000 if query else read_page_chars}
-                            if arguments.get("cursor"):
-                                page = self._server._wangp_pages.page(page_query, cursor=arguments["cursor"], **page_options)
-                                if page["has_more"]:
-                                    page["next_call"] = {**arguments, "cursor": page["next_cursor"]}
-                                future.set_result(page)
-                                continue
-                            resource_result = await clients[server_name].read_resource(uri)
-                            scope = {"applicability": resource_matches[0]["description"]} if server_name == "wangp" and uri.startswith("wangp://docs/") else {}
-                            if query:
-                                matches = []
-                                resource_def = resource_matches[0]
-                                for content in resource_result.contents:
-                                    if not hasattr(content, "text"):
-                                        raise ValueError("Markdown resource search is only available for text resources.")
-                                    if query == "*":
-                                        matches.extend(section["section"] for section in _extract_markdown_sections(str(content.text)))
-                                    else:
-                                        matches.extend(_search_markdown_sections(str(content.text), query, title=resource_def["title"] or resource_def["name"]))
-                                if query != "*":
-                                    matches.sort(key=lambda item: (-int(item["score"]), len(str(item["section"]))))
-                                page = self._server._wangp_pages.page(page_query, matches, metadata={"server": server_name, "uri": uri, "query": query, **scope}, **page_options)
-                                if page["has_more"]:
-                                    page["next_call"] = {**arguments, "cursor": page["next_cursor"]}
-                                future.set_result(page)
-                                continue
-                            contents = []
-                            matched_sections = []
-                            for content in resource_result.contents:
-                                item = {"uri": str(content.uri), "mime_type": str(content.mimeType or "")}
-                                if hasattr(content, "text"):
-                                    text = str(content.text)
-                                    if section_filter:
-                                        text, current_matches = _select_markdown_sections(text, section_filter)
-                                        matched_sections.extend(current_matches)
-                                    item["text"] = text
-                                elif hasattr(content, "blob"):
-                                    if section_filter:
-                                        raise ValueError("Markdown section filtering is only available for text resources.")
-                                    item["blob"] = str(content.blob)
-                                contents.append(item)
-                            page = self._server._wangp_pages.page(page_query, _resource_read_blocks(contents, read_page_chars), metadata={"server": server_name, "uri": uri, "section": section_filter, **scope, "matched_sections": matched_sections}, **page_options)
-                            if page["has_more"]:
-                                page["next_call"] = {**arguments, "cursor": page["next_cursor"]}
-                            future.set_result(page)
+                            budget = min(16000, normalize_deepy_context_tokens(get_deepy_config_value(DEEPY_CONTEXT_TOKENS_KEY, DEEPY_CONTEXT_TOKENS_DEFAULT)) // 2)
+                            future.set_result(await query_resources(self._server._wangp_pages, self._resource_defs, read_resource, arguments, servers=clients, unavailable_servers=self._external_server_errors, read_page_chars=budget))
                             continue
                         server_name, original_name = self._tool_routes[tool_name]
                         future.set_result(await clients[server_name].call_tool(original_name, arguments))
@@ -739,6 +567,7 @@ class DeepyPrimeTools:
             "wangp_model": ("model_type",),
             "wangp_models": ("action",),
             "wangp_deepy_templates": ("tool_id",),
+            "wangp_templates": ("task", "template"),
             "wangp_session": ("action",),
             "wangp_toolbox": ("action",),
             "wangp_io": ("action",),
@@ -860,6 +689,12 @@ class DeepyPrimeTools:
             if settings is None:
                 return self.get_tool_display_name(tool_name)
             media_label, model_label = self._generation_label_context(settings)
+        elif tool_name == "wangp_templates":
+            task = arguments.get("task")
+            template = arguments.get("template")
+            if template is not None:
+                return finish(f"Read {short(template)} Template for {humanize(task or '')}")
+            return finish(f"Browse Templates for {humanize(task)}" if task else "Browse Template Tasks")
         elif tool_name in {"wangp_deepy_templates", "wangp_list_gallery"} and "action" not in arguments:
             if tool_name == "wangp_deepy_templates":
                 tool_name = "wangp_list_deepy_templates" if arguments.get("cursor") else "wangp_get_deepy_template_settings"
@@ -1016,7 +851,7 @@ class DeepyPrimeTools:
                             if name not in ignored:
                                 ignored.append(name)
         result = self._call_mcp_tool(tool_name, arguments)
-        if tool_name in {"wangp_generate", "wangp_postprocess"} and result.get("job_id"):
+        if tool_name in {"wangp_generate", "wangp_postprocess"} and result.get("job_id") and not result.get("recovered"):
             action_arguments = arguments if tool_name == "wangp_generate" else arguments["arguments"]
             if action_arguments.get("wait", True):
                 result = self._wait_for_generation(result, action_arguments.get("timeout_s"), action_arguments.get("event_limit", 0))
@@ -1026,7 +861,7 @@ class DeepyPrimeTools:
             result["info"] = f"Ignored {', '.join(ignored)}: WanGP manages waiting for generation and post-processing."
         self._remember_generated_media(result)
         if tool_name in {"wangp_generate", "wangp_postprocess"}:
-            from shared.mcp_v2 import public_media_result
+            from shared.mcp.v2 import public_media_result
             result = public_media_result(result)
         return self.file_access_policy.virtualize_result(result)
 

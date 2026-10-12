@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Torch default device policy for a model's generate() call.
 
 mmgp installs torch.set_default_device("cuda") when it loads a pipeline, so tensors created without an explicit device

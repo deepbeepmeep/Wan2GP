@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import json
 import os
 import shutil
@@ -406,7 +407,8 @@ def _decode_contiguous_video_frames_ffmpeg(video_path, start_frame, max_frames, 
         raise RuntimeError("ffmpeg binary not found")
     start_frame = int(start_frame)
     max_frames = int(max_frames)
-    if metadata.get("virtual_end_frame") is not None:
+    # The caller's limit can greatly exceed the clip length (for example, postprocessing).
+    if metadata["frame_count"] > 0 or metadata.get("virtual_end_frame") is not None:
         available_frames = max(0, int(metadata["frame_count"]) - max(0, start_frame))
         max_frames = min(max_frames, available_frames)
     if max_frames <= 0:

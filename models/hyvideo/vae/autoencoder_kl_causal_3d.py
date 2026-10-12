@@ -93,6 +93,7 @@ from diffusers.models.attention_processor import (
 )
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers.models.modeling_utils import ModelMixin
+from .unet_causal_3d_blocks import fused_norm_silu
 from .vae import DecoderCausal3D, BaseOutput, DecoderOutput, DiagonalGaussianDistribution, EncoderCausal3D
 
 # """
@@ -200,7 +201,7 @@ class AutoencoderKLCausal3D(ModelMixin, ConfigMixin, FromOriginalVAEMixin):
         time_compression_ratio: int = 4,
         disable_causal_conv: bool = False,
         mid_block_add_attention: bool = True,
-        mid_block_causal_attn: bool = False,
+        mid_block_causal_attn: bool = True,  # upstream's frame-causal mid-block attention (the VAE was trained with it)
         use_trt_engine: bool = False,
         nccl_gather: bool = True,
         engine_path: str = f"{MODEL_BASE}/HYVAE_decoder+conv_256x256xT_fp16_H20.engine",
@@ -494,6 +495,26 @@ class AutoencoderKLCausal3D(ModelMixin, ConfigMixin, FromOriginalVAEMixin):
 
         return DecoderOutput(sample=dec)
 
+    def streamed_decode(self, z, tile, chunk_frames, stats_tile=16, stats_step=2, stats_group=4, global_modules=3):
+        """Decodes without tile overlap or blending. The low-resolution start of the decoder (mid block, whose attention spans all the frames,
+        and the first global_modules modules of the up blocks) runs on the whole clip with its exact GroupNorm statistics. The other GroupNorms
+        normalize with whole-clip statistics estimated by streaming a spread-out part of the frame (one stats_tile tile in stats_step, both
+        ways) through the clip first; with these statistics fixed, the decoder is local and causal, so each output tile (side `tile` latent
+        pixels) streams through all the frames by chunks of chunk_frames latent frames, holding only its own causal caches, and is computed
+        exactly with a halo of the receptive field. Memory follows the tile and chunk sizes, not the frame size. Needs the Triton GroupNorm
+        kernels."""
+        sample, modules = self.decoder.stream_start(self.post_quant_conv(z), global_modules)
+        sample = sample.cpu()  # the passes read boxes and tile regions of it: in RAM between them, not in VRAM
+        frames, height, width = sample.shape[2:]
+        box_height, box_width = min(stats_tile, height), min(stats_tile, width)
+        boxes = [(slice(y, y + box_height), slice(x, x + box_width)) for y in sorted({min(y, height - box_height) for y in range(0, height, stats_tile * stats_step)})
+                 for x in sorted({min(x, width - box_width) for x in range(0, width, stats_tile * stats_step)})]
+        calls = sample.shape[0] * frames * -(-len(boxes) // stats_group)  # last resnet calls
+        with vae_decoding_progress(calls, modules[-1], title="VAE Decoding Statistics"):
+            stats = self.decoder.stream_statistics(sample, modules, boxes, 1, stats_group)
+        with vae_decoding_progress(-(-height // tile) * -(-width // tile) * -(-frames // chunk_frames), self.decoder.conv_out.conv):
+            return self.decoder.stream_tiles(sample, modules, stats, tile, chunk_frames)
+
     @apply_forward_hook
     def decode(
         self, z: torch.FloatTensor, return_dict: bool = True, generator=None
@@ -512,6 +533,13 @@ class AutoencoderKLCausal3D(ModelMixin, ConfigMixin, FromOriginalVAEMixin):
                 returned.
 
         """
+
+        if (self.use_temporal_tiling or self.use_spatial_tiling) and not self.disable_causal_conv and not self.parallel_decode and fused_norm_silu(z):
+            # memory-bounded decode without tile overlap or blending (fast kernels): streamed tiles of the preset's size, chunks and statistics
+            # boxes per call of half its frames (peak below the preset's tiled decode)
+            chunk = max(self.tile_latent_min_tsize // 2, 1)
+            decoded = self.streamed_decode(z, self.tile_latent_min_size, chunk, stats_group=chunk)
+            return (decoded,) if not return_dict else DecoderOutput(sample=decoded)
 
         tiles = z.shape[0] if self.use_slicing else 1
         if self.use_temporal_tiling and z.shape[2] > self.tile_latent_min_tsize:

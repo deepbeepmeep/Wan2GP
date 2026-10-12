@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Transparent video companions from a sequence of uint8 BGRA frames."""
 from io import BytesIO
 from pathlib import Path

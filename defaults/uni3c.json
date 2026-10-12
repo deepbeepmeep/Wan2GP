@@ -1,0 +1,25 @@
+{
+    "model": {
+        "name": "Wan2.1 Uni3C Camera Control 14B",
+        "architecture": "uni3c",
+        "description": "Uni3C (Alibaba DAMO) moves the camera precisely around the scene of a start image: the image is lifted to a 3D point cloud with an estimated depth, rendered along the chosen camera path and the renders guide a ControlNet on Wan2.1 Image2Video 14B 720p.",
+        "URLs": "i2v_720p",
+        "modules": [
+            [
+                "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_uni3c_controlnet_fp32.safetensors",
+                "https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan2.1_uni3c_controlnet_int8_convrot.safetensors"
+            ]
+        ]
+    },
+    "prompt": "An old stone bridge lined with yellow houses over a calm green river, a rowing team gliding under the arches, clouds drifting in a blue sky, realistic photography, high detail.",
+    "image_prompt_type": "S",
+    "resolution": "832x480",
+    "video_length": 81,
+    "num_inference_steps": 50,
+    "guidance_scale": 5.0,
+    "flow_shift": 5.0,
+    "model_mode": "arc_left_45",
+    "custom_settings": {
+        "camera_strength": 100.0
+    }
+}

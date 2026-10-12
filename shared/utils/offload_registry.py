@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Registry of mmgp offload objects owned by WanGP extensions (postprocessing
 upsamplers, voice converters, ...).
 

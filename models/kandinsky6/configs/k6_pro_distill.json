@@ -1,0 +1,48 @@
+{
+    "transformer": {
+        "model_dim": 4096,
+        "model_dim_a": 2048,
+        "time_dim": 1024,
+        "time_dim_a": 1024,
+        "ff_dim": 16384,
+        "ff_dim_a": 7168,
+        "axes_dims": [
+            32,
+            48,
+            48
+        ],
+        "axes_dims_a": [
+            32,
+            48,
+            48
+        ],
+        "num_text_blocks": 4,
+        "num_visual_blocks": 60,
+        "in_visual_dim": 16,
+        "in_audio_dim": 40,
+        "in_text_dim": 3584,
+        "in_text_dim2": 768,
+        "patch_size": [
+            1,
+            2,
+            2
+        ],
+        "audio_freqs_scaling": 0.144,
+        "visual_token_type_num_embeddings": 2,
+        "n_grid": 10,
+        "out_visual_dim": 16,
+        "out_audio_dim": 40
+    },
+    "rope_scale_factor": [
+        1.0,
+        2.0,
+        2.0
+    ],
+    "piflow": {
+        "shift": 5.0,
+        "eps": 1e-06,
+        "final_step_size_scale": 0.5,
+        "num_policy_substeps": 128
+    },
+    "audio_scaling_factor": 0.417
+}

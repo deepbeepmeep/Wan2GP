@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import html
 import json
 import queue
@@ -1097,6 +1098,15 @@ WMM.findImageEditorForTrigger = function (trigger) {
 };
 
 WMM.mountImageEditorTriggers = function () {
+    const anchors = [...document.querySelectorAll('.wangp-magic-mask-anchor')];
+    const triggers = [...document.querySelectorAll('.wangp-magic-mask-trigger')];
+    const targets = [...anchors, ...triggers];
+    if (targets.length !== WMM.observedTargets.length || targets.some((node, index) => node !== WMM.observedTargets[index])) {
+        WMM.observer.disconnect();
+        anchors.forEach(anchor => WMM.observer.observe(anchor, {childList: true, subtree: true}));
+        triggers.forEach(trigger => WMM.observer.observe(trigger, {attributes: true, attributeFilter: ['class', 'hidden', 'disabled']}));
+        WMM.observedTargets = targets;
+    }
     WMM.decoratePopupShells();
     WMM.decorateWandTriggers();
     WMM.installOverlayTriggerPatch();
@@ -1138,15 +1148,17 @@ WMM.mountImageEditorTriggers = function () {
 };
 
 WMM.scheduleMount = function () {
-    if (WMM.raf) cancelAnimationFrame(WMM.raf);
-    WMM.raf = requestAnimationFrame(WMM.mountImageEditorTriggers);
+    if (WMM.raf) return;
+    WMM.raf = requestAnimationFrame(() => {
+        WMM.raf = null;
+        WMM.mountImageEditorTriggers();
+    });
 };
 
 if (!WMM.init) {
     WMM.init = true;
     WMM.observer = new MutationObserver(WMM.scheduleMount);
-    const root = document.querySelector('gradio-app') || document.body;
-    if (root) WMM.observer.observe(root, { childList: true, subtree: true });
+    WMM.observedTargets = [];
     window.addEventListener('resize', WMM.scheduleMount);
     window.addEventListener('load', WMM.scheduleMount);
 }

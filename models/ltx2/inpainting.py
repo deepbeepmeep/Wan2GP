@@ -3,6 +3,8 @@ import math
 import torch
 import torch.nn.functional as F
 
+from shared.utils.utils import guide_mask_to_float, guide_to_float
+
 from .ltx2_runtime import LTX2_LAPLACIAN_BLEND_MASK_LOW_RES_LONG_SIDE, LTX2_MASKED_CONTROL_VIDEO_PAD_RGB
 
 
@@ -62,7 +64,8 @@ def _merge_ltx2_masks(mask: torch.Tensor | None, extra_mask: torch.Tensor | None
 def _apply_ltx2_inpaint_preprocess_dilation(video: torch.Tensor | None, mask: torch.Tensor | None, spatial_radius: int) -> tuple[torch.Tensor | None, torch.Tensor | None]:
     if mask is None or spatial_radius <= 0:
         return video, mask
-    dilated_mask = F.max_pool2d(mask.float().clamp(0.0, 1.0).permute(1, 0, 2, 3), kernel_size=spatial_radius * 2 + 1, stride=1, padding=spatial_radius).permute(1, 0, 2, 3).clamp(0.0, 1.0).to(device=mask.device, dtype=mask.dtype)
+    dilated_mask = F.max_pool2d(mask.float().clamp(0.0, 1.0).permute(1, 0, 2, 3), kernel_size=spatial_radius * 2 + 1, stride=1, padding=spatial_radius).permute(1, 0, 2, 3).clamp(0.0, 1.0)
+    dilated_mask = (dilated_mask.mul_(255.0) if mask.dtype == torch.uint8 else dilated_mask).to(device=mask.device, dtype=mask.dtype)  # uint8 masks stay 0 / 255
     if video is None:
         return video, dilated_mask
     color = torch.tensor(LTX2_MASKED_CONTROL_VIDEO_PAD_RGB, device=video.device, dtype=torch.float32)
@@ -86,7 +89,7 @@ def _pad_ltx2_masked_control_video_tail(video: torch.Tensor | None, mask: torch.
         pad = color.view(3, 1, 1, 1).expand(3, pad_frames, video.shape[-2], video.shape[-1])
         video = torch.cat([video, pad], dim=1)
     if mask is not None and int(mask.shape[1]) < int(video.shape[1]):
-        pad = torch.ones((mask.shape[0], int(video.shape[1]) - int(mask.shape[1]), mask.shape[-2], mask.shape[-1]), device=mask.device, dtype=mask.dtype)
+        pad = torch.full((mask.shape[0], int(video.shape[1]) - int(mask.shape[1]), mask.shape[-2], mask.shape[-1]), 255 if mask.dtype == torch.uint8 else 1, device=mask.device, dtype=mask.dtype)
         mask = torch.cat([mask, pad], dim=1)
     return video, mask
 
@@ -156,8 +159,9 @@ def _apply_ltx2_mask_blend(video_tensor: torch.Tensor, source: torch.Tensor | No
     frames = min(int(output_frame_num), int(video_tensor.shape[1]), int(source.shape[1]), int(mask.shape[1]))
     if frames <= 0:
         return video_tensor
-    source = source.detach().cpu()[:, :frames, :height, :width].contiguous()
-    mask = mask.detach().cpu()[:1, :frames, :height, :width].contiguous()
+    # uint8 control videos and masks (model_def "uint8_guides") are blended from WanGP's float values, converted to contiguous tensors directly
+    source = guide_to_float(source.detach().cpu()[:, :frames, :height, :width], torch.contiguous_format).contiguous()
+    mask = guide_mask_to_float(mask.detach().cpu()[:1, :frames, :height, :width], torch.contiguous_format).contiguous()
     generated = video_tensor[:, :frames, :height, :width]
     if sanitize_masked_source:
         generated_source = generated.detach().cpu()

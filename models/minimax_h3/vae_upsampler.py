@@ -8,7 +8,7 @@ from postprocessing.spatial_upsamplers import SimpleScaleSuffixMixin, resize_x2_
 
 
 X2_VAE_FILE = "minimax_h3/MiniMax-H3-X2-Detail-v1.safetensors"
-X2_VAE_INT8_FILE = "minimax_h3/MiniMax-H3-X2-Detail-v1_int8_convrot.safetensors"  # built by tools/build_h3_x2_vae_int8_convrot.py
+X2_VAE_INT8_FILE = "minimax_h3/MiniMax-H3-X2-Detail-v1_int8_convrot.safetensors"
 X2_VAE_METHOD = "h3_vae"
 X2_VAE_VALUE = "h3_vae*2"
 X2_VAE_SCALES = (1.0, 1.5, 2.0)

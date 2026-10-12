@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import ast
 import json
 import os
@@ -196,7 +197,9 @@ if _TRITON_AVAILABLE:
 def _decode_w4a8_triton(qdata, s_rel, codebook, group_size, output):
     rows, k_half = qdata.shape
     grid = (triton.cdiv(rows, 16), triton.cdiv(k_half, 128))
-    codebook_arg = codebook if codebook is not None else torch.empty(1, dtype=torch.float32, device=qdata.device)
+    # Older Triton versions cannot load E4M3 FP8 tensors on Ampere GPUs.
+    s_rel = s_rel.float()
+    codebook_arg = codebook.float() if codebook is not None else torch.empty(1, dtype=torch.float32, device=qdata.device)
     _decode_w4a8_kernel[grid](qdata, s_rel, codebook_arg, output, rows, k_half, group_size,
                               qdata.stride(0), qdata.stride(1), s_rel.stride(0), s_rel.stride(1), output.stride(0), output.stride(1),
                               has_codebook=codebook is not None, block_n=16, block_kh=128, num_warps=4)

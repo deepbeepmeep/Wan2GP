@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import json
 import math
 import os
@@ -7,9 +8,11 @@ from shared.match_archi import match_nvidia_architecture
 
 
 RESOLUTION_FILE = "resolutions.json"
+# Include the block-aligned 1080p presets (1920x1088).
+DEFAULT_RESOLUTION_BUDGET = "1920x1088"
 
 DEFAULT_RESOLUTION_CHOICES_4K = [
-    # 4096p
+    # 16.8 MP
     ("4096x4096 (1:1)", "4096x4096"),
     ("5440x3072 (16:9)", "5440x3072"),
     ("3072x5440 (9:16)", "3072x5440"),
@@ -78,7 +81,9 @@ DEFAULT_RESOLUTION_CHOICES = [
     ("320x320 (1:1)", "320x320"),
 ]
 
-GROUP_THRESHOLDS = {
+# Frozen for legacy category expressions, whose aliases and equality ranges must
+# not change when the display groups below acquire a new boundary.
+LEGACY_GROUP_THRESHOLDS = {
     "256p": 448 * 256,
     "320p": 448 * 448,
     "384p": 512 * 512,
@@ -91,6 +96,15 @@ GROUP_THRESHOLDS = {
     "4096p": 4096 * 4096,
 }
 
+GROUP_THRESHOLDS = {**LEGACY_GROUP_THRESHOLDS}
+GROUP_THRESHOLDS.pop("4096p")
+GROUP_THRESHOLDS.pop("1440p")
+GROUP_THRESHOLDS["2048sq"] = 2048 * 2048
+GROUP_THRESHOLDS["4096sq"] = 4096 * 4096
+GROUP_THRESHOLDS = dict(sorted(GROUP_THRESHOLDS.items(), key=lambda item: item[1]))
+GROUP_THRESHOLDS["larger"] = math.inf
+GROUP_LABELS = {"2048sq": "4.2 MP", "2160p": "4K UHD", "4096sq": "16.8 MP", "larger": "Custom"}
+
 GROUP_TIERS = {
     "256p": 256,
     "320p": 320,
@@ -102,6 +116,8 @@ GROUP_TIERS = {
     "1440p": 1440,
     "2160p": 2160,
     "4096p": 4096,
+    "2048sq": 2048,
+    "4096sq": 4096,
 }
 
 CATEGORY_ALIASES = {
@@ -113,11 +129,13 @@ _custom_resolutions = None
 
 
 def is_resolution_value(value):
-    return isinstance(value, str) and re.fullmatch(r"\d+x\d+", value.strip().lower()) is not None
+    return isinstance(value, str) and re.fullmatch(r"[1-9]\d*x[1-9]\d*", value.strip().lower()) is not None
 
 
 def parse_resolution(value):
-    width, height = value.lower().split("x", 1)
+    if not is_resolution_value(value):
+        raise ValueError('resolution must be a positive "WIDTHxHEIGHT" string.')
+    width, height = value.strip().lower().split("x", 1)
     return int(width), int(height)
 
 
@@ -245,6 +263,8 @@ def categorize_resolution(resolution_str):
 
 def _category_tier(category):
     key = str(category).strip().lower()
+    if key in GROUP_TIERS:
+        return GROUP_TIERS[key]
     if key in CATEGORY_ALIASES:
         return CATEGORY_ALIASES[key]
     if key.endswith("p"):
@@ -277,16 +297,26 @@ def category_allowed(category, category_expressions):
     expressions = normalize_category_expressions(category_expressions)
     if not expressions:
         return True
+    if category == "larger":
+        return False
     tier = GROUP_TIERS[category]
     return any(match_nvidia_architecture({_normalize_category_expression(expression): True}, tier) for expression in expressions)
 
 
 def filter_resolution_choices_by_categories(resolution_choices, category_expressions):
-    return [
-        resolution
-        for resolution in resolution_choices
-        if category_allowed(categorize_resolution(resolution[1]), category_expressions)
-    ]
+    expressions = normalize_category_expressions(category_expressions)
+    if not expressions:
+        return list(resolution_choices)
+    result = []
+    for choice in resolution_choices:
+        width, height = parse_resolution(choice[1])
+        for expression in expressions:
+            thresholds = GROUP_THRESHOLDS if re.search(r"\b(?:2048|4096)sq\b", expression, re.I) else LEGACY_GROUP_THRESHOLDS
+            group = next((group for group, area in thresholds.items() if width * height <= area), "larger")
+            if category_allowed(group, [expression]):
+                result.append(choice)
+                break
+    return result
 
 
 def closest_resolution(target_resolution, resolution_choices):
@@ -316,23 +346,35 @@ def closest_resolution(target_resolution, resolution_choices):
 
 
 def resolve_resolution_choices(current_resolution_choice, model_def, enable_4k_resolutions=False, block_size=None):
-    model_resolutions = model_def.get("resolutions", None)
-    if model_resolutions is not None:
-        resolution_choices = normalize_resolution_choices(model_resolutions, "model.resolutions") or []
-        if model_def.get("resolutions_categories", None) is not None:
-            resolution_choices = dedupe_resolution_choices(resolution_choices + filter_resolution_choices_by_categories(all_global_resolution_choices(), model_def["resolutions_categories"]))
-    elif model_def.get("resolutions_categories", None) is not None:
-        resolution_choices = filter_resolution_choices_by_categories(all_global_resolution_choices(), model_def["resolutions_categories"])
+    model_def = migrate_resolution_definition(model_def)
+    custom = normalize_resolution_choices(model_def.get("resolutions"), "model.resolutions") or []
+    locked = model_def.get("lock_resolutions", False)
+    if locked:
+        resolution_choices = custom
+    elif enable_4k_resolutions:
+        resolution_choices = dedupe_resolution_choices(default_global_resolution_choices(True) + custom)
+    elif available_resolution_budgets(model_def):
+        max_pixels = max(available_resolution_budgets(model_def).values(), default=0)
+        resolution_choices = [choice for choice in builtin_resolution_choices(include_4k=True) if math.prod(parse_resolution(choice[1])) <= max_pixels]
+        resolution_choices = dedupe_resolution_choices(resolution_choices + custom + load_custom_resolution_choices())
     else:
-        resolution_choices = default_global_resolution_choices(enable_4k_resolutions)
+        resolution_choices = dedupe_resolution_choices(default_global_resolution_choices(enable_4k_resolutions) + custom)
     resolution_choices = align_resolution_choices(resolution_choices, model_def.get("vae_block_size", 16) if block_size is None else block_size)
+    minimum = (resolution_pixels(model_def.get("resolution_min")) or 0) if locked or not enable_4k_resolutions else 0
+    resolution_choices = [choice for choice in resolution_choices if math.prod(parse_resolution(choice[1])) >= minimum]
 
-    if not resolution_choices:
-        return [], None
-    if current_resolution_choice is not None and not any(current_resolution_choice == resolution[1] for resolution in resolution_choices):
-        current_resolution_choice = closest_resolution(current_resolution_choice, resolution_choices)
-    elif current_resolution_choice is None and resolution_choices:
+    if is_resolution_value(current_resolution_choice):
+        if not locked:
+            current_resolution_choice = align_resolution_value(current_resolution_choice, model_def.get("vae_block_size", 16) if block_size is None else block_size)
+        if not any(current_resolution_choice == resolution[1] for resolution in resolution_choices):
+            if locked:
+                current_resolution_choice = None
+            else:
+                resolution_choices.append((f"{current_resolution_choice} (Current)", current_resolution_choice))
+    elif resolution_choices:
         current_resolution_choice = resolution_choices[0][1]
+    else:
+        current_resolution_choice = None
 
     return resolution_choices, current_resolution_choice
 
@@ -372,3 +414,251 @@ def group_choices(resolution_choices, selected_group):
 def remember_last_resolution(last_resolution_per_group, resolution):
     last_resolution_per_group[categorize_resolution(resolution)] = resolution
     return last_resolution_per_group
+
+
+def migrate_resolution_preferences(config):
+    """Rekey remembered groups by dimensions, never rewrite saved generation sizes."""
+    remembered = {}
+    for resolution in config.get("last_resolution_per_group", {}).values():
+        if is_resolution_value(resolution):
+            remember_last_resolution(remembered, resolution)
+    if is_resolution_value(config.get("last_resolution_choice")):
+        remember_last_resolution(remembered, config["last_resolution_choice"])
+    updates = {}
+    if remembered != config.get("last_resolution_per_group", {}):
+        updates["last_resolution_per_group"] = remembered
+    if config.get("resolution_picker_mode") not in ("presets", "mp"):
+        updates["resolution_picker_mode"] = "presets"
+    return updates
+
+
+def resolution_pixels(value):
+    """Parse the public area shorthand; WxH does not constrain aspect ratio."""
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    if is_resolution_value(value):
+        return math.prod(parse_resolution(value))
+    raise ValueError('Resolution bounds must be positive integer pixels or "WIDTHxHEIGHT".')
+
+
+def migrate_resolution_definition(model_def, legacy_lists=False):
+    """Expand old menu rules without declaring their ceiling as model capability."""
+    result = dict(model_def)
+    rules = result.pop("resolutions_categories", None)
+    if rules is not None:
+        custom = normalize_resolution_choices(result.get("resolutions"), "model.resolutions") or []
+        result["resolutions"] = dedupe_resolution_choices(custom + filter_resolution_choices_by_categories(builtin_resolution_choices(include_4k=True), rules))
+        result.setdefault("lock_resolutions", False)
+    elif legacy_lists and result.get("resolutions") and "lock_resolutions" not in result:
+        result["lock_resolutions"] = True
+    budget = result.get("resolution_budget")
+    if isinstance(budget, dict):
+        ordinary = budget.get("two_phases", budget.get("default"))
+        result.pop("resolution_budget")
+        if ordinary is not None:
+            result["resolution_budget"] = ordinary
+        if "two_phases_tiled" in budget:
+            result.setdefault("resolution_budget_tiled", budget["two_phases_tiled"])
+    return result
+
+
+def fix_resolution_settings(settings):
+    if settings.get("settings_version", 0) < 2.80 and "model" in settings:
+        settings["model"] = migrate_resolution_definition(settings["model"], legacy_lists=True)
+
+
+
+def locked_resolution_values(model_def):
+    choices = normalize_resolution_choices(model_def.get("resolutions"), "model.resolutions") or []
+    minimum = resolution_pixels(model_def.get("resolution_min")) or 0
+    return [value for _, value in align_resolution_choices(choices, model_def.get("vae_block_size", 16)) if math.prod(parse_resolution(value)) >= minimum]
+
+
+def validate_resolution_definition(model_def):
+    for key in ("resolution_budget", "resolution_budget_tiled", "resolution_min"):
+        resolution_pixels(model_def.get(key))
+    minimum = resolution_pixels(model_def.get("resolution_min")) or 0
+    for key in ("resolution_budget", "resolution_budget_tiled"):
+        maximum = resolution_pixels(model_def.get(key) or (DEFAULT_RESOLUTION_BUDGET if key == "resolution_budget" else None))
+        if maximum is not None and minimum > maximum:
+            raise ValueError(f"resolution_min exceeds {key}.")
+    if model_def.get("lock_resolutions") and not locked_resolution_values(model_def):
+        raise ValueError("Lock Resolutions requires at least one custom resolution at or above the minimum.")
+
+
+def validate_resolution(model_def, resolution):
+    parse_resolution(resolution)
+    if model_def.get("lock_resolutions"):
+        allowed = locked_resolution_values(model_def)
+        if resolution.lower() not in allowed:
+            raise ValueError("Resolution is locked for this model. Choose one of: " + ", ".join(allowed))
+
+
+def validate_agent_resolution(model_def, resolution, guidance_phases=1, video_prompt_type=""):
+    """Agent requests must fit the selected workflow; UI overrides are separate."""
+    if model_def.get("audio_only") or model_def.get("mesh_outputs"):
+        return
+    validate_resolution(model_def, resolution)
+    pixels = math.prod(parse_resolution(resolution))
+    minimum = resolution_pixels(model_def.get("resolution_min")) or 0
+    mode = resolution_mode(model_def, guidance_phases, video_prompt_type)
+    maximum = available_resolution_budgets(model_def).get(mode, resolution_budget(model_def)["default"])
+    if pixels < minimum or pixels > maximum:
+        assessment = assess_resolution(model_def, resolution, guidance_phases, video_prompt_type)
+        hint = f" Use settings {json.dumps(assessment['settings'])} for this size." if assessment.get("settings") else " Choose another resolution or model."
+        raise ValueError(f"Resolution {resolution} is outside the accepted range for {RESOLUTION_MODE_LABELS[mode]}: {minimum:,} to {maximum:,} pixels ({minimum / 1_000_000:.2f}–{maximum / 1_000_000:.2f} MP)." + hint)
+
+
+def resolution_budget(model_def):
+    """Normalized recommendations; unlocked custom presets do not imply a ceiling."""
+    result = {"default": resolution_pixels(model_def.get("resolution_budget")) or resolution_pixels(DEFAULT_RESOLUTION_BUDGET)}
+    for key, mode in (("resolution_budget", "default"), ("resolution_budget_tiled", "two_phases_tiled")):
+        value = resolution_pixels(model_def.get(key))
+        if value is not None:
+            result[mode] = value
+    return result
+
+
+def available_resolution_budgets(model_def):
+    budget = resolution_budget(model_def)
+    result = {}
+    max_phases = model_def.get("guidance_max_phases", 0)
+    locked = model_def.get("lock_guidance_phases", False)
+    if "default" in budget and not (locked and max_phases == 2):
+        result["default"] = budget["default"]
+    if max_phases >= 2 and (not locked or max_phases == 2):
+        two = budget.get("default")
+        if two is not None:
+            result["two_phases"] = two
+        if model_def.get("phase_2_spatial_tiling", False):
+            tiled = budget.get("two_phases_tiled", two)
+            if tiled is not None:
+                result["two_phases_tiled"] = tiled
+    return result
+
+
+def resolution_mode(model_def, guidance_phases=1, video_prompt_type=""):
+    if model_def.get("lock_guidance_phases", False):
+        guidance_phases = "2~" if guidance_phases == "2~" and model_def.get("guidance_max_phases") == 2 else model_def.get("guidance_max_phases", 0)
+    if model_def.get("guidance_max_phases", 0) >= 2 and guidance_phases in (2, "2", "2~"):
+        if model_def.get("phase_2_spatial_tiling", False) and (guidance_phases == "2~" or "~" in video_prompt_type):
+            return "two_phases_tiled"
+        return "two_phases"
+    return "default"
+
+
+def normalize_phase_2_tiling_selection(model_def, guidance_phases, video_prompt_type):
+    if guidance_phases == "2~":
+        guidance_phases = 2
+        if model_def.get("phase_2_spatial_tiling", False):
+            if "~" not in video_prompt_type:
+                video_prompt_type += "~"
+        else:
+            video_prompt_type = video_prompt_type.replace("~", "")
+    elif guidance_phases != 2 or not model_def.get("phase_2_spatial_tiling", False):
+        video_prompt_type = video_prompt_type.replace("~", "")
+    return guidance_phases, video_prompt_type
+
+
+def assess_resolution(model_def, resolution, guidance_phases=1, video_prompt_type=""):
+    """Assess an exact canvas without replacing it with a preset or MP target."""
+    width, height = parse_resolution(resolution)
+    requested = f"{width}x{height}"
+    budgets = available_resolution_budgets(model_def)
+    current = resolution_mode(model_def, guidance_phases, video_prompt_type)
+    minimum = resolution_pixels(model_def.get("resolution_min")) or 0
+    locked = model_def.get("lock_resolutions", False)
+    allowed = locked_resolution_values(model_def) if locked else []
+    matching = [mode for mode, budget in budgets.items() if minimum <= width * height <= budget]
+    selected = current if current in matching else next(iter(matching), None)
+    result = {"requested": requested, "aligned": align_resolution_value(requested, model_def.get("vae_block_size", 16)), "status": "recommended" if matching else "above_recommendation" if budgets else "unknown"}
+    if locked and requested not in allowed:
+        return {**result, "status": "not_allowed", "allowed_resolutions": allowed}
+    if width * height < minimum:
+        return {**result, "status": "below_recommendation"}
+    if locked and not budgets:
+        result["status"] = "recommended"
+    if selected is not None:
+        result["mode"] = selected
+        if selected != current:
+            result["settings"] = {"guidance_phases": {"default": 1, "two_phases": 2, "two_phases_tiled": "2~"}[selected]}
+    return result
+
+
+def resolution_metadata(model_def):
+    budgets = available_resolution_budgets(model_def)
+    result = {"resolution_budget": resolution_budget(model_def)["default"], "vae_block_size": model_def.get("vae_block_size", 16)}
+    if "two_phases_tiled" in budgets:
+        result["resolution_budget_tiled"] = budgets["two_phases_tiled"]
+    if model_def.get("resolution_min") is not None:
+        result["resolution_min"] = resolution_pixels(model_def["resolution_min"])
+    if model_def.get("lock_resolutions"):
+        result.update(lock_resolutions=True, allowed_resolutions=locked_resolution_values(model_def))
+    return result
+
+
+RESOLUTION_MODE_LABELS = {"default": "Default Mode", "two_phases": "Two Phases", "two_phases_tiled": "Two Phases with Tiling"}
+ASPECT_RATIOS = ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9", "9:21", "4:1", "1:4", "8:3", "3:8", "4:7", "7:4"]
+
+
+def megapixels_to_resolution(megapixels, aspect_ratio, block_size):
+    ratio_width, ratio_height = map(int, aspect_ratio.split(":"))
+    if not math.isfinite(megapixels) or megapixels <= 0 or min(ratio_width, ratio_height) <= 0:
+        raise ValueError("Megapixels and aspect ratio must be positive.")
+    block = normalize_block_size(block_size)
+    area, ratio = megapixels * 1_000_000, ratio_width / ratio_height
+    width, height = (max(block, math.floor(value / block + 0.5) * block) for value in (math.sqrt(area * ratio), math.sqrt(area / ratio)))
+    return f"{width}x{height}"
+
+
+def megapixel_controls(resolution, resolution_choices, model_def, enable_4k_resolutions=False):
+    width, height = parse_resolution(resolution)
+    divisor = math.gcd(width, height)
+    ratio = f"{width // divisor}:{height // divisor}"
+    ratios = [(value, value) for value in ASPECT_RATIOS]
+    # Keep familiar nominal preset ratios despite their block-aligned dimensions.
+    label = next((label for label, value in resolution_choices if value == resolution), "")
+    nominal = re.search(r"\((\d+:\d+)\)", label)
+    if nominal and nominal[1] in ASPECT_RATIOS:
+        ratio = nominal[1]
+    elif ratio not in ASPECT_RATIOS:
+        # A rounded canvas can still represent a familiar ratio. Allow only the
+        # half-block error introduced by rounding each requested dimension.
+        common = {value: int(value.split(":")[0]) / int(value.split(":")[1]) for value in ASPECT_RATIOS}
+        nearest = min(common, key=lambda value: abs(math.log((width / height) / common[value])))
+        half_block = normalize_block_size(model_def.get("vae_block_size", 16)) / 2
+        if (width - half_block) / (height + half_block) <= common[nearest] <= (width + half_block) / (height - half_block):
+            ratio = nearest
+    if ratio not in ASPECT_RATIOS:
+        ratios.append((ratio, ratio))
+    mp = width * height / 1_000_000
+    maximum = max([mp, 0.1] + [math.prod(parse_resolution(value)) / 1_000_000 for _, value in resolution_choices] + [value / 1_000_000 for value in available_resolution_budgets(model_def).values()])
+    minimum = (100000 if enable_4k_resolutions and not model_def.get("lock_resolutions") else resolution_pixels(model_def.get("resolution_min")) or 100000) / 1_000_000
+    return {"ratio": ratio, "ratios": ratios, "value": mp, "minimum": min(minimum, mp), "maximum": max(minimum + 0.05, math.ceil(maximum / 0.05) * 0.05)}
+
+
+def resolution_advice(model_def, resolution, guidance_phases=1, video_prompt_type=""):
+    if model_def.get("audio_only") or model_def.get("mesh_outputs") or not is_resolution_value(resolution):
+        return "", ""
+    assessment = assess_resolution(model_def, resolution, guidance_phases, video_prompt_type)
+    budgets = available_resolution_budgets(model_def)
+    current = resolution_mode(model_def, guidance_phases, video_prompt_type)
+    budget = budgets.get(current)
+    summary = f"Recommended Maximum: {budget / 1_000_000:.2f} MP ({RESOLUTION_MODE_LABELS[current]})." if budget else ""
+    warning = ""
+    if assessment["aligned"] != assessment["requested"]:
+        warning = f"Canvas aligned from {assessment['requested']} to {assessment['aligned']}. "
+    # UI advice is about the canvas that will actually be generated.
+    if assessment["status"] != "not_allowed":
+        assessment = assess_resolution(model_def, assessment["aligned"], guidance_phases, video_prompt_type)
+    if assessment["status"] == "above_recommendation":
+        warning += f"This size exceeds the recommended maximum of {budget / 1_000_000:.2f} MP; quality may degrade."
+    elif assessment["status"] == "below_recommendation":
+        warning += "This size is below the model's recommended minimum."
+    elif assessment["status"] == "not_allowed":
+        warning += "Choose a resolution from this model's locked list."
+    elif assessment.get("mode", current) != current:
+        warning += f"This size exceeds the current mode's recommended maximum of {budget / 1_000_000:.2f} MP. {RESOLUTION_MODE_LABELS[assessment['mode']]} is recommended for this size."
+    return summary, warning.strip()

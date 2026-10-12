@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import os
 import shutil
 import sys
@@ -12,8 +13,6 @@ from pathlib import Path
 from .infos import LTX2_25_DEEPY_INFOS, LTX2_25_INFOS, LTX2_25_MSR_INFOS, LTX2_INFOS, LTX2_MSR_INFOS, LTX2_MSR_V2_INFOS
 from .lora_utils import control_video_phase2_message
 from .ltx2_runtime import LTX2_OUTPAINTING_METHOD
-
-LTX2_25_NVFP4_USE_SHARED_EMBEDDERS = False
 
 _GEMMA_FOLDER_URL = "https://huggingface.co/DeepBeepMeep/LTX-2/resolve/main/gemma-3-12b-it-qat-q4_0-unquantized/"
 _GEMMA_FOLDER = "gemma-3-12b-it-qat-q4_0-unquantized"
@@ -145,10 +144,8 @@ _ARCH_SPECS = {
         "text_embedding_projection": "ltx-2.5-22b_text_embedding_projection_bf16.safetensors",
         "video_embeddings_connector_bf16": "ltx-2.5-22b_video_embeddings_connector_bf16.safetensors",
         "video_embeddings_connector_int8": "ltx-2.5-22b_video_embeddings_connector_int8_convrot.safetensors",
-        "video_embeddings_connector_nvfp4": "ltx-2.5-22b_video_embeddings_connector_nvfp4_bf16.safetensors",
         "audio_embeddings_connector_bf16": "ltx-2.5-22b_audio_embeddings_connector_bf16.safetensors",
         "audio_embeddings_connector_int8": "ltx-2.5-22b_audio_embeddings_connector_int8_convrot.safetensors",
-        "audio_embeddings_connector_nvfp4": "ltx-2.5-22b_audio_embeddings_connector_nvfp4_bf16.safetensors",
         "profiles_dir": "ltx2",
         "dev_profiles_dir": "ltx2_25_dev_accelerators",
         "preset_profiles_dir": "ltx2_presets",
@@ -199,6 +196,12 @@ def _supports_main_22b_loras(base_model_type: str | None) -> bool:
 
 def _ltx2_outpainting_method() -> int:
     return LTX2_OUTPAINTING_METHOD
+
+
+def ltx2_uint8_guides(video_prompt_type, audio_prompt_type, any_outpainting):
+    # outpainting edits the float control video in place (gamma, continuation frames) and the audio from the control video returns it as
+    # the output video: float control videos for these modes, so that no uint8 copy stays alongside
+    return not any_outpainting and "2" not in (audio_prompt_type or "")
 
 
 def ltx2_guide_inpaint_color(video_prompt_type, any_outpainting, extra_settings):
@@ -372,14 +375,7 @@ def _get_embeddings_connector_filename(model_def, base_model_type):
     return spec["dev_embeddings_connector"]
 
 
-def _get_ltx25_connector_variant(transformer_path):
-    transformer_name = os.path.basename(transformer_path or "").lower()
-    if "nvfp4" in transformer_name:
-        return "bf16" if LTX2_25_NVFP4_USE_SHARED_EMBEDDERS else "nvfp4"
-    return "int8" if "int8" in transformer_name else "bf16"
-
-
-def _get_multi_file_names(model_def, base_model_type, transformer_path=None):
+def _get_multi_file_names(model_def, base_model_type):
     spec = _get_arch_spec(base_model_type)
     names = {
         "video_vae": model_def.get("ltx2_video_vae_file", spec["video_vae"]),
@@ -388,7 +384,8 @@ def _get_multi_file_names(model_def, base_model_type, transformer_path=None):
         "text_embedding_projection": spec["text_embedding_projection"],
     }
     if _is_ltx25(base_model_type):
-        connector_variant = _get_ltx25_connector_variant(transformer_path)
+        # LTX-2.5 connectors follow the transformer quantization setting: bf16, otherwise int8 ConvRot.
+        connector_variant = "bf16" if sys.modules["wgp"].transformer_quantization == "bf16" else "int8"
         names["video_embeddings_connector"] = spec[f"video_embeddings_connector_{connector_variant}"]
         names["audio_embeddings_connector"] = spec[f"audio_embeddings_connector_{connector_variant}"]
     else:
@@ -396,9 +393,9 @@ def _get_multi_file_names(model_def, base_model_type, transformer_path=None):
     return names
 
 
-def _resolve_multi_file_paths(model_def, base_model_type, transformer_path=None, include_spatial_upsampler=True):
+def _resolve_multi_file_paths(model_def, base_model_type, include_spatial_upsampler=True):
     spec = _get_arch_spec(base_model_type)
-    paths = {key: fl.locate_file(name) for key, name in _get_multi_file_names(model_def, base_model_type, transformer_path).items()}
+    paths = {key: fl.locate_file(name) for key, name in _get_multi_file_names(model_def, base_model_type).items()}
     if include_spatial_upsampler:
         paths["spatial_upsampler"] = fl.locate_file(spec["spatial_upscaler"])
     model_config = os.path.join(os.path.dirname(__file__), "configs", spec["config_file"])
@@ -540,6 +537,8 @@ class family_handler:
         gemma_files = (_GEMMA4_FILENAME, _GEMMA4_INT8_FILENAME) if ltx25 else (_GEMMA_FILENAME, _GEMMA_QUANTO_FILENAME)
         extra_model_def = {
             "device_explicit": True,
+            "cuda_graphs": ["transformer", "transformer2"],
+            "uint8_guides": ltx2_uint8_guides,
             "ltx2_22B_class": base_model_type in LTX2_22B_CLASS or ltx25,
             "ltx2_edit_anything": editanything_ref,
             "infos": model_def.get("infos", LTX2_25_MSR_INFOS if ltx25 and msr else LTX2_25_INFOS if ltx25 else LTX2_MSR_V2_INFOS if msr_v2 else LTX2_MSR_INFOS if msr else LTX2_INFOS),
@@ -555,6 +554,8 @@ class family_handler:
             "frames_steps": 8,
             "sliding_window": not msr,
             "returns_audio": True,
+            "audio_window_alignment": True,
+            "audio_overlap_repair_ms": 80,  # reserve two 40 ms audio latents at the join
             "auto_null_audio": True,
             "multimedia_generation": True,
             "image_end_frame_position": True,
@@ -839,6 +840,9 @@ class family_handler:
         #     "scale": 1,
         #     }
 
+        from models.help_shared import merge_help
+        from .infos import compact_help
+        extra_model_def = merge_help(extra_model_def, compact_help(msr=msr, joy=joy, editanything=editanything_ref, ltx25=ltx25))
         extra_model_def["phase_2_spatial_tiling"] = not (msr or joy or editanything_ref)
         if extra_model_def["phase_2_spatial_tiling"]:
             tiling_help = "\n\n**Two Phases with Tiling** refines overlapping spatial tiles in phase 2, blending predictions at every step. Phase 1 establishes the whole scene. This reduces each transformer call's spatial extent, takes more calls, and can change fine detail. VAE tiling is independent."
@@ -847,6 +851,10 @@ class family_handler:
                     extra_model_def[key] += tiling_help
         from .vfx import vfx_model_def
         extra_model_def.update(vfx_model_def(model_def))
+        if ltx25:
+            extra_model_def["resolution_budget"] = "1920x1088"
+            if extra_model_def["phase_2_spatial_tiling"]:
+                extra_model_def["resolution_budget_tiled"] = "3840x2176"
         return extra_model_def
 
     @staticmethod
@@ -869,16 +877,9 @@ class family_handler:
         spec = _get_arch_spec(base_model_type)
 
         file_list = [spec["spatial_upscaler"]] if _is_joyai_echo(base_model_type, model_def) else [spec["spatial_upscaler"], spec["temporal_upscaler"]]
-        model_urls = model_def.get("URLs", [])
-        model_urls = [model_urls] if isinstance(model_urls, str) else model_urls
-        transformer_hint = model_urls[0] if model_urls else None
-        component_names = _get_multi_file_names(model_def, base_model_type, transformer_hint)
+        component_names = _get_multi_file_names(model_def, base_model_type)
         if _is_ltx25(base_model_type):
             component_names["diffusion_video_vae"] = spec["diffusion_video_vae"]
-            variants = {_get_ltx25_connector_variant(url) for url in model_urls}
-            for variant in variants:
-                component_names[f"video_embeddings_connector_{variant}"] = spec[f"video_embeddings_connector_{variant}"]
-                component_names[f"audio_embeddings_connector_{variant}"] = spec[f"audio_embeddings_connector_{variant}"]
         for name in component_names.values():
             if name not in file_list:
                 file_list.append(name)
@@ -1057,7 +1058,7 @@ class family_handler:
                 transformer_path = transformer_path[0]
         else:
             transformer_path = model_filename
-        checkpoint_paths = _resolve_multi_file_paths(model_def, base_model_type, transformer_path, include_spatial_upsampler=not model_type.startswith("ltx2_upsampler_"))
+        checkpoint_paths = _resolve_multi_file_paths(model_def, base_model_type, include_spatial_upsampler=not model_type.startswith("ltx2_upsampler_"))
         checkpoint_paths["transformer"] = transformer_path
         if transformer_modules:
             checkpoint_paths["transformer_modules"] = transformer_modules

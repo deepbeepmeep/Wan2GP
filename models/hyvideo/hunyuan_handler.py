@@ -1,3 +1,6 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .infos import hunyuan_help
 import torch
 from shared.utils.hf import build_hf_url
 
@@ -137,7 +140,7 @@ class family_handler():
             extra_model_def["sliding_window_defaults"] = { "overlap_min" : 1, "overlap_max" : 1, "overlap_step": 0, "overlap_default": 1}
 
 
-        return extra_model_def
+        return merge_help(extra_model_def, hunyuan_help(base_model_type))
 
     @staticmethod
     def query_supported_types():

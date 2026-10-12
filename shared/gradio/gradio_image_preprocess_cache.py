@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Avoid decoding unchanged file-backed PIL inputs on every UI callback."""
 from collections import OrderedDict
 from copy import deepcopy

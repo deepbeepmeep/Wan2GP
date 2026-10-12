@@ -1,17 +1,17 @@
 {
     "components": {
         "python": {
-            "3.10": { "ver": "3.10.9", "label": "Python 3.10.9 (Legacy)" },
+            "3.10": { "ver": "3.10.9", "label": "Python 3.10.9 (GTX 10XX with Torch 2.7.1)" },
             "3.11": { "ver": "3.11.14", "label": "Python 3.11.14 (Recommended)" },
             "3.12": { "ver": "3.12.10", "label": "Python 3.12.10 (AMD ROCm)" }
         },
         "torch": {
             "cu128": {
-                "label": "Torch 2.7.1 + CUDA 12.8",
+                "label": "Torch 2.7.1 + CUDA 12.8 (GTX 10XX only: CUDA 13 no longer supports them)",
                 "cmd": "torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128"
             },
             "cu130": {
-                "label": "Torch 2.10.0 + CUDA 13.0",
+                "label": "Torch 2.10.0 + CUDA 13.0 (Recommended for RTX 20XX and newer)",
                 "cmd": "torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu130"                
             },
             "rocm10": {
@@ -57,25 +57,18 @@
         },
         "sage": {
             "v1": { "label": "Sage Attention 1.0.6 (RTX 20XX / Turing)", "cmd": "sageattention==1.0.6" },
-            "v211": {
-                "label": "Sage Attention 2.1.1 (RTX 30XX+ / Ampere+)",
-                "cmd": {
-                    "win": "https://github.com/woct0rdho/SageAttention/releases/download/v2.1.1-windows/sageattention-2.1.1+cu126torch2.6.0-cp310-cp310-win_amd64.whl",
-                    "linux": "pip install \"setuptools<=75.8.2\" ninja wheel --force-reinstall && git clone https://github.com/thu-ml/SageAttention && pip install --no-build-isolation -e SageAttention"
-                }
-            },
             "v220": {
-                "label": "Sage Attention 2.2.0 (RTX 30XX+ / Ampere+)",
+                "label": "Sage Attention 2.2.0 (Torch 2.7.1, RTX 30XX+ / Ampere+)",
                 "cmd": {
-                    "win": "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows/sageattention-2.2.0+cu128torch2.7.1-cp310-cp310-win_amd64.whl",
-                    "linux": "pip install \"setuptools<=75.8.2\" ninja wheel --force-reinstall && git clone https://github.com/thu-ml/SageAttention && pip install --no-build-isolation -e SageAttention"
+                    "win": "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows/sageattention-2.2.0+cu128torch2.7.1-{py}-{py}-win_amd64.whl",
+                    "linux": "https://github.com/deepbeepmeep/SageAttention/releases/download/v2.2.0-linux.cg1/sageattention-2.2.0+cu128torch2.7.1.cg1-{py}-{py}-linux_x86_64.whl"
                 }
             },
             "v220_cu13": {
-                "label": "Sage Attention 2.2.0 (CUDA 13, RTX 30XX+ / Ampere+)",
+                "label": "Sage Attention 2.2.0 (Torch 2.10 / CUDA 13, RTX 30XX+ / Ampere+, Recommended)",
                 "cmd": {
-                    "win": "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post4/sageattention-2.2.0+cu130torch2.9.0andhigher.post4-cp39-abi3-win_amd64.whl",
-                    "linux": "pip install \"setuptools<=75.8.2\" ninja wheel --force-reinstall && git clone https://github.com/thu-ml/SageAttention && pip install --no-build-isolation -e SageAttention"
+                    "win": "https://github.com/woct0rdho/SageAttention/releases/download/v2.2.0-windows.post6/sageattention-2.2.0+cu130torch2.10.0andhigher.post6-cp310-abi3-win_amd64.whl",
+                    "linux": "https://github.com/deepbeepmeep/SageAttention/releases/download/v2.2.0-linux.cg1/sageattention-2.2.0+cu130torch2.10.0.cg1-{py}-{py}-linux_x86_64.whl"
                 }
             }
         },

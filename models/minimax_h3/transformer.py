@@ -495,11 +495,6 @@ def _chunk_rows(start, stop, chunk=CONTROL_ROW_CHUNK):
     return ((offset, min(stop, offset + chunk)) for offset in range(start, stop, chunk))
 
 
-def _graph_manager(module):
-    manager = module.__dict__.get("_mm_manager")
-    return None if manager is None else manager.cuda_graphs.get(module._mm_id)
-
-
 class InputPreparation(nn.Module):
     def __init__(self, model):
         super().__init__()
@@ -556,12 +551,10 @@ class FinalLayer(nn.Module):
         return output(value)
 
     def forward(self, x_list, temb, video_segment, audio_segment):
-        graphs = _graph_manager(self.norm)
         # PDD heads read a sampling plan changed by the scheduler outside this call.
-        if graphs is not None and not isinstance(self.video_out, MiniMaxH3ParallelHead):
-            with cuda_graphs.scope():
-                return graphs.call(self, self._forward, (x_list, temb, video_segment, audio_segment), {})
-        return self._forward(x_list, temb, video_segment, audio_segment)
+        with cuda_graphs.scope():
+            return cuda_graphs.run(self, x_list, temb, video_segment, audio_segment, method="_forward",
+                                   enabled=not isinstance(self.video_out, MiniMaxH3ParallelHead))
 
     def _forward(self, x_list, temb, video_segment, audio_segment):
         hidden = _take(x_list)
@@ -814,9 +807,9 @@ class MiniMaxH3Model(nn.Module):
         lower = position.floor().long().clamp(max=table.shape[0] - 2)
         return torch.lerp(table[lower], table[lower + 1], (position - lower).unsqueeze(1).to(table.dtype))
 
-    def _prepare_graph_input(self, graphs, video_x, audio_x, context, payload, layout, dtype):
+    def _prepare_graph_input(self, video_x, audio_x, context, payload, layout, dtype):
         with cuda_graphs.scope():
-            if cuda_graphs._blocked is not None or graphs.disabled is not None or not graphs.ready():
+            if not cuda_graphs.is_enabled(self):
                 return None
             stage = self.__dict__.get("_input_preparation")
             if stage is None:
@@ -831,7 +824,7 @@ class MiniMaxH3Model(nn.Module):
                 payload["graph_input_indices"] = indices
             optional = [payload.get(name) for name in ("target_video_order", "cond_video_rows", "cond_audio_rows")]
             optional = [None if value is None else value.to(device) for value in optional]
-            return graphs.call(stage, stage.forward, (video_x, audio_x, text_embeds, *indices[1:], *optional, layout.sequence_length, dtype), {})
+            return cuda_graphs.run(stage, video_x, audio_x, text_embeds, *indices[1:], *optional, layout.sequence_length, dtype, owner=self)
 
     def forward(self, video_x, audio_x, sigma_video, sigma_audio, context, payload, spectrum=None, first_block_cache=None):
         device, dtype = video_x.device, self.dtype or next(self.blocks.parameters()).dtype
@@ -886,8 +879,7 @@ class MiniMaxH3Model(nn.Module):
             audio = _to_dtype([audio], audio_dtype)
             return (unpatchify_video_tokens(video, latent_t, latent_h, latent_w, self.latents_dim, self.patch_size),
                     unpack_audio(audio))
-        graphs = _graph_manager(self.blocks[0])
-        hidden = self._prepare_graph_input(graphs, video_x, audio_x, context, payload, layout, dtype) if graphs is not None else None
+        hidden = self._prepare_graph_input(video_x, audio_x, context, payload, layout, dtype)
         if hidden is None:
             video_x = video_x.to(torch.float32)
             video_rows = patchify_video(video_x, self.patch_size)

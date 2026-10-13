@@ -68,7 +68,8 @@ class family_handler:
             "one_image_ref_only": True,
             "image_refs_keep_alpha": True,
             "no_lora": True,
-            "prompt_description": "Asset Name / Description (used for file names)",
+            "prompt_description": "Asset Name / Description (optional, used for file names)",
+            "prompt_optional": True,  # the prompt only names the output files
             "no_negative_prompt": True,
             "guidance_max_phases": 1,
             "embedded_guidance": False,

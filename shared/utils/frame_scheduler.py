@@ -30,6 +30,24 @@ def floor_frame_count(frame_count: int, minimum: int, step: int, offset: int = 1
     return lower if lower >= minimum else normalize_frame_count(minimum, minimum, step, offset)
 
 
+VIDEO_LENGTH_ROUNDINGS = ("floor", "ceil", "nearest")
+VIDEO_LENGTH_ROUNDING = "ceil"  # set by wgp.py at startup (its VIDEO_LENGTH_ROUNDING)
+
+
+def set_video_length_rounding(rounding: str) -> None:
+    global VIDEO_LENGTH_ROUNDING
+    if rounding not in VIDEO_LENGTH_ROUNDINGS:
+        raise ValueError(f"Video length rounding must be one of {', '.join(VIDEO_LENGTH_ROUNDINGS)}, not {rounding!r}")
+    VIDEO_LENGTH_ROUNDING = rounding
+
+
+def fit_video_length(frame_count: int, minimum: int, step: int, offset: int = 1) -> int:
+    """A requested video length fitted to a model's frame steps with VIDEO_LENGTH_ROUNDING: ceil never shortens the request
+    (speech and music driving the video keep their last words), floor never lengthens it, nearest takes the closest count."""
+    fit = {"floor": floor_frame_count, "ceil": normalize_frame_count, "nearest": normalize_output_frame_count}[VIDEO_LENGTH_ROUNDING]
+    return fit(frame_count, minimum, step, offset)
+
+
 def normalize_output_frame_count(frame_count: int, minimum: int, step: int, offset: int = 1) -> int:
     frame_count = max(minimum, frame_count)
     step = max(1, step)

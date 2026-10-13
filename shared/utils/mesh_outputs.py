@@ -55,26 +55,38 @@ def animation_time(path, frame_no):
     return animation["start"] + frame_no / animation["fps"] if animation["fps"] else animation["start"]
 
 
-def render_asset_views(path, angles, resolution, *, frame_no=None, mode="shaded", projection="orthographic", zoom=1.0, focus=(0.5, 0.5, 0.5), background=None):
+def render_asset_views(path, angles, resolution, **options):
     """Views of a 3D gallery file (mesh or Gaussian splats) as PIL images, one scale shared by every view (angles: names
-    of shared.mesh3d.render.VIEWS or (azimuth, elevation); see orbit_cameras for zoom and focus): RGBA with a transparent background for the colour
-    modes unless background is given. frame_no poses an animated mesh at that frame (rest pose without it). Rendered on
-    the GPU when there is one (a few hundred MB for typical assets)."""
+    of shared.mesh3d.render.VIEWS or (azimuth, elevation); options of iter_asset_views)."""
+    return list(iter_asset_views(path, angles, resolution, chunk=len(angles), **options))
+
+
+def iter_asset_views(path, angles, resolution, *, chunk, frame_no=None, mode="shaded", projection="orthographic", zoom=1.0, focus=(0.5, 0.5, 0.5), background=None):
+    """Views of a 3D gallery file as a stream of PIL images rendered `chunk` at a time, every view keeping the scale of
+    the whole sequence, so a long one (a turntable) holds only a few views in memory; depth views are normalized per
+    chunk. See orbit_cameras for zoom and focus: RGBA with a transparent background for the colour modes unless
+    background is given. frame_no poses an animated mesh at that frame (rest pose without it). Rendered on the GPU when
+    there is one (a few hundred MB for typical assets)."""
     import torch
     from PIL import Image
-    from shared.mesh3d.render import VIEWS, render_splat_views, render_views
+    from shared.mesh3d.render import VIEWS, asset_cameras, render_splat_views, render_views
     device = "cuda" if torch.cuda.is_available() else "cpu"
     angles = [VIEWS[angle] if isinstance(angle, str) else angle for angle in angles]
     time = None if frame_no is None else animation_time(path, frame_no)
     with torch.inference_mode():
         if is_splat_file(path):
             from shared.mesh3d.splats import ply_to_splats
-            images = render_splat_views(ply_to_splats(path, device=device), angles, resolution, mode, projection=projection, zoom=zoom, focus=focus, background=background)
+            asset, render = ply_to_splats(path, device=device), render_splat_views
         else:
             from shared.mesh3d.glb import load_mesh
-            images = render_views(load_mesh(path, device=device, time=time), angles, resolution, mode, projection=projection, zoom=zoom, focus=focus, background=background)
-        arrays = (images.clamp(0, 1) * 255).round().byte().cpu().numpy()
-    return [Image.fromarray(array) for array in arrays]  # RGBA or RGB from the channel count
+            asset, render = load_mesh(path, device=device, time=time), render_views
+        cameras = asset_cameras(asset, angles, resolution, projection=projection, zoom=zoom, focus=focus)
+    for start in range(0, len(angles), chunk):
+        with torch.inference_mode():
+            images = render(asset, None, resolution, mode, background=background, cameras=tuple(camera[start:start + chunk] for camera in cameras))
+            arrays = (images.clamp(0, 1) * 255).round().byte().cpu().numpy()
+        del images
+        yield from (Image.fromarray(array) for array in arrays)  # RGBA or RGB from the channel count
 
 
 def save_mesh_metadata(path, settings):

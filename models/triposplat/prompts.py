@@ -50,7 +50,7 @@ TRIPOSPLAT_DEEPY_INFOS = ("Image to 3D Gaussian splat (PLY, Y up), not a mesh. N
                           "(detail vs file size, ~68 bytes per Gaussian). batch_size = candidate splats. Best for stylised objects, props, "
                           "creatures; human faces come out blurred.")
 
-TRIPOSPLAT_DEEPY_PROMPT_INFOS = ("`prompt`: a short asset name such as `Toy pirate ship`; it names the file and does not change the splat, which "
+TRIPOSPLAT_DEEPY_PROMPT_INFOS = ("`prompt` (optional): a short asset name such as `Toy pirate ship`; it names the file and does not change the splat, which "
                                  "depends only on the reference image (one centred, uncropped object, plain background, three-quarter view).")
 
 ASSET_NAME_INSTRUCTIONS = """You name 3D assets. Look at the image and name the single main object it shows in 2 to 6 words, for example: Toy

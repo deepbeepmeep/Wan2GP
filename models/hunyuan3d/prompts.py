@@ -91,7 +91,7 @@ TEXTURE_DEEPY_INFOS = ("Image to PBR-textured 3D mesh (GLB). Needs one reference
                        "always reduced), `texture_views` 6_512/8_768/9_768, `texture_size` 1024/2048/4096. "
                        "Tencent license: not for EU/UK/South Korea; outputs may not train other AI models.")
 
-DEEPY_PROMPT_INFOS = ("`prompt`: a short asset name such as `red toy robot`; nothing else is read. The reference image decides the result: "
+DEEPY_PROMPT_INFOS = ("`prompt` (optional): a short asset name such as `red toy robot` for the file name; nothing else is read. The reference image decides the result: "
                       "one centred, uncropped object, plain background, front or three-quarter view, even light.")
 
 ASSET_NAME_INSTRUCTIONS = """You name 3D assets. Look at the image and name the single main object it shows in 2 to 6 words, for example:

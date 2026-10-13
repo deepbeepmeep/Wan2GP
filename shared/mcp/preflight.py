@@ -2,6 +2,7 @@
 """Read-only preflight using the same request preparation as submission."""
 
 import copy
+import difflib
 import json
 import math
 import re
@@ -11,7 +12,7 @@ from pathlib import Path
 
 from shared import extra_settings, resolutions
 from shared.api import apply_media_flag_defaults, apply_video_length_duration
-from shared.utils.frame_scheduler import has_slash_commands
+from shared.utils.frame_scheduler import fit_video_length, has_slash_commands, normalize_frame_count
 
 
 def task_settings(source):
@@ -101,8 +102,29 @@ def window_report(model_def, effective, fps, diagnostics, index, frames_maximum=
     return report
 
 
-def validate_declared_settings(session, supplied):
+def check_speech_length(model_def, effective, resolve_media):
+    """A video driven by speech stops shortly after it, but WanGP first fits video_length to the model's frame steps: unless
+    that rounding is ceil, a length set to the speech's own frame count can lose its last words."""
+    audio_prompt_type = effective.get("audio_prompt_type", "")
+    if not (effective.get("audio_guide") and effective.get("video_length")) or "A" not in audio_prompt_type or "F" in audio_prompt_type or model_def.get("video_length_not_limited_by_audio"):
+        return
+    from shared.utils.audio_video import get_media_duration_and_audio_layouts
+
+    duration = get_media_duration_and_audio_layouts(resolve_media(effective["audio_guide"], "audio_guide"))[0]
+    force = str(effective.get("force_fps") or "")
+    fps = float(force) if force.isdigit() else float(model_def.get("fps", 16))
+    minimum, step, offset = model_def.get("frames_minimum", 5), model_def.get("latent_size", model_def.get("frames_steps", 4)), model_def.get("frames_offset", 1)
+    frames, needed = fit_video_length(int(effective["video_length"]), minimum, step, offset), math.ceil(duration * fps)
+    if frames < needed:
+        raise ValueError(f"video_length {int(effective['video_length'])} makes {frames} frames ({frames / fps:.2f} s at {fps:g} fps), shorter than the {duration:.2f} s audio_guide: its last words would be cut."
+                         f" Use video_length {normalize_frame_count(needed, minimum, step, offset)} or more (longer values stop shortly after the speech). Nothing was submitted.")
+
+
+def validate_declared_settings(session, supplied, resolve_media=None):
+    """Settings checks before submission; resolve_media(value, key) -> path enables the checks that read media inputs."""
     model_def, effective = effective_settings(session, supplied)
+    if resolve_media is not None:
+        check_speech_length(model_def, effective, resolve_media)
     resolution = effective.get("resolution")
     if resolution and (not isinstance(resolution, str) or not re.fullmatch(r"[1-9]\d*x[1-9]\d*", resolution)):
         raise ValueError('resolution must be a positive "WIDTHxHEIGHT" string.')
@@ -225,7 +247,10 @@ def preflight(session, prepare_generation, prepare_postprocess, settings=None, m
                         report["diagnostics"].append({"severity": "error", "task": index, "message": f"LoRAs not found in this model's catalog: {task['missing_loras']}"})
                     if downloadable:
                         task["downloadable_loras"] = downloadable
-                        report["diagnostics"].append({"severity": "warning", "task": index, "message": f"LoRAs are not installed locally; execution will attempt to download them. Remote availability was not checked: {downloadable}"})
+                        installed = sorted({Path(name).name for name in available["loras"]})
+                        close = {Path(name).name: match[0] for name in downloadable if (match := difflib.get_close_matches(Path(name).name, installed, n=1, cutoff=0.85))}
+                        hint = f" Close installed names, possibly mistyped: {close}." if close else ""
+                        report["diagnostics"].append({"severity": "warning", "task": index, "message": f"LoRAs are not installed locally; execution will attempt to download them. Remote availability was not checked: {downloadable}.{hint}"})
                 if detail == "summary":
                     task.pop("settings")
                     task.pop("sources")

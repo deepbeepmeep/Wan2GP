@@ -290,11 +290,20 @@ def orbit_cameras(points: torch.Tensor, angles, resolution, *, projection: str =
     return torch.stack(views), (adjust @ base).expand(len(views), 4, 4)
 
 
+def asset_cameras(asset, angles, resolution, **framing) -> tuple[torch.Tensor, torch.Tensor]:
+    """orbit_cameras of a mesh, or of Gaussian splats framed on the 2-98 % quantiles of their centres (against floaters):
+    the cameras render_views / render_splat_views use, computed once for a sequence rendered in slices."""
+    if isinstance(asset, Mesh):
+        return orbit_cameras(asset.vertices, angles, resolution, **framing)
+    return orbit_cameras(asset["means"], angles, resolution, quantile=0.02, fill=0.85, **framing)
+
+
 def render_views(mesh: Mesh, angles, resolution, mode: str = "shaded", *, projection: str = "orthographic", zoom: float = 1.0,
-                 focus=(0.5, 0.5, 0.5), background=None, supersample: int = 2) -> torch.Tensor:
+                 focus=(0.5, 0.5, 0.5), background=None, supersample: int = 2, cameras=None) -> torch.Tensor:
     """Views [B, H, W, C] in 0..1 of a mesh from orbit_cameras (one scale shared by every view), encoded as
-    _encoded_views: RGBA with a transparent background for the colour modes by default."""
-    view, projection = orbit_cameras(mesh.vertices, angles, resolution, projection=projection, zoom=zoom, focus=focus)
+    _encoded_views: RGBA with a transparent background for the colour modes by default. cameras: a slice of the
+    asset_cameras of a longer sequence, rendered instead of angles."""
+    view, projection = asset_cameras(mesh, angles, resolution, projection=projection, zoom=zoom, focus=focus) if cameras is None else cameras
     return _encoded_views(mesh, view, projection, resolution, mode, background, supersample)
 
 
@@ -410,14 +419,14 @@ def splat_preview(splats: dict, size=512, *, cameras=None, max_radius: int | Non
 
 
 def render_splat_views(splats: dict, angles, resolution, mode: str = "shaded", *, projection: str = "orthographic", zoom: float = 1.0,
-                       focus=(0.5, 0.5, 0.5), background=None) -> torch.Tensor:
-    """Views [B, H, W, C] in 0..1 of Gaussian splats from orbit_cameras (framed on the 2-98 % quantiles of the centres,
-    against floaters): shaded / albedo give the splat colours, RGBA with a transparent background when background is
-    None; mask gives the coverage (C = 3)."""
+                       focus=(0.5, 0.5, 0.5), background=None, cameras=None) -> torch.Tensor:
+    """Views [B, H, W, C] in 0..1 of Gaussian splats from asset_cameras (or a slice of them given as cameras): shaded /
+    albedo give the splat colours, RGBA with a transparent background when background is None; mask gives the
+    coverage (C = 3)."""
     if mode not in ("shaded", "albedo", "mask"):
         raise ValueError(f"Gaussian splats render in shaded, albedo or mask mode, not {mode!r}")
     height, width = (resolution, resolution) if isinstance(resolution, int) else resolution
-    view, projection = orbit_cameras(splats["means"], angles, (height, width), projection=projection, zoom=zoom, focus=focus, quantile=0.02, fill=0.85)
+    view, projection = asset_cameras(splats, angles, (height, width), projection=projection, zoom=zoom, focus=focus) if cameras is None else cameras
     images = torch.stack([(splat_preview(splats, (height, width), cameras=(v, p)).permute(1, 2, 0) + 1) / 2 for v, p in zip(view, projection)])
     rgb, coverage = images[..., :3], images[..., 3:]
     if mode == "mask":

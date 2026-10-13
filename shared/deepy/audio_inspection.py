@@ -97,7 +97,7 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
     end_silence(frames / rate)
 
     def db(value):
-        return 20 * math.log10(value) if value > 0 else None
+        return round(20 * math.log10(value), 2) if value > 0 else None
 
     summary = diagnostics.rsplit("Summary:", 1)[-1]
     integrated = re.search(r"\bI:\s*([-+\w.]+)\s*LUFS", summary)
@@ -115,7 +115,9 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
               "loudness": {"method": "FFmpeg EBU R128", "integrated_lufs": measured(integrated), "true_peak_dbfs": measured(true_peak)},
               "silence": {"threshold_dbfs": silence_db, "window_seconds": window / rate, "minimum_seconds": min_silence,
                           "duration_seconds": silent_seconds, "interval_count": interval_count, "intervals": intervals, "truncated": interval_count > len(intervals)},
-              "notes": ["Coverage follows the selected audio stream's playable timeline when its duration is known, excluding decoder tail padding. Times are relative to the source file.", "Silence means all-channel RMS below the threshold in 20 ms windows, not necessarily zero samples or missing audio.", "Full-scale samples (absolute amplitude >= 1) indicate possible clipping, not proof of audible distortion. Null dBFS means zero amplitude; null loudness means unavailable. Measurements do not judge semantic content or musical quality."]}
+              "note": "Times are relative to the source file. Silence: all-channel RMS below the threshold in 20 ms windows. Full-scale samples suggest possible clipping. Null dBFS: zero amplitude."}
+    if (measured(true_peak) or -100) > -1 or any(clipped):
+        result["fix"] = "Peaks are above -1 dBTP: remux_media with mode \"mix\" and this one file (optionally normalize_lufs) masters it below the ceiling with its true-peak limiter, without regenerating."
     if preview_path:
         seconds = min(preview_seconds, frames / rate)
         # A compact stereo preview is deliberately bounded; measurements above retain all source channels.
@@ -136,7 +138,9 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
             if math.isfinite(loudness := float(value)) and loudness > -70:
                 index = min(int(max(float(time_text) - 0.05, 0) / window_s), max(envelope))
                 momentary[index] = max(momentary.get(index, -math.inf), loudness)
-        result["envelope"] = {"window_seconds": window_s, "windows": [{"start": round(start_time + index * window_s, 3), "rms_dbfs": db(math.sqrt(total / count)), "peak_dbfs": db(top), "momentary_max_lufs": momentary.get(index)} for index, (total, count, top) in sorted(envelope.items())]}
+        windows = [envelope[index] for index in range(max(envelope) + 1)]  # contiguous: every window of the range holds samples
+        result["envelope"] = {"window_s": window_s, "start_s": start_time, "rms_dbfs": [None if (value := db(math.sqrt(total / count))) is None else round(value, 1) for total, count, _ in windows],
+                              "peak_dbfs": [None if (value := db(top)) is None else round(value, 1) for _, _, top in windows], "momentary_max_lufs": [momentary.get(index) for index in range(len(windows))]}
     return result
 
 

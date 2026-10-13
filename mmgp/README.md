@@ -23,6 +23,22 @@ Requirements: Python 3.10+, PyTorch 2.1+ (2.3+ for the VRAM allocator), an NVIDI
 - **Progress reporting and cancellation** of loading, quantization and pinning.
 - **PyTorch compilation** of the main model.
 
+### Model execution API
+
+Model code can use `from mmgp import runtime, cuda_graphs` without inspecting MMGP's hook attributes:
+
+- `runtime.execution_device(module)` returns the execution device of a managed root or submodule, including while its weights are on CPU. For an unmanaged module it returns its first parameter/buffer's device (CPU for an empty module).
+- `runtime.ensure_loaded(module)` requests the owning model's base/preloaded weights before a custom entry point reads them. It keeps the normal co-tenancy and block-swapping policy; it does not make all blocks resident. It does nothing for an unmanaged module.
+- `cuda_graphs.run(stage, *args, owner=model, method="forward", enabled=True, **kwargs)` executes an extra graphable stage inside `cuda_graphs.scope()`. A registered stage can omit `owner`. A separate stage can reuse a managed model's weights without changing checkpoint paths or registering those parameters again. Its method follows the same graph contract as a transformer block: weights and explicit inputs only, no CPU synchronization, and tensor outputs/in-place updates only.
+- `cuda_graphs.is_enabled(model)` checks graph availability inside the current scope, including registered gates and weight readiness, when preparation is specific to graph execution. `run()` also enforces these conditions.
+
+Extra stages use their owner's existing graph cache, LoRA inputs, weight-placement keys and cleanup. Outside a graph scope, when disabled, or when the owner has no CUDA-graph manager, `run()` calls the selected method normally. PyTorch compilation alone does not enable MMGP CUDA graphs. Module ownership is registered independently of compilation hooks and removed on release; it does not keep models or managers alive. Separately managed roots own themselves; shared descendants use the last configured owner, so pass an explicit root as `owner` when a graph stage uses shared modules.
+
+```python
+with cuda_graphs.scope():
+    output = cuda_graphs.run(output_stage, hidden, conditioning, owner=transformer)
+```
+
 ### What's new in 4.0
 - MMGP Optimized VRAM Allocator (*mmgp.allocator*).
 - Faster block swapping with the same VRAM: prefetch window (*prefetchWindow*, set automatically), learned block order across towers and steps, fixed VRAM slots for swapped blocks.

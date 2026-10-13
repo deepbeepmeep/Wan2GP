@@ -39,7 +39,8 @@ class family_handler:
             "one_image_ref_only": True,
             "image_refs_keep_alpha": True,
             "fit_into_canvas_image_refs": 0,
-            "prompt_description": "Asset Name / Description (used for file names)",
+            "prompt_description": "Asset Name / Description (optional, used for file names)",
+            "prompt_optional": True,  # the prompt only names the output files
             "no_negative_prompt": True,
             "embedded_guidance": False,
             "inference_steps": True,

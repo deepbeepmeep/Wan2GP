@@ -230,7 +230,7 @@ class PrismAudioRuntime:
         inputs["input_ids"] = inputs["input_ids"].to(dtype=torch.long)
         if "attention_mask" in inputs:
             inputs["attention_mask"] = inputs["attention_mask"].to(dtype=torch.long)
-        with _autocast_context(self.device, self.dtype), checkpoint_modules(self.feature_extractor.t5.encoder.block):
+        with _autocast_context(self.device, self.dtype), checkpoint_modules(self.feature_extractor.t5.layers):
             text_features = self.feature_extractor.t5(**inputs).last_hidden_state[0].cpu()
         if _check_abort(abort_callback):
             return None

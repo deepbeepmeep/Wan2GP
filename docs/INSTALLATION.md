@@ -44,14 +44,17 @@ pip install -r requirements.txt
 
 In the configuration menu, **INT8 Math Kernels** selects the backend for INT8 quantized linear layers, including INT8 ConvRot checkpoints:
 
-- **Auto** (default): tries Comfy Kitchen CUDA on NVIDIA or HIP on AMD ROCm, then Triton, then PyTorch when neither backend is available.
+- **Auto** (default): tries WGPKernels on NVIDIA, then Comfy Kitchen CUDA on NVIDIA or HIP on AMD ROCm, then Triton, then PyTorch when no other backend is available.
+- **WGPKernels**: selects WanGP's own INT8 kernels (`wgpkernels` package, NVIDIA GPUs with compute capability 8.0 or newer). They keep full precision activations for autoregressive decoding and short inputs, and use one activation scale per block of 128 values for longer inputs, so a few large activation values no longer erase the small ones. Each GPU measures its fastest precise path once per layer shape; the result is cached for later sessions.
 - **Triton**: selects WanGP's Triton INT8 kernels. See [Triton Installation](#triton-installation) below.
 - **Comfy Kitchen Kernels**: selects Kitchen's native CUDA or HIP kernels for the current PyTorch runtime.
 - **Disabled: PyTorch**: uses the standard PyTorch/Quanto path.
 
-Kitchen falls back to Triton when unavailable, and Triton falls back to PyTorch when unavailable, including explicit selections. Startup reports the backend actually selected. Finish the current generation before changing the selection. Weights stay loaded; autoregressive CUDA graphs and KV caches rebuild on the next request when the resolved backend changes. Existing `enable_int8_kernels` configurations migrate automatically: enabled becomes `int8_kernels: "auto"`, disabled becomes `int8_kernels: "disabled"`.
+WGPKernels fall back to Kitchen, Kitchen falls back to Triton, and Triton falls back to PyTorch when unavailable, including explicit selections. Startup reports the backend actually selected. Finish the current generation before changing the selection. Weights stay loaded; autoregressive CUDA graphs and KV caches rebuild on the next request when the resolved backend changes. Existing `enable_int8_kernels` configurations migrate automatically: enabled becomes `int8_kernels: "auto"`, disabled becomes `int8_kernels: "disabled"`.
 
 Comfy Kitchen is installed with `requirements.txt`; its prebuilt CUDA kernels require an NVIDIA R580+ driver. AMD INT8/ConvRot uses ROCm PyTorch and Kitchen's HIP extension on supported RDNA3/3.5/4 devices. RDNA2 and unavailable or failing HIP backends retain the Triton/PyTorch fallback. WanGP probes small plain and ConvRot linear operations before selecting Kitchen, and reports CUDA or HIP in the startup message. This option selects INT8 linear math; it does not change the attention backend or enable FP16 accumulation.
+
+ACE-Step 1.5's INT8 language models use residual correction with Kitchen: a second Kitchen INT8 multiplication recovers activation values lost to its per-token scale. This prevents corrupted captions and missing metadata on the 4B LM. Both products are combined in FP32 before the output cast, using bounded scratch memory and the existing INT8 weights. The correction adds computation while keeping Kitchen selected. WGPKernels need no correction: these layers keep full precision activations at every input length.
 
 ### CUDA Kernels Optimized Ops Precision (When Available)
 

@@ -137,6 +137,28 @@ def get_video_thumbnail_data_url(video_path: str) -> str:
     return data_url
 
 
+def black_ranges(path: str, start_s: float = 0.0, end_s: float | None = None, *, min_seconds: float = 1.0) -> list[list[float]]:
+    """Stretches of black picture in [start_s, end_s] (seconds): ffmpeg blackdetect, nearly every pixel below 10 % luminance."""
+    span = [] if end_s is None or not math.isfinite(end_s) else ["-t", f"{end_s - start_s:.3f}"]
+    command = [_get_ffmpeg_path(), "-v", "info", "-ss", f"{start_s:.3f}", *span, "-i", path, "-an", "-vf", f"scale=160:-2,blackdetect=d={min_seconds:g}:pix_th=0.10", "-f", "null", "-"]
+    process = subprocess.run(command, capture_output=True, text=True, errors="replace")
+    if process.returncode:
+        raise RuntimeError(process.stderr.strip()[-500:] or "ffmpeg could not decode the video.")
+    return [[round(start_s + float(begin), 2), round(start_s + float(end), 2)] for begin, end in re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", process.stderr)]
+
+
+def quiet_ranges(path: str, *, threshold_db: float = -45.0, min_seconds: float = 1.0) -> list[list[float]]:
+    """Stretches (seconds) where the first audio track stays below threshold_db: ffmpeg silencedetect."""
+    command = [_get_ffmpeg_path(), "-v", "info", "-i", path, "-vn", "-af", f"silencedetect=n={threshold_db:g}dB:d={min_seconds:g}", "-f", "null", "-"]
+    process = subprocess.run(command, capture_output=True, text=True, errors="replace")
+    if process.returncode:
+        raise RuntimeError(process.stderr.strip()[-500:] or "ffmpeg could not decode the audio.")
+    starts = [max(0.0, float(value)) for value in re.findall(r"silence_start: (-?[\d.]+)", process.stderr)]
+    ends = [float(value) for value in re.findall(r"silence_end: ([\d.]+)", process.stderr)]
+    ends += [get_media_duration(path)] * (len(starts) - len(ends))  # a silence lasting to the end
+    return [[round(start, 2), round(end, 2)] for start, end in zip(starts, ends)]
+
+
 def encode_frames(frames, output_path: str, fps: float, *, video_codec: str | None = None, video_container: str | None = None) -> str:
     """Encode RGB PIL frames of one size as a silent video; odd sizes get one black pixel row/column for 4:2:0 encoders."""
     frames = iter(frames)
@@ -164,7 +186,7 @@ def encode_frames(frames, output_path: str, fps: float, *, video_codec: str | No
 MERGE_TRANSITIONS = {"cut": None, "crossfade": "fade", "fade_black": "fadeblack", "fade_white": "fadewhite"}  # names for agents -> ffmpeg xfade
 
 
-def merge_videos(videos: list[str], output_path: str, *, transitions: list[str] | None = None, transition_s: float = 1.0, video_codec: str | None = None, video_container: str | None = None, audio_codec: str | None = None) -> str:
+def merge_videos(videos: list[str], output_path: str, *, transitions: str | list[str] | None = None, transition_s: float = 1.0, video_codec: str | None = None, video_container: str | None = None, audio_codec: str | None = None) -> str:
     """Join videos in order with a cut, crossfade or fade through black/white at each join (transitions: one per join, or one for all).
     Clips are fitted to the first one's size and frame rate; a transition overlaps the two clips by transition_s, and the soundtracks
     follow the picture (silence for a clip without sound)."""
@@ -174,7 +196,7 @@ def merge_videos(videos: list[str], output_path: str, *, transitions: list[str] 
     for path in videos:
         if not os.path.isfile(path):
             raise FileNotFoundError(f"Video not found: {path}")
-    transitions = list(transitions or ["cut"])
+    transitions = [transitions] if isinstance(transitions, str) else list(transitions or ["cut"])
     transitions = transitions * (len(videos) - 1) if len(transitions) == 1 else transitions
     if len(transitions) != len(videos) - 1 or any(name not in MERGE_TRANSITIONS for name in transitions):
         raise ValueError(f"transitions needs one value per join ({len(videos) - 1}) or one for all, among {', '.join(MERGE_TRANSITIONS)}.")
@@ -539,13 +561,15 @@ def replace_audio(video_path: str, audio_path: str, output_path: str, *, audio_c
 
 def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_path: str | None = None, include_video_audio: bool = False, gains_db: list[float] | None = None, audio_codec: str | None = None, standalone_audio_codec: str | None = None, subtitle_tracks: list[dict] | None = None, include_video_subtitles: bool = True,
                 offsets_s: list[float] | None = None, fade_in_s: list[float] | None = None, fade_out_s: list[float] | None = None, video_audio_gain_db: float | None = None, normalize_lufs: float | None = None,
-                trim_start_s: list[float] | None = None, trim_duration_s: list[float] | None = None, gain_points: list | None = None, ducking: dict | None = None) -> str:
+                trim_start_s: list[float] | None = None, trim_duration_s: list[float] | None = None, gain_points: list | None = None, ducking: dict | None = None, audio_languages: list[str] | None = None) -> str:
     """Copy video, combine or retain audio, and attach selectable subtitle streams. Mixing can trim, offset, fade, gain and automate each
     file, lower some files under speech (ducking) and normalize the result. Files add at their own levels, under a true-peak limiter."""
     mode = str(mode or "").strip().lower()
     if mode not in {"copy", "replace", "mix", "multitrack"}:
         raise ValueError("mode must be copy, replace, mix, or multitrack.")
-    if not isinstance(audio_paths, list) or (mode != "copy" and not audio_paths):
+    if audio_languages is not None and (mode != "multitrack" or len(audio_languages) != len(audio_paths)):
+        raise ValueError("audio_languages needs multitrack mode and one language code per file of audio_ids.")
+    if not isinstance(audio_paths, list) or (mode != "copy" and not audio_paths and not (mode == "mix" and video_path and include_video_audio)):  # a mix of the video's own soundtrack masters it
         raise ValueError("audio_paths must contain audio files for this mode.")
     audio_paths = [os.path.normpath(str(path or "").strip()) for path in audio_paths]
     for path in audio_paths:
@@ -651,14 +675,14 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
         _run_ffmpeg([*command, output_path])
         return output_path
-    if len(audio_paths) + int(include_video_audio) < 2:
-        raise ValueError(f"{mode} requires at least two audio streams.")
+    if len(audio_paths) + int(include_video_audio) < (1 if mode == "mix" else 2):  # a one-file mix masters it: trim, fades, gain, loudness, limiter
+        raise ValueError("mix requires an audio stream." if mode == "mix" else "multitrack requires at least two audio streams.")
     def per_file(name, values, low, high, unit):
         if values is None:
             return None
         if mode != "mix" or len(values) != len(audio_paths):
             raise ValueError(f"{name} is available for mix only and needs one value per audio file.")
-        values = [float(value) for value in values]
+        values = [0.0 if value is None else float(value) for value in values]  # null keeps that file's default (no gain, offset, fade or trim)
         if any(not math.isfinite(value) or value < low or value > high for value in values):
             raise ValueError(f"Each {name} value must be a finite number from {low} to {high} {unit}.")
         return values
@@ -730,6 +754,8 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
         names = (["Original Soundtrack"] if include_video_audio else []) + [os.path.splitext(os.path.basename(path))[0] for path in audio_paths]
         for index, name in enumerate(names):
             command += [f"-metadata:s:a:{index}", f"title={name}"]
+        for index, language in enumerate(audio_languages or [], start=1 if include_video_audio else 0):
+            command += [f"-metadata:s:a:{index}", f"language={language}"]
     else:
         # amix would otherwise adopt the rate and layout negotiated for its first input, downsampling or downmixing richer sources
         streams = [next(stream for stream in ffmpeg.probe(path).get("streams", []) if stream.get("codec_type") == "audio") for path in ([video_path] if include_video_audio else []) + audio_paths]
@@ -768,10 +794,13 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
         if normalize_lufs is not None:  # one linear gain to the measured integrated loudness
             loudness = _graph_loudness([*inputs, "-filter_complex", ";".join([*filters, "[mixed]ebur128=framelog=verbose[measure]"]), "-map", "[measure]", *duration_args])
             gain = f"volume={float(normalize_lufs) - loudness:g}dB,"
-        # A true-peak limiter: at 4x the rate it also catches peaks between samples; -2 dBTP leaves room for the overshoot of lossy encoders.
-        filters.append(f"[mixed]{gain}aresample={4 * rate},alimiter=limit={10 ** (-2 / 20):.4f}:level=0:latency=1,aresample={rate}[limited]")
+        encode_args = _get_mp4_audio_encode_args(audio_codec) if video_path else _get_standalone_audio_encode_args(standalone_audio_codec)
+        codec = encode_args[encode_args.index("-c:a") + 1]
+        ceiling = -2 if codec.startswith("pcm_") or codec in ("flac", "alac") else -3  # AAC and MP3 encoding add about 1 dB of true-peak overshoot
+        # A true-peak limiter: at 4x the rate it also catches peaks between samples, keeping the encoded file below -1 dBTP.
+        filters.append(f"[mixed]{gain}aresample={4 * rate},alimiter=limit={10 ** (ceiling / 20):.4f}:level=0:latency=1,aresample={rate}[limited]")
         mixed = "[limited]"
-        command = [*inputs, "-filter_complex", ";".join(filters), *maps, "-map", mixed, *subtitle_args, *(_get_mp4_audio_encode_args(audio_codec) if video_path else _get_standalone_audio_encode_args(standalone_audio_codec)), *duration_args]
+        command = [*inputs, "-filter_complex", ";".join(filters), *maps, "-map", mixed, *subtitle_args, *encode_args, *duration_args]
     _run_ffmpeg([*command, output_path])
     return output_path
 

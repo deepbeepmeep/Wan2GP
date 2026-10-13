@@ -1,6 +1,7 @@
 # Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
+import glob
 import hashlib
 import mimetypes
 import os
@@ -215,7 +216,8 @@ class FileAccessPolicy:
         if not self.can_read(target):
             raise PermissionError(f"Filesystem read is not authorized for: {self.virtualize_path(target)}")
         if file and not target.is_file():
-            raise FileNotFoundError(f"Path is not an existing file: {self.virtualize_path(target)}")
+            named = sorted(target.parent.glob(f"{glob.escape(target.name)}.*")) if not target.suffix and target.parent.is_dir() else []
+            raise FileNotFoundError(f"Path is not an existing file: {self.virtualize_path(target)}" + (f" (did you mean {', '.join(self.virtualize_path(item) for item in named[:3])}?)" if named else ""))
         if directory and not target.is_dir():
             raise FileNotFoundError(f"Path is not an existing directory: {self.virtualize_path(target)}")
         if not file and not directory and not target.exists():
@@ -511,15 +513,16 @@ def search_text(policy: FileAccessPolicy, path: str, query: str, pattern: str = 
 
 def write_text(policy: FileAccessPolicy, path: str, text: str, mode: str = "create", encoding: str = "utf-8") -> dict[str, Any]:
     file_path = policy.require_write(path)
-    if not file_path.parent.is_dir():
-        raise FileNotFoundError(f"Parent directory does not exist: {file_path.parent}")
     mode = str(mode or "create").strip().lower()
     open_mode = {"create": "x", "overwrite": "w", "append": "a"}.get(mode)
     if open_mode is None:
         raise ValueError("mode must be create, overwrite, or append.")
     if policy.create_only(file_path):
         open_mode = "x"
+    if open_mode == "x" and file_path.exists():
+        raise FileExistsError(f"{path} already exists and cannot be replaced here: write a new file name." if policy.create_only(file_path) else f"{path} already exists: pass mode \"overwrite\" to replace it, or use append_text to add to it.")
     content = str(text)
+    file_path.parent.mkdir(parents=True, exist_ok=True)  # inside the authorized write area, like the file itself
     with file_path.open(open_mode, encoding=_encoding(encoding), newline="") as writer:  # the text as given: no Windows newline translation
         writer.write(content)
     digest = hashlib.sha256()

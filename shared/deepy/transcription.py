@@ -180,6 +180,13 @@ def _tighten(start: float | None, end: float | None, speech: list[tuple[float, f
     return (inside[0][0] if inside[0][0] - start >= min_pause else start), (inside[-1][1] if end - inside[-1][1] >= min_pause else end)
 
 
+def segments_to_srt(segments: list[dict[str, Any]]) -> str:
+    """SubRip subtitles from serialized transcription segments (seconds)."""
+    stamp = lambda seconds: (lambda ms: f"{ms // 3600000:02}:{ms // 60000 % 60:02}:{ms // 1000 % 60:02},{ms % 1000:03}")(round(float(seconds) * 1000))
+    cues = [segment for segment in segments if segment["text"] and segment["start"] is not None and segment["end"] is not None]
+    return "\n".join(f"{index}\n{stamp(cue['start'])} --> {stamp(cue['end'])}\n{cue['text']}\n" for index, cue in enumerate(cues, 1))
+
+
 def _serialize_segments(segments: list[dict[str, Any]], timestamp_type: str | None, speech: list[tuple[float, float]]) -> list[dict[str, Any]]:
     serialized = []
     include_words = timestamp_type == "word"

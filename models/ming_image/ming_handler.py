@@ -120,7 +120,7 @@ class family_handler:
                 "guidance_max_phases": 1,
                 "NAG": False,
                 "profiles_dir": [LAYER_ARCHITECTURE],
-                "resolutions_categories": ["<=720p"],
+                "resolution_budget": "1024x1024",
                 "text_encoder_folder": ENCODER,
                 "text_encoder_URLs": [
                     build_hf_url(REPO, ENCODER, ENCODER_CORE + suffix)
@@ -210,7 +210,7 @@ class family_handler:
             "embedded_guidance": False,
             "NAG": False,
             "profiles_dir": [ARCHITECTURE],
-            "resolutions_categories": ["<=2048sq"],
+            "resolution_budget": "2048x2048",
             "text_encoder_folder": ENCODER,
             "text_encoder_URLs": [
                 build_hf_url(REPO, ENCODER, ENCODER_CORE + suffix)

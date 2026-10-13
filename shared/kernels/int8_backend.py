@@ -12,10 +12,21 @@ import torch
 from shared.kernels import quanto_int8_inject as triton
 
 
-CHOICES = [("Disabled: PyTorch (slowest, most precise)", "disabled"), ("Auto (fastest available, less precise)", "auto"),
-           ("Triton (fast, less precise)", "triton"), ("Comfy Kitchen Kernels (fastest, least precise)", "kitchen")]
+def _wgp_installed():
+    """The WGPKernels package with its built INT8 library, checked without the GPU (the backend probe runs the kernels)."""
+    try:
+        from wgpkernels import int8
+    except ImportError:
+        return False
+    return int8.default_library_path().is_file()
+
+
+CHOICES = [("Disabled: PyTorch (slowest, most precise)", "disabled"), ("Auto (best available)", "auto"),
+           (f"WGPKernels ({'installed' if _wgp_installed() else 'not installed'}, fastest, precise)", "wgpkernels"),
+           ("Triton (fast, less precise)", "triton"), ("Comfy Kitchen Kernels (fast, least precise)", "kitchen")]
 _backend = "pytorch"
 revision = 0
+_wgp = None  # wgpkernels.int8 while it is the backend
 _kitchen = None
 _kitchen_hip = False
 _direct_cutlass = False
@@ -31,7 +42,7 @@ _blockwise_required = False
 _kitchen_dlpack_export = None  # (Kitchen module, its own DLPack exporter) while the direct exporter replaces it
 _prepared_capture_streams = set()
 # Bump when changes to INT8 custom operators invalidate compiled graphs.
-_COMPILE_CACHE_VERSION = 3
+_COMPILE_CACHE_VERSION = 4
 # Includes row quantization, a possible INT32 GEMM result, and a temporary output.
 # Never allocate an activation-sized quantization buffer for a whole video.
 _SCRATCH_BYTES = 16 * 1024 * 1024
@@ -94,13 +105,37 @@ def _probe_kitchen():
         return None, str(exc)
 
 
+def _probe_wgpkernels():
+    if not torch.cuda.is_available() or torch.version.hip is not None:
+        return None, "requires an NVIDIA GPU"
+    if torch.cuda.get_device_capability() < (8, 0):
+        return None, "requires an NVIDIA GPU with compute capability 8.0 or newer"
+    try:
+        module = importlib.import_module("wgpkernels.int8")
+        if module._lib is None:
+            module.load_library()
+        # Every kernel once with fixed configurations, at selection time and outside graph capture.
+        with torch.inference_mode():
+            failure = module.selftest()
+        return (None, failure) if failure else (module, "available")
+    except Exception as exc:
+        return None, str(exc)
+
+
 def resolve_backend(selection):
-    """Validate user selection before changing the active runtime or config."""
+    """Validate user selection before changing the active runtime or config. Auto prefers WGPKernels, then Comfy Kitchen, then
+    Triton; an unavailable explicit choice falls back the same way."""
     if selection not in {value for _, value in CHOICES}:
         raise ValueError(f"Unknown INT8 kernel backend: {selection!r}")
     if selection == "disabled":
         return "pytorch", None
-    if selection in ("auto", "kitchen"):
+    if selection in ("auto", "wgpkernels"):
+        module, reason = _probe_wgpkernels()
+        if module is not None:
+            return "wgpkernels", module
+        if selection == "wgpkernels":
+            print(f"[INT8] WGPKernels unavailable: {reason}.")
+    if selection in ("auto", "kitchen", "wgpkernels"):
         module, reason = _probe_kitchen()
         if module is not None:
             return "kitchen", module
@@ -114,12 +149,107 @@ def kitchen_enabled():
     return _backend == "kitchen"
 
 
+def wgp_enabled():
+    return _backend == "wgpkernels"
+
+
+def _wgp_supports(input, weight):
+    """Inputs of WGPKernels: BF16/FP16 activations on the GPU (plain, or traced by torch.compile, not Quanto activations), INT8
+    weights with K a multiple of 16."""
+    return ((type(input) is torch.Tensor or (triton._is_fake_tensor(input) and not triton._is_qbytes_tensor(input)))
+            and input.is_cuda and input.dtype in (torch.bfloat16, torch.float16)
+            and weight._data.is_cuda and weight._data.dtype == torch.int8 and input.shape[-1] % 16 == 0)
+
+
+def _wgp_run(x, weight, scale, bias, group, precise):
+    if x.stride(-1) != 1 or x.stride(0) % 8 or x.data_ptr() % 16:  # the kernels load activation rows by 16 bytes
+        x = x.clone(memory_format=torch.contiguous_format)
+    return _wgp.linear(x, weight, scale, bias, group, precise)
+
+
+def wgp_linear(input, weight, bias=None, group=0, precise=False):
+    """INT8 linear with WGPKernels (ConvRot rotation `group`, 0 for plain INT8). The kernels choose, per GPU and shape, full
+    precision activations or per-block INT8 activations; precise=True keeps full precision at every token count."""
+    n = weight._data.shape[0]
+    scale = _weight_scale(weight, n, input.device)
+    x = input.reshape(-1, input.shape[-1])
+    if bias is not None and bias.dtype != x.dtype:
+        bias = bias.to(x.dtype)
+    if torch.compiler.is_compiling() or triton._is_fake_tensor(input):
+        out = torch.ops.wan2gp_wgp.linear(x, weight._data, scale, bias, group, precise)
+    else:
+        out = _wgp_run(x, weight._data, scale, bias, group, precise)
+    return out.reshape(*input.shape[:-1], n)
+
+
+def require_int8_residual(model, reason):
+    """Keep activation outliers from erasing small values in rowwise INT8 activations: Kitchen adds a second INT8 product of the
+    discarded residual, WGPKernels keep full precision activations at every token count.
+
+    Install before MMGP profiling. Other backends and weight formats retain their own forwards.
+    """
+    from optimum.quanto import qint8
+
+    count = 0
+    for module in model.modules():
+        if (isinstance(module, torch.nn.Linear) and getattr(module, "weight_qtype", None) == qint8
+                and not hasattr(module, "_int8_residual_forward")):
+            module._int8_residual_forward = module.forward
+            module.forward = MethodType(_residual_module_forward, module)
+            count += 1
+    if count:
+        print(f"[INT8] Full Precision Activations Required for {count} Linear Layers - {reason}.")
+
+
+def _residual_module_forward(module, input):
+    if _backend == "wgpkernels" and _wgp_supports(input, module.qweight):
+        return wgp_linear(input, module.qweight, module.bias, precise=True)
+    if (_backend != "kitchen" or type(input) is not torch.Tensor or not input.is_cuda
+            or input.dtype not in (torch.float16, torch.bfloat16, torch.float32)):
+        return module._int8_residual_forward(input)
+    weight = module.qweight
+    n = weight._data.shape[0]
+    scale = _weight_scale(weight, n, input.device)
+    x = input.reshape(-1, input.shape[-1])
+    if torch.compiler.is_compiling() or triton._is_fake_tensor(input):
+        out = torch.ops.wan2gp_kitchen.residual_linear(x, weight._data, scale, module.bias)
+    else:
+        out = _residual_linear_impl(x, weight._data, scale, module.bias)
+    return out.reshape(*input.shape[:-1], n)
+
+
+def _residual_linear_impl(x, weight, scale, bias):
+    # W8A8's single row scale can destroy the signal of weight-only INT8 LMs.
+    # Quantize the discarded residual separately and sum both INT8 products in
+    # FP32, rounding only once. Never dequantize weights or retain a full input
+    # residual; the bound includes contiguous input copies and cuBLAS INT32 output.
+    m, k = x.shape
+    n = weight.shape[0]
+    rows = max(1, _SCRATCH_BYTES // (10 * k + 12 * n + 64))
+    out = x.new_empty((m, n))
+    for start in range(0, m, rows):
+        stop = min(start + rows, m)
+        tile = x[start:stop]
+        q, qs = _kitchen.quantize_int8_rowwise(tile)
+        residual = q.float().mul_(qs).neg_().add_(tile)
+        del q, qs
+        high = _kitchen.int8_linear(tile, weight, scale, out_dtype=torch.float32)
+        low = _kitchen.int8_linear(residual, weight, scale, out_dtype=torch.float32)
+        high.add_(low)
+        if bias is not None:
+            high.add_(bias)
+        out[start:stop].copy_(high)
+        del residual, high, low
+    return out
+
+
 def require_blockwise_int8(model, reason, module_patterns=("*",)):
     """Protect a model or subtree whose plain INT8 linears need finer activation scales.
 
-    Install before MMGP profiling/LoRA hooks. Other qtypes and the user's Disabled
-    or Triton selections retain their normal forwards; Kitchen uses Triton for
-    these linears, or native Quanto when Triton is unavailable.
+    Install before MMGP profiling/LoRA hooks. Other qtypes and the user's Disabled,
+    Triton or WGPKernels selections retain their normal forwards (WGPKernels
+    use per-block activation scales at most); Kitchen uses Triton for these linears,
+    or native Quanto when Triton is unavailable.
     """
     global _blockwise_required, _blockwise_triton
     from optimum.quanto import qint8
@@ -452,6 +582,16 @@ def _register_ops():
     if _ops_registered:
         return
 
+    # WGPKernels: the path (full precision or per-block activations) is chosen when the operator runs, never in a compiled graph.
+    @torch.library.custom_op("wan2gp_wgp::linear", mutates_args=())
+    def wgp_linear_op(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor, bias: torch.Tensor | None,
+                      group: int, precise: bool) -> torch.Tensor:
+        return _wgp_run(x, weight, scale, bias, group, precise)
+
+    @wgp_linear_op.register_fake
+    def wgp_fake(x, weight, scale, bias, group, precise):
+        return x.new_empty((x.shape[0], weight.shape[0]))
+
     @torch.library.custom_op("wan2gp_kitchen::linear", mutates_args=())
     def linear(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor,
                bias: torch.Tensor | None, convrot: bool) -> torch.Tensor:
@@ -468,6 +608,15 @@ def _register_ops():
 
     @blockwise_linear.register_fake
     def blockwise_fake(x, weight, scale, bias):
+        return x.new_empty((x.shape[0], weight.shape[0]))
+
+    @torch.library.custom_op("wan2gp_kitchen::residual_linear", mutates_args=())
+    def residual_linear(x: torch.Tensor, weight: torch.Tensor, scale: torch.Tensor,
+                        bias: torch.Tensor | None) -> torch.Tensor:
+        return _residual_linear_impl(x, weight, scale, bias)
+
+    @residual_linear.register_fake
+    def residual_fake(x, weight, scale, bias):
         return x.new_empty((x.shape[0], weight.shape[0]))
 
     _ops_registered = True
@@ -501,6 +650,48 @@ def _quanto_forward(ctx, input, weight, bias=None):
         ctx.save_for_backward(input, weight)
         return kitchen_linear(input, weight, bias)
     return _original_forward(ctx, input, weight, bias)
+
+
+def _wgp_quanto_forward(ctx, input, weight, bias=None):
+    if _wgp_supports(input, weight):
+        ctx.save_for_backward(input, weight)
+        return wgp_linear(input, weight, bias)
+    return _original_forward(ctx, input, weight, bias)
+
+
+class _WgpRowProjection:
+    """mmgp row projection (offload.linear_rows) of the INT8 ConvRot and Quanto INT8 layers computed with WGPKernels: each range
+    of output rows is the same linear on a view of the weight rows (the activation is prepared again for each range)."""
+    @staticmethod
+    def supports(module, x):
+        qtype = getattr(module, "weight_qtype", None)
+        if (_backend != "wgpkernels" or qtype is None or qtype.name not in ("qint8", "qint8_convrot") or torch.compiler.is_compiling()
+                or triton._is_fake_tensor(x) or getattr(module, "activation_qtype", None) is not None):
+            return False
+        if qtype.name == "qint8" and getattr(module, "_router_forward_impl", None) is not None:
+            return False
+        weight = module.qweight
+        return (_wgp_supports(x, weight) and x.is_contiguous() and x.data_ptr() % 16 == 0 and weight._data.is_contiguous()
+                and (qtype.name == "qint8" or x.shape[-1] % module._convrot_group_size == 0))
+
+    @staticmethod
+    def key(module):
+        return None
+
+    @staticmethod
+    def prepare(module, x):
+        return None
+
+    @staticmethod
+    def rows(module, x, start, stop):
+        weight, bias = module.qweight, module.bias
+        scale = _weight_scale(weight, weight._data.shape[0], x.device)[start:stop]
+        group = module._convrot_group_size if module.weight_qtype.name == "qint8_convrot" else 0
+        bias = None if bias is None else bias[start:stop].to(x.dtype)
+        return _wgp.linear(x, weight._data[start:stop], scale, bias, group, hasattr(module, "_int8_residual_forward"))
+
+
+_WGP_ROW_PROJECTION = _WgpRowProjection()
 
 
 class _Int8RowProjection:
@@ -560,6 +751,7 @@ class _KitchenRowProjection:
     def supports(module, x):
         qtype = getattr(module, "weight_qtype", None)
         if (_kitchen is None or not _direct_cutlass or qtype is None or torch.compiler.is_compiling() or not x.is_cuda
+                or hasattr(module, "_int8_residual_forward")
                 or x.dtype not in (torch.bfloat16, torch.float16) or not x.is_contiguous()):
             return False
         convrot = qtype.name == "qint8_convrot"
@@ -620,7 +812,7 @@ _KITCHEN_ROW_PROJECTION = _KitchenRowProjection()
 
 def configure(selection, verbose_level=0, *, resolved=None):
     global _backend, _kitchen, _kitchen_hip, _original_forward, _direct_cutlass, _sm120_cutlass, _wide_convrot_triton, revision
-    global _blockwise_triton, _kitchen_dlpack_export
+    global _blockwise_triton, _kitchen_dlpack_export, _wgp
     backend, module = resolve_backend(selection) if resolved is None else resolved
     previous_backend = _backend
     if _kitchen_dlpack_export is not None:
@@ -632,7 +824,7 @@ def configure(selection, verbose_level=0, *, resolved=None):
         _original_forward = None
     triton.disable_quanto_int8_kernel()
     os.environ["WAN2GP_QUANTO_INT8_KERNEL"] = "1" if backend == "triton" else "0"
-    _backend, _kitchen = "pytorch", None
+    _backend, _kitchen, _wgp = "pytorch", None, None
     _kitchen_hip = False
     _direct_cutlass = False
     _sm120_cutlass = False
@@ -640,6 +832,12 @@ def configure(selection, verbose_level=0, *, resolved=None):
     if backend == "triton":
         if not triton.maybe_enable_quanto_int8_kernel(verbose_level):
             raise RuntimeError("Failed to enable Triton INT8 kernels")
+    elif backend == "wgpkernels":
+        from optimum.quanto.tensor.weights import qbytes
+        _register_ops()
+        _wgp = module
+        _original_forward = qbytes.WeightQBytesLinearFunction.forward
+        qbytes.WeightQBytesLinearFunction.forward = staticmethod(_wgp_quanto_forward)
     elif backend == "kitchen":
         from optimum.quanto.tensor.weights import qbytes
         _register_ops()
@@ -665,9 +863,11 @@ def configure(selection, verbose_level=0, *, resolved=None):
     from shared.qtypes import quanto_rows
     offload.register_row_projection(_INT8_ROW_PROJECTION)
     (offload.register_row_projection if backend == "kitchen" else offload.unregister_row_projection)(_KITCHEN_ROW_PROJECTION)
+    (offload.register_row_projection if backend == "wgpkernels" else offload.unregister_row_projection)(_WGP_ROW_PROJECTION)
     cuda_graphs.register_capture_setup(prepare_capture_stream)
     if backend != previous_backend:
         revision += 1
-    label = {"kitchen": "Comfy Kitchen HIP" if _kitchen_hip else "Comfy Kitchen CUDA", "triton": "Triton", "pytorch": "PyTorch"}[backend]
+    label = {"wgpkernels": "WGPKernels", "kitchen": "Comfy Kitchen HIP" if _kitchen_hip else "Comfy Kitchen CUDA", "triton": "Triton",
+             "pytorch": "PyTorch"}[backend]
     print(f"[INT8] Backend: {label} (setting: {selection}).")
     return backend != "pytorch"

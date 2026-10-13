@@ -182,9 +182,13 @@ def _apply_rotary_inplace(x, cos, sin, scratch, unsqueeze_dim):
 
 
 def _cached_prefix(past_key_values, layer_idx):
-    """The cached prompt/reference keys and values of a layer, (batch, tokens, kv heads, head_dim) views, or None."""
+    """The cached prompt/reference keys and values of a layer, (batch, tokens, kv heads, head_dim) views, or None. A prompt cache expanded
+    to the batch gives its single row: _forward_gen_kit expands it inside the layer, as CUDA graph buffers cannot hold expanded views."""
     layer = None if past_key_values is None else past_key_values.layers[layer_idx]
-    return None if layer is None or layer.keys is None else (layer.keys.transpose(1, 2), layer.values.transpose(1, 2))
+    if layer is None or layer.keys is None:
+        return None
+    keys, values = (layer.keys[:1], layer.values[:1]) if layer.keys.stride(0) == 0 else (layer.keys, layer.values)
+    return keys.transpose(1, 2), values.transpose(1, 2)
 
 
 def _norm_rope_rows(x, norm_t, norm_hw, cos, sin, partner):
@@ -580,6 +584,9 @@ class Qwen3Attention(nn.Module):
         rope: the step's gen_rope_tables, computed here when not given."""
         if rope is None:
             rope = self.gen_rope_tables(hidden_states_list[0], indexes)
+        batch = hidden_states_list[0].shape[0]
+        if kv_prefix is not None and kv_prefix[0].shape[0] != batch:  # one prompt for the whole batch
+            kv_prefix = tuple(tensor.expand(batch, *tensor.shape[1:]) for tensor in kv_prefix)
         attn_output = attention_kit.qkv_attention(hidden_states_list, self.q_proj_mot_gen, self.k_proj_mot_gen, self.v_proj_mot_gen,
                                                   self.config.num_attention_heads, self.head_dim, lambda query, key, group: self._norm_rope_gen_(query, key, rope),
                                                   kv_heads=self.config.num_key_value_heads, kv_prefix=kv_prefix)

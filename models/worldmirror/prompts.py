@@ -55,5 +55,5 @@ WORLDMIRROR_DEEPY_INFOS = ("Multi-view 3D reconstruction (not generation): View 
                            "sky_edges/edges/none. Best: 8-32 overlapping sharp views. Tencent license: not for EU/UK/South Korea; outputs may "
                            "not train other AI models.")
 
-WORLDMIRROR_DEEPY_PROMPT_INFOS = ("`prompt`: a short scene name such as `garden statue`; only used for file names. The views (photos or a video "
+WORLDMIRROR_DEEPY_PROMPT_INFOS = ("`prompt` (optional): a short scene name such as `garden statue`; only used for file names. The views (photos or a video "
                                   "of a static scene from several viewpoints) decide the reconstruction.")

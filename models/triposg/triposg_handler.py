@@ -60,7 +60,8 @@ class family_handler:
                 "mesh_outputs": True,
                 "device_explicit": True,
                 "image_prompt_types_allowed": "",
-                "prompt_description": "Asset Name / Description (used for file names)",
+                "prompt_description": "Asset Name / Description (optional, used for file names)",
+                "prompt_optional": True,  # the prompt only names the output files
                 "no_negative_prompt": True,
                 "embedded_guidance": False,
                 "NAG": False,
@@ -88,7 +89,8 @@ class family_handler:
             "one_image_ref_needed": True,
             "one_image_ref_only": True,
             "image_refs_keep_alpha": True,
-            "prompt_description": "Asset Name / Description (used for file names)",
+            "prompt_description": "Asset Name / Description (optional, used for file names)",
+            "prompt_optional": True,  # the prompt only names the output files
             "no_negative_prompt": True,
             "guidance_max_phases": 1,
             "embedded_guidance": False,

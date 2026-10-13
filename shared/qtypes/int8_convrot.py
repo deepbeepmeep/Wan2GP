@@ -429,6 +429,8 @@ class QLinearInt8ConvRot(QModuleMixin, torch.nn.Linear):
             return input.new_empty((*input.shape[:-1], qweight.shape[0]))
         original_input = input
         if self.weight_qtype == _QINT8_CONVROT_QTYPE:
+            if int8_backend.wgp_enabled() and self._convrot_group_size in (16, 64, 256) and int8_backend._wgp_supports(input, qweight):
+                return int8_backend.wgp_linear(input, qweight, self.bias, group=self._convrot_group_size)
             if (int8_backend.kitchen_enabled() and self._convrot_group_size == 256
                     and input.is_cuda and input.dtype in (torch.bfloat16, torch.float16, torch.float32)):
                 return int8_backend.kitchen_linear(input, qweight, self.bias, convrot=True)

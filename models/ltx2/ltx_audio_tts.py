@@ -201,16 +201,6 @@ class LTXAudioTTSPipelineBase:
     def request_early_stop(self) -> None:
         self._early_stop = True
 
-    @staticmethod
-    def _unload_managed_model(model: torch.nn.Module | None) -> None:
-        if model is None:
-            return
-        for module in model.modules():
-            manager = getattr(module, "_mm_manager", None)
-            if manager is not None:
-                manager.unload_all()
-                return
-
     def _encode_prompt(self, prompt: str) -> torch.Tensor:
         feature_extractor, video_connector, audio_connector = resolve_text_connectors(self.text_encoder, self._text_connectors)
         encode_fn = lambda prompts: postprocess_text_embeddings(

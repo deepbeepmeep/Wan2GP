@@ -32,6 +32,7 @@ import weakref
 import torch
 from torch.utils import _pytree as pytree
 from torch.utils._python_dispatch import TorchDispatchMode
+from . import runtime
 
 MAX_KEYS = 8  # graphs kept per block, the least recently used dropped first: weight locations, CFG branches of other lengths, resolutions
 _SCALARS = (bool, int, float, str, type(None), torch.dtype, torch.device)
@@ -93,6 +94,40 @@ def recording():
     """True while a block of a graphed model runs to be captured (its first, eager call and its capture): a kernel launched outside
     PyTorch's current stream (e.g. on the legacy default stream) would be missing from its graph, so code with such kernels uses others."""
     return _recording > 0
+
+
+def _graphs(module):
+    owner = runtime._owner(module)
+    if owner is None:
+        return None
+    manager, model_id = owner
+    return manager.cuda_graphs.get(model_id)
+
+
+def is_enabled(module):
+    """Whether a managed module can use graphs in the current scope.
+
+    Includes mode selection, registered gates and weight-residency readiness.
+    Use only to skip preparation specific to a graph stage; run() also enforces
+    these conditions. Unmanaged/released modules return False.
+    """
+    graphs = _graphs(module) if _depth else None
+    return graphs is not None and _blocked is None and graphs.disabled is None and graphs.ready()
+
+
+def run(module, *args, owner=None, method="forward", enabled=True, **kwargs):
+    """Execute an extra stage using its owner's existing graph cache and lifetime.
+
+    Call inside scope(). An unregistered stage may supply a managed owner whose
+    weights it uses; its parameters need not be registered a second time. The
+    selected method must satisfy the same graph contract as a tower block.
+    Outside a scope, with enabled=False, or without an active graph manager,
+    execute the method normally. Gates/readiness and cache invalidation/release
+    remain MMGP-owned. PyTorch compilation does not enable these CUDA graphs.
+    """
+    forward = getattr(module, method)
+    graphs = _graphs(module if owner is None else owner) if enabled and _depth else None
+    return forward(*args, **kwargs) if graphs is None else graphs.call(module, forward, args, kwargs)
 
 
 def register_key(provider):
@@ -168,6 +203,26 @@ def _register_dataclass(cls):
     pytree.register_pytree_node(cls, lambda obj: ([getattr(obj, name) for name in fields], None),
                                 lambda values, _: cls(**dict(zip(fields, values))), serialized_type_name=f"{cls.__module__}.{cls.__qualname__}")
     _registered.add(cls)
+
+
+class _OverlappingArgument(Exception):
+    def __init__(self, index):
+        self.index = index
+
+
+def _argument_path(tree, target, path):
+    """Where `target` sits in a block call's arguments (lists, tuples, dicts, dataclasses), for error messages."""
+    if tree is target:
+        return path
+    if dataclasses.is_dataclass(tree) and not isinstance(tree, type):
+        items = [(f".{field.name}", getattr(tree, field.name)) for field in dataclasses.fields(tree)]
+    elif isinstance(tree, dict):
+        items = [(f"[{key!r}]", value) for key, value in tree.items()]
+    elif isinstance(tree, (list, tuple)):
+        items = [(f"[{index}]", value) for index, value in enumerate(tree)]
+    else:
+        return None
+    return next((found for suffix, value in items if (found := _argument_path(value, target, path + suffix)) is not None), None)
 
 
 def _flatten(tree):
@@ -318,7 +373,7 @@ class BlockGraphs:
         self.name, self.weights_key, self.weight_tensors, self.extra_inputs, self.ready = name, weights_key, weight_tensors, extra_inputs, ready
         self.disabled = None  # the reason why this model's blocks run eagerly (e.g. weights whose kernels cannot be captured), or None
         self.reported = False
-        self.checked = set()  # (block, signature) whose capture checked the reads
+        self.checked = set()  # (block, method, signature) whose capture checked the reads
         self.clear()
         _managers.append(self)
 
@@ -347,8 +402,16 @@ class BlockGraphs:
         extra_signature = _signature([holder[index] for holder, index in extras])
         positions = [index for index, leaf in enumerate(leaves) if isinstance(leaf, torch.Tensor)]
         input_signatures = [signature[index] for index in positions] + list(extra_signature)
-        static_key, buffers = self._buffers(input_signatures, [leaves[index] for index in positions] + [None] * len(extras))
-        key = (id(module), spec, signature, extra_signature, self.weights_key(module), tuple(provider() for provider in _key_providers), tuple(static_key))
+        try:
+            static_key, buffers = self._buffers(input_signatures, [leaves[index] for index in positions] + [None] * len(extras), arguments=True)
+        except _OverlappingArgument as overlap:
+            leaf = leaves[positions[overlap.index]]
+            name = _argument_path(args, leaf, "args") or _argument_path(kwargs, leaf, "kwargs")
+            raise ValueError(f"CUDA graph block call of '{self.name}' ({type(module).__name__}): argument {name} is a view whose elements share memory "
+                             f"(shape {tuple(leaf.shape)}, stride {leaf.stride()}, e.g. from expand), which a graph's static buffer cannot hold. Pass the "
+                             f"unexpanded tensor and expand it inside the block's forward (no cost), or make it contiguous before the call.") from None
+        method = getattr(forward, "__func__", forward)
+        key = (id(module), spec, signature, extra_signature, self.weights_key(module), tuple(provider() for provider in _key_providers), tuple(static_key), method)
         keys = self.keys.setdefault(id(module), {})
         entry = self.entries.get(key, None)
         lifetimes = None
@@ -480,9 +543,10 @@ class BlockGraphs:
         self.static_by_buffer.setdefault((key[0], buffer.data_ptr()), []).append(key)
         self.static_by_base.setdefault(key[:2], []).append(key)
 
-    def _buffers(self, signatures, sources, counts=None):
+    def _buffers(self, signatures, sources, counts=None, arguments=False):
         # static buffers, shared by the graphs (they run one after the other) for each signature and occurrence in a call; not inference
-        # tensors, whose version counters show the in-place updates of the arguments
+        # tensors, whose version counters show the in-place updates of the arguments. An argument whose elements share memory (an expanded
+        # view) cannot be copied into a buffer of its layout: arguments=True reports it (checked only when a buffer is created).
         counts, keys, buffers = {} if counts is None else counts, [], []
         for signature, source in zip(signatures, sources):
             base = (signature, counts.setdefault(signature, 0))
@@ -502,6 +566,8 @@ class BlockGraphs:
             if key is None:
                 key = (*base, 1 + max((k[2] for k in candidates), default=-1))
                 shape, stride, dtype, device = signature
+                if arguments and source is not None and torch._debug_has_internal_overlap(source) == 1:
+                    raise _OverlappingArgument(len(keys))
                 if source is not None and _adoptable(source):
                     self.static[key] = _buffer_alias(source)
                     self.borrowed.add(key)
@@ -541,7 +607,8 @@ class BlockGraphs:
             static_leaves[index] = static
         args, kwargs = pytree.tree_unflatten(static_leaves, spec)
         versions = [static._version for static in entry.static]
-        if (id(module), signature) in self.checked:
+        checked_key = (id(module), getattr(forward, "__func__", forward), signature)
+        if checked_key in self.checked:
             check = contextlib.nullcontext()
         else:  # costly (each operation goes through Python): once per code path, which other weights capture again
             allowed = {_storage(t) for t in buffers} | {_storage(t) for t in _constants}
@@ -605,7 +672,7 @@ class BlockGraphs:
             if check.unknown:
                 raise RuntimeError(f"CUDA graph capture of a block of '{self.name}' ({type(module).__name__}): it reads tensors that are neither "
                                    f"its weights nor its arguments, whose addresses may change between replays:\n" + "\n".join(check.unknown))
-            self.checked.add((id(module), signature))
+            self.checked.add(checked_key)
         entry.mutated = [index for index, (static, version) in enumerate(zip(entry.static, versions)) if static._version != version]
         if not self.reported:
             print(f"[MMGP] CUDA graphs of the blocks of '{self.name}' are being captured.")

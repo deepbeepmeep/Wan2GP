@@ -26,7 +26,7 @@ from typing import Any, Iterator, Sequence
 from PIL import Image
 from shared.tinyvae.media import VideoPreview
 
-from shared.utils.frame_scheduler import normalize_output_frame_count
+from shared.utils.frame_scheduler import fit_video_length, normalize_output_frame_count
 from shared.utils.gallery_sources import GALLERY_SOURCES, gallery_state_defaults
 from shared.utils.process_locks import set_main_generation_running
 from shared.utils.virtual_media import get_virtual_media_vsource, parse_virtual_media_path, replace_virtual_media_source
@@ -148,7 +148,7 @@ def apply_video_length_duration(settings: dict[str, Any], model_def: dict[str, A
     if not math.isfinite(fps) or fps <= 0:
         raise ValueError("A positive numeric force_fps or model fps is required when video_length uses seconds")
     requested_frames = int(round(seconds * fps))
-    frames = normalize_output_frame_count(requested_frames, model_def.get("frames_minimum", 5), model_def.get("frames_steps", 4), model_def.get("frames_offset", 1))
+    frames = fit_video_length(requested_frames, model_def.get("frames_minimum", 5), model_def.get("frames_steps", 4), model_def.get("frames_offset", 1))
     settings["video_length"] = frames
     return {"input": raw_value, "seconds": seconds, "fps": fps, "frames": frames}
 
@@ -823,6 +823,7 @@ class WanGPSession:
             "infos": str(model_def.get("infos", "") or ""),
             "prompt_infos": str(model_def.get("prompt_infos", "") or ""),
             "sliding_window": bool(model_def.get("sliding_window", False)),
+            **({"prompt_optional": True} if model_def.get("prompt_optional") else {}),
         })
         if "video" in metadata.get("outputs", []):
             metadata["frames_maximum"] = _model_frames_maximum(self._ensure_runtime().module, model_type, model_def)

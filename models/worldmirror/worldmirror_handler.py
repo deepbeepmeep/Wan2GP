@@ -41,7 +41,8 @@ class family_handler:
             "reference_video_enabled": True,
             "skip_video_guide_preprocess": True,  # the pipeline picks and decodes its views from the source file
             "video_guide_label": "Reference Video",
-            "prompt_description": "Scene Name / Description (used for file names)",
+            "prompt_description": "Scene Name / Description (optional, used for file names)",
+            "prompt_optional": True,  # the prompt only names the output files
             "no_negative_prompt": True,
             "inference_steps": False,
             "lock_inference_steps": True,

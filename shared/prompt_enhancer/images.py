@@ -4,7 +4,7 @@
 from dataclasses import dataclass
 
 from shared.remote_llm import is_remote_engine, resolve_role_engine
-from shared.utils.frame_scheduler import SLASH_BLOCK_RE, build_default_window_plan, build_frame_scheduler, floor_frame_count
+from shared.utils.frame_scheduler import SLASH_BLOCK_RE, build_default_window_plan, build_frame_scheduler, fit_video_length, floor_frame_count
 
 
 MULTI_IMAGE_PROMPT_ENHANCEMENT = True
@@ -193,7 +193,7 @@ def window_plan(prompts, inputs, model_def, *, fps, source_frames, has_start):
     """Sliding-window plan of a video generation: its windows (frames, overlap, trims), each window's prompt, the window size, default overlap and discarded frames."""
     minimum, step = model_def.get("frames_minimum", 5), model_def.get("frames_steps", 4)
     latent_size, offset = model_def.get("latent_size", step), model_def.get("frames_offset", 1)
-    total_frames = floor_frame_count(inputs["video_length"], minimum, latent_size, offset)
+    total_frames = fit_video_length(inputs["video_length"], minimum, latent_size, offset)
     window_size = floor_frame_count(inputs["sliding_window_size"], minimum, latent_size, offset)
     default_overlap = min(window_size - latent_size, inputs["sliding_window_overlap"])
     defaults = model_def.get("sliding_window_defaults", {})
@@ -243,7 +243,7 @@ def prepare_manual(prompts, inputs, model_def, *, fps, source_frames, open_image
     if sliding:
         windows, expanded, window_size, default_overlap, discard = window_plan(prompts, inputs, model_def, fps=fps, source_frames=source_frames, has_start=start is not None)
     else:
-        window_size = floor_frame_count(inputs["video_length"], model_def.get("frames_minimum", 5), model_def.get("latent_size", model_def.get("frames_steps", 4)), model_def.get("frames_offset", 1))
+        window_size = fit_video_length(inputs["video_length"], model_def.get("frames_minimum", 5), model_def.get("latent_size", model_def.get("frames_steps", 4)), model_def.get("frames_offset", 1))
         default_overlap = discard = 0
         windows = [dict(frame_num=window_size, output_frames=window_size, overlap_frames=0, discard_last_frames=0, trim_last_frames=0)]
         expanded = prompts

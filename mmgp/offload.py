@@ -81,7 +81,7 @@ import functools
 import types
 import inspect
 
-from mmgp import safetensors2
+from mmgp import safetensors2, runtime
 from .read_ahead import ReadAhead, BATCH as READ_AHEAD_BATCH, WINDOW as READ_AHEAD_WINDOW, MAX_RANGES as READ_AHEAD_MAX_RANGES
 from mmgp import profile_type
 from .quant_router import (
@@ -4732,6 +4732,7 @@ def {fname}(module, *args, **kwargs):
             model = None
 
         self.models = None            
+        runtime._unregister(self)
 
         if last_offload_obj == self:
             last_offload_obj = None
@@ -5039,6 +5040,8 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
                 
         
         model_budgets[model_id] = model_budget
+
+    runtime._register(self, models)
 
     #  Hook forward methods of modules 
     for model_id in models: 

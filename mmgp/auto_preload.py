@@ -107,6 +107,7 @@ class _Plan:
         self.relink = False  # blocks were released by the pressure callback: to chain again with the streamed blocks
         self.slow = set()  # blocks not pinned: staged through RAM at each transfer, the first to keep in VRAM
         self.recoveries = None  # the allocator's recoveries when a cycle with blocks kept in VRAM started (None: no block kept)
+        self.measuring = False  # the cycle running measures a new workload with the budget's preload: the next one may keep other blocks
 
 
 class AutoPreload:
@@ -177,6 +178,12 @@ class AutoPreload:
             count += 1
         return plan.ranking[:count]
 
+    def settled(self, model_id):
+        """False while the model runs a cycle measuring a new workload: the blocks it keeps in VRAM (where its weights are) may change at the
+        next cycle."""
+        plan = self.plans.get(model_id)
+        return plan is None or not plan.measuring
+
     def own_buffer(self, model_id, block_name):
         """A block transferred into a buffer of its own rather than a shared slot: a block to keep in VRAM once transferred, or any block while
         no block of the towers is streamed (the slots, sized for the blocks of the towers, would only hold the small ones outside them)."""
@@ -231,7 +238,7 @@ class AutoPreload:
             print(f"Automatic VRAM preload of '{model_id}': {len(current) + len(plan.pending)} of its {len(plan.sizes)} blocks to keep in VRAM ({measured})")
         if len(current) + len(plan.pending) == len(plan.sizes):
             self._free_slots(plan)
-        plan.workload, plan.grew = work, False
+        plan.workload, plan.grew, plan.measuring = work, False, peak is None and plan.floor < len(plan.sizes)
         plan.min_weights = self._weights(plan, current)
         plan.recoveries = allocator.stats()["recoveries"] if current or plan.pending else None
         allocator.mark_reset()

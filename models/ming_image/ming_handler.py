@@ -1,15 +1,14 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """WanGP integration for inclusionAI Ming-Image-0.1-Design.
 
 The checkpoint URLs describe the prepared DeepBeepMeep layout.  The
 upstream code and checkpoint provenance are recorded in README.md.
 """
 
-from math import prod
 from pathlib import Path
 
 import torch
 
-from shared.resolutions import all_global_resolution_choices, parse_resolution
 from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
 
@@ -121,10 +120,7 @@ class family_handler:
                 "guidance_max_phases": 1,
                 "NAG": False,
                 "profiles_dir": [LAYER_ARCHITECTURE],
-                "resolutions": [
-                    choice for choice in all_global_resolution_choices()
-                    if prod(parse_resolution(choice[1])) <= 1024 * 1024
-                ],
+                "resolutions_categories": ["<=720p"],
                 "text_encoder_folder": ENCODER,
                 "text_encoder_URLs": [
                     build_hf_url(REPO, ENCODER, ENCODER_CORE + suffix)
@@ -149,7 +145,7 @@ class family_handler:
                     "name": "layer decomposition",
                     "aliases": ["transparent design layers"],
                     "description": "Separates one flattened design into ordered transparent PNG layers.",
-                }],
+                }, {"name": "alpha output", "aliases": ["RGBA", "transparent layers"], "description": "Separate a supplied design into transparent PNG layers."}],
                 "infos": (
                     "**Ming Image Design-Layer** turns a finished poster, infographic, card, or similar design "
                     "into separate transparent image layers. Select one Reference Image, then describe the pieces "
@@ -214,10 +210,7 @@ class family_handler:
             "embedded_guidance": False,
             "NAG": False,
             "profiles_dir": [ARCHITECTURE],
-            "resolutions": [
-                choice for choice in all_global_resolution_choices()
-                if prod(parse_resolution(choice[1])) <= 2048 * 2048
-            ],
+            "resolutions_categories": ["<=2048sq"],
             "text_encoder_folder": ENCODER,
             "text_encoder_URLs": [
                 build_hf_url(REPO, ENCODER, ENCODER_CORE + suffix)
@@ -242,6 +235,7 @@ class family_handler:
                 "info": "Preserve the model-generated alpha channel in PNG. Transparency depends on the prompt and is not guaranteed.",
             }],
             "specialities": [
+                {"name": "alpha output", "aliases": ["RGBA", "transparent background"], "description": "Set custom_settings.rgba to Enabled and request a transparent background to preserve model-generated alpha in PNG. Transparency depends on the prompt."},
                 {"name": "visual design", "aliases": ["UI design", "poster design"], "description": "Creates text-rich visual designs, posters, and interface mockups."},
             ],
             "infos": (

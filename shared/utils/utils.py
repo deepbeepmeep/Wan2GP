@@ -1,3 +1,4 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import argparse
 import math
 import os
@@ -10,7 +11,7 @@ import imageio
 import torch
 from PIL import Image
 import numpy as np
-from rembg import remove, new_session
+from rembg import remove
 import random
 import ffmpeg
 import os
@@ -20,6 +21,7 @@ from functools import lru_cache
 from . import files_locator as fl
 from .video_decode import probe_video_stream_metadata, decode_video_frames_ffmpeg, get_video_summary_extras
 from .virtual_media import get_virtual_image, parse_virtual_media_path, strip_virtual_media_suffix
+from .gallery_sources import MESH_EXTENSIONS, MESH_IMPORT_EXTENSIONS
 
 
 from PIL import Image
@@ -47,6 +49,17 @@ def has_audio_file_extension(filename):
     filename = strip_virtual_media_suffix(filename)
     extension = os.path.splitext(filename)[-1].lower()
     return extension in [".wav", ".mp3", ".aac", ".flac"]
+
+
+def has_mesh_file_extension(filename):
+    return os.path.splitext(strip_virtual_media_suffix(filename))[-1].lower() in MESH_EXTENSIONS
+
+def get_media_kind(filename):
+    """"image", "video", "audio", "3d" or None, from the file extension."""
+    for kind, test in (("video", has_video_file_extension), ("image", has_image_file_extension), ("audio", has_audio_file_extension), ("3d", has_mesh_file_extension)):
+        if test(filename):
+            return kind
+    return None
 
 def resample(video_fps, video_frames_count, max_target_frames_count, target_fps, start_target_frame ):
     import math
@@ -120,6 +133,30 @@ def to_rgb_tensor(value, device="cpu", dtype=torch.float):
         else:
             tensor = tensor[:3]
     return tensor.view(3, 1, 1)
+
+def guide_to_float(video, memory_format=torch.preserve_format):
+    """A control video in [-1, 1]. Models declaring model_def "uint8_guides" may receive uint8 control videos (0-255): they are converted
+    with the operations WanGP applies to float guides, so the values are identical (the divisor is a tensor: CUDA divides by a scalar
+    through its reciprocal, which changes some values). Float videos are returned as they are."""
+    if video is None or video.dtype != torch.uint8:
+        return video
+    return video.to(torch.float32, memory_format=memory_format).div_(torch.tensor(127.5, device=video.device)).sub_(1.0)
+
+def guide_to_dtype(video, dtype, chunk_frames=16):
+    """A control video (C, T, H, W) in dtype with the values of guide_to_float, converted by chunks of frames: a uint8 guide does not go
+    through a float32 copy of the whole video. Float videos are only cast."""
+    if video.dtype != torch.uint8:
+        return video.to(dtype)
+    output = torch.empty_like(video, dtype=dtype)
+    for start in range(0, video.shape[1], chunk_frames):
+        output[:, start:start + chunk_frames] = guide_to_float(video[:, start:start + chunk_frames])
+    return output
+
+def guide_mask_to_float(mask, memory_format=torch.preserve_format):
+    """A control mask in [0, 1]: uint8 masks (0 / 255, model_def "uint8_guides") as WanGP's float masks; float masks are returned as they are."""
+    if mask is None or mask.dtype != torch.uint8:
+        return mask
+    return mask.to(torch.float32, memory_format=memory_format).div_(torch.tensor(255.0, device=mask.device))
 
 def process_images_multithread(image_processor, items, process_type, wrap_in_list = True, max_workers: int = os.cpu_count()/ 2, in_place = False) :
     if not items:
@@ -352,12 +389,25 @@ def resolve_rembg_home():
         rembg_home = fl.get_smart_download_location(force_path="rembg")
     return os.path.abspath(rembg_home)
 
-def new_rembg_session(*args, **kwargs):
-    if kwargs.get("model_name", args[0] if args else "u2net") == "u2net":
+REMBG_ON_CPU = True  # CPU: ~1.3 s per image like a warm GPU (alpha matting runs on the CPU anyway), no 10-15 s CUDA provider start, no VRAM
+
+
+def new_rembg_session(model_name="u2net"):
+    if model_name == "u2net":
         from preprocessing.rembg.assets import ensure_assets
         ensure_assets()
     os.environ["U2NET_HOME"] = resolve_rembg_home()
-    return new_session(*args, **kwargs)
+    import onnxruntime as ort
+    from rembg.sessions import sessions_class
+    # rembg 2.0.65 hard-codes its providers, so the session is built here. On the GPU, onnxruntime's default exhaustive
+    # cuDNN search costs ~10 s on the first image; the heuristic choice gives the same masks.
+    session_class = next(cls for cls in sessions_class if cls.name() == model_name)
+    session = session_class.__new__(session_class)
+    session.model_name = model_name
+    cuda = not REMBG_ON_CPU and "CUDAExecutionProvider" in ort.get_available_providers()
+    providers = [("CUDAExecutionProvider", {"cudnn_conv_algo_search": "HEURISTIC"}), "CPUExecutionProvider"] if cuda else ["CPUExecutionProvider"]
+    session.inner_session = ort.InferenceSession(str(session_class.download_models()), sess_options=ort.SessionOptions(), providers=providers)
+    return session
 
 def remove_background(img, session=None):
     if session ==None:
@@ -382,12 +432,15 @@ def convert_tensor_to_image(t, frame_no = 0, mask_levels = False):
     else:
         return Image.fromarray(t.clone().add_(1.).mul_(127.5).permute(1,2,0).to(torch.uint8).cpu().numpy())
 
-def convert_video_tensor_to_uint8_chunked(video, value_range=(-1, 1), max_buffer_mb=256):
+def convert_video_tensor_to_uint8_chunked(video, value_range=(-1, 1), max_buffer_mb=256, output_device=None):
+    # output_device: where the uint8 video goes (the video's device by default); a video on the GPU is converted there chunk by chunk,
+    # so only the uint8 video reaches the RAM
+    output_device = video.device if output_device is None else torch.device(output_device)
     if video.dtype == torch.uint8:
-        return video
+        return video.to(output_device)
     min_val, max_val = value_range
     scale = 255.0 / (max_val - min_val)
-    output = torch.empty(video.shape, dtype=torch.uint8, device=video.device)
+    output = torch.empty(video.shape, dtype=torch.uint8, device=output_device)
     time_dim = 2 if video.ndim == 5 else 1 if video.ndim >= 4 else 0
     frames = video.shape[time_dim]
     frame_elems = max(1, video.numel() // max(1, frames))
@@ -639,7 +692,7 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
         image = image.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
     return image, new_height, new_width
 
-def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255], outpainting_quantize_margins = 0):
+def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255], outpainting_quantize_margins = 0, keep_alpha = False):
     if rm_background:
         session = new_rembg_session() 
 
@@ -657,7 +710,9 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
                 resized_image =img
         elif fit_into_canvas == 1:
             canvas_color = to_rgb_tensor(background_removal_color, device="cpu", dtype=torch.uint8).view(1, 1, 3).numpy()
-            canvas = np.broadcast_to(canvas_color, (budget_height, budget_width, 3)).copy()
+            if img.mode == "RGBA":  # references kept with their alpha (image_refs_keep_alpha) get a transparent canvas
+                canvas_color = np.concatenate([canvas_color, np.zeros_like(canvas_color[..., :1])], axis=-1)
+            canvas = np.broadcast_to(canvas_color, (budget_height, budget_width, canvas_color.shape[-1])).copy()
             scale = min(budget_height / height, budget_width / width)
             new_height = int(height * scale)
             new_width = int(width * scale)
@@ -673,7 +728,11 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
             resized_image= img.resize((new_width,new_height), resample=Image.Resampling.LANCZOS) 
         if rm_background  and not (any_background_ref and i==0 or any_background_ref == 2) :
             # resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1,alpha_matting_background_threshold = 70, alpha_foreground_background_threshold = 100, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')
-            resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1, alpha_matting = True, bgcolor=background_removal_color + [0]).convert('RGB')
+            if keep_alpha:  # models reading the alpha channel get the transparent cut-out; an image already transparent is kept as is
+                if not (img.mode == "RGBA" and img.getextrema()[3][0] < 255):
+                    resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1, alpha_matting = True)
+            else:
+                resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1, alpha_matting = True, bgcolor=background_removal_color + [0]).convert('RGB')
         if return_tensor:
             output_list.append(convert_image_to_tensor(resized_image).unsqueeze(1)) 
         else:
@@ -739,21 +798,33 @@ def fit_image_into_canvas(ref_img, image_size, canvas_tf_bg =127.5, device ="cpu
 
 def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, image_size, current_video_length = 81, latent_size = 4, any_mask = False, any_guide_padding = False, guide_inpaint_color = 127.5, keep_video_guide_frames = [],  inject_frames = [], outpainting_dims = None, outpainting_ratio = "", device ="cpu", outpainting_quantize_margins = 0, frame_offset = 1):
     src_videos, src_masks = [], []
-    inpaint_color_compressed = to_rgb_tensor(guide_inpaint_color, device=device, dtype=torch.float) / 127.5 - 1
-    inpaint_color_compressed = inpaint_color_compressed.unsqueeze(1)
+    inpaint_color = to_rgb_tensor(guide_inpaint_color, device=device, dtype=torch.float)
+    inpaint_color_compressed = (inpaint_color / 127.5 - 1).unsqueeze(1)
     prepend_count = pre_video_guide.shape[1] if pre_video_guide is not None else 0
+    # uint8 guides and masks (model_def "uint8_guides") stay uint8 unless float frames are merged into them below (padding and frames
+    # that are not kept are filled in uint8 when the inpainting color is made of whole values)
+    whole_color = torch.equal(inpaint_color, inpaint_color.round())
+    if pre_video_guide is not None and any(guide is not None and guide.dtype == torch.uint8 for guide in video_guides):
+        # the frames prepended to uint8 guides are kept in uint8 when they are 8 bit frames (start image, previous window)
+        pre_video_guide_uint8 = pre_video_guide.add(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
+        if torch.equal(guide_to_float(pre_video_guide_uint8), pre_video_guide):
+            pre_video_guide = pre_video_guide_uint8
+    float_edits = pre_video_guide is not None and pre_video_guide.dtype != torch.uint8 or not (whole_color or all(keep_video_guide_frames)) or any(frame is not None for frame in inject_frames)
     for guide_no, (cur_video_guide, cur_video_mask) in enumerate(zip(video_guides, video_masks)):
-        src_video, src_mask = cur_video_guide, cur_video_mask
+        padded = any_guide_padding and (cur_video_guide is None or prepend_count + cur_video_guide.shape[1] < current_video_length)
+        src_video, src_mask = (guide_to_float(cur_video_guide), guide_mask_to_float(cur_video_mask)) if float_edits or padded and not whole_color else (cur_video_guide, cur_video_mask)
         if pre_video_guide is not None:
-            src_video = pre_video_guide if src_video is None else torch.cat( [pre_video_guide, src_video], dim=1)
+            pre_guide = pre_video_guide if src_video is None or src_video.dtype == pre_video_guide.dtype else guide_to_float(pre_video_guide)
+            src_video = pre_guide if src_video is None else torch.cat( [pre_guide, src_video], dim=1)
             if any_mask:
-                src_mask = torch.zeros_like(pre_video_guide[:1]) if src_mask is None else torch.cat( [torch.zeros_like(pre_video_guide[:1]), src_mask], dim=1)
+                src_mask = torch.zeros_like(pre_guide[:1]) if src_mask is None else torch.cat( [torch.zeros_like(pre_guide[:1], dtype=src_mask.dtype), src_mask], dim=1)
 
         if any_guide_padding:
             if src_video is None:
                 src_video = inpaint_color_compressed.expand(3, current_video_length, *image_size).clone()
             elif src_video.shape[1] < current_video_length:
-                pad = inpaint_color_compressed.to(src_video.device).expand(3, current_video_length - src_video.shape[1], *src_video.shape[-2:]).clone()
+                color = inpaint_color.to(torch.uint8).unsqueeze(1) if src_video.dtype == torch.uint8 else inpaint_color_compressed
+                pad = color.to(src_video.device).expand(3, current_video_length - src_video.shape[1], *src_video.shape[-2:]).clone()
                 src_video = torch.cat([src_video, pad], dim=1)
         elif src_video is not None:
             new_num_frames = src_video.shape[1] if src_video.shape[1] < frame_offset else (src_video.shape[1] - frame_offset) // latent_size * latent_size + frame_offset
@@ -761,11 +832,12 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
                 print(f"invalid number of control frames {src_video.shape[1]}, potentially {src_video.shape[1]-new_num_frames} frames will be lost")
             src_video = src_video[:, :new_num_frames]
 
+        full_mask = 255 if src_video is not None and src_video.dtype == torch.uint8 else 1
         if any_mask and src_video is not None:
-            if src_mask is None:                   
-                src_mask = torch.ones_like(src_video[:1])
+            if src_mask is None:
+                src_mask = torch.full_like(src_video[:1], full_mask)
             elif src_mask.shape[1] < src_video.shape[1]:
-                src_mask = torch.cat([src_mask, torch.full( (1, src_video.shape[1]- src_mask.shape[1], *src_mask.shape[-2:]  ), 1, dtype = src_video.dtype, device= src_video.device) ], dim=1)
+                src_mask = torch.cat([src_mask, torch.full( (1, src_video.shape[1]- src_mask.shape[1], *src_mask.shape[-2:]  ), full_mask, dtype = src_video.dtype, device= src_video.device) ], dim=1)
             else:
                 src_mask = src_mask[:, :src_video.shape[1]]                                        
 
@@ -773,8 +845,8 @@ def prepare_video_guide_and_mask( video_guides, video_masks, pre_video_guide, im
             for k, keep in enumerate(keep_video_guide_frames):
                 if not keep:
                     pos = prepend_count + k
-                    src_video[:, pos:pos+1] = inpaint_color_compressed.to(src_video.device)
-                    if any_mask: src_mask[:, pos:pos+1] = 1
+                    src_video[:, pos:pos+1] = (inpaint_color.to(torch.uint8).unsqueeze(1) if src_video.dtype == torch.uint8 else inpaint_color_compressed).to(src_video.device)
+                    if any_mask: src_mask[:, pos:pos+1] = full_mask
 
             for k, frame in enumerate(inject_frames):
                 if frame != None:

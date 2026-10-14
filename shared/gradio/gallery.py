@@ -1,5 +1,6 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
-import os, io, tempfile, mimetypes, urllib.parse
+import os, io, mimetypes, urllib.parse
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, Literal
 
 import gradio as gr
@@ -7,6 +8,7 @@ import PIL
 import time
 from PIL import Image as PILImage
 from . import metadata_events
+from .gradio_save_image_cache_patch import save_image_by_content
 
 FilePath = str
 ImageLike = Union["PIL.Image.Image", Any]
@@ -121,7 +123,7 @@ class AdvancedMediaGallery:
         return out
 
     def _ensure_image_item(self, item: Union[FilePath, ImageLike]) -> Optional[Any]:
-        # Accept a path to an image, or a PIL.Image/np.ndarray -> save temp PNG and return its path
+        # Form copies reuse encoded pixels; changed pixels get a new PNG.
         if isinstance(item, tuple): item = item[0]
         if isinstance(item, str):
             return os.path.abspath(item) if self._is_image_path(item) else None
@@ -139,9 +141,7 @@ class AdvancedMediaGallery:
                     img = PILImage.open(io.BytesIO(data)).convert("RGBA")
                 else:
                     return None
-            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-            img.save(tmp.name)
-            return tmp.name
+            return save_image_by_content(img, gr.utils.get_upload_folder())
         except Exception:
             return None
 

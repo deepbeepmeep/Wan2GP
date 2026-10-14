@@ -1,6 +1,9 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
+import contextvars
 import copy
+import itertools
 import json
 import math
 import os
@@ -22,6 +25,7 @@ from PIL import Image, ImageColor, ImageDraw
 
 from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io, media_descriptor, token_id_descriptor
 from shared.utils.audio_video import extract_audio_tracks
+from shared.utils.gallery_sources import GALLERY_SOURCES, gallery_source, source_for_kind
 from shared.utils.utils import get_video_info
 from shared.deepy.config import (
     DEEPY_AUTO_CANCEL_QUEUE_TASKS_DEFAULT,
@@ -53,8 +57,10 @@ from shared.deepy.debug_bootstrap import capture_external_logs
 from shared import extra_settings
 from shared.deepy import filesystem as deepy_filesystem, image_channels as deepy_image_channels, long_text as deepy_long_text, media_registry, session_store, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
 from shared.deepy.paged_files import list_directory_page
-from shared.mcp_paging import PAGE_SIZE, ResultPages
+from shared.mcp.paging import PAGE_SIZE, ResultPages
 from shared.utils.gallery_media import gallery_media_ids
+
+_MESH_VIEWS = ("front", "back", "left", "right", "top", "bottom", "three_quarter")  # shared.mesh3d.render.VIEWS names
 from postprocessing import catalog as postprocessing_catalog
 from shared.gradio import assistant_chat
 from shared.prompt_enhancer import qwen35_text
@@ -90,6 +96,7 @@ _TOOL_TYPE_MAP = {
     "dict": "object",
 }
 _AI_GEN_NO = 0
+OUTPUT_NAME = contextvars.ContextVar("deepy_output_name", default=None)  # an MCP caller's file name for the current tool call's output
 _DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
 _DEEPY_DOCS = {
     "finetunes": {"title": "Finetunes", "path": _DOCS_DIR / "FINETUNES.md"},
@@ -160,10 +167,20 @@ _RUNTIME_STATUS_AUDIO_KEYS = (
     "selected_audio_media_type",
     "selected_audio_media_label",
 )
-_RUNTIME_STATUS_ALL_KEYS = _RUNTIME_STATUS_VISUAL_KEYS + _RUNTIME_STATUS_AUDIO_KEYS
+_RUNTIME_STATUS_MESH_KEYS = (
+    "selected_mesh_media_id",
+    "selected_mesh_media_type",
+    "selected_mesh_media_label",
+)
+_RUNTIME_STATUS_ALL_KEYS = _RUNTIME_STATUS_VISUAL_KEYS + _RUNTIME_STATUS_AUDIO_KEYS + _RUNTIME_STATUS_MESH_KEYS
 _EXTRA_SETTINGS_PARAMETER = {
     "type": "object",
     "description": "Optional dict of additional exposed UI settings. Call Get Default Settings first and copy one of its extra_settings keys exactly, for example {\"Guidance\": 7.5}.",
+    "required": False,
+}
+_CUSTOM_FILE_PARAMETER = {
+    "type": "string",
+    "description": "Optional extra input file of the selected model (a score, camera path, 3D mesh...), only when Get Default Settings reports custom_file: a gallery media id or an authorized file path of one of its file_types.",
     "required": False,
 }
 
@@ -541,9 +558,11 @@ class AssistantSessionState:
     file_list_policy_signature: tuple[Any, ...] | None = None
     seen_video_gallery_paths: list[str] = field(default_factory=list)
     seen_audio_gallery_paths: list[str] = field(default_factory=list)
+    seen_mesh_gallery_paths: list[str] = field(default_factory=list)
     generated_client_ids: list[str] = field(default_factory=list)
     selected_visual_runtime_signature: str = ""
     selected_audio_runtime_signature: str = ""
+    selected_mesh_runtime_signature: str = ""
     video_tool_runtime_variants: dict[str, str] = field(default_factory=dict)
     video_tool_runtime_signature: str = ""
     video_tool_runtime_last_injected_tokens: int = 0
@@ -555,6 +574,7 @@ class AssistantSessionState:
     prime_toolbox: Any | None = None
     artifact_workspace: Any | None = None
     remote_backends: dict[str, Any] = field(default_factory=dict)
+    remote_history_pending: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self.pause_resume_event.set()
@@ -598,6 +618,7 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
         if callable(close_backend):
             close_backend()
     session.remote_backends.clear()
+    session.remote_history_pending.clear()
     if session.file_list_pages is not None:
         session.file_list_pages.close()
         session.file_list_pages = None
@@ -658,9 +679,11 @@ def clear_assistant_session(session: AssistantSessionState) -> None:
     session.remote_usage_stats = None
     session.seen_video_gallery_paths = []
     session.seen_audio_gallery_paths = []
+    session.seen_mesh_gallery_paths = []
     session.generated_client_ids = []
     session.selected_visual_runtime_signature = ""
     session.selected_audio_runtime_signature = ""
+    session.selected_mesh_runtime_signature = ""
     session.video_tool_runtime_variants = {}
     session.video_tool_runtime_signature = ""
     session.video_tool_runtime_last_injected_tokens = 0
@@ -757,6 +780,7 @@ def begin_assistant_replay_turn(session: AssistantSessionState, replay: dict[str
         "semantic_boundaries": [],
         "selected_visual_media_snapshot": copy.deepcopy(replay["selected_visual_media_snapshot"]),
         "selected_audio_media_snapshot": copy.deepcopy(replay["selected_audio_media_snapshot"]),
+        "selected_mesh_media_snapshot": copy.deepcopy(replay.get("selected_mesh_media_snapshot")),
     }
 
 
@@ -912,8 +936,8 @@ def _summarize_interrupted_committed_messages(messages: list[dict[str, Any]]) ->
                 tool_name = mapped_tool_name or tool_name
                 status = str(payload.get("status", "") or "").strip()
                 identifiers = [f"{key}={payload[key]}" for key in ("job_id", "output_file", "media_id") if payload.get(key) not in (None, "")]
-            if tool_name in {"wangp_get_deepy_template_settings", "wangp_deepy_templates"} and isinstance(payload.get("settings"), dict):
-                retained_template = {key: payload.get(key) for key in ("tool_id", "template", "general_properties_active") if payload.get(key) is not None}
+            if tool_name in {"wangp_get_deepy_template_settings", "wangp_deepy_templates", "wangp_templates"} and isinstance(payload.get("settings"), dict):
+                retained_template = {key: payload.get(key) for key in ("task", "tool_id", "template", "general_properties_active") if payload.get(key) is not None}
                 retained_template["settings"] = payload["settings"]
                 if isinstance(payload.get("general_properties"), dict):
                     retained_template["general_properties"] = payload["general_properties"]
@@ -1364,10 +1388,10 @@ def set_assistant_tool_ui_settings(session: AssistantSessionState, **kwargs) -> 
     return session.tool_ui_settings
 
 
-def _next_ai_client_id() -> str:
+def _next_ai_client_id(prefix: str = "ai") -> str:
     global _AI_GEN_NO
     _AI_GEN_NO += 1
-    return f"ai_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_AI_GEN_NO}"
+    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_AI_GEN_NO}"
 
 
 def _json_dumps(payload: Any) -> str:
@@ -1433,6 +1457,8 @@ def _trim_incomplete_answer_tail(answer_text: str) -> str:
 
 
 class DeepyZeroTools:
+    client_id_prefix = "ai"  # task client IDs; external MCP toolboxes use "ai_mcp" so their outputs are not credited to Deepy
+
     def __init__(self, gen, get_processed_queue, send_cmd, session: AssistantSessionState | None = None, get_output_filepath: Callable[[str, bool, bool], str] | None = None, record_file_metadata: Callable[..., None] | None = None, get_server_config: Callable[[], dict[str, Any]] | None = None):
         self.gen = gen
         self.get_processed_queue = get_processed_queue
@@ -1896,6 +1922,9 @@ class DeepyZeroTools:
             result["reference_videos"] = bool(model_def.get("reference_video_enabled", False))
             result["input_guidance"] = model_def.get("deepy_infos", model_def.get("infos", ""))
             result["prompt_guidance"] = model_def.get("deepy_prompt_infos", model_def.get("prompt_infos", ""))
+        custom_guide = model_def.get("custom_guide")
+        if custom_guide is not None:
+            result["custom_file"] = {"name": custom_guide.get("name", "Custom Guide"), "file_types": list(custom_guide.get("file_types", [])), "required": bool(custom_guide.get("required", False))}
         result["extra_settings"] = {label: entry.get("value", None) for label, entry in self._get_generation_extra_settings_info(task).items()}
         return result, None
 
@@ -2022,9 +2051,15 @@ class DeepyZeroTools:
     def _sync_recent_media(self, max_items: int = 5) -> None:
         if self.session is None:
             return
-        file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(self.gen)
-        media_registry.sync_recent_generated_media(self.session, file_list, file_settings_list, max_items=max_items)
-        media_registry.sync_recent_generated_media(self.session, audio_file_list, audio_file_settings_list, max_items=max_items)
+        galleries = self.get_processed_queue(self._workspace_gallery())
+        for files, settings in galleries.values():
+            media_registry.sync_recent_generated_media(self.session, files, settings, max_items=max_items)
+
+    def _workspace_gallery(self):
+        from shared.utils.workspace_storage import host_for_gen, workspace_gallery
+        host = host_for_gen(self.gen)
+        workspace_id = getattr(self, 'workspace_id', None) or (host.deepy_workspace_id() if host else None)
+        return workspace_gallery(self.gen, workspace_id)
 
     def _remember_generated_client_id(self, client_id: str) -> None:
         if self.session is None:
@@ -2057,13 +2092,10 @@ class DeepyZeroTools:
     def _get_new_user_gallery_media(self) -> dict[str, dict[str, Any]]:
         if self.session is None:
             return {}
-        file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(self.gen)
-        generated_client_ids = {str(value or "").strip() for value in list(self.session.generated_client_ids or []) if len(str(value or "").strip()) > 0}
+        galleries = self.get_processed_queue(self.gen)
+        generated_client_ids = set(self.session.generated_client_ids)
         media_updates = {}
-        gallery_groups = (
-            ("seen_video_gallery_paths", file_list or [], file_settings_list or []),
-            ("seen_audio_gallery_paths", audio_file_list or [], audio_file_settings_list or []),
-        )
+        gallery_groups = [(f"seen_{source}_gallery_paths", files, settings) for source, (files, settings) in galleries.items()]
         for session_attr, gallery_files, gallery_settings in gallery_groups:
             previous_files = [str(path or "").strip() for path in getattr(self.session, session_attr, []) if len(str(path or "").strip()) > 0]
             current_pairs = [(str(path or "").strip(), index) for index, path in enumerate(gallery_files) if len(str(path or "").strip()) > 0]
@@ -2079,45 +2111,24 @@ class DeepyZeroTools:
                     continue
                 media_record = self._register_gallery_media_record(media_path, settings)
                 media_type = "" if media_record is None else str(media_record.get("media_type", "") or "").strip()
-                if media_type in {"image", "video", "audio"}:
+                if media_type in {"image", "video", "audio", "3d"}:
                     media_updates[media_type] = media_record
         return media_updates
 
     def _get_selected_gallery_media_updates(self) -> list[dict[str, Any]]:
         if self.session is None:
             return []
-        updates: list[dict[str, Any]] = []
-
-        visual_media_record, _error_result = self._get_selected_media_record_from_source("video", "all")
-        visual_signature = "" if visual_media_record is None else f"{str(visual_media_record.get('media_type', '') or '').strip()}:{str(visual_media_record.get('media_id', '') or '').strip()}"
-        if visual_signature != str(self.session.selected_visual_runtime_signature or "") and visual_media_record is not None:
-            visual_media_type = str(visual_media_record.get("media_type", "") or "").strip()
-            if visual_media_type in {"image", "video"}:
-                media_entry = self._runtime_media_entry(
-                    visual_media_record,
-                    action="selected",
-                    gallery_label="Image / Video Gallery",
-                    reference_label="selected",
-                    selected_payload=True,
-                )
-                if media_entry is not None:
-                    updates.append(media_entry)
-        self.session.selected_visual_runtime_signature = visual_signature
-
-        audio_media_record, _error_result = self._get_selected_media_record_from_source("audio", "audio")
-        audio_signature = "" if audio_media_record is None else f"audio:{str(audio_media_record.get('media_id', '') or '').strip()}"
-        if audio_signature != str(self.session.selected_audio_runtime_signature or "") and audio_media_record is not None:
-            media_entry = self._runtime_media_entry(
-                audio_media_record,
-                action="selected",
-                gallery_label="Audio Gallery",
-                reference_label="selected",
-                selected_payload=True,
-            )
-            if media_entry is not None:
-                updates.append(media_entry)
-        self.session.selected_audio_runtime_signature = audio_signature
-
+        updates = []
+        for source_id in self.get_processed_queue(self.gen):
+            source = gallery_source(source_id)
+            record, _error = self._get_selected_media_record_from_source(source_id, "all")
+            attribute = f"selected_{'visual' if source_id == 'video' else source_id}_runtime_signature"
+            signature = "" if record is None else f"{record['media_type']}:{record['media_id']}"
+            if signature != getattr(self.session, attribute) and record is not None:
+                entry = self._runtime_media_entry(record, action="selected", gallery_label=f"{source.label} Gallery", reference_label="selected", selected_payload=True)
+                if entry is not None:
+                    updates.append(entry)
+            setattr(self.session, attribute, signature)
         return updates
 
     def _queue_contains_client_id(self, queue: list[Any], client_id: str) -> bool:
@@ -2149,7 +2160,7 @@ class DeepyZeroTools:
 
     def _normalize_selected_media_type(self, media_type: str | None, reference: str | None = None) -> str:
         normalized = str(media_type or "").strip().lower()
-        if normalized in {"image", "video", "audio"}:
+        if normalized in {"image", "video", "audio", "3d"}:
             return normalized
         if normalized in {"", "any", "all"}:
             inferred = media_registry.normalize_media_type("any", reference=reference)
@@ -2235,30 +2246,17 @@ class DeepyZeroTools:
 
     def _get_selected_runtime_snapshot(self) -> dict[str, Any] | None:
         snapshot = {}
-
-        visual_media_record, _error_result = self._get_selected_media_record_from_source("video", "all")
-        if visual_media_record is not None:
-            snapshot["selected_visual_media_id"] = str(visual_media_record.get("media_id", "") or "").strip()
-            snapshot["selected_visual_media_type"] = str(visual_media_record.get("media_type", "") or "").strip()
-            label = str(visual_media_record.get("label", "") or "").strip()
-            if len(label) > 0:
-                snapshot["selected_visual_media_label"] = label
-            if snapshot["selected_visual_media_type"] == "video":
-                video_position = self._get_selected_video_position(visual_media_record)
-                if "current_time_seconds" in video_position:
-                    snapshot["selected_visual_current_time_seconds"] = video_position["current_time_seconds"]
-                if "current_frame_no" in video_position:
-                    snapshot["selected_visual_current_frame_no"] = video_position["current_frame_no"]
-
-        audio_media_record, _error_result = self._get_selected_media_record_from_source("audio", "audio")
-        if audio_media_record is not None:
-            snapshot["selected_audio_media_id"] = str(audio_media_record.get("media_id", "") or "").strip()
-            snapshot["selected_audio_media_type"] = str(audio_media_record.get("media_type", "") or "").strip()
-            label = str(audio_media_record.get("label", "") or "").strip()
-            if len(label) > 0:
-                snapshot["selected_audio_media_label"] = label
-
-        return snapshot if len(snapshot) > 1 else None
+        for source_id in self.get_processed_queue(self.gen):
+            record, _error = self._get_selected_media_record_from_source(source_id, "all")
+            if record is None:
+                continue
+            prefix = "selected_visual" if source_id == "video" else f"selected_{source_id}"
+            snapshot.update({f"{prefix}_media_id": record["media_id"], f"{prefix}_media_type": record["media_type"]})
+            if record.get("label"):
+                snapshot[f"{prefix}_media_label"] = record["label"]
+            if record["media_type"] == "video":
+                snapshot.update({f"{prefix}_{key}": value for key, value in self._get_selected_video_position(record).items()})
+        return snapshot or None
 
     def _is_selected_reference(self, reference: str) -> bool:
         return _SELECTED_REFERENCE_RE.search(str(reference or "").strip()) is not None
@@ -2266,7 +2264,7 @@ class DeepyZeroTools:
     def _get_current_turn_selected_media_snapshot(self, source: str) -> dict[str, Any] | None:
         if self.session is None or not isinstance(self.session.current_turn, dict):
             return None
-        snapshot_key = "selected_audio_media_snapshot" if str(source or "").strip().lower() == "audio" else "selected_visual_media_snapshot"
+        snapshot_key = f"selected_{'visual' if source == 'video' else source}_media_snapshot"
         snapshot = self.session.current_turn.get(snapshot_key, None)
         return copy.deepcopy(snapshot) if isinstance(snapshot, dict) else None
 
@@ -2274,14 +2272,10 @@ class DeepyZeroTools:
         requested_label = self._normalize_selected_media_type(requested_media_type)
         if self.session is None:
             return None, {"status": "error", "media_type": requested_label, "error": "Assistant session is not available."}
-        file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(self.gen)
-        source = "audio" if str(source or "").strip().lower() == "audio" else "video"
-        if source == "audio":
-            raw_choice = (self.gen or {}).get("audio_selected", -1)
-            file_list, file_settings_list = audio_file_list or [], audio_file_settings_list or []
-        else:
-            raw_choice = (self.gen or {}).get("selected", -1)
-            file_list, file_settings_list = file_list or [], file_settings_list or []
+        galleries = self.get_processed_queue(self.gen)
+        source_info = gallery_source(source)
+        file_list, file_settings_list = galleries[source]
+        raw_choice = self.gen.get(source_info.selected_key, -1)
         try:
             choice = int(raw_choice if raw_choice is not None else -1)
         except Exception:
@@ -2292,13 +2286,13 @@ class DeepyZeroTools:
             snapshot = self._get_current_turn_selected_media_snapshot(source)
             if snapshot is not None:
                 return snapshot, None
-            gallery_label = "audio gallery" if source == "audio" else "image/video gallery"
+            gallery_label = f"{source_info.label} gallery"
             return None, {"status": "error", "media_type": requested_label, "error": f"No media is currently selected in the WanGP {gallery_label}."}
         selected_path = str(file_list[choice] or "").strip()
         selected_settings = file_settings_list[choice] if choice < len(file_settings_list) and isinstance(file_settings_list[choice], dict) else None
         selected_client_id = str((selected_settings or {}).get("client_id", "") or "").strip()
-        selected_gallery_media_type = "audio" if source == "audio" else "video"
-        if len(selected_client_id) > 0 and (source == "audio" or deepy_video_tools.has_video_extension(selected_path)):
+        selected_gallery_media_type = source_info.kinds[-1]
+        if len(selected_client_id) > 0 and (source != "video" or deepy_video_tools.has_video_extension(selected_path)):
             latest_path, latest_settings = media_registry.find_last_gallery_media_by_client(file_list, file_settings_list, selected_client_id, media_type=selected_gallery_media_type)
             if latest_path is not None:
                 selected_path = latest_path
@@ -2328,31 +2322,22 @@ class DeepyZeroTools:
             }
         return media_record, None
 
-    def _get_all_selected_media_records(self) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
-        visual_media_record, _visual_error = self._get_selected_media_record_from_source("video", "all")
-        audio_media_record, _audio_error = self._get_selected_media_record_from_source("audio", "audio")
-        if visual_media_record is None and audio_media_record is None:
-            return None, None, {"status": "error", "media_type": "all", "error": "No media is currently selected in either WanGP gallery."}
-        return visual_media_record, audio_media_record, None
+    def _get_all_selected_media_records(self):
+        records = {source: self._get_selected_media_record_from_source(source, "all")[0] for source in self.get_processed_queue(self.gen)}
+        error = None if any(record is not None for record in records.values()) else {"status": "error", "media_type": "all", "error": "No media is currently selected in any WanGP gallery."}
+        return records, error
 
     def _get_selected_media_record(self, requested_media_type: str = "all") -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         resolved_media_type = self._normalize_selected_media_type(requested_media_type)
-        if resolved_media_type == "audio":
-            return self._get_selected_media_record_from_source("audio", "audio")
-        if resolved_media_type in {"image", "video"}:
-            return self._get_selected_media_record_from_source("video", resolved_media_type)
-        visual_media_record, audio_media_record, error_result = self._get_all_selected_media_records()
-        if error_result is not None:
-            return None, error_result
-        if visual_media_record is None:
-            return audio_media_record, None
-        if audio_media_record is None:
-            return visual_media_record, None
-        return None, {
-            "status": "error",
-            "media_type": "all",
-            "error": "Both a visual selection and an audio selection exist. Request image, video, or audio explicitly, or use Get Selected Media with media_type='all'.",
-        }
+        if resolved_media_type != "all":
+            return self._get_selected_media_record_from_source(source_for_kind(resolved_media_type).id, resolved_media_type)
+        records, error = self._get_all_selected_media_records()
+        if error is not None:
+            return None, error
+        selected = [record for record in records.values() if record is not None]
+        if len(selected) == 1:
+            return selected[0], None
+        return None, {"status": "error", "media_type": "all", "error": "Multiple gallery selections exist. Request image, video, audio, or 3d explicitly, or use Get Selected Media with media_type='all'."}
 
     def _get_selected_video_position(self, media_record: dict[str, Any]) -> dict[str, Any]:
         if str(media_record.get("media_type", "") or "").strip() != "video":
@@ -2390,8 +2375,16 @@ class DeepyZeroTools:
         file_path = str(file_path or "").strip()
         if len(file_path) == 0:
             raise RuntimeError("Output file path is empty.")
+        name = OUTPUT_NAME.get()
+        if name and not os.path.basename(file_path).startswith(name):  # actions writing several files already prefix them with the name
+            file_path = os.path.join(os.path.dirname(file_path), name + os.path.splitext(file_path)[1])
         if callable(self.get_output_filepath):
-            resolved = str(self.get_output_filepath(file_path, is_image, audio_only) or "").strip()
+            from shared.utils.workspace_storage import host_for_gen, execution_workspace
+            from contextlib import nullcontext
+            host = host_for_gen(self.gen)
+            workspace_id = getattr(self, 'workspace_id', None) or (host.deepy_workspace_id() if host else None)
+            with execution_workspace(host, workspace_id) if host else nullcontext():
+                resolved = str(self.get_output_filepath(file_path, is_image, audio_only) or "").strip()
             if len(resolved) > 0:
                 return os.path.abspath(os.path.normpath(resolved))
         return os.path.abspath(os.path.normpath(file_path))
@@ -2419,6 +2412,10 @@ class DeepyZeroTools:
                 from shared.utils.video_metadata import read_metadata_from_video
 
                 settings = read_metadata_from_video(path)
+            elif media_type == "3d":
+                from shared.utils.mesh_outputs import read_mesh_metadata
+
+                settings = read_mesh_metadata(path)
             else:
                 from shared.utils.audio_metadata import read_audio_metadata
 
@@ -2429,7 +2426,11 @@ class DeepyZeroTools:
 
     def _server_config(self) -> dict[str, Any]:
         if callable(self.get_server_config):
-            return dict(self.get_server_config() or {})
+            from shared.utils.workspace_storage import host_for_gen, output_config
+            config = dict(self.get_server_config() or {})
+            host = host_for_gen(self.gen)
+            workspace_id = getattr(self, 'workspace_id', None) or (host.deepy_workspace_id() if host else None)
+            return output_config(config, binding=(host, workspace_id)) if host else config
         return {}
 
     def _file_access_policy(self):
@@ -2468,15 +2469,16 @@ class DeepyZeroTools:
 
     def _resolve_gallery_media_path(self, value: str) -> str:
         lookup = str(value or "").strip().lower()
-        if not lookup.startswith(("visual:", "audio:")):
+        source = next((source for source in GALLERY_SOURCES if lookup.startswith(source.media_ids + ":")), None)
+        if source is None:
             return ""
-        gallery = lookup.split(":", 1)[0]
-        paths = self.gen.get("audio_file_list" if gallery == "audio" else "file_list", []) or []
-        settings_list = self.gen.get("audio_file_settings_list" if gallery == "audio" else "file_settings_list", []) or []
+        gen = self._workspace_gallery()
+        paths = gen.get(source.files_key, []) or []
+        settings_list = gen.get(source.settings_key, []) or []
         for index, path in enumerate(paths):
             resolved = str(path or "").strip()
             settings = settings_list[index] if index < len(settings_list) else None
-            if lookup in gallery_media_ids(resolved, gallery, settings):
+            if lookup in gallery_media_ids(resolved, source.media_ids, settings):
                 return resolved
         return ""
 
@@ -2485,11 +2487,13 @@ class DeepyZeroTools:
         lookup = str(value or "").strip()
         record = None if self.session is None else media_registry.get_media_record(self.session, lookup)
         if record is not None:
+            self._check_workspace_media(record['path'])
             return media_registry.mark_media_access(record, "read")
         if self.session is None:
             return record
         gallery_path = self._resolve_gallery_media_path(lookup)
         if gallery_path:
+            self._check_workspace_media(gallery_path)
             return media_registry.register_media(self.session, gallery_path, source="gallery", access="read")
         if Path(lookup).suffix:
             try:
@@ -2498,6 +2502,32 @@ class DeepyZeroTools:
                 return None
             return media_registry.register_media(self.session, str(candidate), source="filesystem", access="read")
         return None
+
+    def _check_workspace_media(self, path):
+        from shared.utils.workspace_storage import host_for_gen
+        host = host_for_gen(self.gen)
+        if host is None:
+            return
+        workspace_id = getattr(self, 'workspace_id', None) or host.deepy_workspace_id()
+        directory = host.workspaces.media_dir(workspace_id)
+        if directory is not None and not Path(path).resolve().is_relative_to(directory) and not self._file_access_policy().can_read(Path(path)):
+            raise PermissionError('This media is outside the assigned workspace and authorized folders. Import it first.')
+
+    def _apply_custom_file(self, tool_name: str, task: dict[str, Any], custom_file: str | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """Puts custom_file (gallery media id or authorized file path) in the model's custom file input (custom_guide)."""
+        custom_file = str(custom_file or "").strip()
+        if not custom_file:
+            return task, None
+        custom_guide = self._get_effective_tool_model_def(tool_name).get("custom_guide")
+        if custom_guide is None:
+            return None, {"status": "error", "custom_file": custom_file, "error": "The selected model has no custom file input."}
+        record = self._resolve_media_record_input(custom_file)
+        if record is None:
+            return None, {"status": "error", "custom_file": custom_file, "error": "custom_file is neither a known media id nor a readable authorized file."}
+        file_types = [file_type.lower() for file_type in custom_guide.get("file_types", [])]
+        if file_types and Path(record["path"]).suffix.lower() not in file_types:
+            return None, {"status": "error", "custom_file": custom_file, "error": f"custom_file must be one of: {', '.join(file_types)}."}
+        return {**task, "custom_guide": str(record["path"])}, None
 
     def _get_video_output_settings(self) -> tuple[str, str]:
         server_config = self._server_config()
@@ -2724,7 +2754,7 @@ class DeepyZeroTools:
             "type": f"WanGP v{wangp_version} DeepBeepMeep - Deepy" if len(wangp_version) > 0 else "WanGP DeepBeepMeep - Deepy",
             "model_type": "Deepy",
             "prompt": str(prompt or "").strip(),
-            "client_id": _next_ai_client_id(),
+            "client_id": _next_ai_client_id(self.client_id_prefix),
         }
         self._remember_generated_client_id(settings["client_id"])
         settings["comments"] = str(comments or "").strip()
@@ -2738,11 +2768,11 @@ class DeepyZeroTools:
 
     def _build_direct_media_settings(self, source_media: dict[str, Any], comments: str, fallback_prompt: str | None = None, **updates: Any) -> dict[str, Any]:
         settings = dict(source_media.get("settings", {}) or {})
-        for key in ("gallery_media_ids", "deepy_session_id", "deepy_media_id", "deepy_media_fingerprint"):
+        for key in ("gallery_media_ids", "deepy_session_id", "deepy_media_id", "deepy_media_fingerprint", "window_no"):
             settings.pop(key, None)
         if fallback_prompt is not None and (len(settings) == 0 or str(settings.get("model_type", "") or "").strip() == "Deepy"):
             return self._build_deepy_settings(fallback_prompt, comments, **updates)
-        settings["client_id"] = _next_ai_client_id()
+        settings["client_id"] = _next_ai_client_id(self.client_id_prefix)
         self._remember_generated_client_id(settings["client_id"])
         settings["comments"] = str(comments or "").strip()
         end_time = time.time()
@@ -2786,7 +2816,9 @@ class DeepyZeroTools:
         self._set_status(f"Queueing {activity_label}...", kind="tool")
         self._update_tool_progress("running", "Queued", {"status": "queued", "client_id": client_id, "prompt": prompt, "resolution": resolution})
         task["priority"] = True
-        gen["inline_queue"] = task
+        from shared.utils.workspace_storage import host_for_gen
+        host = host_for_gen(gen)
+        gen["inline_queue"] = [{'id': 0, 'params': task, 'workspace_id': getattr(self, 'workspace_id', None) or host.deepy_workspace_id()}] if host else task
         self._log(f"Queued {activity_label} for {client_id}")
 
         from shared.deepy.media_pause import MediaToolPause
@@ -2815,7 +2847,7 @@ class DeepyZeroTools:
                     }
                     self._update_tool_progress("error", "Error", result)
                     return result
-                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
+                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(self._workspace_gallery())
                 media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
                 media_settings_list = (audio_file_settings_list or []) if gallery_media_type == "audio" else (file_settings_list or [])
                 file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
@@ -2856,7 +2888,7 @@ class DeepyZeroTools:
                     }
                     self._update_tool_progress("error", "Error", result)
                     return result
-                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(gen)
+                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(self._workspace_gallery())
                 media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
                 media_settings_list = (audio_file_settings_list or []) if gallery_media_type == "audio" else (file_settings_list or [])
                 queue = list(gen.get("queue", []) or [])
@@ -2969,7 +3001,7 @@ class DeepyZeroTools:
         process_id = str(process["id"])
         process_type = str(process["type"])
         source_settings = source_media.get("settings", {})
-        client_id = _next_ai_client_id()
+        client_id = _next_ai_client_id(self.client_id_prefix)
         self._remember_generated_client_id(client_id)
         task = {
             "client_id": client_id,
@@ -3152,10 +3184,11 @@ class DeepyZeroTools:
                 "required": False,
             },
             "extra_settings": copy.deepcopy(_EXTRA_SETTINGS_PARAMETER),
+            "custom_file": copy.deepcopy(_CUSTOM_FILE_PARAMETER),
         },
     )
-    def gen_image(self, prompt: str, width: int | None = None, height: int | None = None, num_inference_steps: int | None = None, extra_settings: dict[str, Any] | None = None) -> dict[str, Any]:
-        client_id = _next_ai_client_id()
+    def gen_image(self, prompt: str, width: int | None = None, height: int | None = None, num_inference_steps: int | None = None, extra_settings: dict[str, Any] | None = None, custom_file: str | None = None) -> dict[str, Any]:
+        client_id = _next_ai_client_id(self.client_id_prefix)
         generator_variant = self._get_tool_ui_settings()["image_generator_variant"]
         template_file = self.get_tool_template_filename("gen_image")
         task, error_result = self._build_generation_task("gen_image", generator_variant, prompt=prompt, client_id=client_id)
@@ -3180,6 +3213,9 @@ class DeepyZeroTools:
                 "resolution": task["resolution"],
                 "error": "Prompt is empty.",
             }
+        task, error_result = self._apply_custom_file("gen_image", task, custom_file)
+        if error_result is not None:
+            return error_result
         result = self._queue_generation_task(task, activity_label="image generation", output_label="Generated image")
         result["generator_variant"] = generator_variant
         if len(template_file) > 0:
@@ -3248,6 +3284,7 @@ class DeepyZeroTools:
                     "required": ["name"],
                 },
             },
+            "custom_file": copy.deepcopy(_CUSTOM_FILE_PARAMETER),
         },
     )
     def gen_video(
@@ -3263,6 +3300,7 @@ class DeepyZeroTools:
         num_inference_steps: int | None = None,
         extra_settings: dict[str, Any] | None = None,
         loras: list[dict[str, Any]] | None = None,
+        custom_file: str | None = None,
     ) -> dict[str, Any]:
         self._sync_recent_media()
         start_media, error_result = self._resolve_image_media(image_start or "", "image_start")
@@ -3273,7 +3311,7 @@ class DeepyZeroTools:
         if error_result is not None:
             error_result.update({"prompt": str(prompt or "").strip(), "output_file": ""})
             return error_result
-        client_id = _next_ai_client_id()
+        client_id = _next_ai_client_id(self.client_id_prefix)
         generator_variant = self._get_tool_ui_settings()["video_generator_variant"]
         template_file = self.get_tool_template_filename("gen_video")
         task, error_result = self._build_generation_task(
@@ -3332,6 +3370,9 @@ class DeepyZeroTools:
                 "resolution": task.get("resolution", ""),
                 "error": "Prompt is empty.",
             }
+        task, error_result = self._apply_custom_file("gen_video", task, custom_file)
+        if error_result is not None:
+            return error_result
         result = self._queue_generation_task(task, activity_label="video generation", output_label="Generated video", gallery_media_type="video")
         result["generator_variant"] = generator_variant
         if len(template_file) > 0:
@@ -3356,7 +3397,7 @@ class DeepyZeroTools:
         image_start: str | None = None, image_end: str | None = None, width: int | None = None,
         height: int | None = None, num_frames: int | None = None, duration_seconds: float | None = None,
         fps: int | None = None, num_inference_steps: int | None = None,
-        extra_settings: dict[str, Any] | None = None, loras: list[dict[str, Any]] | None = None,
+        extra_settings: dict[str, Any] | None = None, loras: list[dict[str, Any]] | None = None, custom_file: str | None = None,
     ) -> dict[str, Any]:
         self._sync_recent_media()
         tool_name = "gen_video_with_refs"
@@ -3382,7 +3423,7 @@ class DeepyZeroTools:
             if error is not None:
                 return error
             sources[name] = None if media is None else media["path"]
-        client_id = _next_ai_client_id()
+        client_id = _next_ai_client_id(self.client_id_prefix)
         task, error = self._build_generation_task(tool_name, variant, prompt=prompt, client_id=client_id, image_refs=sources["image_refs"], image_start=sources["image_start"], image_end=sources["image_end"])
         if error is not None:
             return error
@@ -3401,6 +3442,9 @@ class DeepyZeroTools:
         task, error = self._apply_generation_overrides(tool_name, task, include_num_frames=True, width=width, height=height, num_frames=num_frames, duration_seconds=duration_seconds, fps=fps, num_inference_steps=num_inference_steps, extra_settings=extra_settings)
         if error is not None:
             return error
+        task, error_result = self._apply_custom_file(tool_name, task, custom_file)
+        if error_result is not None:
+            return error_result
         result = self._queue_generation_task(task, activity_label="reference video generation", output_label="Generated video", gallery_media_type="video")
         result.update(generator_variant=variant, template_file=self.get_tool_template_filename(tool_name), source_image_media_ids=list(image_refs or []), source_video_media_ids=list(video_refs or []))
         return result
@@ -3490,7 +3534,7 @@ class DeepyZeroTools:
         if error_result is not None:
             error_result.update({"prompt": str(prompt or "").strip(), "output_file": ""})
             return error_result
-        client_id = _next_ai_client_id()
+        client_id = _next_ai_client_id(self.client_id_prefix)
         generator_variant = self.get_tool_variant("gen_video_with_speech")
         template_file = self.get_tool_template_filename("gen_video_with_speech")
         task, error_result = self._build_generation_task(
@@ -3579,10 +3623,11 @@ class DeepyZeroTools:
                 "required": False,
                 "items": {"type": "object", "properties": {"name": {"type": "string"}, "multiplier": {}}, "required": ["name"]},
             },
+            "custom_file": copy.deepcopy(_CUSTOM_FILE_PARAMETER),
         },
     )
-    def gen_song(self, lyrics: str, music_caption: str, duration_seconds: float | None = None, extra_settings: dict[str, Any] | None = None, loras: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-        client_id = _next_ai_client_id()
+    def gen_song(self, lyrics: str, music_caption: str, duration_seconds: float | None = None, extra_settings: dict[str, Any] | None = None, loras: list[dict[str, Any]] | None = None, custom_file: str | None = None) -> dict[str, Any]:
+        client_id = _next_ai_client_id(self.client_id_prefix)
         generator_variant = self.get_tool_variant("gen_song")
         template_file = self.get_tool_template_filename("gen_song")
         task, error_result = self._build_generation_task("gen_song", generator_variant, prompt=lyrics, client_id=client_id, alt_prompt=music_caption)
@@ -3604,6 +3649,9 @@ class DeepyZeroTools:
             return error_result
         if len(str(task.get("prompt", "") or "").strip()) == 0 or len(str(task.get("alt_prompt", "") or "").strip()) == 0:
             return {"status": "error", "client_id": client_id, "output_file": "", "prompt": str(lyrics or "").strip(), "error": "lyrics and music_caption are required."}
+        task, error_result = self._apply_custom_file("gen_song", task, custom_file)
+        if error_result is not None:
+            return error_result
         result = self._queue_generation_task(task, activity_label="song generation", output_label="Generated song", gallery_media_type="audio")
         result["generator_variant"] = generator_variant
         if len(template_file) > 0:
@@ -3627,7 +3675,7 @@ class DeepyZeroTools:
         },
     )
     def gen_speech_from_description(self, prompt: str, voice_description: str, duration_seconds: float | None = None, extra_settings: dict[str, Any] | None = None) -> dict[str, Any]:
-        client_id = _next_ai_client_id()
+        client_id = _next_ai_client_id(self.client_id_prefix)
         generator_variant = self.get_tool_variant("gen_speech_from_description")
         template_file = self.get_tool_template_filename("gen_speech_from_description")
         task, error_result = self._build_generation_task("gen_speech_from_description", generator_variant, prompt=prompt, client_id=client_id, alt_prompt=voice_description)
@@ -3689,7 +3737,7 @@ class DeepyZeroTools:
         if error_result is not None:
             error_result.update({"prompt": str(prompt or "").strip(), "output_file": ""})
             return error_result
-        client_id = _next_ai_client_id()
+        client_id = _next_ai_client_id(self.client_id_prefix)
         generator_variant = self.get_tool_variant("gen_speech_from_sample")
         template_file = self.get_tool_template_filename("gen_speech_from_sample")
         task, error_result = self._build_generation_task(
@@ -3793,7 +3841,7 @@ class DeepyZeroTools:
             }
         editor_variant = self._get_tool_ui_settings()["image_editor_variant"]
         template_file = self.get_tool_template_filename("edit_image")
-        client_id = _next_ai_client_id()
+        client_id = _next_ai_client_id(self.client_id_prefix)
         task, error_result = self._build_generation_task(
             "edit_image",
             editor_variant,
@@ -3872,6 +3920,14 @@ class DeepyZeroTools:
         if source is None:
             return {"status": "error", "path": str(path or "").strip(), "media_id": "", "media_type": "", "already_present": False, "error": "Not an authorized existing image, video, or audio file."}
         output_path = os.path.abspath(os.path.normpath(str(source.get("path", "") or "")))
+        from shared.utils.workspace_storage import host_for_gen, recording_gallery
+        host = host_for_gen(self.gen)
+        gen = recording_gallery(self.gen)  # an agent's own workspace gallery while it works in the background
+        if host is not None:
+            workspace_id = getattr(self, 'workspace_id', None) or host.deepy_workspace_id()
+            if gen is self.gen:
+                host.activate_workspace(workspace_id)
+            output_path = host.workspaces.adopt(workspace_id, [output_path])[0]
         media_type = str(source.get("media_type", "") or "").strip()
         try:
             if media_type == "image":
@@ -3883,31 +3939,35 @@ class DeepyZeroTools:
                 from shared.utils.audio_video import get_audio_file_sample_rate
 
                 get_audio_file_sample_rate(output_path)
+            elif media_type == "3d":
+                from shared.utils.mesh_outputs import asset_stats
+
+                asset_stats(output_path)
             else:
                 raise ValueError(f"Unsupported media file: {os.path.basename(output_path)}")
         except Exception as exc:
             return {"status": "error", "path": output_path, "media_id": str(source.get("media_id", "") or ""), "media_type": media_type, "already_present": False, "error": str(exc) or "Unable to read media file."}
         settings = dict(source.get("settings", {}) or {}) or self._read_media_settings(output_path, media_type)
         audio_only = media_type == "audio"
-        path_key, settings_key, selection_key = ("audio_file_list", "audio_file_settings_list", "audio_selected") if audio_only else ("file_list", "file_settings_list", "selected")
-        gallery_paths = self.gen.setdefault(path_key, [])
+        gallery = source_for_kind(media_type)
+        path_key, settings_key, selection_key = gallery.files_key, gallery.settings_key, gallery.selected_key
+        gallery_paths = gen.setdefault(path_key, [])
         existing_index = next((index for index, gallery_path in enumerate(gallery_paths) if os.path.normcase(os.path.abspath(str(gallery_path))) == os.path.normcase(output_path)), None)
         already_present = existing_index is not None
         if existing_index is None:
             if not callable(self.record_file_metadata):
                 return {"status": "error", "path": output_path, "media_id": "", "media_type": media_type, "already_present": False, "error": "WanGP Gallery recording is unavailable."}
-            self.record_file_metadata(output_path, settings, media_type == "image", audio_only, self.gen, notify_generation=False, write_metadata=False, record_notification=False)
-            existing_index = next(index for index, gallery_path in enumerate(self.gen[path_key]) if os.path.normcase(os.path.abspath(str(gallery_path))) == os.path.normcase(output_path))
+            self.record_file_metadata(output_path, settings, media_type == "image", audio_only, gen, notify_generation=False, write_metadata=False, record_notification=False)
+            existing_index = next(index for index, gallery_path in enumerate(gen[path_key]) if os.path.normcase(os.path.abspath(str(gallery_path))) == os.path.normcase(output_path))
         else:
-            saved_settings = self.gen.setdefault(settings_key, [])
+            saved_settings = gen.setdefault(settings_key, [])
             if settings and existing_index < len(saved_settings) and not saved_settings[existing_index]:
                 saved_settings[existing_index] = settings
         record = self._register_tool_media(output_path, settings, label=f"Imported {media_type}")
-        self.gen[selection_key] = existing_index
-        self.gen["audio_last_selected" if audio_only else "last_selected"] = existing_index + 1 >= len(self.gen[path_key])
-        self.gen["last_was_audio"] = audio_only
-        self.gen["current_gallery_source"] = "audio" if audio_only else "video"
-        self.gen["selected_video_time"] = 0.0 if media_type == "video" else None
+        gen[selection_key] = existing_index
+        gen[gallery.last_selected_key] = existing_index + 1 >= len(gen[path_key])
+        gen["last_gallery_source"] = gen["current_gallery_source"] = gallery.id
+        gen["selected_video_time"] = 0.0 if media_type == "video" else None
         return {"status": "done", "path": output_path, "media_id": "" if record is None else record.get("media_id", ""), "media_type": media_type, "already_present": already_present, "error": ""}
 
     @assistant_tool(
@@ -3939,10 +3999,12 @@ class DeepyZeroTools:
                 "description": "Color of the boxes; defaults to white.",
                 "required": False,
             },
+            "duration_s": {"type": "number", "minimum": 0.1, "maximum": 60, "description": "Optional: make a silent video clip of this length instead of an image, e.g. a black leader or a pause between clips.", "required": False},
+            "fps": {"type": "number", "minimum": 1, "maximum": 60, "description": "Frame rate of the clip; default 24.", "required": False},
         },
         pause_runtime=False,
     )
-    def create_color_frame(self, width: int, height: int, color: str = "black", boxes: list[list[int]] | None = None, box_color: str = "white") -> dict[str, Any]:
+    def create_color_frame(self, width: int, height: int, color: str = "black", boxes: list[list[int]] | None = None, box_color: str = "white", duration_s: float | None = None, fps: float = 24) -> dict[str, Any]:
         try:
             width = int(width)
             height = int(height)
@@ -3960,25 +4022,34 @@ class DeepyZeroTools:
         if len(rgb_color) == 4:
             rgb_color = tuple(rgb_color[:3])
         safe_color_name = re.sub(r"[^a-z0-9]+", "_", resolved_color.lower()).strip("_") or "color"
-        output_name = f"color_{safe_color_name}_{width}x{height}.png"
+        clip = duration_s is not None
+        video_codec, video_container = self._get_video_output_settings()
+        output_name = f"color_{safe_color_name}_{width}x{height}" + (f"_{float(duration_s):g}s{deepy_video_tools.get_video_container_extension(video_container)}" if clip else ".png")
         self._set_status("Creating color frame...", kind="tool")
         self._update_tool_progress("running", "Creating", {"status": "running", "width": width, "height": height, "color": resolved_color})
-        output_path = self._resolve_direct_output_path(output_name, True, False)
+        output_path = self._resolve_direct_output_path(output_name, not clip, False)
         try:
             image = Image.new("RGB", (width, height), rgb_color)
             if boxes:
                 draw = ImageDraw.Draw(image)
                 for x_min, y_min, x_max, y_max in boxes:
                     draw.rectangle((round(x_min * width / 1000), round(y_min * height / 1000), round(x_max * width / 1000) - 1, round(y_max * height / 1000) - 1), fill=ImageColor.getrgb(box_color)[:3])
-            image.save(output_path)
+            if clip:
+                deepy_video_tools.encode_frames(itertools.repeat(image, max(1, round(float(duration_s) * float(fps)))), output_path, float(fps), video_codec=video_codec, video_container=video_container)
+            else:
+                image.save(output_path)
         except Exception as exc:
             result = {"status": "error", "width": width, "height": height, "color": resolved_color, "output_file": "", "error": str(exc)}
             self._update_tool_progress("error", "Error", result)
             self._set_status(f"Color frame creation failed: {exc}", kind="error")
             return result
         boxes_text = f" with {len(boxes)} {box_color} box{'es' if len(boxes) > 1 else ''}" if boxes else ""
-        settings = self._build_direct_image_settings(f'Created solid {resolved_color} image at {width}x{height}{boxes_text}', width, height, prompt=f"A solid {resolved_color} image at {width}x{height}{boxes_text}.")
-        media_record = self._record_direct_media(output_path, settings, is_image=True, audio_only=False, label="Color frame")
+        if clip:
+            settings = self._build_deepy_settings(f"A solid {resolved_color} clip at {width}x{height}{boxes_text}.", f"Created a {float(duration_s):g} s solid {resolved_color} clip at {width}x{height}{boxes_text}", resolution=f"{width}x{height}")
+            self._update_video_metadata_fields(output_path, settings)
+        else:
+            settings = self._build_direct_image_settings(f'Created solid {resolved_color} image at {width}x{height}{boxes_text}', width, height, prompt=f"A solid {resolved_color} image at {width}x{height}{boxes_text}.")
+        media_record = self._record_direct_media(output_path, settings, is_image=not clip, audio_only=False, label="Color clip" if clip else "Color frame")
         result = {
             "status": "done",
             "media_id": "" if media_record is None else media_record.get("media_id", ""),
@@ -4191,6 +4262,146 @@ class DeepyZeroTools:
         }
         self._update_tool_progress("done", "Done", result)
         self._set_status("Side-by-side media created.", kind="tool")
+        return result
+
+    @assistant_tool(
+        display_name="Render 3D Views",
+        description="Render views of a 3D asset (mesh or Gaussian splats) as images added to the image gallery, all at the same scale: named views and/or custom angles, an optional animation frame, zoom and focus point. Use them for character sheets, turnarounds, close-ups or as image references.",
+        parameters={
+            "media_id": {"type": "string", "description": "3D media id."},
+            "views": {"type": "array", "items": {"type": "string", "enum": list(_MESH_VIEWS)}, "description": "Optional named views in output order (default front). left and right are the object's own sides as it faces the front view.", "required": False},
+            "angles": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}, "description": "Optional custom [azimuth, elevation] views in degrees, after the named views: azimuth 0 front, 90 the object's left side, 180 back, -90 its right side; elevation 90 from above, -90 from below.", "required": False},
+            "frame_no": {"type": "integer", "minimum": 0, "description": "Optional frame of an animated mesh (0-based, below the asset's frame_count reported by the gallery or media details); rest pose by default.", "required": False},
+            "zoom": {"type": "number", "exclusiveMinimum": 0, "description": "Optional magnification: 1 (default) fits the whole object in every view, 3 shows a third of it.", "required": False},
+            "focus": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 1}, "minItems": 3, "maxItems": 3, "description": "Optional point to centre, as [x, y, z] fractions of the object's bounding box: [0.5, 0.5, 0.5] centre (default), y 1 top, z 1 front, x 1 the object's left. With zoom, e.g. a face close-up: focus [0.5, 0.9, 0.6], zoom 4.", "required": False},
+            "projection": {"type": "string", "enum": ["orthographic", "perspective"], "description": "Optional: orthographic (default; no perspective distortion, for sheets and turnarounds) or perspective.", "required": False},
+            "mode": {"type": "string", "enum": ["shaded", "albedo", "normal", "depth", "mask"], "description": "Optional: shaded (default), albedo (unlit colours), normal, depth or mask (control images). Gaussian splats: shaded or mask.", "required": False},
+            "width": {"type": "integer", "minimum": 64, "maximum": 2048, "description": "Optional width of each view in pixels (default 768).", "required": False},
+            "height": {"type": "integer", "minimum": 64, "maximum": 2048, "description": "Optional height of each view in pixels (default 768).", "required": False},
+            "background": {"type": "string", "description": "Optional background: transparent (default for shaded / albedo) or a color name / hex value.", "required": False},
+            "front_azimuth": {"type": "number", "minimum": -180, "maximum": 180, "description": "Optional azimuth in degrees where the object actually faces, when a generated asset does not face the front view (e.g. 90 if its face shows in the left view): named views turn with it; custom angles do not.", "required": False},
+        },
+        pause_runtime=False,
+    )
+    def render_3d_views(self, media_id: str, views: list[str] | None = None, angles: list[list[float]] | None = None, frame_no: int | None = None, zoom: float = 1.0, focus: list[float] | None = None,
+                        projection: str = "orthographic", mode: str = "shaded", width: int = 768, height: int = 768, background: str | None = None, front_azimuth: float = 0.0) -> dict[str, Any]:
+        from shared.mesh3d.render import VIEWS
+        from shared.utils.mesh_outputs import render_asset_views
+
+        self._sync_recent_media()
+        source = self._resolve_media_record_input(media_id)
+        error = lambda message: {"status": "error", "media_id": str(media_id or "").strip(), "media_ids": [], "output_files": [], "error": message}
+        if source is None:
+            return error("Unknown media id.")
+        if source.get("media_type") != "3d":
+            return error(f"media_id must reference a 3D asset, not a {source.get('media_type') or 'unknown media type'}.")
+        names = list(views or []) if views or angles else ["front"]
+        if unknown := [name for name in names if name not in _MESH_VIEWS]:
+            return error(f"Unknown view {unknown[0]!r}; use {', '.join(_MESH_VIEWS)} or angles.")
+        try:
+            custom = [(float(azimuth), float(elevation)) for azimuth, elevation in (angles or [])]
+            color = None if background is None or str(background).strip().lower() in {"", "transparent", "none"} else [value / 255 for value in ImageColor.getrgb(str(background))[:3]]
+            if not 1 <= len(names) + len(custom) <= 16:
+                raise ValueError("Request between 1 and 16 views.")
+            if focus is not None and len(focus) != 3 or float(zoom) <= 0:
+                raise ValueError("focus must be [x, y, z] fractions and zoom a positive number.")
+            labels = names + [f"az{azimuth:g}_el{elevation:g}" for azimuth, elevation in custom]
+            descriptions = [f"A {name.replace('_', ' ')} view of a 3D asset." for name in names] + [f"A view of a 3D asset at azimuth {azimuth:g}°, elevation {elevation:g}°." for azimuth, elevation in custom]
+            self._set_status(f"Rendering {len(labels)} 3D view{'s' if len(labels) > 1 else ''}...", kind="tool")
+            self._update_tool_progress("running", "Rendering", {"status": "running", "media_id": source["media_id"], "views": labels, "frame_no": frame_no})
+            named = [(VIEWS[name][0] + float(front_azimuth), VIEWS[name][1]) for name in names]  # turned toward where the asset faces
+            images = render_asset_views(source["path"], named + custom, (int(height), int(width)), frame_no=None if frame_no is None else int(frame_no), mode=mode,
+                                        projection=projection, zoom=float(zoom), focus=tuple(focus or (0.5, 0.5, 0.5)), background=color)
+        except ValueError as exc:
+            result = error(str(exc))
+            self._update_tool_progress("error", "Error", result)
+            self._set_status(f"3D view rendering failed: {exc}", kind="error")
+            return result
+        stem, frame_text = OUTPUT_NAME.get() or Path(source["path"]).stem, "" if frame_no is None else f" at animation frame {int(frame_no)}"
+        rendered = []
+        for label, description, image in zip(labels, descriptions, images):
+            output_path = self._resolve_direct_output_path(f"{stem}_{label}{'' if frame_no is None else f'_f{int(frame_no)}'}.png", True, False)
+            image.save(output_path)
+            settings = self._build_direct_image_settings(f'{label.replace("_", " ").title()} view of "{Path(source["path"]).name}"{frame_text} ({projection}, {mode})', image.width, image.height, prompt=description)
+            record = self._record_direct_media(output_path, settings, is_image=True, audio_only=False, label=f"{label.replace('_', ' ').title()} view")
+            rendered.append(("" if record is None else record.get("media_id", ""), output_path))
+        result = {"status": "done", "source_media_id": source["media_id"], "frame_no": frame_no, "views": labels, "media_ids": [media for media, _ in rendered], "output_files": [path for _, path in rendered], "error": ""}
+        self._update_tool_progress("done", "Done", result)
+        self._set_status("3D views rendered.", kind="tool")
+        return result
+
+    @assistant_tool(
+        display_name="Draw SVG",
+        description="Draw an image from SVG markup and add it to the image gallery: shapes, paths, gradients, text, clip paths, masks, filters (blur, shadows) and transforms, for character sheets, posters, storyboards, diagrams, layout guides or masks. <image href> may name gallery images (a 3D asset gives its preview) or authorized image files: they are embedded. url() may only point to #ids of the drawing. Inspect the result and redraw to refine it; the PNG keeps the SVG source in its settings. With duration_s it makes a silent video clip instead, animated by SVG animation elements: <animate attributeName=\"opacity\" from=\"0\" to=\"1\" begin=\"0.5s\" dur=\"1s\" fill=\"freeze\"/> fades a title in, <animateTransform attributeName=\"transform\" type=\"scale\" from=\"1\" to=\"1.1\" dur=\"4s\" fill=\"freeze\"/> slowly zooms a group holding a gallery image, and an <image> with no animation gives a still clip (title card, end card). Supported: animate (numbers, lists of numbers, colours), animateTransform (translate, scale, rotate, skewX, skewY; additive=\"sum\" adds to the existing transform), set; with begin, dur, from/to or values with keyTimes, calcMode linear, discrete or spline with keySplines, fill=\"freeze\" and repeatCount. CSS animations and scripts are not run.",
+        parameters={
+            "svg": {"type": "string", "description": "Complete SVG document: <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"W\" height=\"H\" viewBox=\"0 0 W H\">...</svg>. Up to 2,000,000 characters of markup; embedded images may total 48 MB."},
+            "width": {"type": "integer", "minimum": 1, "maximum": 4096, "description": "Optional output width in pixels; the SVG's own size by default. Given alone, width or height keeps the aspect ratio.", "required": False},
+            "height": {"type": "integer", "minimum": 1, "maximum": 4096, "description": "Optional output height in pixels.", "required": False},
+            "background": {"type": "string", "description": "Optional background color name or hex value; transparent by default.", "required": False},
+            "name": {"type": "string", "description": "Optional short file name, e.g. character_sheet.", "required": False},
+            "duration_s": {"type": "number", "minimum": 0.1, "maximum": 60, "description": "Optional: make a silent video clip of this length, animated by the SVG animation elements (background black by default).", "required": False},
+            "fps": {"type": "number", "minimum": 1, "maximum": 60, "description": "Frame rate of the clip; default 24, or like_video_id's.", "required": False},
+            "like_video_id": {"type": "string", "description": "Optional video whose size and frame rate the clip takes, so it merges with it directly; draw the SVG in that video's aspect ratio.", "required": False},
+        },
+        pause_runtime=False,
+    )
+    def draw_svg(self, svg: str, width: int | None = None, height: int | None = None, background: str | None = None, name: str | None = None, duration_s: float | None = None, fps: float | None = None, like_video_id: str | None = None) -> dict[str, Any]:
+        from shared.deepy import svg_drawing
+        from shared.utils.mesh_outputs import ensure_preview, preview_path
+
+        self._sync_recent_media()
+        self._set_status("Drawing SVG...", kind="tool")
+        self._update_tool_progress("running", "Drawing", {"status": "running"})
+        try:
+            embedded = {}
+            for reference in svg_drawing.references(svg):
+                record = self._resolve_media_record_input(reference)
+                if record is None:
+                    raise ValueError(f"Unknown media id or unreadable file in href: {reference}")
+                if record.get("media_type") == "3d":
+                    ensure_preview(record["path"])
+                    embedded[reference] = svg_drawing.data_uri(preview_path(record["path"]))
+                elif record.get("media_type") == "image":
+                    embedded[reference] = svg_drawing.data_uri(record["path"])
+                else:
+                    raise ValueError(f"href {reference} is a {record.get('media_type')}; extract an image from it first.")
+            if duration_s is None:
+                if like_video_id is not None or fps is not None:
+                    raise ValueError("fps and like_video_id apply to clips: set duration_s.")
+                image = svg_drawing.rasterize(svg_drawing.rewrite(svg, embedded), None if width is None else int(width), None if height is None else int(height), background or None)
+            else:
+                if like_video_id is not None:
+                    like, error_result = self._resolve_video_media(like_video_id, "like_video_id")
+                    if error_result is not None:
+                        return error_result
+                    like_fps, width, height, _frames = get_video_info(like["path"])
+                    fps = fps or like_fps
+                fps = float(fps or 24)
+                video_codec, video_container = self._get_video_output_settings()
+                stem = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name or "drawing")).strip("_") or "drawing"
+                output_path = self._resolve_direct_output_path(f"{stem}{deepy_video_tools.get_video_container_extension(video_container)}", False, False)
+                frames = svg_drawing.render_frames(svg_drawing.rewrite(svg, embedded), float(duration_s), fps, None if width is None else int(width), None if height is None else int(height), background or "black")
+                deepy_video_tools.encode_frames(frames, output_path, fps, video_codec=video_codec, video_container=video_container)
+        except ValueError as exc:
+            result = {"status": "error", "media_id": "", "output_file": "", "error": str(exc)}
+            self._update_tool_progress("error", "Error", result)
+            self._set_status(f"SVG drawing failed: {exc}", kind="error")
+            return result
+        embedded_text = f"{len(embedded)} embedded image{'s' if len(embedded) != 1 else ''}"
+        if duration_s is None:
+            stem = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name or "drawing")).strip("_") or "drawing"
+            output_path = self._resolve_direct_output_path(f"{stem}.png", True, False)
+            image.save(output_path)
+            settings = self._build_direct_image_settings(f"Drawn from SVG ({embedded_text})", image.width, image.height, prompt="An SVG drawing.", svg=svg)
+            size = image.size
+        else:
+            settings = self._build_deepy_settings("An animated SVG drawing.", f"Drawn from SVG as a {float(duration_s):g} s clip at {fps:g} fps ({embedded_text})", svg=svg)
+            self._update_video_metadata_fields(output_path, settings)
+            size = tuple(map(int, settings["resolution"].split("x")))
+        record = self._record_direct_media(output_path, settings, is_image=duration_s is None, audio_only=False, label="SVG drawing" if duration_s is None else "SVG clip")
+        result = {"status": "done", "media_id": "" if record is None else record.get("media_id", ""), "width": size[0], "height": size[1], **({} if duration_s is None else {"duration_seconds": settings.get("duration_seconds"), "fps": fps}), "embedded_media": list(embedded), "output_file": output_path, "error": ""}
+        self._update_tool_progress("done", "Done", result)
+        self._set_status("SVG drawing created.", kind="tool")
         return result
 
     @assistant_tool(
@@ -4418,6 +4629,39 @@ class DeepyZeroTools:
         return result
 
     @assistant_tool(
+        description="Inspect the selected audio stream's playable range on CPU: peak/RMS, clipping indicators, EBU R128 loudness and below-threshold silence intervals. Coverage excludes decoder tail padding when track duration is known; silence does not mean zero or missing audio. Optional playable preview (at most 30 seconds). Does not transcribe or judge musical quality.",
+        parameters={
+            "media_id": {"type": "string", "description": "Audio or video media ID or authorized file.", "required": True},
+            "audio_track_no": {"type": "integer", "description": "1-based audio stream; default 1.", "required": False},
+            "start_time": {"type": "number", "description": "Start in seconds; default 0.", "required": False},
+            "duration": {"type": "number", "description": "Seconds to analyze; omitted analyzes through the end.", "required": False},
+            "silence_db": {"type": "number", "description": "Silence RMS threshold in dBFS (-120..0); default -50.", "required": False},
+            "min_silence": {"type": "number", "description": "Minimum silence interval in seconds; default 0.2.", "required": False},
+            "preview": {"type": "boolean", "description": "Create a playable Gallery excerpt; default false.", "required": False},
+            "preview_seconds": {"type": "number", "description": "Excerpt length, at most 30 seconds; default 10. Starts at start_time.", "required": False},
+            "window_s": {"type": "number", "description": "Optional envelope window in seconds (0.1..600, at most 600 windows): adds RMS, peak and loudest momentary loudness per window, for finding climaxes, gaps and balance in one call.", "required": False},
+        },
+        pause_runtime=False,
+    )
+    def inspect_audio(self, media_id: str, audio_track_no: int = 1, start_time: float = 0.0, duration: float | None = None, silence_db: float = -50.0, min_silence: float = 0.2, preview: bool = False, preview_seconds: float = 10.0, window_s: float | None = None) -> dict[str, Any]:
+        from shared.deepy.audio_inspection import inspect_audio
+
+        self._sync_recent_media()
+        source = self._resolve_media_record_input(media_id)
+        if source is None or source.get("media_type") not in {"audio", "video"}:
+            raise ValueError("media_id must reference audio or video.")
+        self._set_status("Inspecting Audio", kind="tool")
+        output = self._resolve_direct_output_path(f"{Path(source['path']).stem}_preview.wav", False, True) if preview else None
+        result = inspect_audio(source["path"], audio_track_no=audio_track_no, start_time=start_time, duration=duration, silence_db=silence_db, min_silence=min_silence, preview_path=output, preview_seconds=preview_seconds, window_s=window_s)
+        result["source_media_id"] = source["media_id"]
+        if output:
+            settings = self._build_direct_media_settings(source, "Audio inspection preview")
+            record = self._record_direct_media(output, settings, is_image=False, audio_only=True, label="Audio Preview")
+            result["media_id"] = record["media_id"] if record else ""
+        self._set_status("Audio Inspection Complete", kind="tool")
+        return result
+
+    @assistant_tool(
         display_name="Extract Audio",
         description="Extract audio from a previously resolved video or audio file using either time-based arguments (start_time, end_time, duration) or, for video sources, frame-based arguments (start_frame, end_frame, num_frames).",
         parameters={
@@ -4582,7 +4826,7 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Transcribe Media",
-        description="Transcribe the spoken content of a previously resolved audio or video media item with Whisper medium, returning segment timestamps by default and optionally using word timestamps instead.",
+        description="Transcribe the spoken content of a previously resolved audio or video media item with Whisper medium, returning segment timestamps by default and optionally using word timestamps instead. Timestamps are tightened to the detected speech, so a pause before a word is not counted in it, and speech_intervals lists where speech is heard. For speech over music, transcribe the clean voice file, or isolate the voice first (remove_background audio treatment).",
         parameters={
             "media_id": {
                 "type": "string",
@@ -4735,7 +4979,7 @@ class DeepyZeroTools:
         },
         pause_runtime=False,
     )
-    def replace_audio(self, video_id: str = "", audio_id: str = "", *, audio_ids: list[str] | None = None, mode: str = "replace", include_video_audio: bool = False, gains_db: list[float] | None = None, output_extension: str | None = None, subtitle_tracks: list[dict] | None = None, include_video_subtitles: bool = True) -> dict[str, Any]:
+    def replace_audio(self, video_id: str = "", audio_id: str = "", *, audio_ids: list[str] | None = None, mode: str = "replace", include_video_audio: bool = False, gains_db: list[float] | None = None, output_extension: str | None = None, subtitle_tracks: list[dict] | None = None, include_video_subtitles: bool = True, offsets_s: list[float] | None = None, fade_in_s: list[float] | None = None, fade_out_s: list[float] | None = None, video_audio_gain_db: float | None = None, normalize_lufs: float | None = None, trim_start_s: list[float] | None = None, trim_duration_s: list[float] | None = None, gain_points: list | None = None, ducking: dict | None = None) -> dict[str, Any]:
         if audio_ids is not None or subtitle_tracks is not None:
             self._sync_recent_media()
             if audio_ids is None:
@@ -4789,13 +5033,15 @@ class DeepyZeroTools:
             self._set_status("Remuxing Media...", kind="tool")
             self._update_tool_progress("running", "Remuxing", {"status": "running", "mode": mode, "video_id": video_id, "audio_ids": audio_ids})
             try:
-                output_path = deepy_video_tools.remux_media(audio_paths, output_path, mode=mode, video_path=video_path, include_video_audio=include_video_audio, gains_db=gains_db, audio_codec=self._get_video_audio_output_codec(), standalone_audio_codec=standalone_audio_codec, subtitle_tracks=subtitle_tracks, include_video_subtitles=include_video_subtitles)
+                output_path = deepy_video_tools.remux_media(audio_paths, output_path, mode=mode, video_path=video_path, include_video_audio=include_video_audio, gains_db=gains_db, audio_codec=self._get_video_audio_output_codec(), standalone_audio_codec=standalone_audio_codec, subtitle_tracks=subtitle_tracks, include_video_subtitles=include_video_subtitles, offsets_s=offsets_s, fade_in_s=fade_in_s, fade_out_s=fade_out_s, video_audio_gain_db=video_audio_gain_db, normalize_lufs=normalize_lufs, trim_start_s=trim_start_s, trim_duration_s=trim_duration_s, gain_points=gain_points, ducking=ducking)
                 source_media = video_media or audio_media[0]
                 comment = f"{mode.title()} media"
                 if audio_paths:
                     comment += " from " + ", ".join(os.path.basename(path) for path in audio_paths)
                 if include_video_audio:
                     comment += " with the original video soundtrack"
+                if normalize_lufs is not None:
+                    comment += f" normalized to {normalize_lufs:g} LUFS"
                 if subtitle_tracks:
                     comment += f" with {len(subtitle_tracks)} subtitle track(s)"
                 settings = self._build_direct_media_settings(source_media, comment)
@@ -5009,55 +5255,40 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Merge Videos",
-        description="Merge two previously resolved videos into one clip, resizing the second video when needed so it matches the first video dimensions.",
+        description="Join videos end to end in the given order, with a cut, a crossfade or a fade through black or white at each join; the soundtracks follow the picture. Clips are fitted to the first video's size and frame rate, and a clip without sound gets silence.",
         parameters={
-            "video_first": {
-                "type": "string",
-                "description": "The media id for the first video returned by Resolve Media.",
-            },
-            "video_second": {
-                "type": "string",
-                "description": "The media id for the second video returned by Resolve Media.",
-            },
+            "video_ids": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 32, "description": "Media ids of the videos, in playing order."},
+            "transitions": {"type": "array", "items": {"type": "string", "enum": list(deepy_video_tools.MERGE_TRANSITIONS)}, "minItems": 1, "maxItems": 31, "description": "Optional transition at each join, one per join or a single one for all: cut (default), crossfade, fade_black or fade_white.", "required": False},
+            "transition_s": {"type": "number", "minimum": 0.05, "maximum": 10, "description": "Optional length of each crossfade or fade in seconds (default 1). The two clips overlap by this time, so the result is shorter than their sum.", "required": False},
         },
         pause_runtime=False,
     )
-    def merge_videos(self, video_first: str, video_second: str) -> dict[str, Any]:
+    def merge_videos(self, video_ids: list[str], transitions: list[str] | None = None, transition_s: float = 1.0) -> dict[str, Any]:
         self._sync_recent_media()
-        first_media, error_result = self._resolve_video_media(video_first, "video_first")
-        if error_result is not None:
-            return error_result
-        second_media, error_result = self._resolve_video_media(video_second, "video_second")
-        if error_result is not None:
-            return error_result
+        sources = []
+        for index, video_id in enumerate(video_ids):
+            media, error_result = self._resolve_video_media(video_id, f"video_ids[{index}]")
+            if error_result is not None:
+                return error_result
+            sources.append(media)
+        media_ids = [media.get("media_id", "") for media in sources]
         self._set_status("Merging videos...", kind="tool")
-        self._update_tool_progress("running", "Merging", {"status": "running", "video_first": first_media.get("media_id", ""), "video_second": second_media.get("media_id", "")})
-        first_path = str(first_media.get("path", "")).strip()
-        second_path = str(second_media.get("path", "")).strip()
-        first_name = os.path.basename(first_path)
-        second_name = os.path.basename(second_path)
+        self._update_tool_progress("running", "Merging", {"status": "running", "video_ids": media_ids})
         video_codec, video_container = self._get_video_output_settings()
-        output_name = f"merged_{first_media.get('media_id', 'video')}_{second_media.get('media_id', 'video')}{deepy_video_tools.get_video_container_extension(video_container)}"
-        output_path = self._resolve_direct_output_path(output_name, False, False)
-        output_path = deepy_video_tools.merge_videos(first_path, second_path, output_path=output_path, video_codec=video_codec, video_container=video_container, audio_codec=self._get_video_audio_output_codec())
-        merged_settings = self._build_direct_media_settings(second_media, f'Merged from "{first_name} & {second_name}"')
+        names = [os.path.basename(str(media.get("path", "")).strip()) for media in sources]
+        output_path = self._resolve_direct_output_path(f"merged_{len(sources)}_videos{deepy_video_tools.get_video_container_extension(video_container)}", False, False)
         try:
-            fps, width, height, frames_count = get_video_info(output_path)
-            merged_settings["resolution"] = f"{width}x{height}"
-            merged_settings["video_length"] = int(frames_count)
-            if fps > 0:
-                merged_settings["duration_seconds"] = round(frames_count / fps, 3)
-        except Exception:
-            pass
+            output_path = deepy_video_tools.merge_videos([str(media.get("path", "")).strip() for media in sources], output_path, transitions=transitions, transition_s=float(transition_s), video_codec=video_codec, video_container=video_container, audio_codec=self._get_video_audio_output_codec())
+        except ValueError as exc:
+            result = {"status": "error", "video_ids": media_ids, "output_file": "", "error": str(exc)}
+            self._update_tool_progress("error", "Error", result)
+            self._set_status(f"Video merge failed: {exc}", kind="error")
+            return result
+        joins = sorted(set(transitions or ["cut"]))
+        merged_settings = self._build_direct_media_settings(sources[-1], f"Merged {len(sources)} videos ({', '.join(joins)}): " + ", ".join(names))
+        self._update_video_metadata_fields(output_path, merged_settings)
         media_record = self._record_direct_media(output_path, merged_settings, is_image=False, audio_only=False, label="Merged video")
-        result = {
-            "status": "done",
-            "output_file": output_path,
-            "media_id": "" if media_record is None else media_record.get("media_id", ""),
-            "video_first": first_media.get("media_id", ""),
-            "video_second": second_media.get("media_id", ""),
-            "error": "",
-        }
+        result = {"status": "done", "output_file": output_path, "media_id": "" if media_record is None else media_record.get("media_id", ""), "video_ids": media_ids, "duration_seconds": merged_settings.get("duration_seconds"), "error": ""}
         self._update_tool_progress("done", "Done", result)
         self._set_status("Video merge finished.", kind="tool")
         return result
@@ -5081,7 +5312,7 @@ class DeepyZeroTools:
         name="rg",
         display_name="Search Long Text",
         description="Search authorized UTF-8 files with ripgrep. Pass rg arguments only: supported options and one pattern, followed by `--` and optional @alias paths. Paths are validated before rg runs; with no paths, the temporary workspace is searched.",
-        parameters={"arguments": {"type": "string", "description": "For example: `-n -F \"character name\" -- @workspace/story.md`. Use `--files -- @workspace` to list searchable files."}},
+        parameters={"arguments": {"type": "string", "description": "For example: `-n -F \"character name\" -- @documents/story.md`. Use `--files -- @documents` to list searchable files."}},
         pause_runtime=False,
         requires_file_system_write=True,
         requires_long_text_tools=True,
@@ -5127,7 +5358,7 @@ class DeepyZeroTools:
         parameters={
             "path": {"type": "string", "description": "Authorized directory; omit to list roots.", "required": False, "default": ""},
             "pattern": {"type": "string", "description": "Filename glob within one directory, such as *.mp4.", "required": False, "default": "*"},
-            "media_type": {"type": "string", "description": "Optional media filter.", "enum": ["all", "image", "video", "audio", "txt", "other"], "required": False, "default": "all"},
+            "media_type": {"type": "string", "description": "Optional media filter.", "enum": ["all", "image", "video", "audio", "3d", "txt", "other"], "required": False, "default": "all"},
             "limit": {"type": "integer", "description": "Entries per page, from 1 to 100.", "minimum": 1, "maximum": 100, "required": False, "default": PAGE_SIZE},
             "cursor": {"type": "string", "description": "next_cursor from the previous page; keep filters unchanged.", "required": False},
             "summary_only": {"type": "boolean", "description": "Return the stored count without entries.", "required": False, "default": False},
@@ -5297,11 +5528,11 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Get Selected Media",
-        description="Return the current selected WanGP gallery media. With media_type=all, return both the selected visual media and the selected audio media. If the selected visual item is a video, also report the current player time and frame number.",
+        description="Return the current selected WanGP gallery media. With media_type=all, return the selections from the image/video, audio and 3D galleries. If the selected visual item is a video, also report the current player time and frame number.",
         parameters={
             "media_type": {
                 "type": "string",
-                "description": "Optional desired media type: image, video, audio, or all. all returns both gallery selections.",
+                "description": "Optional desired media type: image, video, audio, 3d, or all. all returns every gallery selection.",
                 "required": False,
             },
         },
@@ -5311,16 +5542,10 @@ class DeepyZeroTools:
         self._sync_recent_media()
         resolved_media_type = self._normalize_selected_media_type(media_type)
         if resolved_media_type == "all":
-            visual_media_record, audio_media_record, error_result = self._get_all_selected_media_records()
+            records, error_result = self._get_all_selected_media_records()
             if error_result is not None:
                 return error_result
-            return {
-                "status": "done",
-                "media_type": "all",
-                "selected_visual_media": None if visual_media_record is None else self._selected_media_payload(visual_media_record),
-                "selected_audio_media": None if audio_media_record is None else self._selected_media_payload(audio_media_record),
-                "error": "",
-            }
+            return {"status": "done", "media_type": "all", **{f"selected_{'visual' if source == 'video' else source}_media": None if record is None else self._selected_media_payload(record) for source, record in records.items()}, "error": ""}
         media_record, error_result = self._get_selected_media_record(media_type)
         if error_result is not None:
             return error_result
@@ -5328,7 +5553,7 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Get Media Details",
-        description="Return detailed local metadata for a previously resolved image, video, or audio.",
+        description="Return detailed local metadata for a previously resolved image, video, audio or 3D asset (3D: mesh or splats, faces, and frame_count / fps / duration_seconds of an animation).",
         parameters={
             "media_id": {
                 "type": "string",
@@ -5346,12 +5571,12 @@ class DeepyZeroTools:
             return {"status": "error", "media_id": str(media_id or "").strip(), "error": "Unknown media id."}
         media_path = str(media_record.get("path", "")).strip()
         media_type = str(media_record.get("media_type", "")).strip().lower()
-        if media_type not in {"image", "video", "audio"}:
+        if media_type not in {"image", "video", "audio", "3d"}:
             return {
                 "status": "error",
                 "media_id": media_record.get("media_id", ""),
                 "media_type": media_type,
-                "error": "Detailed media info currently supports images, videos, and audio.",
+                "error": "Detailed media info currently supports images, videos, audio and 3D assets.",
             }
         self._set_status("Reading media details...", kind="tool")
         self._update_tool_progress("running", "Reading", {"status": "running", "media_id": media_record.get("media_id", ""), "media_type": media_type})
@@ -5403,6 +5628,11 @@ class DeepyZeroTools:
                     "channels": None,
                     "error": "",
                 }
+            elif media_type == "3d":
+                from shared.utils.mesh_outputs import asset_summary
+
+                result = {"status": "done", "media_id": media_record.get("media_id", ""), "label": media_record.get("label", ""), "media_type": "3d", "filename": os.path.basename(media_path),
+                          "fps": None, "duration_seconds": None, **asset_summary(media_path), "error": ""}
             else:
                 probe = ffmpeg.probe(media_path)
                 audio_streams = [stream for stream in probe.get("streams", []) if str(stream.get("codec_type", "")).strip().lower() == "audio"]
@@ -5460,11 +5690,11 @@ class DeepyZeroTools:
         parameters={
             "reference": {
                 "type": "string",
-                "description": "The media reference. Use short aliases such as 'last', 'previous', or 'selected' when media_type already specifies image, video, or audio. Descriptive references such as 'robot on the moon' also work.",
+                "description": "The media reference. Use short aliases such as 'last', 'previous', or 'selected' when media_type already specifies image, video, audio, or 3d. Descriptive references such as 'robot on the moon' also work.",
             },
             "media_type": {
                 "type": "string",
-                "description": "The desired media type: image, video, audio, or all. Pair this with short references such as reference='last' or reference='selected'.",
+                "description": "The desired media type: image, video, audio, 3d, or all. Pair this with short references such as reference='last' or reference='selected'.",
             },
         },
         pause_runtime=False,
@@ -5478,15 +5708,11 @@ class DeepyZeroTools:
         if self._is_selected_reference(resolved_reference):
             resolved_media_type = self._normalize_selected_media_type(media_type, reference=resolved_reference)
             if resolved_media_type == "all":
-                matches = []
-                visual_media_record, audio_media_record, error_result = self._get_all_selected_media_records()
+                records, error_result = self._get_all_selected_media_records()
                 if error_result is not None:
                     error_result.setdefault("reference", resolved_reference)
                     return error_result
-                if visual_media_record is not None:
-                    matches.append(self._selected_media_payload(visual_media_record, why="matched selected visual media"))
-                if audio_media_record is not None:
-                    matches.append(self._selected_media_payload(audio_media_record, why="matched selected audio media"))
+                matches = [self._selected_media_payload(record, why=f"matched selected {gallery_source(source).label} media") for source, record in records.items() if record is not None]
                 if len(matches) == 1:
                     return {"status": "resolved", "media_type": "all", "reference": resolved_reference, "media": matches[0], "error": ""}
                 return {"status": "candidates", "media_type": "all", "reference": resolved_reference, "matches": matches, "error": ""}
@@ -5499,9 +5725,38 @@ class DeepyZeroTools:
         result.setdefault("error", "")
         return result
 
+    @staticmethod
+    def _inspection_3d_view(path: str, frame_no: int | None, time_seconds: float | None, view: str | None) -> str:
+        """Image inspected for a 3D asset, over light grey (vision drops alpha): its preview (three-quarter view, rest pose)
+        unless a view or an animation frame is requested. Cached in the temp folder by file version and request."""
+        import hashlib
+        import tempfile
+        from shared.utils.mesh_outputs import asset_summary, ensure_preview, preview_path, render_asset_views
+
+        if time_seconds is not None:
+            fps = asset_summary(path).get("fps")
+            if not fps:
+                raise ValueError("This 3D asset has no animation: omit time_seconds.")
+            frame_no = int(round(time_seconds * fps))
+        stat = os.stat(path)
+        key = hashlib.sha1(f"{os.path.abspath(path)}|{stat.st_mtime_ns}|{stat.st_size}|{frame_no}|{view}".encode("utf-8")).hexdigest()[:24]
+        output = Path(tempfile.gettempdir()) / "wangp_deepy_3d_views" / f"{key}.png"
+        if not output.is_file():
+            if frame_no is None and view is None:
+                ensure_preview(path)
+                with Image.open(preview_path(path)) as preview:
+                    image = preview.convert("RGBA")
+            else:
+                image = render_asset_views(path, [view or "three_quarter"], 768, frame_no=frame_no)[0].convert("RGBA")
+            canvas = Image.new("RGBA", image.size, (217, 217, 217, 255))
+            canvas.alpha_composite(image)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            canvas.convert("RGB").save(output)
+        return str(output)
+
     @assistant_tool(
         display_name="Inspect Media",
-        description="Directly inspect or compare multiple images and/or explicitly selected video frames in one call; video frames do not need to be extracted first.",
+        description="Directly inspect or compare multiple images, explicitly selected video frames and 3D assets in one call; video frames do not need to be extracted first. A 3D asset is seen in its three-quarter preview unless an input sets view or an animation frame.",
         parameters={
             "media_id": {
                 "type": "string",
@@ -5525,6 +5780,7 @@ class DeepyZeroTools:
                         "media_id": {"type": "string", "description": "A media id returned by Resolve Media."},
                         "frame_no": {"type": "integer", "minimum": 0, "description": "Optional video frame number. If omitted for a video, frame 0 is used."},
                         "time_seconds": {"type": "number", "minimum": 0, "description": "Optional exact video time in seconds. Do not combine it with frame_no."},
+                        "view": {"type": "string", "enum": list(_MESH_VIEWS), "description": "Optional view of a 3D asset (left / right: the object's own sides); frame_no / time_seconds select its animation frame."},
                     },
                     "required": ["media_id"],
                 },
@@ -5539,7 +5795,7 @@ class DeepyZeroTools:
             },
             "frame_no": {
                 "type": "integer",
-                "description": "Optional frame number to inspect for every video supplied through media_id or media_ids. If omitted, frame 0 is used. Do not use it with media_inputs.",
+                "description": "Optional frame number to inspect for every video or animated 3D asset supplied through media_id or media_ids. If omitted, video frame 0 and the 3D rest pose are used. Do not use it with media_inputs.",
                 "required": False,
             },
             "bbox": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 1000}, "minItems": 4, "maxItems": 4, "description": "Optional normalized [x_min,y_min,x_max,y_max] crop, applied before resize.", "required": False},
@@ -5577,7 +5833,7 @@ class DeepyZeroTools:
         for index, raw_input in enumerate(raw_inputs):
             if not isinstance(raw_input, dict):
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}] must be an object."}
-            unknown_keys = set(raw_input) - {"media_id", "frame_no", "time_seconds", "bbox"}
+            unknown_keys = set(raw_input) - {"media_id", "frame_no", "time_seconds", "bbox", "view"}
             if unknown_keys:
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"Unsupported media_inputs[{index}] field: {sorted(unknown_keys)[0]}."}
             requested_media_id = raw_input.get("media_id", "")
@@ -5603,7 +5859,7 @@ class DeepyZeroTools:
                 input_bbox = deepy_vision.normalize_inspection_bbox(raw_input.get("bbox"))
             except ValueError as exc:
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}]: {exc}"}
-            requested_inputs.append({"media_id": requested_media_id.strip(), "frame_no": input_frame_no, "time_seconds": input_time_seconds, **({"bbox": input_bbox} if "bbox" in raw_input else {})})
+            requested_inputs.append({"media_id": requested_media_id.strip(), "frame_no": input_frame_no, "time_seconds": input_time_seconds, **({"bbox": input_bbox} if "bbox" in raw_input else {}), **({"view": raw_input["view"]} if raw_input.get("view") else {})})
         requested_media_ids = [item["media_id"] for item in requested_inputs]
         progress_inputs = [{key: value for key, value in item.items() if value is not None} for item in requested_inputs]
         self._update_tool_progress("running", "Inspecting", {"status": "running", "media_id": single_media_id, "media_ids": requested_media_ids, "media_inputs": progress_inputs, "question": question, "frame_no": frame_no, "bbox": bbox})
@@ -5615,8 +5871,17 @@ class DeepyZeroTools:
             media_record = self._resolve_media_record_input(requested_media_id)
             if media_record is None:
                 return {"status": "error", "media_id": requested_media_id, "media_ids": requested_media_ids, "media_inputs": progress_inputs, "question": question, "answer": "", "error": f"Unknown media id: {requested_media_id}."}
-            if media_record.get("media_type") not in {"image", "video"}:
-                return {"status": "error", "media_id": media_record.get("media_id", ""), "media_ids": requested_media_ids, "media_inputs": progress_inputs, "media_type": media_record.get("media_type", ""), "question": question, "answer": "", "error": "Visual inspection currently supports images and videos."}
+            if media_record.get("media_type") not in {"image", "video", "3d"}:
+                return {"status": "error", "media_id": media_record.get("media_id", ""), "media_ids": requested_media_ids, "media_inputs": progress_inputs, "media_type": media_record.get("media_type", ""), "question": question, "answer": "", "error": "Visual inspection currently supports images, videos and 3D assets."}
+            if media_record.get("media_type") == "3d":
+                try:
+                    view_path = self._inspection_3d_view(media_record["path"], requested_input["frame_no"], requested_input["time_seconds"], requested_input.get("view"))
+                except ValueError as exc:
+                    return {"status": "error", "media_id": media_record.get("media_id", ""), "media_ids": requested_media_ids, "media_inputs": progress_inputs, "media_type": "3d", "question": question, "answer": "", "error": f"media_inputs[{index}]: {exc}" if media_inputs is not None else str(exc)}
+                media_records.append({**media_record, "media_type": "image", "source_media_type": "3d", "path": view_path, "frame_no": None, "time_seconds": None, "bbox": requested_input.get("bbox", bbox)})
+                continue
+            if requested_input.get("view"):
+                return {"status": "error", "media_id": media_record.get("media_id", ""), "media_ids": requested_media_ids, "media_inputs": progress_inputs, "media_type": media_record.get("media_type", ""), "question": question, "answer": "", "error": f"media_inputs[{index}].view applies to 3D assets only."}
             if media_inputs is not None and media_record.get("media_type") == "image" and (requested_input["frame_no"] is not None or requested_input["time_seconds"] is not None):
                 return {"status": "error", "media_id": media_record.get("media_id", ""), "media_ids": requested_media_ids, "media_inputs": progress_inputs, "media_type": "image", "question": question, "answer": "", "error": f"media_inputs[{index}] is an image and cannot specify frame_no or time_seconds."}
             inspection_record = dict(media_record)
@@ -5638,7 +5903,7 @@ class DeepyZeroTools:
         if isinstance(result, dict) and result.get("status") == "done":
             image_details = []
             for record in media_records:
-                if record.get("media_type") != "image" or not os.path.isfile(record.get("path", "")):
+                if record.get("media_type") != "image" or record.get("source_media_type") == "3d" or not os.path.isfile(record.get("path", "")):
                     continue
                 with Image.open(record["path"]) as image_handle:
                     image_details.append({"media_id": record.get("media_id", ""), **deepy_image_channels.image_color_details(image_handle)})
@@ -5651,7 +5916,7 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Inspect Video",
-        description="Inspect a video across a time range using automatically selected, evenly spaced frames. Use this instead of manually extracting or listing frames.",
+        description="Inspect a video across a time range using automatically selected, evenly spaced frames: up to 2 per second, or 8 per second over a range shorter than 3 s, such as a join or a cut. Use this instead of manually extracting or listing frames.",
         parameters={
             "media_id": {
                 "type": "string",
@@ -5752,7 +6017,9 @@ class DeepyZeroTools:
         target_count = deepy_vision.video_inspection_sample_count(remote=self._vision_is_remote, mid_res_sampling=mid_res_sampling)
         frame_span = end_frame - start_frame
         min_frame_gap = min_frames_between_samples or (max(1, math.ceil(min_seconds_between_samples * effective_fps - 1e-9)) if min_seconds_between_samples is not None else 1)
-        rate_limited_count = max(1, math.ceil((sampled_end_seconds - start_time_seconds) * deepy_vision.VISION_VIDEO_MAX_SAMPLES_PER_SECOND - 1e-9))
+        span = sampled_end_seconds - start_time_seconds
+        per_second = deepy_vision.VISION_VIDEO_SHORT_RANGE_SAMPLES_PER_SECOND if span < deepy_vision.VISION_VIDEO_SHORT_RANGE_SECONDS else deepy_vision.VISION_VIDEO_MAX_SAMPLES_PER_SECOND
+        rate_limited_count = max(1, math.ceil(span * per_second - 1e-9))
         sample_count = min(target_count, rate_limited_count, frame_span // min_frame_gap + 1)
         frame_indices = [start_frame] if sample_count == 1 else [round(start_frame + (end_frame - start_frame) * index / (sample_count - 1)) for index in range(sample_count)]
         max_image_edge = deepy_vision.VISION_VIDEO_MID_RES_MAX_IMAGE_EDGE if mid_res_sampling else deepy_vision.VISION_VIDEO_MAX_IMAGE_EDGE
@@ -6449,31 +6716,8 @@ class AssistantEngine:
 
         if _INJECT_LAST_SELECTED_MEDIA_RUNTIME_REFERENCES:
             new_user_gallery_media = self.tool_box._get_new_user_gallery_media()
-            if "image" in new_user_gallery_media:
-                media_entry = self.tool_box._runtime_media_entry(
-                    new_user_gallery_media["image"],
-                    action="added",
-                    gallery_label="Image / Video Gallery",
-                    reference_label="last",
-                )
-                if media_entry is not None:
-                    media_entries.append(media_entry)
-            if "video" in new_user_gallery_media:
-                media_entry = self.tool_box._runtime_media_entry(
-                    new_user_gallery_media["video"],
-                    action="added",
-                    gallery_label="Image / Video Gallery",
-                    reference_label="last",
-                )
-                if media_entry is not None:
-                    media_entries.append(media_entry)
-            if "audio" in new_user_gallery_media:
-                media_entry = self.tool_box._runtime_media_entry(
-                    new_user_gallery_media["audio"],
-                    action="added",
-                    gallery_label="Audio Gallery",
-                    reference_label="last",
-                )
+            for kind, record in new_user_gallery_media.items():
+                media_entry = self.tool_box._runtime_media_entry(record, action="added", gallery_label=f"{source_for_kind(kind).label} Gallery", reference_label="last")
                 if media_entry is not None:
                     media_entries.append(media_entry)
             media_entries.extend(self.tool_box._get_selected_gallery_media_updates())
@@ -6495,7 +6739,7 @@ class AssistantEngine:
                     normalized_snapshot = {key: None for key in _RUNTIME_STATUS_ALL_KEYS}
             else:
                 normalized_snapshot = {key: None for key in _RUNTIME_STATUS_ALL_KEYS}
-                for key in ("selected_visual_media_id", "selected_visual_media_type", "selected_visual_media_label", "selected_audio_media_id", "selected_audio_media_type", "selected_audio_media_label"):
+                for key in (*_RUNTIME_STATUS_VISUAL_KEYS[:3], *_RUNTIME_STATUS_AUDIO_KEYS, *_RUNTIME_STATUS_MESH_KEYS):
                     normalized_snapshot[key] = str(snapshot.get(key, "") or "").strip() or None
                 for key in ("selected_visual_current_time_seconds", "selected_visual_current_frame_no"):
                     normalized_snapshot[key] = snapshot.get(key, None)
@@ -6511,6 +6755,8 @@ class AssistantEngine:
                             emitted_keys.extend(_RUNTIME_STATUS_VISUAL_KEYS)
                         if any(key in changed_keys for key in _RUNTIME_STATUS_AUDIO_KEYS):
                             emitted_keys.extend(_RUNTIME_STATUS_AUDIO_KEYS)
+                        if any(key in changed_keys for key in _RUNTIME_STATUS_MESH_KEYS):
+                            emitted_keys.extend(_RUNTIME_STATUS_MESH_KEYS)
                     if len(emitted_keys) > 0:
                         runtime_lines.append("Use it as factual UI context only. Omitted keys keep their previous runtime-update values.")
                         for key in emitted_keys:
@@ -6723,6 +6969,7 @@ class AssistantEngine:
             "completed_thought_content": str(checkpoint.get("completed_thought_content", "") or ""),
             "selected_visual_media_snapshot": copy.deepcopy(checkpoint.get("selected_visual_media_snapshot")),
             "selected_audio_media_snapshot": copy.deepcopy(checkpoint.get("selected_audio_media_snapshot")),
+            "selected_mesh_media_snapshot": copy.deepcopy(checkpoint.get("selected_mesh_media_snapshot")),
             "stream_answer_text": str(self._stream_answer_text or ""),
             "stream_answer_block_id": str(self._stream_answer_block_id or ""),
             "stream_reasoning_text": str(self._stream_reasoning_text or ""),
@@ -8203,7 +8450,8 @@ class AssistantEngine:
                 if len(suffix_tokens) > 0:
                     prefix_tokens = self._active_sequence_token_count()
                     prefix_tokens = len(self.session.rendered_token_ids) if prefix_tokens is None else prefix_tokens
-                    if prefix_tokens + len(suffix_tokens) > max(1, self._get_context_window_tokens()):
+                    required_reserve = 0 if self._get_compaction_type() == DEEPY_COMPACTION_TYPE_SUMMARIZE else generation_reserve_tokens
+                    if prefix_tokens + len(suffix_tokens) > max(1, self._get_context_window_tokens() - required_reserve):
                         self._log("Live tool suffix append skipped because history must be trimmed before continuing.")
                     else:
                         mode = self._run_prefill_call(len(suffix_tokens), lambda: runtime.append_suffix(suffix_tokens), record_if=lambda result: result in ("prefilled", "chunk_prefilled"))
@@ -9050,6 +9298,8 @@ class AssistantEngine:
             audio_media_record, _audio_error = self.tool_box._get_selected_media_record_from_source("audio", "audio")
             self.session.current_turn["selected_visual_media_snapshot"] = None if visual_media_record is None else copy.deepcopy(visual_media_record)
             self.session.current_turn["selected_audio_media_snapshot"] = None if audio_media_record is None else copy.deepcopy(audio_media_record)
+            mesh_media_record, _mesh_error = self.tool_box._get_selected_media_record_from_source("mesh", "3d")
+            self.session.current_turn["selected_mesh_media_snapshot"] = copy.deepcopy(mesh_media_record)
         if replay is None:
             self._refresh_runtime_status_note()
             self.session.messages.append(self._build_pending_user_message(user_text))

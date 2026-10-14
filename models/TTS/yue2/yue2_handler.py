@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import os
 from pathlib import Path
 
@@ -307,7 +308,8 @@ class family_handler:
                 "specialities": [{"name": "hum to song", "aliases": ["humming to song"], "description": "Create a song from a hummed melody, lyrics and music style."}],
             })
             definition.pop("custom_guide")
-        return definition
+        from models.help_shared import merge_help, specialities
+        return merge_help(definition, {"specialities": specialities("music generation")})
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import json
@@ -28,6 +29,7 @@ from shared.deepy.config import (
     DEEPY_TYPE_PRIME,
     DEEPY_VRAM_MODE_KEY,
     DEEPY_VRAM_MODE_UNLOAD,
+    DEEPY_QWEN_ENHANCER_IDS,
     deepy_available,
     deepy_requirement_error,
     deepy_requirement_met,
@@ -50,6 +52,7 @@ from shared.deepy.publication import DeepyPublicationQueue
 from shared.deepy.engine import (
     AssistantEngine,
     AssistantRuntimeHooks,
+    AssistantSessionState,
     begin_assistant_replay_turn,
     begin_assistant_turn,
     build_interruption_notice,
@@ -71,10 +74,13 @@ from shared.deepy.engine import (
 from shared.gradio import assistant_chat
 from shared.utils.thread_utils import AsyncStream, async_run_in, promote_async_task, promote_async_tasks
 from shared.remote_llm.config import is_remote_engine, resolve_role_engine
+from shared.utils.process_locks import acquire_GPU_ressources, release_GPU_ressources, unregister_GPU_resident
 
 
 _DEEPY_GPU_PROCESS_ID = "deepy"
 _DEEPY_DISABLED_TEXT = "Deepy is disabled in Configuration > Deepy."
+AGENT_VISION_PROCESS, AGENT_VISION_NAME = "agent_vision", "Agent Visual Inspection"
+_AGENT_VISION_LOCK = threading.Lock()  # one GPU owner id: agents' questions take turns
 _CHAT_BATCH_MAX_EVENTS = 16
 _CHAT_BATCH_MAX_SECONDS = 0.05
 DEEPY_STREAM_TRACE_ENV = "WAN2GP_DEEPY_STREAM_TRACE"
@@ -112,7 +118,7 @@ class DeepyDeps:
     clear_gpu_resident: Callable[[Any], None]
     get_new_refresh_id: Callable[[], Any]
     get_gen_info: Callable[[Any], dict[str, Any]]
-    get_processed_queue: Callable[[dict[str, Any]], tuple[list[Any], list[Any], list[Any], list[Any]]]
+    get_processed_queue: Callable[[dict[str, Any]], dict[str, tuple[list[Any], list[Any]]]]
     get_output_filepath: Callable[[str, bool, bool], str]
     record_file_metadata: Callable[..., Any]
     exec_prompt_enhancer_engine: Callable[..., Any]
@@ -375,6 +381,36 @@ class DeepyController:
         enhancer_offloadobj = self._deps.get_enhancer_offloadobj()
         if enhancer_offloadobj is not None:
             enhancer_offloadobj.unload_all()
+
+    def answer_visual_query(self, state, media_record, question: str, frame_no: int | None = None, max_image_edge: int | None = None) -> dict[str, Any]:
+        """The prompt enhancer's Qwen VL model answers an external agent's visual question directly from the images, as Deepy's inspection does.
+        It borrows the GPU like any WanGP process: a running generation pauses at its next step; Deepy's VRAM mode decides whether the model stays loaded."""
+        server_config = self._server_config()
+        if server_config.get("enhancer_enabled", 0) not in DEEPY_QWEN_ENHANCER_IDS:  # the model the prompt enhancer loads
+            raise ValueError("WanGP's Visual Inspector uses the prompt enhancer: set it to a Qwen3.5VL or Qwen3.8VL mode in Configuration > Extensions.")
+        keep_loaded = self.get_vram_mode() != DEEPY_VRAM_MODE_UNLOAD
+        engine = AssistantEngine(AssistantSessionState(), AssistantRuntimeHooks(
+            acquire_gpu=lambda: acquire_GPU_ressources(state, AGENT_VISION_PROCESS, AGENT_VISION_NAME),
+            release_gpu=lambda **_kwargs: release_GPU_ressources(state, AGENT_VISION_PROCESS, process_name=AGENT_VISION_NAME),
+            register_gpu_resident=lambda *_args, **_kwargs: None,
+            clear_gpu_resident=lambda: unregister_GPU_resident(state, AGENT_VISION_PROCESS),
+            ensure_loaded=self._deps.ensure_prompt_enhancer_loaded,
+            unload_runtime=self._deps.unload_prompt_enhancer_runtime,
+            unload_weights=self._unload_weights,
+            ensure_vision_loaded=self._ensure_vision_loaded,
+            get_offload_manager=self._deps.get_enhancer_offloadobj,
+        ), None, lambda *_args: None, debug_enabled=self._sync_debug_enabled(), thinking_enabled=False, vram_mode=self.get_vram_mode())
+        with _AGENT_VISION_LOCK:
+            try:
+                return engine._run_visual_query(media_record, question, frame_no, max_image_edge)
+            finally:
+                if engine._gpu_acquired:
+                    release_callback = self._build_preload_release_callback()
+                    try:
+                        if not keep_loaded:
+                            release_callback()
+                    finally:  # a loaded model is released by the next GPU owner, as Deepy's own
+                        release_GPU_ressources(state, AGENT_VISION_PROCESS, keep_resident=keep_loaded, process_name=AGENT_VISION_NAME, release_vram_callback=release_callback if keep_loaded else None)
 
     def _build_preload_release_callback(self) -> Callable[[], None]:
         def _release_preloaded_runtime() -> None:
@@ -703,6 +739,16 @@ class DeepyController:
         if self.get_deepy_type() == DEEPY_TYPE_PRIME:
             from shared.deepy.prime_tools import DeepyPrimeTools
 
+            if active_session.prime_toolbox is not None and self.workspace_host is not None:
+                from shared.deepy.filesystem import build_file_access_policy
+                workspace_id = self.workspace_host.deepy_workspace_id()
+                config = self.workspace_host.workspace_output_config(workspace_id)
+                expected_roots = build_file_access_policy(config).output_roots
+                current = active_session.prime_toolbox
+                if getattr(current._api_session, '_workspace_id', None) != workspace_id or current.file_access_policy.output_roots != expected_roots:
+                    current.close()
+                    active_session.prime_toolbox = None
+
             if active_session.prime_toolbox is None:
                 gen = self._deps.get_gen_info(state)
                 zero_tools = DeepyZeroTools(gen, self._deps.get_processed_queue, send_cmd, session=active_session, get_output_filepath=self._deps.get_output_filepath, record_file_metadata=self._deps.record_file_metadata, get_server_config=self._server_config)
@@ -725,7 +771,8 @@ class DeepyController:
         )
 
     def _build_session_system_prompt(self, session, tools) -> tuple[str, str]:
-        server_config = self._server_config()
+        host = getattr(self, 'workspace_host', None)
+        server_config = host.workspace_output_config(host.deepy_workspace_id()) if host is not None else self._server_config()
         if self.get_deepy_type() == DEEPY_TYPE_PRIME:
             session.file_access_policy = tools.file_access_policy
             scope = "Reading may extend outside these roots; writing does not." if tools.file_access_policy.read_everywhere else "Use authorized @alias paths from IO discovery."
@@ -1111,9 +1158,10 @@ class DeepyController:
                 raise
             from shared.deepy.filesystem import build_file_access_policy
 
-            media_registry.sync_context_media_paths(session, build_file_access_policy(self._server_config()))
             if workspace_host is not None:
                 workspace_host.restore_session_workspace(session.gallery_workspace_id)
+            config = workspace_host.workspace_output_config(workspace_host.deepy_workspace_id()) if workspace_host is not None else self._server_config()
+            media_registry.sync_context_media_paths(session, build_file_access_policy(config))
             gallery = session_store.inject_session_media(session, self._deps.get_gen_info(state))
             saved_mcp = {str(item.get("name", "")) for item in list(loaded["environment"].get("mcp_servers", []) or []) if isinstance(item, dict)}
             current_mcp = set(normalize_deepy_prime_mcp_servers(self._server_config().get(DEEPY_PRIME_MCP_SERVERS_KEY, {}))) if self.get_deepy_type() == DEEPY_TYPE_PRIME else set()

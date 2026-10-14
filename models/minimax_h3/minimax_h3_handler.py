@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """WanGP family handler for MiniMax H3."""
 
 import os
@@ -17,7 +18,7 @@ from .dialogue import H3_DIALOGUE_GENERATION, H3_DIALOGUE_MAX_TOTAL_SECONDS, H3_
 from .minimax_h3_main import (AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER,
                               VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE, VIDEO_VAE_INT8_FILE)
 from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
-from .vae_upsampler import X1_VAE_VALUE, X2_VAE_DESCRIPTION, X2_VAE_FILE, X2_VAE_INT8_FILE, X2_VAE_METHOD, X2_VAE_VALUE, query_x2_vae_files
+from .vae_upsampler import X2_VAE_DESCRIPTION, X2_VAE_FILE, X2_VAE_INT8_FILE, X2_VAE_METHOD, X2_VAE_VALUE, query_x2_vae_files
 from .viggle import VIGGLE_ARCHITECTURE, VIGGLE_ASSET_FOLDER, VIGGLE_INFOS, VIGGLE_PROMPT_FILE, VIGGLE_REPO_ID
 from .prompt_enhancer import (FL2VA_DEEPY_PROMPT_INFOS, FL2VA_IMAGE_SYSTEM_PROMPT, FL2VA_PROMPT_INFOS, FL2VA_TEXT_SYSTEM_PROMPT,
                               H3_AUDIO_DEEPY_PROMPT_INFOS, H3_AUDIO_DIALOGUE_SYSTEM_PROMPT, H3_AUDIO_MONOLOGUE_SYSTEM_PROMPT,
@@ -248,11 +249,11 @@ Enable **Advanced Mode**, open **General**, and choose an option under **Phases*
 - **Two Phases:** use it for faster high-resolution generation and improved fine detail. Most of the work is performed at a lower resolution before H3 enhances the result at the selected output resolution. This mode does not reduce the peak VRAM required by the final enhancement.
 - **Two Phases with Tiling:** use it when regular two-phase generation runs out of VRAM. It processes the final enhancement as four overlapping areas, reducing peak VRAM at the cost of extra processing time and a possible risk of visible seams or local inconsistencies.
 
-Start with the default **Phase 2 Noise Level Start**. Lower it to keep the result closer to the first phase and favor smoother tile blending; raise it to encourage stronger new details, with a greater risk of seams or changes between tiles.
+**Phase 2 Steps** controls the final enhancement independently of the first phase; the default is 3. Other counts use evenly spaced noise levels from **Phase 2 Noise Level Start** to zero. Start with the default noise level; lower it to keep the result closer to the first phase and favor smoother tile blending, or raise it to encourage stronger new details, with a greater risk of seams or changes between tiles. More steps are not necessarily better with a few-step accelerator.
 """
 
 H3_PHASE_TURBO_INFOS = """
-WanGP manages the required phase-two Turbo LoRA automatically. Other selected Turbo LoRAs are disabled during phase two to avoid conflicts, while non-Turbo LoRAs retain their selected phase-two multiplier.
+Phase 2 uses the automatic Turbo LoRA unless an accelerator before `|` in **LoRAs Multipliers** has a nonzero phase-2 multiplier. In that case, all selected accelerators keep their phase-2 multipliers and replace the automatic Turbo. For example, `1;0` keeps an accelerator in phase 1 only and uses the automatic Turbo in phase 2; `1;0.6` uses that accelerator at 0.6 in phase 2; `1` applies to both phases. Multiple accelerators and per-step multiplier sequences are supported. LoRAs after `|` retain their own multipliers.
 """
 
 H3_SPEED_INFOS = """
@@ -330,6 +331,11 @@ H3_FINETUNES_PARAMS = {
         "description": "Physical row order of fused QKV tensors in the finetune checkpoint. This does not enable or disable QKV splitting.",
     },
 }
+
+
+def _uint8_guides(video_prompt_type, audio_prompt_type, any_outpainting):
+    # with the audio generated from the control video, the control video becomes the output video: float control videos for this mode
+    return "2" not in (audio_prompt_type or "")
 
 
 def _notify_audio_reference_limit(audio_durations):
@@ -487,6 +493,7 @@ class family_handler:
     def query_model_def(base_model_type, model_def):
         if base_model_type == VIGGLE_ARCHITECTURE:
             result = family_handler.query_model_def(REF2VA_PRUNED_ARCHITECTURE, model_def)
+            result.pop("resolution_budget_tiled", None)
             result.update({
                 "profiles_dir": [VIGGLE_ARCHITECTURE],
                 "device_explicit": True,
@@ -503,7 +510,7 @@ class family_handler:
                 "extract_guide_from_window_start": True, "control_video_trim_disabled": False, "control_video_trim": False,
                 "image_prompt_types_allowed": "T", "end_frames_always_enabled": False, "image_end_frame_position": False,
                 "guidance_max_phases": 1, "lock_guidance_phases": True, "lora_multiplier_phases": 1,
-                "phase_2_spatial_tiling": False, "custom_settings": [], "sample_solvers": [("Euler", "euler")],
+                "phase_2_spatial_tiling": False, "inference_steps2": False, "custom_settings": [], "sample_solvers": [("Euler", "euler")],
                 "spectrum_cache": False, "first_block_cache": False,
                 "one_image_ref_needed": True, "no_background_removal": True, "any_image_refs_relative_size": False, "fit_into_canvas_image_refs": 1,
                 "image_ref_choices": {"choices": [("Use Edited Reference Frame", "I")], "letters_filter": "I", "default": "I", "label": "Edited Reference Frame"},
@@ -521,6 +528,7 @@ class family_handler:
         if base_model_type in CONTROL_ARCHITECTURES:
             pruned = base_model_type == CONTROL_PRUNED_ARCHITECTURE
             result = family_handler.query_model_def(FL2VA_PRUNED_ARCHITECTURE if pruned else FL2VA_ARCHITECTURE, model_def)
+            result.pop("resolution_budget_tiled", None)
             for key in ("guide_custom_choices", "custom_frames_injection", "one_image_ref_only", "switch_threshold"):
                 result.pop(key)
             result.update({
@@ -533,7 +541,7 @@ class family_handler:
                 "deepy_infos": CONTROL_DEEPY_INFOS,
                 "prompt_infos": FL2VA_PROMPT_INFOS, "deepy_prompt_infos": FL2VA_DEEPY_PROMPT_INFOS,
                 "v2i_switch_supported": False, "image_outputs": False,
-                "guidance_max_phases": 1, "lock_guidance_phases": True, "lora_multiplier_phases": 1, "phase_2_spatial_tiling": False,
+                "guidance_max_phases": 1, "lock_guidance_phases": True, "lora_multiplier_phases": 1, "phase_2_spatial_tiling": False, "inference_steps2": False,
                 "custom_settings": [setting for setting in result["custom_settings"] if setting["id"] == H3_AUDIO_REFINEMENT_SETTING],
                 "sliding_window_defaults": {**result["sliding_window_defaults"], "window_max": 362,
                                             **({"overlap_min": 5, "overlap_max": 107, "overlap_offset": 5, "overlap_default": 22} if H3_CONTROL_LATENT_CONTINUATION else {})},
@@ -554,13 +562,17 @@ class family_handler:
         pruned = base_model_type in (FL2VA_PRUNED_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE)
         vdn = model_def.get("vdn", False)
         pdd = model_def.get("pdd", False)
+        veda = model_def.get("veda", False)
         text_encoder_variant = model_def.get("text_encoder_variant")
         text_encoder_files = [TEXT_ENCODER_BF16, TEXT_ENCODER_INT8] if text_encoder_variant is None else TEXT_ENCODER_VARIANTS[text_encoder_variant]
         result = {
             "dtype": "bf16",
             "device_explicit": True,
+            "cuda_graphs": [] if veda else ["transformer"],
+            "uint8_guides": _uint8_guides,
+            "tiny_vae_architecture": REF2VA_ARCHITECTURE,
             "size": "lighter" if pruned else "large",
-            **({"accelerated": "native"} if pdd or vdn else {}),
+            **({"accelerated": "native"} if pdd or vdn or veda else {}),
             **({"specialities": [{"name": "character consistency", "aliases": ["identity preservation"]}, {"name": "motion transfer", "description": "Transfer motion or camera from reference videos to image-reference characters."}]} if reference_mode else {}),
             "fps": 24,
             "v2i_switch_supported": True,
@@ -576,6 +588,8 @@ class family_handler:
             "visible_phases": 0,
             "lora_multiplier_phases": 1 if pdd else 2,
             "phase_2_spatial_tiling": not pdd,
+            "resolution_budget": "2048x2048",
+            **({"resolution_budget_tiled": "3840x2176"} if not pdd else {}),
             "custom_settings": [{
                 "id": H3_MASK_MODE_SETTING,
                 "name": "Mask Denoising Mode",
@@ -589,7 +603,7 @@ class family_handler:
                 "video_prompt_type": "G",
             }, {
                 "id": H3_AUDIO_REFINEMENT_SETTING,
-                "name": "Audio Refinement Extra Phase",
+                "name": "Audio Refinement",
                 "label": "Audio Refinement Extra Phase",
                 "type": "dropdown",
                 "default": "none",
@@ -607,6 +621,7 @@ class family_handler:
                 "step": 0.0001,
             },
             "inference_steps": True,
+            "inference_steps2": not pdd,
             "lock_inference_steps": pdd,
             "flow_shift": True,
             "spectrum_cache": True,
@@ -617,10 +632,12 @@ class family_handler:
             "custom_attention_modes": {
                 "vdn": {"label": "VDN hybrid attention", "supports_sparsity": False, "installed": True, "supported": True},
             } if vdn else {
+                "veda": {"label": "Veda Learned Sparse Attention (Triton, NVIDIA SM80+)", "supports_sparsity": False},
+            } if veda else {
                 "sol": {"label": "Sol sparse attention, requires Triton and RTX 30xx or newer", "supports_sparsity": True},
             },
-            "default_attention_modes_supported": not vdn,
-            "attention": {">=0": "vdn"} if vdn else None,
+            "default_attention_modes_supported": not (vdn or veda),
+            "attention": {">=0": "vdn"} if vdn else {">=80": "veda"} if veda else None,
             "attention_sparsity": {
                 "label": "Start Tau (higher = more sparse/faster; lower = more faithful; End Tau = 0.8)",
                 "start": 0.0,
@@ -630,6 +647,8 @@ class family_handler:
             "sample_solvers": [("Euler", "euler")] if pdd else [("Euler", "euler"), ("RES Multistep", "res_multistep"), ("Ralston 2S (~2x slower)", "ralston_2s")],
             "no_negative_prompt": True,
             "returns_audio": True,
+            "audio_window_alignment": True,
+            "audio_overlap_repair_ms": 25,  # one audio latent, plus the measured waveform shortfall
             "multimedia_generation": True,
             "image_end_frame_position": True,
             "control_video_trim_disabled": True,
@@ -817,21 +836,30 @@ class family_handler:
             })
         if pdd:
             result["deepy_infos"] += " PDD requires exactly 8 inference steps and the Euler sampler."
+        else:
+            result["deepy_infos"] += " Two-phase generation uses `num_inference_steps2` (default 3) for final enhancement and `switch_threshold` for its starting noise. Accelerator LoRAs before `|` with any nonzero phase-2 multiplier replace the automatic Turbo together, at their specified multipliers; if all are zero, the automatic Turbo is used. `1;0` means phase 1 only, `1;0.6` sets phase 2 to 0.6, and `1` applies to both phases. LoRAs after `|` keep their multipliers."
         if vdn:
             result["deepy_infos"] += " VDN loads its acceleration LoRA automatically and defaults to 8 steps."
+        if veda:
+            result["compile"] = False
+            help_text = " Veda variants always use learned sparse attention in the H3 transformer; the attention override is locked to Veda. Other attention operations use the application attention backend. It reuses the standard H3 settings, LoRAs and step counts. The predictor follows Transformer Quantization (BF16 or INT8 ConvRot). Sparsity can change fine detail or motion; compare with a standard H3 variant at the same seed. Speed benefits are greatest for large videos. Requires Triton and an NVIDIA SM80+ GPU. Veda runs without CUDA graphs or transformer compilation."
+            result["infos"] += "\n\n### Veda Sparse Attention\n\n" + help_text.strip()
+            result["deepy_infos"] += help_text
         still_infos = "\n\n**Text to Image:** generate one still image without audio. Video duration, extra frames and Audio Refinement do not apply in this mode."
         still_prompt_infos = "\n\nFor Text to Image, describe one still scene: its subject, composition, lighting and details. A plain-language image prompt is sufficient; speech and soundtrack instructions are unnecessary. The optional Write enhancer offers image prompts from text alone or from text plus the selected images. With an image, specify what to change and what to preserve."
         result["infos"] += still_infos
         result["deepy_infos"] += still_infos + " Set `image_mode` to `1`."
         result["infos"] += "\n\n**MiniMax H3 VAE:** " + X2_VAE_DESCRIPTION
-        result["deepy_infos"] += " MiniMax H3 VAE replaces the default VAE and handles decoding and upsampling together. Choose `h3_vae*2` to double the output width and height, or `h3_vae*1` to keep the original size."
+        result["deepy_infos"] += " MiniMax H3 VAE replaces the default VAE and handles decoding and upsampling together. Choose `h3_vae*2` to double the output width and height, `h3_vae*1.5` to enlarge them by half, or `h3_vae*1` to keep the original size."
         result["prompt_infos"] += still_prompt_infos
         result["deepy_prompt_infos"] += still_prompt_infos
         return result
 
     @staticmethod
     def validate_generative_settings(base_model_type, model_def, inputs):
-        if (inputs.get("spatial_upsampling") in (X1_VAE_VALUE, X2_VAE_VALUE) and int(inputs["image_mode"]) == 0
+        if model_def.get("veda", False):
+            inputs["override_attention"] = "veda"
+        if ((inputs.get("spatial_upsampling") or "").startswith(X2_VAE_METHOD) and int(inputs["image_mode"]) == 0
                 and base_model_type not in (REF2VA_ARCHITECTURE, REF2VA_PRUNED_ARCHITECTURE, VIGGLE_ARCHITECTURE)
                 and "2" in inputs["audio_prompt_type"]):
             return "MiniMax H3 VAE Upsampling requires generated video; Audio from Control Video preserves the input frames and does not decode video latents"
@@ -1105,7 +1133,7 @@ class family_handler:
                                  video_vae_filename=video_vae_file,
                                  audio_vae_filename=model_def.get("audio_vae_file", AUDIO_VAE_FILE), shared_h3_pipeline=shared_h3_pipeline,
                                  pdd=pdd, pdd_num_steps=PDD_NUM_STEPS if pdd else None, pdd_block_size=PDD_BLOCK_SIZE if pdd else None,
-                                 vdn=model_def.get("vdn", False), audio_only=base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE,
+                                 vdn=model_def.get("vdn", False), veda=model_def.get("veda", False), audio_only=base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE,
                                  fixed_prompt_filename=os.path.join(VIGGLE_ASSET_FOLDER, VIGGLE_PROMPT_FILE) if viggle else None)
         pipe = {"transformer": pipeline.transformer}
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE and H3_DIALOGUE_GENERATION:
@@ -1132,6 +1160,10 @@ class family_handler:
 
     @staticmethod
     def fix_settings(base_model_type, settings_version, model_def, ui_defaults):
+        if model_def.get("veda", False):
+            ui_defaults["override_attention"] = "veda"
+        elif ui_defaults.get("override_attention") == "veda":
+            ui_defaults["override_attention"] = ""
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE:
             return
         if base_model_type in CONTROL_ARCHITECTURES:
@@ -1207,6 +1239,7 @@ class family_handler:
             "sliding_window_overlap": 18,
             "num_inference_steps": 20,
             "guidance_phases": 1,
+            "num_inference_steps2": 3,
             "switch_threshold": H3_PHASE_2_NOISE_LEVEL_START_DEFAULT,
             "guidance_scale": 1.0,
             "flow_shift": 12.0,

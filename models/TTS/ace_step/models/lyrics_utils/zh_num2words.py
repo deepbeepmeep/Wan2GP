@@ -1,7 +1,11 @@
+# Modified from Coqui TTS (https://github.com/coqui-ai/TTS), TTS/tts/layers/xtts/zh_num2words.py, licensed under MPL-2.0.
+# This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL was not
+# distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
 # Authors:
 #   2019.5 Zhiyang Zhou (https://github.com/Joee1995/chn_text_norm.git)
 #   2019.9 - 2022 Jiayu DU
 # copy from https://github.com/coqui-ai/TTS/blob/dbf1a08a0d4e47fdad6172e433eeb34bc6b13b4e/TTS/tts/layers/xtts/zh_num2words.py
+# Modified for WanGP.
 import argparse
 import csv
 import os

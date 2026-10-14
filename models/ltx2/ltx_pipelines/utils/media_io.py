@@ -4,6 +4,7 @@ import math
 from collections.abc import Generator, Iterator
 from fractions import Fraction
 from io import BytesIO
+from typing import NamedTuple
 
 import numpy as np
 import torch
@@ -12,7 +13,18 @@ from PIL import Image
 from torch._prims_common import DeviceLikeType
 from tqdm import tqdm
 
+from shared.utils.utils import guide_to_float
+
 from .constants import DEFAULT_IMAGE_CRF
+
+# Control videos are prepared on the device by chunks of frames and kept in RAM; the VAE encoder uploads each tile.
+CONDITIONING_CHUNK_FRAMES = 16
+
+
+class UInt8Guide(NamedTuple):
+    """A control video WanGP passed in uint8 (model_def "uint8_guides"). It is loaded by chunks through the [-1, 1] float values WanGP gives
+    float control videos, so that the conditioning is identical without a float copy of the whole video."""
+    video: torch.Tensor
 
 
 def _get_av():
@@ -173,11 +185,11 @@ def _normalize_video_tensor(video: torch.Tensor) -> torch.Tensor:
             return video.permute(0, 2, 3, 1)
     raise ValueError(f"Unsupported video tensor shape: {tuple(video.shape)}")
 
-def _scale_to_255(image: torch.Tensor) -> torch.Tensor:
+def _scale_to_255(image: torch.Tensor, value_range: tuple[float, float] | None = None) -> torch.Tensor:
+    """``value_range`` is the ``(min, max)`` of the whole clip when ``image`` is one chunk of it."""
     if not torch.is_floating_point(image):
         return image.to(dtype=torch.float32)
-    max_val = float(image.max())
-    min_val = float(image.min())
+    min_val, max_val = value_range or (float(image.min()), float(image.max()))
     if max_val <= 1.0 and min_val >= -1.0:
         image = (image + 1.0) * 127.5
     elif max_val <= 1.0 and min_val >= 0.0:
@@ -222,6 +234,8 @@ def load_video_conditioning(
     """
     Loads a video from a path or tensor and preprocesses it for conditioning.
     Note: The video is resized to the nearest multiple of 2 for compatibility with video codecs.
+    Tensor, array and image inputs are prepared on ``device`` by chunks of frames and returned in RAM:
+    pass ``device`` to ``encode_video`` so that each VAE tile is uploaded on its own.
     """
     if isinstance(video_path, str):
         frames = decode_video_from_file(path=video_path, frame_cap=frame_cap, device=device)
@@ -232,14 +246,22 @@ def load_video_conditioning(
             result = frame if result is None else torch.cat([result, frame], dim=2)
         return result
 
-    video = _coerce_video_input(video_path)
-    video = _normalize_video_tensor(video)
+    uint8_guide = isinstance(video_path, UInt8Guide)
+    if uint8_guide:
+        video_path = video_path.video
+    video = _normalize_video_tensor(video_path.detach() if torch.is_tensor(video_path) else _coerce_video_input(video_path))
     if frame_cap is not None and video.shape[0] > frame_cap:
         video = video[:frame_cap]
-    video = _scale_to_255(video)
-    video = video.to(device=device)
-    video = resize_and_center_crop(video, height, width)
-    return normalize_latent(video, device, dtype)
+    value_range = (-1.0, 1.0) if uint8_guide else (float(video.min()), float(video.max()))
+    result = None
+    for start in range(0, video.shape[0], CONDITIONING_CHUNK_FRAMES):
+        chunk = video[start : start + CONDITIONING_CHUNK_FRAMES]
+        chunk = _scale_to_255((guide_to_float(chunk) if uint8_guide else chunk).to(device=device, dtype=torch.float32), value_range)
+        chunk = normalize_latent(resize_and_center_crop(chunk, height, width), device, dtype)
+        if result is None:
+            result = torch.empty((*chunk.shape[:2], video.shape[0], *chunk.shape[3:]), dtype=dtype, device="cpu")
+        result[:, :, start : start + chunk.shape[2]].copy_(chunk)
+    return result
 
 
 def decode_image(image_path: str) -> np.ndarray:

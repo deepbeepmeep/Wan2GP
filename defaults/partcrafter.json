@@ -1,0 +1,23 @@
+{
+    "model": {
+        "name": "PartCrafter 1.5B",
+        "architecture": "partcrafter",
+        "description": "PartCrafter (built on TripoSG) turns one picture of an object into separate part meshes, one GLB with one coloured node per part.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/partcrafter_fp16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/partcrafter_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "red toy robot",
+    "image_mode": 1,
+    "video_prompt_type": "I",
+    "num_inference_steps": 50,
+    "guidance_scale": 7.0,
+    "batch_size": 1,
+    "seed": 0,
+    "custom_settings": {
+        "num_parts": 4,
+        "mesh_resolution": 512,
+        "max_faces": 0
+    }
+}

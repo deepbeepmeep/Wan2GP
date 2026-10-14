@@ -1,3 +1,32 @@
+from models.help_shared import specialities
+
+
+def compact_help(*, msr, joy, editanything, ltx25):
+    prompt = 'Describe a chronological audiovisual scene: subjects, actions, framing, light, audible events, voice and exact quoted dialogue. Keep speech feasible within the clip. With a start image, describe motion consistent with it. Prompt enhancement is optional.'
+    info = "Generate synchronized video/audio from text or start/end images; continuation and sliding windows extend output. Keep the selected full/distilled sampling preset."
+    strengths = ["audio-video generation"]
+    if msr:
+        info = "MSR uses reference images only: background-first mode = 2–5 images (scene + up to 4 subjects); subject-only mode = 1–4 subjects. Prefer white/neutral subject backgrounds or enable background removal. Character sheets help. No control video, pose/depth/edges, masks, outpainting or frame injection. Generate audio or supply a soundtrack. MSR V2 reference length Auto is recommended and does not set output duration."
+        prompt += " Assign each reference its role, describe subject interaction and retain consistent identity/clothing."
+        strengths += ["identity preservation"]
+    elif joy:
+        info = "JoyAI-Echo builds connected story windows with reusable visual/voice memories. Start/continue source applies to the first window. Prefer one phase. Memories are not saved automatically: explicitly store named moments; up to 7 can be active. Control Video Memory can supply reference moments from a video with sound, not full-video editing."
+        prompt = 'One story window per line/paragraph matching Text Prompt processing. Repeat stable character/voice IDs and appearances. Commands: [/duration=5s], [/new_shot], [/overlap=9], [/store_mem=alice], [/load_mem=alice,bob], [/load_mem=] clears active memory, [/drop_mem=alice] removes it. Without load_mem, active memories carry forward. Example: `[/duration=5s,/store_mem=alice] ID_A, a woman in a red coat, says "Welcome" in a quiet courtyard.` Later: `[/new_shot,/load_mem=alice] ID_A in the same red coat turns toward the gate.` Read full prompt help for timing/memory details.'
+        strengths += ["multi-shot video", "identity preservation"]
+    else:
+        info += " Audio modes: new soundtrack, supplied audio, control video with its audio, or audio generation for raw control video, as offered by the selected entry."
+        if editanything:
+            info = "EditAnything reference video editing requires a source/control video and one reference image. Describe the reference subject to add or edit and the source details to preserve. Use the selected full/distilled preset and the entry's offered audio modes."
+            prompt = "Describe the desired edited scene, the reference image's role, the action and the source details to preserve. State changes explicitly; keep requested audio and quoted dialogue feasible within the clip."
+            strengths += ["video editing"]
+        else:
+            info += " Control-video processing offers pose/depth/canny/raw guidance; selected 22B workflows also offer masks and Ingredients references. Raw-video audio generation must not be combined with other visual controls."
+            if not ltx25:
+                info += " Reference Voice uses the ID-LoRA mode when offered."
+            strengths += ["control video"]
+    return {"deepy_infos": "### LTX Audio and Video\n\n" + info, "deepy_prompt_infos": "### Prompt\n\n" + prompt, "specialities": specialities(*strengths)}
+
+
 LTX2_INFOS = """
 # LTX2 Workflows
 
@@ -16,15 +45,15 @@ Choose the decoder from the `VAE` system configuration:
 
 - `Default VAE`: the original decoder and default choice. It offers the best balance of speed, quality, and VRAM use for normal generation.
 - `PrunaAI VAE (faster, slightly worse quality)`: an optimized alternative available for both LTX-2.3 and LTX-2.5.
-- `NAD Diffusion Decoder (slower, higher VRAM, better motion)`: an optional diffusion decoder that supports tiled decoding and automatically uses its Triton accelerator when a compatible Triton version is available; the console reports whether the Triton or standard implementation is active. NAD is available for both LTX-2.3 and LTX-2.5.
+- `NAD Diffusion Decoder (slower, higher VRAM, better motion)`: an alternative with improved motion at the cost of more time and VRAM. It supports tiled decoding and is available for both LTX-2.3 and LTX-2.5.
 
 ## Text To Image Mode
 
-LTX2 image generation is implemented by generating a short video internally and keeping only the first frame.
+Image mode returns one image.
 
 Image quality, reference identity, and control-image adherence can often be improved from the Quality tab with `Generate more frames to preserve Reference Image Identity / Control Image Information or improve`.
 
-Some IC-LoRAs, such as the union-control LoRA used by pose, depth, and canny control, need at least 9 frames so the model has more than one temporal latent. If image mode uses these controls and only one latent was requested, WanGP automatically expands the internal generation to 9 frames and still returns only the first frame.
+Higher values can improve image quality and reference adherence, but take more time and memory. Pose, depth and canny controls may increase this value automatically to meet their minimum requirement; the result is still one image.
 
 ## Control Video Processes
 
@@ -160,7 +189,7 @@ Use one of the `MSR Reference Images` modes:
 - `Background + Up to 4 Subjects`: upload 2 to 5 images. Image 1 is the background or scene reference; images 2 to 5 are the subject or object references to preserve.
 - `Subjects / Objects only`: upload 1 to 4 subject or object references on a plain white or neutral background.
 
-In `Background + Up to 4 Subjects` mode, WanGP internally reorders the references before denoising so the MSR LoRA receives the subject references first and the background reference last, matching the upstream MSR convention. In `Subjects / Objects only` mode, WanGP keeps the uploaded reference order unchanged.
+Refer to images in their displayed upload order when describing their roles. Keep the scene first in background mode.
 
 ## Reference Image Preparation
 
@@ -175,7 +204,7 @@ LTX2_25_MSR_INFOS = LTX2_MSR_INFOS + """
 
 ## LTX-2.5 MSR V1
 
-This preset uses the LTX-2.5 Distilled model with the LiconStudio MSR V1 LoRA and its learned reference-slot embeddings. Each reference is encoded separately using 33 repeated frames. This preparation length does not change the output video length.
+This preset combines LTX-2.5 Distilled with LiconStudio MSR V1 for scenes containing several referenced subjects. The reference preparation does not set the output video length.
 
 Start with 8 sampling steps and describe each reference's role, the subjects' actions, and their spatial relationships. The model can generate sound with the video or use a supplied soundtrack. Prompt enhancement is optional and off by default.
 """
@@ -191,7 +220,7 @@ Leave this on `Auto` for normal use. WanGP automatically gives each uploaded sub
 - 3 subjects: `49`
 - 4 subjects: `65`
 
-Choose `17` to `65` manually only when you want to experiment with reference strength or reduce memory use. This setting changes how the uploaded images are prepared; it does not change the generated video length. Missing or older saved settings behave like `Auto`.
+Choose `17` to `65` manually only when you want to experiment with reference strength or reduce memory use. This setting changes reference influence; it does not change the generated video length.
 
 MSR V2 keeps subject references separate from the background and generally preserves identities and multi-subject scenes better than V1.
 """

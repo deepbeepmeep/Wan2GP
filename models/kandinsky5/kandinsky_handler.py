@@ -1,3 +1,6 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .infos import kandinsky_help
 import os
 import torch
 from omegaconf import OmegaConf
@@ -136,6 +139,7 @@ class family_handler:
 
         profiles_dir = base_model_type or "kandinsky5"
         extra_model_def = {
+            "tiny_vae_architecture": "hunyuan",
             "i2v_class": task == "i2v",
             "t2v_class": task == "t2v",
             "image_outputs": is_image,
@@ -174,7 +178,7 @@ class family_handler:
         else:
             extra_model_def["image_prompt_types_allowed"] = ""
 
-        return extra_model_def
+        return merge_help(extra_model_def, kandinsky_help(base_model_type, {**extra_model_def, **model_def}))
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

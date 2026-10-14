@@ -1,12 +1,13 @@
-##### Enjoy this spagheti VRAM optimizations done by DeepBeepMeep !
-# I am sure you are a nice person and as you copy this code, you will give me officially proper credits:
-# Please link to https://github.com/deepbeepmeep/Wan2GP and @deepbeepmeep on twitter  
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+# Inference flow adapted from FlashVSR (https://github.com/OpenImagingLab/FlashVSR), Copyright (c) the FlashVSR authors,
+# Apache License 2.0 (see docs/third_party_licenses/Apache-2.0.txt).
 from __future__ import annotations
 from shared.utils.media_control import controlled_model_loading, loading_callback
 
 import gc
 import math
 import os
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -22,7 +23,7 @@ from mmgp import offload
 from models.wan.modules.vae import WanVAE
 from shared.utils import offload_registry
 from .attention_backend import log_sparse_backend, require_sparge_attention
-from .tcdecoder import build_tcdecoder
+from .tcdecoder import build_tcdecoder, tile_plan
 from .utils import Causal_LQ4x_Proj
 from .wan_video_dit import WanModel, precompute_freqs_cis_3d
 
@@ -261,25 +262,6 @@ def _nested_tensors_to(value: Any, device: torch.device | str, dtype: torch.dtyp
     return value
 
 
-def _tcdecoder_mem_halo_latents(tcdecoder: torch.nn.Module) -> int:
-    radius = 0.0
-    jump = 1.0
-    decoder = tcdecoder.taehv.decoder if hasattr(tcdecoder, "taehv") else tcdecoder.decoder
-    for module in decoder:
-        if isinstance(module, torch.nn.Conv2d):
-            kernel = module.kernel_size[0] if isinstance(module.kernel_size, tuple) else int(module.kernel_size)
-            radius += ((kernel - 1) / 2) * jump
-        elif module.__class__.__name__ == "MemBlock":
-            for submodule in module.conv:
-                if isinstance(submodule, torch.nn.Conv2d):
-                    kernel = submodule.kernel_size[0] if isinstance(submodule.kernel_size, tuple) else int(submodule.kernel_size)
-                    radius += ((kernel - 1) / 2) * jump
-        elif isinstance(module, torch.nn.Upsample):
-            scale = module.scale_factor[0] if isinstance(module.scale_factor, tuple) else module.scale_factor
-            jump /= float(scale or 1)
-    return max(1, int(math.ceil(radius)))
-
-
 def _report_progress(progress_callback, phase: str, current_step: int | None = None, total_steps: int | None = None) -> None:
     if callable(progress_callback):
         progress_callback(phase, current_step, total_steps)
@@ -336,36 +318,44 @@ def _wavelet_color_fix(frames: torch.Tensor, lq_video: torch.Tensor) -> torch.Te
     return frames
 
 
-def _wavelet_color_fix_from_sample(frames: torch.Tensor, sample: torch.Tensor, scale: float, output_height: int, output_width: int, padded_output_height: int, padded_output_width: int) -> torch.Tensor:
+def _wavelet_color_fix_from_sample(frames: torch.Tensor, sample: torch.Tensor, *, device: torch.device, abort_callback=None, progress_callback=None) -> torch.Tensor | None:
+    # Decoded videos stay in CPU RAM; only the current correction chunk runs on the GPU.
     step = 1 if frames.dtype == torch.uint8 else 4
-    for start in range(0, min(int(frames.shape[2]), int(sample.shape[1])), step):
-        end = min(start + step, int(frames.shape[2]), int(sample.shape[1]))
-        frame_chunk = frames[:, :, start:end]
-        if frames.dtype == torch.uint8:
-            frame_float = frame_chunk.float()
-            lq_chunk = sample[:, start:end].unsqueeze(0).to(device=frames.device, dtype=torch.float32)
-            if sample.dtype != torch.uint8:
+    total = min(int(frames.shape[2]), int(sample.shape[1]))
+    dtype = torch.float32 if frames.dtype == torch.uint8 else frames.dtype
+    _report_progress(progress_callback, "Color Correction", 0, total)
+    last_progress = time.monotonic()
+    with tqdm(total=total, desc="Color Correction", unit="frames", mininterval=1 / 3) as progress:
+        for start in range(0, total, step):
+            if _abort_requested(abort_callback):
+                return None
+            end = min(start + step, total)
+            frame_chunk = frames[:, :, start:end]
+            frame_float = frame_chunk.to(device=device, dtype=dtype, copy=True)
+            lq_chunk = sample[:, start:end].unsqueeze(0).to(device=device, dtype=dtype, copy=True)
+            if sample.dtype != torch.uint8 and frames.dtype == torch.uint8:
                 lq_chunk.clamp_(-1.0, 1.0).add_(1.0).mul_(127.5)
+            elif sample.dtype == torch.uint8 and frames.dtype != torch.uint8:
+                lq_chunk.div_(127.5).sub_(1.0)
+            elif sample.dtype != torch.uint8:
+                lq_chunk.clamp_(-1.0, 1.0)
             mean_frames = frame_float.mean(dim=(3, 4), keepdim=True)
             std_frames = frame_float.std(dim=(3, 4), keepdim=True).clamp_min_(1e-5)
             mean_lq = lq_chunk.mean(dim=(3, 4), keepdim=True)
             std_lq = lq_chunk.std(dim=(3, 4), keepdim=True).clamp_min_(1e-5)
-            frame_float.sub_(mean_frames).div_(std_frames).mul_(std_lq).add_(mean_lq).round_().clamp_(0, 255)
-            frame_chunk.copy_(frame_float.to(torch.uint8))
+            frame_float.sub_(mean_frames).div_(std_frames).mul_(std_lq).add_(mean_lq)
+            if frames.dtype == torch.uint8:
+                frame_float.round_().clamp_(0, 255)
+                frame_chunk.copy_(frame_float.to(torch.uint8))
+            else:
+                frame_chunk.copy_(frame_float.clamp_(-1.0, 1.0))
             del frame_float, lq_chunk, mean_frames, std_frames, mean_lq, std_lq
-            continue
-        lq_chunk = sample[:, start:end].unsqueeze(0).to(device=frames.device, dtype=frames.dtype)
-        if sample.dtype == torch.uint8:
-            lq_chunk.div_(127.5).sub_(1.0)
-        else:
-            lq_chunk.clamp_(-1.0, 1.0)
-        mean_frames = frame_chunk.mean(dim=(3, 4), keepdim=True)
-        std_frames = frame_chunk.std(dim=(3, 4), keepdim=True).clamp_min_(1e-5)
-        mean_lq = lq_chunk.mean(dim=(3, 4), keepdim=True)
-        std_lq = lq_chunk.std(dim=(3, 4), keepdim=True).clamp_min_(1e-5)
-        frame_chunk.sub_(mean_frames).div_(std_frames).mul_(std_lq).add_(mean_lq).clamp_(-1.0, 1.0)
-        del lq_chunk, mean_frames, std_frames, mean_lq, std_lq
-    return frames
+            progress.update(end - start)
+            now = time.monotonic()
+            if end == total or now - last_progress >= 1 / 3:
+                _report_progress(progress_callback, "Color Correction", end, total)
+                last_progress = now
+    return None if _abort_requested(abort_callback) else frames
 
 
 def _denoise_stream_chunk(
@@ -530,7 +520,7 @@ class FlashVSRRuntime:
             _report_progress(progress_callback, "TCDecoder Decoding", progress_step + 1 if progress_step is not None else None, progress_total)
             return _normalized_video_to_cpu_uint8(frames), tile_mems
 
-        halo = _tcdecoder_mem_halo_latents(self.tcdecoder)
+        # exact tiles (tile_plan): each decoder module computes only what the next ones need; per tile the MemBlock memory of its regions
         latent_tile = max(1, tile_size // 8)
         latent_height = padded_output_height // 8
         latent_width = padded_output_width // 8
@@ -541,8 +531,6 @@ class FlashVSRRuntime:
             write_y0, write_y1 = latent_y0 * 8, min(latent_y1 * 8, output_height)
             if write_y1 <= write_y0:
                 continue
-            expanded_y0, expanded_y1 = max(0, latent_y0 - halo), min(latent_height, latent_y1 + halo)
-            crop_y0 = (latent_y0 - expanded_y0) * 8
             for latent_x0 in range(0, latent_width, latent_tile):
                 if _abort_requested(abort_callback):
                     del cur_lq
@@ -551,23 +539,21 @@ class FlashVSRRuntime:
                 write_x0, write_x1 = latent_x0 * 8, min(latent_x1 * 8, output_width)
                 if write_x1 <= write_x0:
                     continue
-                expanded_x0, expanded_x1 = max(0, latent_x0 - halo), min(latent_width, latent_x1 + halo)
-                crop_x0 = (latent_x0 - expanded_x0) * 8
+                ((y0, y1), (x0, x1)), crops = tile_plan(self.tcdecoder.decoder, (latent_height, latent_width), ((write_y0, write_y1), (write_x0, write_x1)))
                 tile_key = (latent_y0, latent_x0)
                 saved_mem = tile_mems.get(tile_key)
                 if saved_mem is None:
                     self.tcdecoder.clean_mem()
                 else:
                     self.tcdecoder.mem = _nested_tensors_to(saved_mem, self.device, self.dtype)
-                cur_lq_tile = cur_lq[:, :, :, expanded_y0 * 8:expanded_y1 * 8, expanded_x0 * 8:expanded_x1 * 8].contiguous().to(self.device, dtype=self.dtype)
-                cur_latents = latents[:, :, :, expanded_y0:expanded_y1, expanded_x0:expanded_x1].to(self.device, dtype=self.dtype)
-                tile_frames = self.tcdecoder.decode_video(cur_latents.transpose(1, 2), parallel=False, show_progress_bar=False, cond=cur_lq_tile).transpose(1, 2).mul_(2).sub_(1)
+                cur_lq_tile = cur_lq[:, :, :, y0 * 8:y1 * 8, x0 * 8:x1 * 8].contiguous().to(self.device, dtype=self.dtype)
+                cur_latents = latents[:, :, :, y0:y1, x0:x1].to(self.device, dtype=self.dtype)
+                tile_frames = self.tcdecoder.decode_video(cur_latents.transpose(1, 2), parallel=False, show_progress_bar=False, cond=cur_lq_tile, crops=crops).transpose(1, 2).mul_(2).sub_(1)
                 tile_mems[tile_key] = _nested_tensors_to(self.tcdecoder.mem, "cpu")
                 self.tcdecoder.clean_mem()
-                tile_frames = tile_frames[:, :, :, crop_y0:crop_y0 + latent_y1 * 8 - latent_y0 * 8, crop_x0:crop_x0 + latent_x1 * 8 - latent_x0 * 8]
                 if frames_out is None:
                     frames_out = torch.empty((tile_frames.shape[0], tile_frames.shape[1], tile_frames.shape[2], output_height, output_width), dtype=torch.uint8, device="cpu")
-                tile_cpu = _normalized_video_to_cpu_uint8(tile_frames[:, :, :, :write_y1 - write_y0, :write_x1 - write_x0])
+                tile_cpu = _normalized_video_to_cpu_uint8(tile_frames)
                 frames_out[:, :, :, write_y0:write_y1, write_x0:write_x1].copy_(tile_cpu)
                 del cur_lq_tile, cur_latents, tile_frames, tile_cpu
         del cur_lq
@@ -666,7 +652,7 @@ class FlashVSRRuntime:
         tcdecoder_tile_mems = None
         if self.tcdecoder is not None:
             if tcdecoder_tile_size > 0 and (padded_output_height > tcdecoder_tile_size or padded_output_width > tcdecoder_tile_size):
-                print(f"[FlashVSR] TCDecoder spatial tiling policy: tile_size={tcdecoder_tile_size}px, halo={_tcdecoder_mem_halo_latents(self.tcdecoder) * 8}px")
+                print(f"[FlashVSR] TCDecoder spatial tiling policy: tile_size={tcdecoder_tile_size}px, exact halos per stage")
                 tcdecoder_tile_mems = {}
             else:
                 print("[FlashVSR] TCDecoder spatial tiling policy: tile_size=0px")
@@ -838,8 +824,8 @@ class FlashVSRRuntime:
             frames = _decoded_frames_to_cpu(decoded_frames, input_frames, output_height, output_width)
             del decoded_frames
         gc.collect()
-        _report_progress(progress_callback, "Color Correction")
-        _wavelet_color_fix_from_sample(frames.unsqueeze(0), sample, scale, output_height, output_width, output_height, output_width)
+        if _wavelet_color_fix_from_sample(frames.unsqueeze(0), sample, device=self.device, abort_callback=abort_callback, progress_callback=progress_callback) is None:
+            return abort_result()
         if frames.dtype != torch.uint8:
             frames.clamp_(-1.0, 1.0)
         frames = _apply_continue_cache(frames, continue_cache)

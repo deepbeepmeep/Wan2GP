@@ -1,3 +1,4 @@
+# Modified for WanGP.
 import torch
 from safetensors.torch import load_file
 from torch import nn, Tensor, einsum, IntTensor, FloatTensor, BoolTensor

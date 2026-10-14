@@ -691,7 +691,7 @@ def _encode_control_video_slots(model, video_path: str, latent_indices: list[int
         for phase, (phase_height, phase_width) in phase_sizes.items():
             video = load_video_conditioning(frames, height=int(phase_height), width=int(phase_width), frame_cap=None, dtype=model.dtype, device=model.device)
             with control_video_encoding():
-                encoded = vae_encode_video(video, video_encoder, tiling_config)
+                encoded = vae_encode_video(video, video_encoder, tiling_config, device=model.device)
             if int(encoded.shape[2]) > 0:
                 phase_slots[phase].append(encoded[:, :, min(local_idx, int(encoded.shape[2]) - 1) : min(local_idx, int(encoded.shape[2]) - 1) + 1].detach().cpu().contiguous())
             del video, encoded

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Persistent Deepy execution. HTTP connections are subscribers, not workers."""
 from __future__ import annotations
 
@@ -5,6 +6,7 @@ import json
 import threading
 import time
 import traceback
+import uuid
 from collections import OrderedDict, deque
 
 from shared.deepy import chat, media_registry, session_store, ui_settings
@@ -31,6 +33,7 @@ class DeepyService(WorkspaceSupport, GenerationRuntime):
         self._mutation_lock = threading.RLock()
         self._events = deque(maxlen=256)
         self._revision = 0
+        self._instance_id = uuid.uuid4().hex
         self._submissions = OrderedDict()
         self._restoration_submissions = deque()
         self._threads = set()
@@ -66,13 +69,16 @@ class DeepyService(WorkspaceSupport, GenerationRuntime):
         # index after another browser has already switched to the new workspace.
         with self._mutation_lock:
             gallery, workspaces = self.gallery_snapshot(), self.workspace_snapshot()
-        return {"cursor": cursor, "display_settings": self.display_settings(), "chat": chat.build_sync_event(self._session), "gallery": gallery, "workspaces": workspaces, "progress": progress, "busy": busy, "restoration": self._restoration, "sessions": self._deps.controller.list_saved_sessions(), "active_session_id": self._session.storage_session_id, "active_session_title": self._session.storage_title, "multi_session": self._deps.controller.multi_session_enabled(), "deepy_type": self._deps.controller.get_deepy_type()}
+        return {"cursor": cursor, "instance": self._instance_id, "display_settings": self.display_settings(), "chat": chat.build_sync_event(self._session), "gallery": gallery, "workspaces": workspaces, "progress": progress, "busy": busy, "restoration": self._restoration, "sessions": self._deps.controller.list_saved_sessions(), "active_session_id": self._session.storage_session_id, "active_session_title": self._session.storage_title, "multi_session": self._deps.controller.multi_session_enabled(), "deepy_type": self._deps.controller.get_deepy_type()}
 
-    def events_after(self, cursor, timeout=15):
+    def events_after(self, cursor, timeout=15, instance=None):
+        # Counter values can overlap after a restart. A cursor only belongs to
+        # the service instance that issued it, even if it is still in range.
+        same_instance = instance is None or instance == self._instance_id
         with self._condition:
-            if cursor == self._revision and not self._closing:
+            if same_instance and cursor == self._revision and not self._closing:
                 self._condition.wait(timeout=timeout)
-            expired = cursor > self._revision or (self._events and cursor < self._events[0]["id"] - 1)
+            expired = not same_instance or cursor > self._revision or (self._events and cursor < self._events[0]["id"] - 1)
             if not expired:
                 return [event for event in self._events if event["id"] > cursor]
         snapshot = self.snapshot()
@@ -338,6 +344,8 @@ class DeepyService(WorkspaceSupport, GenerationRuntime):
                 raise DeepyBusy('The Deepy session changed during upload. Please import the file again.')
             if context == 'deepy':
                 self.prepare_media_workspace()
+            if self.workspaces is not None:
+                path = self.workspaces.adopt(self.workspace_id, [str(path)])[0]
             result = self.gallery.add_path(str(path))
             record = media_registry.mark_media_access(result["record"], "read")
             entry = {"media_id": record["settings"]["gallery_media_ids"][0], "title": record["label"], "media_type": record["media_type"]}

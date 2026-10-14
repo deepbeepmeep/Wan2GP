@@ -1,0 +1,14 @@
+{
+    "model": {
+        "name": "MapAnything Multi-View Reconstruction",
+        "architecture": "mapanything",
+        "description": "MapAnything (Meta) reconstructs a scene in metres from several photos or video frames in one pass: a merged point cloud shown as Gaussian splats, with every camera pose and focal length.",
+        "group": "recon3d",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/mapanything_apache.safetensors",
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/mapanything_apache_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "Courtyard scan",
+    "batch_size": 1
+}

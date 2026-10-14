@@ -1,3 +1,6 @@
+# Vendored from TAEHV (https://github.com/madebyollin/taehv), Copyright (c) 2025 Ollin Boer Bohan,
+# MIT License (see shared/tinyvae/LICENSES/taehv-MIT.txt). Modified for WanGP.
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Decoder-only subset of TAEHV, vendored from madebyollin/taehv.
 
 Source revision: 62f7591f59dfbb4c3c02b7a621d180a9eeaba26c

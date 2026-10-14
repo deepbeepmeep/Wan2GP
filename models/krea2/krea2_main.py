@@ -410,7 +410,7 @@ class Krea2Pipeline:
                 image_mask_rebuilt = torch.maximum(image_mask_rebuilt, outpainting_mask_rebuilt)
             randn = x.clone()
             if model_mode_int in (2, 3, 4, 5):
-                from shared.inpainting.lanpaint import LanPaint
+                from shared.lanpaint import LanPaint
 
                 lanpaint_steps = {2: 2, 3: 5, 4: 10, 5: 15}.get(model_mode_int, 5)
                 lanpaint_proc = LanPaint(NSteps=lanpaint_steps, Lambda=16.0, StepSize=0.2, Beta=1.0, Friction=15.0, IS_FLUX=False, IS_FLOW=True, overdamped_fallback=True)
@@ -539,7 +539,7 @@ class Krea2Pipeline:
             source_pixels = self._image_to_cpu_uint8(source_image, width, height).to(decoded.device, torch.float32)
             mask_pixels = image_mask_rebuilt.to(decoded.device, torch.float32)
             if lanpaint_proc is not None:
-                from shared.inpainting.lanpaint import blend_images_with_mask
+                from shared.lanpaint import blend_images_with_mask
 
                 if outpainting_mask is not None:
                     blend_pad = 4

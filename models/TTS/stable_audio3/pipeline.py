@@ -162,8 +162,8 @@ class StableAudio3Pipeline:
         def _inner(payload):
             if callback is None:
                 return
-            step = int(payload.get("i", 0)) + 1
-            callback(step_idx=step, override_num_inference_steps=int(steps), denoising_extra=f"{step}/{int(steps)} steps", progress_unit="steps")
+            step_idx = int(payload["i"])
+            callback(step_idx=step_idx, override_num_inference_steps=int(steps), progress_unit="steps")
 
         return _inner
 

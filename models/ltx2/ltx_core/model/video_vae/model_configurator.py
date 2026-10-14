@@ -50,7 +50,6 @@ class VideoDecoderConfigurator(ModelConfigurator[VideoDecoder]):
         norm_layer_str = config.get("norm_layer", "pixel_norm")
         causal = config.get("causal_decoder", False)
         timestep_conditioning = config.get("timestep_conditioning", True)
-        temporal_chunk_on_gpu = config.get("decode_temporal_chunk_on_gpu", True)
         base_channels = config.get("decoder_base_channels", 128)
 
         return VideoDecoder(
@@ -62,7 +61,6 @@ class VideoDecoderConfigurator(ModelConfigurator[VideoDecoder]):
             norm_layer=NormLayerType(norm_layer_str),
             causal=causal,
             timestep_conditioning=timestep_conditioning,
-            temporal_chunk_on_gpu=temporal_chunk_on_gpu,
             decoder_spatial_padding_mode=decoder_spatial_padding_mode,
             base_channels=base_channels,
         )

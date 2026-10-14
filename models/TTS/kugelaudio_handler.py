@@ -1,3 +1,6 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .help import KUGEL_HELP
 import os
 import re
 
@@ -144,7 +147,7 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        return _get_kugelaudio_model_def()
+        return merge_help(_get_kugelaudio_model_def(), KUGEL_HELP)
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

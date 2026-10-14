@@ -456,6 +456,40 @@ def apply_rope_cache_inplace(input_tensor: torch.Tensor, rope_cache: RopeCache) 
     return input_tensor
 
 
+def apply_rope_cache_heads_inplace(input_tensor: torch.Tensor, rope_cache: RopeCache, heads: range) -> torch.Tensor:
+    """Rotate a contiguous range of heads with the original cache's absolute frequency and padding positions."""
+    if len(heads) == rope_cache.num_attention_heads:
+        return apply_rope_cache_inplace(input_tensor, rope_cache)
+    dim_head = input_tensor.shape[-1] // len(heads)
+    half_dim, axis_count = dim_head // 2, len(rope_cache.axes)
+    work_dtype = torch.float32 if rope_cache.use_fp32_freqs else input_tensor.dtype
+    for layout in rope_cache.layouts:
+        rows = input_tensor[:, layout.token_start:layout.token_stop]
+        if split_rope(rows, rope_cache, layout, heads.start, dim_head):
+            continue
+        # Keep the native PyTorch rotation and its rounding on unsupported devices or with strict kernel precision.
+        view = rows.reshape(rows.shape[0], *layout.grid_sizes, len(heads), dim_head)
+        for axis_index, axis in enumerate(rope_cache.rope_axes):
+            cos_axis = layout.axis_cos[axis_index].to(device=rows.device, dtype=work_dtype)
+            sin_axis = layout.axis_sin[axis_index].to(device=rows.device, dtype=work_dtype)
+            for group in rope_cache.split_groups[axis_index]:
+                skip = max(0, (heads.start - group.head_start + axis_count - 1) // axis_count)
+                first = group.head_start + skip * axis_count
+                count = min(group.head_count - skip, (heads.stop - 1 - first) // axis_count + 1)
+                if count <= 0:
+                    continue
+                head_slice = slice(first - heads.start, first - heads.start + count * axis_count, axis_count)
+                x0 = view[..., head_slice, group.local_start:half_dim:axis_count]
+                x1 = view[..., head_slice, half_dim + group.local_start::axis_count]
+                cos = _split_group_freq_view(cos_axis, group, half_dim)[:, skip:skip + count]
+                sin = _split_group_freq_view(sin_axis, group, half_dim)[:, skip:skip + count]
+                buffers = _make_axis_buffers(x0, work_dtype)
+                _apply_axis_rotation(x0, x1, _broadcast_group_freqs(cos, axis, len(layout.grid_sizes)),
+                                     _broadcast_group_freqs(sin, axis, len(layout.grid_sizes)), work_dtype, buffers)
+                del buffers
+    return input_tensor
+
+
 def generate_freq_grid_np(
     positional_embedding_theta: float,
     positional_embedding_max_pos_count: int,

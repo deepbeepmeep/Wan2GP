@@ -1,3 +1,6 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .ovi_infos import OVI_HELP
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -28,6 +31,7 @@ class family_handler:
         text_encoder_folder = "umt5-xxl"
         cfg = {
             "wan_5B_class": True,
+            "tiny_vae_architecture": "ti2v_2_2",
             "device_explicit": True,
             "text_encoder_URLs": [
                 build_hf_url("DeepBeepMeep/Wan2.1", text_encoder_folder, "models_t5_umt5-xxl-enc-bf16.safetensors"),
@@ -44,6 +48,8 @@ class family_handler:
             "guidance_max_phases": 1,
             "perturbation": True,
             "returns_audio": True,
+            "audio_window_alignment": True,
+            "audio_overlap_repair_ms": 20,  # covers the native 121-frame waveform's 17.7 ms deficit
             "sample_solvers": [
                 ("unipc", "unipc"),
                 ("dpm++", "dpm++"),
@@ -59,7 +65,7 @@ class family_handler:
             "vae_block_size": 32,
         }
         cfg.update(model_def)
-        return cfg
+        return merge_help(cfg, OVI_HELP)
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

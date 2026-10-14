@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import contextlib
 import copy
 import asyncio
@@ -16,6 +17,7 @@ _NO_YIELDED_RESULT = object()
 _GRADIO_LOG_PATCH_LOCK = threading.Lock()
 _ORIGINAL_GRADIO_LOG_MESSAGE = None
 _WRAPPED_LOG_LOCAL = threading.local()
+_INLINE_QUEUE_LOCK = threading.Lock()  # the inline queue holds one submission until WanGP loads it
 
 
 def _buffered_gradio_log_message(message: str, title: str, level: str = "info", duration: float | None = 10, visible: bool = True):
@@ -280,18 +282,19 @@ class WebUIQueueProbe:
 
     def _submit_inline_manifest(self) -> None:
         self._reset_idle_state()
-        self._wait_for_inline_queue_slot()
-        if self._job.cancel_requested:
-            for client_id in self._client_ids:
-                self._register_error(client_id, "Generation was cancelled", stage="cancelled")
-            return
-        self._gen.setdefault("queue_errors", {})
-        self._gen["inline_queue"] = copy.deepcopy(self._manifest)
-        self._job._mark_webui_submission_ready()
-        print(f"WanGP API queued client_ids={self._client_ids}")
-        gradio_context = getattr(self._session, "_gradio_webui_context", None)
-        if not isinstance(gradio_context, dict) or not gradio_context.get("defer_load_queue_trigger", False):
-            self._trigger_load_queue_event()
+        with _INLINE_QUEUE_LOCK:
+            self._wait_for_inline_queue_slot()
+            if self._job.cancel_requested:
+                for client_id in self._client_ids:
+                    self._register_error(client_id, "Generation was cancelled", stage="cancelled")
+                return
+            self._gen.setdefault("queue_errors", {})
+            self._gen["inline_queue"] = copy.deepcopy(self._manifest)
+            self._job._mark_webui_submission_ready()
+            print(f"WanGP API queued client_ids={self._client_ids}")
+            gradio_context = getattr(self._session, "_gradio_webui_context", None)
+            if not isinstance(gradio_context, dict) or not gradio_context.get("defer_load_queue_trigger", False):
+                self._trigger_load_queue_event()
         self._submitted_at = time.time()
         self._publish("status", "Queued in WanGP...", "on_status")
 
@@ -299,6 +302,8 @@ class WebUIQueueProbe:
         gradio_context = getattr(self._session, "_gradio_webui_context", None)
         if not isinstance(gradio_context, dict):
             raise RuntimeError("WanGP WebUI queue submission requires an active Gradio session context.")
+        if "load_queue" in gradio_context:  # in-process server: no browser request to replay
+            return gradio_context["load_queue"]()
         fn_index = gradio_context.get("load_queue_fn_index")
         blocks = gradio_context.get("blocks")
         request = gradio_context.get("request")
@@ -392,14 +397,11 @@ class WebUIQueueProbe:
                 self._register_error(client_id, error_text or "WanGP queue error", stage="generation")
 
     def _check_outputs(self, queue_client_ids: list[str]) -> None:
-        processed = self._wgp.get_processed_queue(self._gen)
-        if not isinstance(processed, tuple) or len(processed) != 4:
-            return
-        file_list, file_settings_list, audio_file_list, audio_file_settings_list = processed
+        galleries = self._wgp.get_processed_queue(self._session._workspace_gallery())
         for client_id in self._client_ids:
             if client_id in self._outputs_by_client_id or client_id in self._errors_by_client_id:
                 continue
-            output_paths = self._find_outputs_for_client(client_id, file_list, file_settings_list, audio_file_list, audio_file_settings_list)
+            output_paths = self._find_outputs_for_client(client_id, galleries)
             pending_artifact = self._session._peek_output_artifact(client_id)
             if pending_artifact is not None and client_id not in queue_client_ids:
                 if not queue_client_ids and self._gen.get("in_progress", False):
@@ -495,7 +497,7 @@ class WebUIQueueProbe:
             self._live_started_client_ids.add(active_client_id)
             progress_args = self._gen.get("last_progress_args")
             progress_ready = progress_args != self._active_progress_seed
-            progress_update = self._session._build_progress_update(progress_args, include_state_fallback=False) if progress_ready else None
+            progress_update = self._session._build_progress_update(progress_args, include_state_fallback=False, task_id=active_client_id, task_index=self._task_index_by_client_id[active_client_id], task_count=len(self._client_ids)) if progress_ready else None
             if progress_update is not None:
                 if len(progress_update.status) > 0 and progress_update.status != self._last_status_text:
                     self._last_status_text = progress_update.status
@@ -508,6 +510,8 @@ class WebUIQueueProbe:
                     progress_update.total_steps,
                     progress_update.status,
                     progress_update.unit,
+                    progress_update.window_index,
+                    progress_update.window_count,
                 )
                 if progress_key != self._last_progress_key:
                     self._last_progress_key = progress_key
@@ -656,13 +660,10 @@ class WebUIQueueProbe:
     @staticmethod
     def _find_outputs_for_client(
         client_id: str,
-        file_list: Sequence[Any],
-        file_settings_list: Sequence[Any],
-        audio_file_list: Sequence[Any],
-        audio_file_settings_list: Sequence[Any],
+        galleries: dict[str, tuple[Sequence[Any], Sequence[Any]]],
     ) -> list[str]:
         outputs = []
-        for paths, settings_list in ((file_list, file_settings_list), (audio_file_list, audio_file_settings_list)):
+        for paths, settings_list in galleries.values():
             for path, settings in zip(paths or [], settings_list or []):
                 if not isinstance(settings, dict):
                     continue

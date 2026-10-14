@@ -1,3 +1,4 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from typing import List, Tuple, Dict, Callable
 
 
@@ -7,9 +8,9 @@ def preparse_loras_multipliers(loras_multipliers):
 
     loras_multipliers = loras_multipliers.strip(" \r\n")
     loras_mult_choices_list = loras_multipliers.replace("\r", "").split("\n")
-    loras_mult_choices_list = [multi.strip() for multi in loras_mult_choices_list if len(multi)>0 and not multi.startswith("#")]
+    loras_mult_choices_list = [multi.strip() for multi in loras_mult_choices_list if multi.strip() and not multi.lstrip().startswith("#")]
     loras_multipliers = " ".join(loras_mult_choices_list)
-    return loras_multipliers.replace("|"," ").strip().split(" ")
+    return loras_multipliers.replace("|"," ").split()
 
 def expand_slist(slists_dict, mult_no, num_inference_steps, model_switch_step, model_switch_step2 ):
     def expand_one(slist, num_inference_steps):
@@ -39,9 +40,9 @@ def _new_slists_dict(nb_loras):
 
 
 def parse_loras_multipliers(loras_multipliers, nb_loras, num_inference_steps, merge_slist = None, nb_phases = 2, model_switch_step = None, model_switch_step2 = None, model_switch_phase = 1, lora_multiplier_branches = None):
-    if "|" in loras_multipliers: 
-        pos = loras_multipliers.find("|")
-        if "|" in  loras_multipliers[pos+1:]: return "", "", "There can be only one '|' character in Loras Multipliers Sequence"
+    if isinstance(loras_multipliers, str):
+        pos = _find_bar(loras_multipliers)
+        if pos >= 0 and _find_bar(loras_multipliers[pos + 1:]) >= 0: return "", "", "There can be only one '|' character in Loras Multipliers Sequence"
 
     if model_switch_step is None:
         model_switch_step = num_inference_steps

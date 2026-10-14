@@ -1,3 +1,7 @@
+# Modified from Coqui TTS (https://github.com/coqui-ai/TTS), TTS/tts/layers/xtts/tokenizer.py, licensed under MPL-2.0.
+# This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL was not
+# distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+# Modified for WanGP.
 import os
 import re
 import textwrap

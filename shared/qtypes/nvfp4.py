@@ -1,3 +1,4 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import ast
 import os
 import torch
@@ -338,12 +339,14 @@ def _nvfp4_can_use_kernel(input, weight):
         return False
     if _is_fake_tensor(input):
         return True
-    try:
-        if not torch.isfinite(weight._input_global_scale).all():
-            return False
-    except Exception:
-        return False
-    return True
+    finite = weight.__dict__.get("_finite_input_scale")
+    if finite is None:  # checked once per weight: a device sync on every call otherwise, which CUDA graphs cannot capture
+        try:
+            finite = bool(torch.isfinite(weight._input_global_scale).all())
+        except Exception:
+            finite = False
+        weight._finite_input_scale = finite
+    return finite
 
 
 def _nvfp4_get_act_scale(device):
@@ -717,6 +720,79 @@ def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None)
         return {"state_dict": state_dict, "quant_map": {}}
     _nvfp4_note_reset()    
     return convert_nvfp4_to_quanto(state_dict, default_dtype=default_dtype, verboseLevel=verboseLevel)
+
+
+class _NVFP4RowProjection:
+    @staticmethod
+    def supports(module, x):
+        weight = getattr(module, "weight", None)
+        return isinstance(weight, NVFP4WeightTensor) and not _is_fake_tensor(x) and x.dtype in (torch.float16, torch.bfloat16)
+
+    @staticmethod
+    def key(module):
+        weight = module.weight
+        backend = _nvfp4_select_backend(weight, weight) if _nvfp4_can_use_kernel(weight, weight) else None
+        scale = weight._input_global_scale if backend != _NVFP4_BACKEND_COMFY or weight._layout == _NVFP4_LAYOUT_TENSORCORE else None
+        return "nvfp4_rows", backend, weight._layout, weight.dtype, scale, weight._pre_quant_scale
+
+    @staticmethod
+    def prepare(module, x):
+        weight = module.weight
+        if weight._pre_quant_scale is not None:
+            x = x * weight._pre_quant_scale.to(x.dtype)
+        backend = _NVFP4RowProjection.key(module)[1]
+        if backend is None:
+            return x
+        x = x.contiguous()
+        if backend == _NVFP4_BACKEND_COMFY:
+            scale = weight._input_global_scale.float() if weight._layout == _NVFP4_LAYOUT_TENSORCORE else _nvfp4_get_act_scale(x.device)
+            q, scales = _ck_cuda.quantize_nvfp4(x, scale, 0.0, x.shape[0] % 16 != 0)
+        else:
+            scale = weight._input_global_scale.float()
+            if weight._layout == _NVFP4_LAYOUT_TENSORCORE:
+                scale = torch.reciprocal(torch.clamp(scale, min=1e-8))
+            q, scales = _lx_gemm.scaled_nvfp4_quant(x, scale)
+            if weight._layout == _NVFP4_LAYOUT_TENSORCORE:
+                q = _nvfp4_swap_nibbles(q)
+        return q, scales, x.shape[0], x.dtype
+
+    @staticmethod
+    def rows(module, prepared, start, stop):
+        weight = module.weight
+        # Swizzled block scales store contiguous groups of 128 output rows.
+        first, last = start // 128 * 128, min((stop + 127) // 128 * 128, weight.shape[0])
+        data = weight._data[first:last]
+        scales = weight._scale[first:(last + 127) // 128 * 128]
+        bias = None if module.bias is None else module.bias[first:last]
+        backend = _NVFP4RowProjection.key(module)[1]
+        if backend is None:
+            dense = _dequantize_nvfp4_weight(data, scales, weight._input_global_scale, weight._alpha, prepared.dtype, prepared.device, layout=weight._layout)
+            out = torch.nn.functional.linear(prepared, dense, bias)
+        else:
+            q, qs, rows, dtype = prepared
+            input_scale, alpha = weight._input_global_scale, weight._alpha
+            if backend == _NVFP4_BACKEND_COMFY:
+                if weight._layout == _NVFP4_LAYOUT_TENSORCORE:
+                    out = _ck_cuda.scaled_mm_nvfp4(q, data, input_scale.float(), alpha.float(), qs, scales,
+                                                  bias=None if bias is None else bias.to(dtype), out_dtype=dtype)
+                else:
+                    out = _ck_cuda.scaled_mm_nvfp4(q, _nvfp4_swap_nibbles(data), _nvfp4_get_act_scale(q.device), input_scale,
+                                                  qs, scales, bias=None if bias is None else bias.to(dtype), out_dtype=dtype,
+                                                  alpha=(alpha * input_scale).float())
+            else:
+                alpha = alpha.float()
+                if weight._layout == _NVFP4_LAYOUT_TENSORCORE:
+                    alpha = alpha * input_scale.float()
+                out = _lx_gemm.cutlass_scaled_nvfp4_mm(q.contiguous(), data.contiguous(), qs.contiguous(), scales.contiguous(),
+                                                       alpha=alpha, bias=None if bias is None else bias.to(torch.bfloat16).contiguous())
+            out = out[:rows].to(dtype)
+        return out[:, start - first:stop - first]
+
+
+from mmgp import offload
+
+_NVFP4_ROW_PROJECTION = _NVFP4RowProjection()
+offload.register_row_projection(_NVFP4_ROW_PROJECTION)
 
 
 class Int8TensorwiseEmbedding(torch.nn.Embedding):

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # coding=utf-8
 # Copyright (c) Ant Group. All rights reserved.
+# Modified for WanGP.
 
 from typing import List, Optional, Union
 

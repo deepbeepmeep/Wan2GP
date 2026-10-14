@@ -1,3 +1,6 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .infos import z_image_help
 import torch
 from shared.utils.hf import build_hf_url
 
@@ -9,12 +12,15 @@ class family_handler:
         guidance_max_phases = 1 if z_image_base else 0
         extra_model_def = {
             "image_outputs": True,
+            "dtype": "bf16",  # in FP16 the activations overflow from the first refiner block: black or prompt-less images
             "device_explicit": base_model_type != "z_image_control",
+            "cuda_graphs": [] if base_model_type == "z_image_control" else ["transformer"],  # control blocks run control layers inside them
             "guidance_max_phases": guidance_max_phases,
             "fit_into_canvas_image_refs": 0,
             "profiles_dir": [],
             "vae_upsamplers": {"flux_vae_pid": [1, 2]},
             "excluded_spatial_upsamplers": ["flux_pid"],
+            "tiny_vae_architecture": "flux",
         }
         text_encoder_folder = "Qwen3"
         extra_model_def["text_encoder_URLs"] = [
@@ -64,7 +70,7 @@ class family_handler:
                 "infos": "Generate an image from the Text Prompt (`prompt`) at the selected resolution. The prompt supplies the subjects, composition, setting and visual style together.",
                 "prompt_infos": 'Write a description of the finished image in natural language: subject and action, composition, background, lighting, colors and medium. For example: "A man in a red coat stands beside a rainy bus stop, reflected neon on the pavement, documentary photograph." Put important details first and spell visible text exactly in quotes. English and Chinese descriptions are supported.',
             })
-        return extra_model_def
+        return merge_help(extra_model_def, z_image_help(base_model_type))
 
     @staticmethod
     def query_supported_types():

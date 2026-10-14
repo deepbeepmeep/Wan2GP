@@ -16,6 +16,7 @@
 # Modified from diffusers==0.29.2
 #
 # ==============================================================================
+# Modified for WanGP.
 
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union

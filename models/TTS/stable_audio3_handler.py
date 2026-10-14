@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import os
 from importlib.util import find_spec
 
@@ -134,9 +135,43 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        prompt_enhancer_instructions, prompt_enhancer_max_tokens, prompt_enhancer_button_label = get_stable_audio3_prompt_enhancer(_model_id(base_model_type, model_def))
+        model_id = _model_id(base_model_type, model_def)
+        prompt_enhancer_instructions, prompt_enhancer_max_tokens, prompt_enhancer_button_label = get_stable_audio3_prompt_enhancer(model_id)
+        speciality, example = {
+            "small-music": ("instrumental music, loops and grooves", "A relaxed 90 BPM instrumental with warm electric piano, rounded bass and brushed drums; a gentle introduction builds into a steady groove, then resolves softly."),
+            "small-sfx": ("sound effects, foley and ambience", "A heavy wooden door creaks open close to the listener, followed by footsteps across a stone floor and a short reverberant door slam."),
+            "medium": ("longer music, evolving ambience and layered sound design", "A slow cinematic instrumental with low strings and soft piano, gradually joined by distant thunder and wind, building to a restrained climax before fading."),
+        }[model_id]
+        input_help = (
+            f"Stable Audio 3 is suited to {speciality}. It produces stereo audio at 44.1 kHz. "
+            f"**Duration** sets the target output length, from 1 to {_max_duration(base_model_type)} seconds; audible sound may finish earlier.\n\n"
+            "### Choose a Workflow\n\n"
+            "- **Text to Audio:** describe a new sound or piece of music.\n"
+            "- **Edit Audio:** supply source audio and describe the desired change. Audio strength 0 retains more source detail; 1 changes it more.\n"
+            "- **Inpaint Audio:** supply source audio and select the start/end seconds of the interval to regenerate.\n"
+            "- **Continue Audio:** supply source audio and choose a total duration longer than the source. The duration includes the original section.\n\n"
+            "Inpainting and continuation may also change the sound slightly outside the regenerated region; preservation is not sample-exact.\n\n"
+            "Start with 8 inference steps, guidance 1 and the PingPong solver. Prompt enhancement is optional. "
+            "This model is not designed for speech or voice generation, or transcription. Inspect the result for silence and level before combining it with video."
+        )
+        if base_model_type == STABLE_AUDIO3_MEDIUM:
+            input_help += " Medium requires Flash Attention 2 for its audio codec. WanGP allows up to 380 seconds, but the upstream Medium checkpoint is documented for about 4.75 minutes; prefer that range."
+        prompt_help = (
+            f"Describe the sound in English, choosing details relevant to {speciality}. The model was trained on English descriptions; other languages may underperform. "
+            "For music, specify genre, tempo or BPM, instruments, mood, production texture and a simple progression. "
+            "For effects, specify the source, action, material, distance, environment and how the sound develops. "
+            "For source editing, describe the desired resulting sound and the intended change. "
+            "Use the duration control for timing; prose alone does not set the output length. "
+            "Exact lyrics, spoken wording, seamless loops and precisely timed events are not guaranteed.\n\n"
+            f"Example: {example}"
+        )
         return {
             "group": "music",
+            "infos": "## Stable Audio 3\n\n" + input_help,
+            "prompt_infos": "## Describe the Sound\n\n" + prompt_help,
+            "specialities": [{"name": name} for name in ("audio editing", "audio inpainting", "audio continuation", *(("sound effects",) if model_id != "small-music" else ()), *(("music generation",) if model_id != "small-sfx" else ()))],
+            "deepy_infos": f"Stereo 44.1 kHz; {speciality}; target 1–{_max_duration(base_model_type)}s. Modes audio_prompt_type: empty=text; AE=edit audio_guide (audio_scale 0..1, higher changes more); AI=inpaint audio_guide using custom_settings.inpaint_start_seconds/end_seconds; AC=continue audio_guide, duration_seconds is total length and must exceed the source. Codec reconstruction is not sample-exact. Start 8 steps, guidance 1, pingpong. Not designed for speech/voice generation or transcription; inspect silence/levels. " + ("Medium needs Flash Attention 2. WanGP allows 380s, but upstream documents Medium for about 285s; prefer that range." if base_model_type == STABLE_AUDIO3_MEDIUM else ""),
+            "deepy_prompt_infos": f"English description of {speciality}: audible sources/instruments, rhythm, mood, texture, space and development. English-trained; other languages may underperform. Describe the target change when editing. Set timing with duration_seconds. Exact words, event timing and seamless loops are not guaranteed. Example: {example}",
             "device_explicit": True,
             "audio_only": True,
             "image_outputs": False,

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .infos import MAGI_HELP
 from typing import Any, Dict, Tuple
 
 import torch
@@ -52,6 +55,7 @@ class family_handler:
     def query_model_def(base_model_type: str, model_def: Dict[str, Any]):
         is_distill = base_model_type == DISTILL_ARCH
         extra_model_def = {
+            "tiny_vae_architecture": "ti2v_2_2",
             "returns_audio": True,
             "any_audio_prompt": True,
             "audio_prompt_choices": True,
@@ -109,7 +113,7 @@ class family_handler:
                 "guidance_max_phases": 2,
                 "lock_guidance_phases": True,
             })
-        return extra_model_def
+        return merge_help(extra_model_def, MAGI_HELP)
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

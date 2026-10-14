@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import math
 
 import torch
+from mmgp import cuda_graphs
 from torch import Tensor, nn
 import torch.nn.functional as F
 
@@ -441,37 +442,38 @@ class Flux(nn.Module):
         if self.is_flux2:
             double_vec_list = [ ( self.double_stream_modulation_img(base_vec_list[i]), self.double_stream_modulation_txt(base_vec_list[i]), ) for i in range(sz) ]
 
-        for i, block in enumerate(self.double_blocks):
-            if self.chroma:
-                vec_list = [( self.get_modulations(mod_vectors, "double_img", idx=i), self.get_modulations(mod_vectors, "double_txt", idx=i))] * sz
-            elif self.is_flux2:
-                vec_list = double_vec_list
-            if callback != None:
-                callback(-1, None, False, True)
-            if pipeline._interrupt:
-                return [None] * sz
-            for img, txt, pe, vec in zip(img_list, txt_list, pe_list, vec_list):
-                img[...], txt[...] = block(img=img, txt=txt, vec=vec, pe=pe, NAG=NAG)
-                img = txt = pe = vec= None
+        with cuda_graphs.scope():
+            for i, block in enumerate(self.double_blocks):
+                if self.chroma:
+                    vec_list = [( self.get_modulations(mod_vectors, "double_img", idx=i), self.get_modulations(mod_vectors, "double_txt", idx=i))] * sz
+                elif self.is_flux2:
+                    vec_list = double_vec_list
+                if callback != None:
+                    callback(-1, None, False, True)
+                if pipeline._interrupt:
+                    return [None] * sz
+                for img, txt, pe, vec in zip(img_list, txt_list, pe_list, vec_list):
+                    img[...], txt[...] = block(img=img, txt=txt, vec=vec, pe=pe, NAG=NAG)
+                    img = txt = pe = vec= None
 
-        img_list = [torch.cat((txt, img), 1) for txt, img in zip(txt_list, img_list)]
+            img_list = [torch.cat((txt, img), 1) for txt, img in zip(txt_list, img_list)]
 
-        if self.is_flux2:
-            single_vec_list = [self.single_stream_modulation(base_vec_list[i])[0] for i in range(sz)]
+            if self.is_flux2:
+                single_vec_list = [self.single_stream_modulation(base_vec_list[i])[0] for i in range(sz)]
 
-        for i, block in enumerate(self.single_blocks):
-            if self.chroma:
-                vec_list= [self.get_modulations(mod_vectors, "single", idx=i)] * sz
-            elif self.is_flux2:
-                vec_list = single_vec_list
+            for i, block in enumerate(self.single_blocks):
+                if self.chroma:
+                    vec_list= [self.get_modulations(mod_vectors, "single", idx=i)] * sz
+                elif self.is_flux2:
+                    vec_list = single_vec_list
                 
-            if callback != None:
-                callback(-1, None, False, True)
-            if pipeline._interrupt:
-                return [None] * sz
-            for img, pe, vec in zip(img_list, pe_list, vec_list):
-                img[...]= block(x=img, vec=vec, pe=pe, txt_len=txt_len, NAG=NAG)
-                img = pe = vec = None
+                if callback != None:
+                    callback(-1, None, False, True)
+                if pipeline._interrupt:
+                    return [None] * sz
+                for img, pe, vec in zip(img_list, pe_list, vec_list):
+                    img[...]= block(x=img, vec=vec, pe=pe, txt_len=txt_len, NAG=NAG)
+                    img = pe = vec = None
         img_list = [img[:, txt.shape[1] : txt.shape[1] + img_len, ...] for img, txt in zip(img_list, txt_list)]
 
         if self.radiance:

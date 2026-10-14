@@ -1,5 +1,6 @@
 # Copyright (c) 2024 NVIDIA CORPORATION.
 #   Licensed under the MIT license.
+# Modified for WanGP.
 
 import torch
 import torch.nn as nn

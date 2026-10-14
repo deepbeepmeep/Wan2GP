@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Paged native workspace management, independent of Gradio component state."""
 import hashlib
 import json
@@ -8,9 +9,11 @@ from collections import Counter
 from pathlib import Path
 
 from shared.utils.downloads import register_download, register_file_download, stream_writer
+from shared.utils.gallery_sources import GALLERY_SOURCES, SOURCES
 from shared.utils.gallery_view import gallery_offset
 from shared.utils.config_store import update_config
-from shared.utils.workspaces import ARCHIVE_AFTER_DAYS_KEY, ARCHIVE_PERIODS
+from shared.utils.workspaces import ARCHIVE_AFTER_DAYS_KEY, ARCHIVE_PERIODS, media_available
+from shared.utils.workspace_storage import bundle_files
 
 
 def retain_entries(gallery, prefix, indices, *, inplace=False):
@@ -60,11 +63,14 @@ class WorkspaceViewer:
             return {'archive_protected': protected}
 
     def _catalog(self, source):
-        if source not in ('video', 'audio'):
-            raise ValueError('Choose the image/video or audio gallery.')
-        prefix = 'audio_' if source == 'audio' else ''
+        if source not in SOURCES:
+            raise ValueError('Choose one of the workspace galleries.')
+        prefix = SOURCES[source].prefix
         gen = self.service._state['gen']
         paths = gen[prefix + 'file_list']
+        available = [index for index, path in enumerate(paths) if media_available(path)]
+        if len(available) != len(paths):
+            retain_entries(gen, prefix, available, inplace=True)
         signature = (self.service.workspace_id, tuple(paths), self.service._deps.get_server_config()['clear_file_list'])
         cached = self._cache.get(source)
         if cached is None or cached['signature'] != signature:
@@ -98,14 +104,42 @@ class WorkspaceViewer:
             for entry in catalog['entries'][page * self.page_size:(page + 1) * self.page_size]:
                 path = entry['path']
                 kind = self.service.gallery._detect_media_type(path)
-                exists = os.path.isfile(path)
-                download = register_file_download(path) if exists else None
-                item = {'key': entry['key'], 'index': entry['index'], 'name': Path(path).name, 'kind': kind, 'visible': entry['index'] >= offset, 'url': download['url'] if exists else None, 'size': download['size_bytes'] if exists else None}
-                if exists and kind in ('image', 'video'):
-                    item['thumbnail'] = 'deepy_api/workspace_viewer/thumbnail?' + urlencode({'workspace': workspace, 'source': source, 'key': entry['key'], 'v': os.stat(path).st_mtime_ns})
+                try:
+                    stamp = os.stat(path).st_mtime_ns
+                    download = register_file_download(path)
+                except OSError:
+                    download = None
+                item = {'key': entry['key'], 'index': entry['index'], 'name': Path(path).name, 'kind': kind, 'visible': entry['index'] >= offset, 'url': download['url'] if download else None, 'size': download['size_bytes'] if download else None}
+                if download and kind in ('image', 'video', '3d'):
+                    item['thumbnail'] = 'deepy_api/workspace_viewer/thumbnail?' + urlencode({'workspace': workspace, 'source': source, 'key': entry['key'], 'v': stamp})
                 items.append(item)
             record = self.service.workspaces.get(workspace)
-            return {'workspace': workspace, 'name': record['name'], 'last_activity': record['last_activity'], 'archive_protected': record['archive_protected'], 'source': source, 'revision': catalog['revision'], 'page': page, 'pages': pages, 'total': count, 'visible': count - offset, 'items': items, 'selected': [key for key in selected if key in catalog['by_key']]}
+            sources = [{'id': gallery.id, 'label': gallery.label, 'accept': gallery.accept} for gallery in GALLERY_SOURCES]
+            directory = self.service.workspaces.media_dir(workspace)
+            return {'workspace': workspace, 'storage_mode': record.get('storage_mode', 'shared'), 'folder': str(directory) if directory else None, 'sources': sources, 'name': record['name'], 'last_activity': record['last_activity'], 'archive_protected': record['archive_protected'], 'source': source, 'revision': catalog['revision'], 'page': page, 'pages': pages, 'total': count, 'visible': count - offset, 'items': items, 'selected': [key for key in selected if key in catalog['by_key']]}
+
+    def migrate(self, workspace, mode, *, folder=None, confirmed=False):
+        service = self.service
+        with service._mutation_lock:
+            if workspace != service.workspace_id:
+                raise ValueError('The active workspace changed. Please try again.')
+            service.require_idle()
+            if service._state['gen'].get('queue'):
+                raise ValueError('Finish or clear the generation queue before converting workspace storage.')
+            preview = service.workspaces.migration_preview(workspace, mode, folder=folder)
+            if preview['missing']:
+                if confirmed:
+                    raise ValueError('Restore missing media before converting this workspace.')
+                return preview
+            service.save_workspace()
+            if not confirmed:
+                return service.workspaces.migration_preview(workspace, mode, folder=folder)
+            result = service.workspaces.migrate(workspace, mode, folder=folder)
+            service._apply_workspace(workspace, associate=False)
+            service.publish_workspaces()
+            service.publish('gallery', service.gallery_snapshot())
+            service.host_changed()
+            return result
 
     def _entry(self, workspace, source, key):
         if workspace != self.service.workspace_id:
@@ -118,8 +152,7 @@ class WorkspaceViewer:
     def info(self, workspace, source, key):
         with self.service._mutation_lock:
             entry = self._entry(workspace, source, key)
-            prefix = 'audio_' if source == 'audio' else ''
-            settings = self.service._state['gen'][prefix + 'file_settings_list'][entry['index']]
+            settings = self.service._state['gen'][SOURCES[source].settings_key][entry['index']]
             return {'html': self.service._deps.callbacks.emit_first('format_media_info', entry['path'], settings)}
 
     def thumbnail_path(self, workspace, source, key):
@@ -150,22 +183,31 @@ class WorkspaceViewer:
                     names = set()
                     with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_STORED) as archive:
                         for path in paths:
+                            bundle = bundle_files(path)
                             basename = Path(path).name
                             stem, suffix, index = Path(basename).stem, Path(basename).suffix, 1
-                            while basename.casefold() in names:
+                            while any((Path(basename).stem + part).casefold() in names for part in bundle):
                                 index += 1
                                 basename = f'{stem} ({index}){suffix}'
-                            names.add(basename.casefold())
-                            archive.write(path, basename)
+                            for part, member in bundle.items():
+                                member_name = Path(basename).stem + part
+                                names.add(member_name.casefold())
+                                archive.write(member, member_name)
+                            companions = [part for part in bundle if part != Path(path).suffix]
+                            if companions:
+                                ledger_name = basename + '.wangp-files.json'
+                                names.add(ledger_name.casefold())
+                                archive.writestr(ledger_name, json.dumps(companions))
                 return json.loads(register_download(name if name.lower().endswith('.zip') else name + '.zip', 'application/zip', lambda: stream_writer(write_zip)))
             if action in ('copy', 'move'):
+                service.require_idle()
                 target = payload.get('target')
                 if target == workspace:
                     raise ValueError('Choose another workspace.')
                 with service.workspaces.lock:
                     record = service.workspaces.get(target)
                     saved = dict(record['gallery'])
-                    saved[prefix + 'file_list'] = list(saved.get(prefix + 'file_list', [])) + [os.path.abspath(entry['path']) for entry in entries]
+                    saved[prefix + 'file_list'] = list(saved.get(prefix + 'file_list', [])) + [entry['path'] for entry in entries]
                     saved[prefix + 'selected'] = len(saved[prefix + 'file_list']) - 1
                     saved[prefix + 'last_selected'] = True
                     saved['current_gallery_source'] = source
@@ -184,23 +226,25 @@ class WorkspaceViewer:
                 for entry in entries:
                     path = os.path.abspath(entry['path'])
                     try:
-                        Path(path).unlink(missing_ok=True)
+                        main = Path(path).resolve()
+                        companions = [member for member in bundle_files(path).values() if member != main]
+                        for member in [*companions, main]:
+                            member.unlink(missing_ok=True)
+                        Path(path + '.wangp-files.json').unlink(missing_ok=True)
                         removed.add(os.path.normcase(path))
                     except OSError as exc:
                         failures.append(f'{Path(path).name}: {exc.strerror}')
-                for group in ('', 'audio_'):
+                for group in (gallery.prefix for gallery in GALLERY_SOURCES):
                     retain_entries(gen, group, [i for i, path in enumerate(gen[group + 'file_list']) if os.path.normcase(os.path.abspath(path)) not in removed], inplace=True)
                 with service.workspaces.lock:
                     for target in service.workspaces.catalog():
-                        if target['id'] == workspace:
-                            continue
                         saved = dict(service.workspaces.get(target['id'])['gallery'])
-                        for group in ('', 'audio_'):
+                        for group in (gallery.prefix for gallery in GALLERY_SOURCES):
                             paths = saved.get(group + 'file_list', [])
-                            indices = [i for i, path in enumerate(paths) if os.path.normcase(os.path.abspath(path)) not in removed]
+                            indices = [i for i, path in enumerate(paths) if not isinstance(path, str) or os.path.normcase(os.path.abspath(path)) not in removed]
                             if len(indices) != len(paths):
                                 retain_entries(saved, group, indices)
-                        service.workspaces.save(target['id'], saved)
+                        service.workspaces.save(target['id'], saved, retain_missing=False)
             else:
                 indices = [entry['index'] for entry in catalog['entries'] if entry['key'] not in chosen]
                 if action == 'reorder':

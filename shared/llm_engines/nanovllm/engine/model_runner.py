@@ -95,6 +95,7 @@ class ModelRunner:
 
         self.dtype = config_dtype  # Save for later use
         self._runtime_ready = False
+        self._runtime_initializing = False
         self._graph_cache = {}
         self._graph_cache_order = []
         self._logits_bias_cache = {}
@@ -161,12 +162,19 @@ class ModelRunner:
         if self.model is None:
             raise RuntimeError("LLM model object is not available.")
         self._tie_word_embeddings_if_needed()
-        self.allocate_kv_cache()
-        self._prepare_model_sequence_state()
-        if not self.enforce_eager:
-            self.capture_cudagraph()
-        self._runtime_ready = True
-        self._runtime_signature = self._get_graph_capture_signature()
+        self._runtime_initializing = True
+        try:
+            self.allocate_kv_cache()
+            self._prepare_model_sequence_state()
+            if not self.enforce_eager:
+                self.capture_cudagraph()
+            self._runtime_signature = self._get_graph_capture_signature()
+            self._runtime_ready = True
+        except BaseException:
+            self.reset_runtime_state()
+            raise
+        finally:
+            self._runtime_initializing = False
 
     def reset_generation_state(self):
         if self.model is None:
@@ -352,7 +360,7 @@ class ModelRunner:
             raise RuntimeError("Failed to retie lm_head.weight with embed_tokens.weight.")
 
     def reset_runtime_state(self):
-        if not self._runtime_ready:
+        if not self._runtime_ready and not self._runtime_initializing:
             return
         # Steering/interruption may reach teardown while the last CUDA-graph replay
         # is still in flight.  Every object released below can own storage whose raw
@@ -366,6 +374,7 @@ class ModelRunner:
         self._speculative_commit_destinations.clear()
         self._speculative_commit_sources.clear()
         self._speculative_replay_modules = []
+        reset_context()
         # Clear attention KV cache refs so we don't write into freed storage later.
         try:
             if self.model is not None:

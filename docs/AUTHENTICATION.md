@@ -121,6 +121,8 @@ The client discovers authorization settings, registers, then opens the **Authori
 
 Use `--mcp-auth-password "your separate long passphrase"` with `--mcp-auth` for a fixed passphrase, or set `WANGP_MCP_AUTH_PASSWORD` in the launch environment. An explicit CLI passphrase takes precedence. Generated passphrases change at restart; supplied passphrases are not printed. Web `--auth` passwords and browser sessions do not authorize MCP requests.
 
+The same options protect the MCP address when enabled with the web UI, for example `python wgp.py --listen --auth --mcp-webui --mcp-host 0.0.0.0 --mcp-port 7866 --mcp-auth --mcp-auth-url https://wangp.example.com:7866 --ssl-certfile C:\certs\wangp.pem --ssl-keyfile C:\certs\wangp-key.pem`. Web `--auth` then protects the browser pages and MCP OAuth the agents. The certificate options also serve the MCP port over HTTPS; `--https-port` redirects only the browser port.
+
 For an HTTPS reverse proxy on the same PC:
 
 ```powershell
@@ -129,7 +131,7 @@ python wgp.py --mcp --mcp-transport streamable-http --mcp-host 127.0.0.1 --mcp-p
 
 The proxy handles the certificate. Forward the whole origin, including authorization and discovery endpoints, preserve the original Host header, and forward the correct scheme. Keep the backend private. Hosting under a URL subpath is not supported. For local development only, an origin such as `http://127.0.0.1:7866` is accepted without a certificate.
 
-The same certificate flags work with `python -m shared.mcp_server`; use that entry point's `--transport`, `--host` and `--port` names. `--https-port` optionally adds HTTPS while redirecting the main HTTP port. Legacy SSE transport uses `/sse` and the same OAuth protection; Streamable HTTP is recommended for new client connections.
+The same certificate flags work with `python -m shared.mcp`; use that entry point's `--transport`, `--host` and `--port` names. `--https-port` optionally adds HTTPS while redirecting the main HTTP port. Legacy SSE transport uses `/sse` and the same OAuth protection; Streamable HTTP is recommended for new client connections.
 
 Client requirements and session behavior:
 

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import html
 import re
 import time
@@ -36,7 +37,7 @@ def create_toolbar(is_finetune_editor=False):
             search_button = gr.Button("⌕", elem_id="wangp_model_tool_search", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-search"], size="sm", scale=0)
             finetune_button = gr.Button("✎" if is_finetune_editor else "+", elem_id="wangp_model_tool_finetune", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-finetune"], size="sm", scale=0)
             refresh_button = gr.Button("↻", elem_id="wangp_model_tool_refresh", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-refresh"], size="sm", scale=0)
-            unload_button = gr.Button("⏏", elem_id="wangp_model_tool_unload", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-unload"], size="sm", scale=0)
+            unload_button = gr.Button("Unload models and extensions", elem_id="wangp_model_tool_unload", elem_classes=["wangp-model-selector-tool", "wangp-model-selector-tool-unload"], size="sm", scale=0)
         with gr.Row(visible=False, elem_classes=["wangp-model-selector-search-row"]) as search_row:
             with gr.Column(scale=1, min_width=0, elem_classes=["wangp-model-selector-search-box"]):
                 search_query = gr.Textbox(value="", show_label=False, placeholder="Search models", elem_id="wangp_model_search_query", elem_classes=["wangp-model-selector-search-input"])
@@ -417,10 +418,12 @@ def get_javascript():
             toolButton(target)?.click();
         });
 
-        setInterval(() => {
-            bindSearchKeyboard();
-            updateFinetuneTooltip();
-        }, 400);
+        document.addEventListener("focusin", () => { bindSearchKeyboard(); updateFinetuneTooltip(); });
+        document.addEventListener("pointerover", (event) => {
+            if (event.target.closest?.("#wangp_model_tool_finetune")) updateFinetuneTooltip();
+        });
+        bindSearchKeyboard();
+        updateFinetuneTooltip();
     })();
     """
 
@@ -481,9 +484,13 @@ def get_css():
         transform: translateY(-1px);
     }
     .wangp-model-selector-tool-unload::before {
-        content: "⏏";
-        font-size: 22px;
-        transform: translateY(-1px);
+        content: "";
+        inset: 0;
+        margin: auto;
+        width: 22px;
+        height: 22px;
+        background: currentColor;
+        mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 3 3 15h18L12 3ZM3 18h18v3H3z'/%3E%3C/svg%3E") center / contain no-repeat;
     }
     .wangp-model-selector-tool-finetune {
         font-size: 24px !important;

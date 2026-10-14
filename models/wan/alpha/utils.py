@@ -6,7 +6,7 @@ import cv2
 import torch
 import torch.nn.functional as F
 import numpy as np 
-import zipfile
+from shared.utils.rgba_video import write_zip_file
 
 _gauss_mask_cache = {}
 
@@ -118,15 +118,3 @@ def from_BRGA_numpy_to_RGBA_torch(video):
     video = torch.stack(video).permute(3, 0, 1, 2)
     video[[0, 2], ...] = video[[2, 0], ...]
     return video
-
-def write_zip_file(zip_path, frames):
-    # frames in BGRA format
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for idx, img in enumerate(frames):
-            success, buffer = cv2.imencode(".png", img)
-            if not success:
-                print(f"Failed to encode image {idx}, skipping...")
-                continue
-            
-            filename = f"img_{idx:03d}.png"
-            zipf.writestr(filename, buffer.tobytes())

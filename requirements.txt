@@ -3,6 +3,7 @@
 optimum-quanto==0.2.7
 safetensors
 psutil
+filelock
 comfy-kitchen==0.2.35
 # Core AI stack
 diffusers==0.36.0
@@ -76,6 +77,14 @@ facexlib==0.3.0
 taichi
 vector_quantize_pytorch==1.27.19 
 
+# 3D meshes (UV unwrapping, decimation, marching cubes)
+xatlas>=0.0.11
+fast-simplification>=0.2.0
+scikit-image>=0.26.0
+
+# Deepy Draw SVG (resvg rasterizer, MIT)
+resvg-py==0.5.0
+
 
 # chumpy wheel hosted on GitHub to avoid sdist build isolation issue
 chumpy @ https://github.com/deepbeepmeep/chumpy/releases/download/v0.71/chumpy-0.71-py3-none-any.whl
@@ -106,8 +115,6 @@ ftfy
 piexif
 nvidia-ml-py 
 misaki
-phonemizer-fork
-espeakng-loader
 gitdb==4.0.12 
 gitpython==3.1.45
 stringzilla==4.0.14

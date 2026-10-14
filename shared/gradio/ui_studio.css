@@ -1,3 +1,4 @@
+/* Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt) */
 /* Default WanGP visual styling. Loaded by shared/gradio/ui_studio.py.
    Keep the existing rows, columns, navigation and media rendering. */
 footer .built-with > img {
@@ -147,7 +148,7 @@ footer .built-with > img {
     color: var(--studio-disabled-text) !important;
     box-shadow: none !important;
 }
-.wangp-studio-button {
+.wangp-studio-button:not(.resolution-picker-toggle, [id="wangp_finetune_editor_close"]) {
     --button-secondary-background-fill: var(--studio-button);
     --button-secondary-background-fill-hover: var(--studio-button-hover);
     --button-secondary-text-color: var(--studio-button-text);

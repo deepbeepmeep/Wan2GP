@@ -213,11 +213,7 @@ class QLinearQuantoRouter(QModuleMixin, torch.nn.Linear):
         )
 
 
-_FP8_QUANTO_BRIDGE_MODULE = ".fp8_quanto_bridge"
-
-_HANDLER_MODULES = [
-    _FP8_QUANTO_BRIDGE_MODULE,
-]
+_HANDLER_MODULES = []
 _HANDLER_OBJECTS = []
 
 

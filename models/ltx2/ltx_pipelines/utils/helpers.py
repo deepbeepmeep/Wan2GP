@@ -105,8 +105,9 @@ def image_conditionings_by_adding_guiding_latent(
 ) -> list[ConditioningItem]:
     conditionings = []
     for image_entry in images:
-        if len(image_entry) == 4:
-            image_path, frame_idx, strength, resample = image_entry
+        literal_frame_index = len(image_entry) == 5 and image_entry[4]
+        if len(image_entry) >= 4:
+            image_path, frame_idx, strength, resample = image_entry[:4]
         else:
             image_path, frame_idx, strength = image_entry
             resample = None
@@ -120,7 +121,7 @@ def image_conditionings_by_adding_guiding_latent(
         )
         encoded_image = vae_encode_video(image, video_encoder, tiling_config)
         conditionings.append(
-            VideoConditionByKeyframeIndex(keyframes=encoded_image, frame_idx=frame_idx, strength=strength)
+            VideoConditionByKeyframeIndex(keyframes=encoded_image, frame_idx=frame_idx, strength=strength, num_pixel_frames=1 if literal_frame_index else None, literal_frame_index=literal_frame_index)
         )
     return conditionings
 
@@ -164,7 +165,7 @@ def video_conditionings_by_keyframe(
         # else:
         #     encoded_video = vae_encode_video(video, video_encoder, tiling_config)
 
-        encoded_video = vae_encode_video(video, video_encoder, tiling_config)
+        encoded_video = vae_encode_video(video, video_encoder, tiling_config, device=device)
         if continuous_conditioning_and_guide and frame_idx < 0:
             split_frame = -int(frame_idx)
             latent_stride = int(getattr(getattr(video_encoder, "video_downscale_factors", None), "time", 8))
@@ -226,7 +227,7 @@ def video_conditionings_by_reference_latent(
             dtype=dtype,
             device=device,
         )
-        encoded_video = vae_encode_video(video, video_encoder, tiling_config)
+        encoded_video = vae_encode_video(video, video_encoder, tiling_config, device=device)
         conditionings.append(
             VideoConditionByReferenceLatent(
                 latent=encoded_video,
@@ -256,7 +257,7 @@ def video_conditionings_by_frozen_video(
         dtype=dtype,
         device=device,
     )
-    encoded_video = vae_encode_video(video, video_encoder, tiling_config)
+    encoded_video = vae_encode_video(video, video_encoder, tiling_config, device=device)
     return latent_conditionings_by_latent_sequence(encoded_video, strength=1.0, start_index=0)
 
 
@@ -613,7 +614,7 @@ def prepare_mask_injection(  # noqa: PLR0913
     if video_tensor.shape[2] == 0 or mask_tensor.shape[2] == 0:
         return None
 
-    source_latents = vae_encode_video(video_tensor, video_encoder, tiling_config).to(device=device, dtype=dtype)
+    source_latents = vae_encode_video(video_tensor, video_encoder, tiling_config, device=device).to(device=device, dtype=dtype)
     try:
         mask_latents = _mask_to_latents(
             mask_tensor, source_latents.shape[2], source_latents.shape[3], source_latents.shape[4]

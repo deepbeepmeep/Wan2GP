@@ -1,3 +1,4 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 # Thanks to https://github.com/Lightricks/ComfyUI-LTXVideo/blob/master/film_grain.py
 import torch
 from shared.utils.utils import get_default_workers, process_images_multithread

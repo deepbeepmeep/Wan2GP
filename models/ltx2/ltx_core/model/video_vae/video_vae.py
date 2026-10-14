@@ -10,6 +10,7 @@ from torch import nn
 from ..common.normalization import PixelNorm
 from ..transformer.timestep_embedding import PixArtAlphaCombinedTimestepSizeEmbeddings
 from .convolution import make_conv_nd
+from .streaming import DecoderStream, EncoderStream
 from .enums import LogVarianceType, NormLayerType, PaddingModeType
 from .ops import PerChannelStatistics, patchify, unpatchify
 from .resnet import ResnetBlock3D, UNetMidBlock3D
@@ -247,15 +248,18 @@ class VideoEncoder(nn.Module):
             spatial_padding_mode=encoder_spatial_padding_mode,
         )
 
-    def forward(self, sample: torch.Tensor) -> torch.Tensor:
+    def forward(self, sample: torch.Tensor, stream: EncoderStream | None = None) -> torch.Tensor:
         r"""
         Encode video frames into normalized latent representation.
         Args:
             sample: Input video (B, C, F, H, W). F must be 1 + 8*k (e.g., 1, 9, 17, 25, 33...).
+            stream: the frames are the next chunk of this streamed encoding (see encode_video).
         Returns:
             Normalized latent means (B, 128, F', H', W') where F' = 1+(F-1)/8, H' = H/32, W' = W/32.
             Example: (B, 3, 33, 512, 512) -> (B, 128, 5, 16, 16).
         """
+        if stream is not None:
+            return stream.step(sample)
         # Validate frame count
         frames_count = sample.shape[2]
         if ((frames_count - 1) % 8) != 0:
@@ -276,7 +280,10 @@ class VideoEncoder(nn.Module):
         sample = self.conv_norm_out(sample)
         sample = self.conv_act(sample)
         sample = self.conv_out(sample)
+        return self.latent_means(sample)
 
+    def latent_means(self, sample: torch.Tensor) -> torch.Tensor:
+        """The normalized latent means of the output of conv_out."""
         if self.latent_log_var == LogVarianceType.UNIFORM:
             # Uniform Variance: model outputs N means and 1 shared log-variance channel.
             # We need to expand the single logvar to match the number of means channels
@@ -397,6 +404,40 @@ def _make_decoder_block(
     return block, out_channels
 
 
+# Streamed decoding (tiled_decode) and encoding (encode_video). Latent area of a spatial tile: TILE_AREA squares of the tiling size, plus for
+# the decoding FRAME_SHARE of the frame; calibrated so that each tiling size stayed under the VRAM of the former temporal tiles at 480p-1080p
+# (in decoding it grew with the frame), then raised for the 256 level (720p decoded as one exact tile, fewer encoding tiles: +0.2-0.5 GB).
+# Frames per piece of a decoder stage, per chunk of the encoder.
+STREAM_TILE_AREA, STREAM_FRAME_SHARE, STREAM_PIECE_FRAMES = 5, 0.64, 4
+ENCODE_TILE_AREA, ENCODE_CHUNK_FRAMES = 7.25, 4
+
+
+def _stream_tiles(shape: tuple, tiling_config: TilingConfig | None, tile_area: float, frame_share: float, scale: int, device: torch.device) -> List[Tile]:
+    """Spatial tiles of a latent of this shape for a streamed decoding or encoding: the fewest whose latent area, with the overlaps, fits
+    tile_area squares of the tiling size plus frame_share of the frame; their output coordinates and masks in units of `scale`."""
+    splitters, mappers = [DEFAULT_SPLIT_OPERATION] * len(shape), [DEFAULT_MAPPING_OPERATION] * len(shape)
+    spatial = tiling_config.spatial_config if tiling_config is not None else None
+    if spatial is not None:
+        latent_scale = VIDEO_SCALE_FACTORS.height
+        overlap, height, width = spatial.tile_overlap_in_pixels // latent_scale, shape[3], shape[4]
+
+        def size(length: int, count: int) -> int:
+            return length if count == 1 else -(-(length + (count - 1) * overlap) // count)
+
+        def area(counts: tuple[int, int]) -> int:
+            return size(height, counts[0]) * size(width, counts[1])
+
+        budget = tile_area * (spatial.tile_size_in_pixels // latent_scale) ** 2 + frame_share * height * width
+        counts = [(h, w) for h in range(1, height + 1) for w in range(1, width + 1) if (h == 1 or size(height, h) > overlap) and (w == 1 or size(width, w) > overlap)]
+        fits = [c for c in counts if area(c) <= budget]
+        counts = min(fits, key=lambda c: (c[0] * c[1], area(c))) if fits else min(counts, key=area)
+        for axis, length, count in ((3, height, counts[0]), (4, width, counts[1])):
+            if count > 1:
+                splitters[axis] = split_in_spatial(size(length, count), overlap)
+                mappers[axis] = to_mapping_operation(map_spatial_slice, scale, device)
+    return create_tiles(shape, splitters, mappers)
+
+
 class VideoDecoder(nn.Module):
     _DEFAULT_NORM_NUM_GROUPS = 32
     """
@@ -437,7 +478,6 @@ class VideoDecoder(nn.Module):
         norm_layer: NormLayerType = NormLayerType.PIXEL_NORM,
         causal: bool = False,
         timestep_conditioning: bool = False,
-        temporal_chunk_on_gpu: bool = True,
         decoder_spatial_padding_mode: PaddingModeType = PaddingModeType.REFLECT,
         base_channels: int = 128,
     ):
@@ -458,7 +498,6 @@ class VideoDecoder(nn.Module):
         out_channels = out_channels * patch_size**2
         self.causal = causal
         self.timestep_conditioning = timestep_conditioning
-        self.temporal_chunk_on_gpu = temporal_chunk_on_gpu
         self._norm_num_groups = self._DEFAULT_NORM_NUM_GROUPS
 
         # Per-channel statistics for denormalizing latents
@@ -467,8 +506,6 @@ class VideoDecoder(nn.Module):
         # Noise and timestep parameters for decoder conditioning
         self.decode_noise_scale = 0.025
         self.decode_timestep = 0.05
-        self._mask_cache: dict[tuple[int, torch.device, torch.dtype], tuple[torch.Tensor, torch.Tensor]] = {}
-        self._mask_cache_limit = 512
 
         # LTX decoder starts from a wider trunk then reduces channels across upsampling blocks.
         feature_channels = base_channels * 8
@@ -620,389 +657,73 @@ class VideoDecoder(nn.Module):
         sample = unpatchify(sample, patch_size_hw=self.patch_size, patch_size_t=1)
 
         return sample
+    ############## LTX2 Streaming Mode - Copyright DeepBeepMeep 2025-2026 #############
+    _offload_hooks = ["stream_step"]  # MMGP loads the weights when a chunk is decoded, as for forward
 
-    def _prepare_tiles(
-        self,
-        latent: torch.Tensor,
-        tiling_config: TilingConfig | None = None,
-    ) -> List[Tile]:
-        splitters = [DEFAULT_SPLIT_OPERATION] * len(latent.shape)
-        mappers = [DEFAULT_MAPPING_OPERATION] * len(latent.shape)
-        if tiling_config is not None and tiling_config.spatial_config is not None:
-            cfg = tiling_config.spatial_config
-            long_side = max(latent.shape[3], latent.shape[4])
+    def stream_step(self, stream: DecoderStream, latent: torch.Tensor, last: bool) -> None:
+        stream.step(latent, last)
 
-            def enable_on_axis(axis_idx: int, factor: int) -> None:
-                size = cfg.tile_size_in_pixels // factor
-                overlap = cfg.tile_overlap_in_pixels // factor
-                axis_length = latent.shape[axis_idx]
-                lower_threshold = max(2, overlap + 1)
-                tile_size = max(lower_threshold, round(size * axis_length / long_side))
-                splitters[axis_idx] = split_in_spatial(tile_size, overlap)
-                mappers[axis_idx] = to_mapping_operation(map_spatial_slice, factor, latent.device)
-
-            enable_on_axis(3, self.video_downscale_factors.height)
-            enable_on_axis(4, self.video_downscale_factors.width)
-
-        if tiling_config is not None and tiling_config.temporal_config is not None:
-            cfg = tiling_config.temporal_config
-            tile_size = _pixel_frames_to_latent_frames(cfg.tile_size_in_frames, self.video_downscale_factors.time)
-            overlap = _pixel_frames_to_latent_frames(cfg.tile_overlap_in_frames, self.video_downscale_factors.time)
-            overlap = min(overlap, max(tile_size - 1, 0))
-            splitters[2] = split_in_temporal(tile_size, overlap)
-            mappers[2] = to_mapping_operation(map_temporal_slice, self.video_downscale_factors.time, latent.device)
-
-        return create_tiles(latent.shape, splitters, mappers)
-
-    def tiled_decode(
-        self,
-        latent: torch.Tensor,
-        tiling_config: TilingConfig | None = None,
-        timestep: Optional[torch.Tensor] = None,
-        generator: Optional[torch.Generator] = None,
-        interrupt_check: Callable[[], bool] | None = None,
-        copy_emitted_chunks: bool = True,
-    ) -> Iterator[torch.Tensor]:
+    def tiled_decode(self, latent: torch.Tensor, tiling_config: TilingConfig | None, write: Callable[[int, slice, slice, torch.Tensor], None], interrupt_check: Callable[[], bool] | None = None) -> bool:
         """
-        Decode a latent tensor into video frames using tiled processing.
-        Splits the latent tensor into tiles, decodes each tile individually,
-        and yields video chunks as they become available.
-        Args:
-            latent: Input latent tensor (B, C, F', H', W').
-            tiling_config: Tiling configuration for the latent tensor.
-            timestep: Optional timestep for decoder conditioning.
-            generator: Optional random generator for deterministic decoding.
-        Yields:
-            Video chunks (B, C, T, H, W) by temporal slices;
+        Decodes the latent spatial tile after spatial tile, each tile streamed latent frame after latent frame exactly as in the decoding of
+        the whole video (see decode_stream: no temporal tiles), so that VRAM only holds the state of one tile. `write(first frame, rows,
+        columns, frames (B, C, T, h, w))` receives the patches of the video: the parts of a tile that no other tile covers as they are
+        decoded, the overlaps of the tiles blended (on the CPU) when their last tile is decoded. Returns False when interrupted.
         """
+        scale = self.video_downscale_factors
+        tiles = _stream_tiles(latent.shape, tiling_config, STREAM_TILE_AREA, STREAM_FRAME_SHARE, scale.height, latent.device)
+        frames, height, width = latent.shape[2], latent.shape[3] * scale.height, latent.shape[4] * scale.width
+        regions = [(tile.out_coords[3].indices(height)[:2], tile.out_coords[4].indices(width)[:2]) for tile in tiles]
+        rows, cols = sorted({v for region in regions for v in region[0]}), sorted({v for region in regions for v in region[1]})
+        cells = [((top, bottom), (left, right), [i for i, ((t, b), (l, r)) in enumerate(regions) if t <= top and bottom <= b and l <= left and right <= r])
+                 for top, bottom in zip(rows, rows[1:]) for left, right in zip(cols, cols[1:])]
+        masks = []  # blending weights of each tile, (h, w)
+        for tile, ((top, bottom), (left, right)) in zip(tiles, regions):
+            mask = torch.ones((bottom - top, right - left), device=latent.device)
+            for axis, view in ((3, (-1, 1)), (4, (1, -1))):
+                if tile.masks_1d[axis] is not None:
+                    mask *= tile.masks_1d[axis].view(view)
+            masks.append(mask)
 
-        full_video_shape = VideoLatentShape.from_torch_shape(latent.shape).upscale(self.video_downscale_factors)
-        total_frames = full_video_shape.frames
-        tiles = self._prepare_tiles(latent, tiling_config)
-        temporal_groups = self._group_tiles_by_temporal_slice(tiles)
-        if not temporal_groups:
-            return
+        def local(index: int, top: int, bottom: int, left: int, right: int) -> tuple[slice, slice]:
+            (tile_top, _), (tile_left, _) = regions[index]
+            return slice(top - tile_top, bottom - tile_top), slice(left - tile_left, right - tile_left)
 
-        blend_device = latent.device
-        if blend_device.type == "cuda":
-            blend_device = torch.device("cpu")
+        weights = {}
+        for (top, bottom), (left, right), owners in cells:
+            if len(owners) > 1:
+                weights[(top, left)] = sum(masks[i][local(i, top, bottom, left, right)] for i in owners).cpu()
+        sums, position = {}, 0
 
-        chunk_device = blend_device
-        if self.temporal_chunk_on_gpu and latent.device.type == "cuda":
-            chunk_device = latent.device
+        def sink(out: torch.Tensor) -> None:  # frames completed by the stream of the tile `index`, from frame `position`
+            nonlocal position
+            count = out.shape[2]
+            for (top, bottom), (left, right), owners in mine:
+                part = out[(..., *local(index, top, bottom, left, right))]
+                if len(owners) == 1:
+                    write(position, slice(top, bottom), slice(left, right), part)
+                    continue
+                part = part.mul(masks[index][local(index, top, bottom, left, right)].to(part.dtype)).float().cpu()
+                total = sums.get((top, left))
+                if total is None:
+                    total = sums[(top, left)] = part.new_zeros((*part.shape[:2], (frames - 1) * scale.time + 1, *part.shape[3:]))
+                total = total[:, :, position : position + count].add_(part)
+                if index == owners[-1]:
+                    write(position, slice(top, bottom), slice(left, right), total.div_(weights[(top, left)]))
+            position += count
 
-        previous_chunk = None
-        previous_weights = None
-        previous_temporal_slice = None
-        buffer = None
-        curr_weights = None
-        work_buffer = None
-        work_weights = None
-        blend_buffers = None
-        blend_weights = None
-        max_temporal_len = max(
-            self._normalize_temporal_slice(group_tiles[0].out_coords[2], total_frames).stop
-            - self._normalize_temporal_slice(group_tiles[0].out_coords[2], total_frames).start
-            for group_tiles in temporal_groups
-        )
-        slot_count = 1 if len(temporal_groups) == 1 else 2
-        reusable_shape = full_video_shape._replace(frames=max_temporal_len).to_torch_shape()
-        reusable_weights_shape = (1, 1, max_temporal_len, reusable_shape[3], reusable_shape[4])
-
-        if chunk_device == blend_device:
-            blend_buffers = [torch.zeros(reusable_shape, device=blend_device, dtype=latent.dtype) for _ in range(slot_count)]
-            blend_weights = [torch.zeros(reusable_weights_shape, device=blend_device, dtype=latent.dtype) for _ in range(slot_count)]
-        else:
-            work_buffer = torch.zeros(reusable_shape, device=chunk_device, dtype=latent.dtype)
-            work_weights = torch.zeros(reusable_weights_shape, device=chunk_device, dtype=latent.dtype)
-            blend_buffers = [torch.zeros(reusable_shape, device=blend_device, dtype=latent.dtype) for _ in range(slot_count)]
-            blend_weights = [torch.zeros(reusable_weights_shape, device=blend_device, dtype=latent.dtype) for _ in range(slot_count)]
-
-        with PhaseProgress(len(tiles)) as progress:
-            try:
-                for group_idx, temporal_group_tiles in enumerate(temporal_groups):
+        with PhaseProgress(frames * len(tiles)) as progress:
+            for index, tile in enumerate(tiles):
+                stream, position, mine = DecoderStream(self, STREAM_PIECE_FRAMES, sink), 0, [cell for cell in cells if index in cell[2]]
+                for latent_index in range(frames):
                     if interrupt_check is not None and interrupt_check():
-                        return
-
-                    curr_temporal_slice = self._normalize_temporal_slice(
-                        temporal_group_tiles[0].out_coords[2],
-                        total_frames,
-                    )
-                    curr_len = curr_temporal_slice.stop - curr_temporal_slice.start
-                    slot = group_idx % slot_count
-
-                    if chunk_device == blend_device:
-                        buffer = blend_buffers[slot][:, :, :curr_len, :, :]
-                        curr_weights = blend_weights[slot][:, :, :curr_len, :, :]
-                        buffer.zero_()
-                        curr_weights.zero_()
-                        weights_buffer = curr_weights
-                    else:
-                        work_buffer_view = work_buffer[:, :, :curr_len, :, :]
-                        work_weights_view = work_weights[:, :, :curr_len, :, :]
-                        work_buffer_view.zero_()
-                        work_weights_view.zero_()
-                        buffer = work_buffer_view
-                        curr_weights = work_weights_view
-                        weights_buffer = work_weights_view
-
-                    curr_weights = self._accumulate_temporal_group_into_buffer(
-                        group_tiles=temporal_group_tiles,
-                        buffer=buffer,
-                        latent=latent,
-                        timestep=timestep,
-                        generator=generator,
-                        temporal_slice=curr_temporal_slice,
-                        total_frames=total_frames,
-                        interrupt_check=interrupt_check,
-                        weights_buffer=weights_buffer,
-                        progress=progress,
-                    )
-                    if curr_weights is None:
-                        return
-                    if chunk_device != blend_device:
-                        blend_buffer_view = blend_buffers[slot][:, :, :curr_len, :, :]
-                        blend_weights_view = blend_weights[slot][:, :, :curr_len, :, :]
-                        blend_buffer_view.copy_(buffer)
-                        blend_weights_view.copy_(curr_weights)
-                        buffer = blend_buffer_view
-                        curr_weights = blend_weights_view
-
-                    if previous_chunk is not None:
-                        if previous_temporal_slice.stop > curr_temporal_slice.start:
-                            overlap_len = previous_temporal_slice.stop - curr_temporal_slice.start
-                            temporal_overlap_slice = slice(curr_temporal_slice.start - previous_temporal_slice.start, None)
-
-                            previous_chunk[:, :, temporal_overlap_slice, :, :] += buffer[:, :, slice(0, overlap_len), :, :]
-                            previous_weights[:, :, temporal_overlap_slice, :, :] += curr_weights[
-                                :, :, slice(0, overlap_len), :, :
-                            ]
-
-                            buffer[:, :, slice(0, overlap_len), :, :] = previous_chunk[:, :, temporal_overlap_slice, :, :]
-                            curr_weights[:, :, slice(0, overlap_len), :, :] = previous_weights[
-                                :, :, temporal_overlap_slice, :, :
-                            ]
-
-                        previous_weights = previous_weights.clamp_(min=1e-8)
-                        yield_len = curr_temporal_slice.start - previous_temporal_slice.start
-                        previous_chunk[:, :, :yield_len] /= previous_weights[:, :, :yield_len]
-                        yield_chunk = previous_chunk[:, :, :yield_len]
-                        if copy_emitted_chunks:
-                            yield_chunk = yield_chunk.clone()
-
-                        previous_chunk = buffer
-                        previous_weights = curr_weights
-                        previous_temporal_slice = curr_temporal_slice
-                        buffer = None
-                        curr_weights = None
-
-                        yield yield_chunk
-                        continue
-
-                    previous_chunk = buffer
-                    previous_weights = curr_weights
-                    previous_temporal_slice = curr_temporal_slice
-                    buffer = None
-                    curr_weights = None
-
-                if previous_chunk is not None:
-                    previous_weights = previous_weights.clamp_(min=1e-8)
-                    previous_chunk /= previous_weights
-                    previous_weights = None
-                    final_chunk = previous_chunk
-                    if copy_emitted_chunks:
-                        final_chunk = final_chunk.clone()
-                    previous_chunk = None
-                    yield final_chunk
-            finally:
-                previous_chunk = None
-                previous_weights = None
-                previous_temporal_slice = None
-                buffer = None
-                curr_weights = None
-                work_buffer = None
-                work_weights = None
-                blend_buffers = None
-                blend_weights = None
-                temporal_groups = None
-                tiles = None
-
-    def _group_tiles_by_temporal_slice(self, tiles: List[Tile]) -> List[List[Tile]]:
-        """Group tiles by their temporal output slice."""
-        if not tiles:
-            return []
-
-        groups = []
-        current_slice = tiles[0].out_coords[2]
-        current_group = []
-
-        for tile in tiles:
-            tile_slice = tile.out_coords[2]
-            if tile_slice == current_slice:
-                current_group.append(tile)
-            else:
-                groups.append(current_group)
-                current_slice = tile_slice
-                current_group = [tile]
-
-        # Add the final group
-        if current_group:
-            groups.append(current_group)
-
-        return groups
-
-    @staticmethod
-    def _normalize_temporal_slice(temporal_slice: slice, total_frames: int) -> slice:
-        start = 0 if temporal_slice.start is None else temporal_slice.start
-        stop = total_frames if temporal_slice.stop is None else temporal_slice.stop
-        return slice(start, stop, temporal_slice.step)
-
-    def _prepare_mask_1d(
-        self,
-        mask: torch.Tensor | None,
-        length: int | None,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> torch.Tensor | None:
-        if mask is None:
-            return None
-        cache_key = (id(mask), device, dtype)
-        cached = self._mask_cache.get(cache_key)
-        if cached is None or cached[0] is not mask or cached[1].numel() != mask.numel():
-            if self._mask_cache_limit > 0 and len(self._mask_cache) >= self._mask_cache_limit:
-                self._mask_cache.clear()
-            converted = mask.to(device=device, dtype=dtype)
-            self._mask_cache[cache_key] = (mask, converted)
-        else:
-            converted = cached[1]
-        if length is not None and converted.numel() > length:
-            return converted[:length]
-        return converted
-
-    def _accumulate_temporal_group_into_buffer(
-        self,
-        group_tiles: List[Tile],
-        buffer: torch.Tensor,
-        latent: torch.Tensor,
-        timestep: Optional[torch.Tensor],
-        generator: Optional[torch.Generator],
-        temporal_slice: slice,
-        total_frames: int,
-        interrupt_check: Callable[[], bool] | None = None,
-        weights_buffer: torch.Tensor | None = None,
-        progress: PhaseProgress | None = None,
-    ) -> torch.Tensor | None:
-        """
-        Decode and accumulate all tiles of a temporal group into a local buffer.
-        The buffer is local to the group and always starts at time 0; temporal coordinates
-        are rebased by subtracting temporal_slice.start.
-        """
-        if weights_buffer is None:
-            weights = torch.zeros(
-                (1, 1, buffer.shape[2], buffer.shape[3], buffer.shape[4]),
-                device=buffer.device,
-                dtype=buffer.dtype,
-            )
-        else:
-            weights = weights_buffer
-
-        for tile in group_tiles:
-            if interrupt_check is not None and interrupt_check():
-                return None
-            decoded_tile = self.forward(latent[tile.in_coords], timestep, generator)
-            if progress is not None:
-                progress.advance()
-            if interrupt_check is not None and interrupt_check():
-                decoded_tile = None
-                return None
-            tile_temporal_slice = self._normalize_temporal_slice(tile.out_coords[2], total_frames)
-            temporal_offset = tile_temporal_slice.start - temporal_slice.start
-            # Use the tile's output coordinate length, not the decoded tile's length,
-            # as the decoder may produce a different number of frames than expected
-            expected_temporal_len = tile_temporal_slice.stop - tile_temporal_slice.start
-            decoded_temporal_len = decoded_tile.shape[2]
-
-            # Ensure we don't exceed the buffer or decoded tile bounds
-            actual_temporal_len = min(expected_temporal_len, decoded_temporal_len, buffer.shape[2] - temporal_offset)
-
-            chunk_coords = (
-                slice(None),  # batch
-                slice(None),  # channels
-                slice(temporal_offset, temporal_offset + actual_temporal_len),
-                tile.out_coords[3],  # height
-                tile.out_coords[4],  # width
-            )
-
-            # Slice decoded_tile and mask to match the actual length we're writing
-            decoded_slice = decoded_tile[:, :, :actual_temporal_len, :, :]
-            mask_t = self._prepare_mask_1d(
-                tile.masks_1d[2],
-                actual_temporal_len,
-                decoded_slice.device,
-                decoded_slice.dtype,
-            )
-            mask_h = self._prepare_mask_1d(
-                tile.masks_1d[3],
-                decoded_slice.shape[3],
-                decoded_slice.device,
-                decoded_slice.dtype,
-            )
-            mask_w = self._prepare_mask_1d(
-                tile.masks_1d[4],
-                decoded_slice.shape[4],
-                decoded_slice.device,
-                decoded_slice.dtype,
-            )
-            if mask_t is not None:
-                decoded_slice *= mask_t.view(1, 1, -1, 1, 1)
-            if mask_h is not None:
-                decoded_slice *= mask_h.view(1, 1, 1, -1, 1)
-            if mask_w is not None:
-                decoded_slice *= mask_w.view(1, 1, 1, 1, -1)
-            if decoded_slice.device != buffer.device or decoded_slice.dtype != buffer.dtype:
-                decoded_slice = decoded_slice.to(device=buffer.device, dtype=buffer.dtype)
-            decoded_h = decoded_slice.shape[3]
-            decoded_w = decoded_slice.shape[4]
-            del decoded_tile
-
-            buffer[chunk_coords] += decoded_slice
-            del decoded_slice
-
-            if mask_t is not None and (mask_t.device != buffer.device or mask_t.dtype != buffer.dtype):
-                mask_t = self._prepare_mask_1d(tile.masks_1d[2], actual_temporal_len, buffer.device, buffer.dtype)
-            if mask_h is not None and (mask_h.device != buffer.device or mask_h.dtype != buffer.dtype):
-                mask_h = self._prepare_mask_1d(tile.masks_1d[3], decoded_h, buffer.device, buffer.dtype)
-            if mask_w is not None and (mask_w.device != buffer.device or mask_w.dtype != buffer.dtype):
-                mask_w = self._prepare_mask_1d(tile.masks_1d[4], decoded_w, buffer.device, buffer.dtype)
-
-            weights_slice = weights[chunk_coords]
-            if mask_h is not None and mask_w is not None:
-                mask_hw = mask_h.view(-1, 1) * mask_w.view(1, -1)
-                if mask_t is None:
-                    weights_slice += mask_hw.view(1, 1, 1, mask_hw.shape[0], mask_hw.shape[1])
-                elif mask_t.numel() == 1:
-                    weights_slice += mask_hw.view(1, 1, 1, mask_hw.shape[0], mask_hw.shape[1]) * mask_t
-                else:
-                    for t_idx in range(actual_temporal_len):
-                        weights_slice[:, :, t_idx, :, :] += mask_t[t_idx] * mask_hw
-                del mask_hw
-            else:
-                if mask_t is None:
-                    if mask_h is None and mask_w is None:
-                        weights_slice += 1
-                    elif mask_h is not None:
-                        weights_slice += mask_h.view(1, 1, 1, -1, 1)
-                    else:
-                        weights_slice += mask_w.view(1, 1, 1, 1, -1)
-                else:
-                    if mask_h is not None:
-                        weights_slice += mask_t.view(1, 1, -1, 1, 1) * mask_h.view(1, 1, 1, -1, 1)
-                    elif mask_w is not None:
-                        weights_slice += mask_t.view(1, 1, -1, 1, 1) * mask_w.view(1, 1, 1, 1, -1)
-                    else:
-                        weights_slice += mask_t.view(1, 1, -1, 1, 1)
-            del mask_t, mask_h, mask_w
-        return weights
+                        return False
+                    self.stream_step(stream, latent[tile.in_coords][:, :, latent_index : latent_index + 1], latent_index == frames - 1)
+                    progress.advance()
+                for (top, bottom), (left, right), owners in mine:
+                    if index == owners[-1]:
+                        sums.pop((top, left), None)
+        return True
 
 
 def decode_video(
@@ -1019,56 +740,11 @@ def decode_video(
         video_decoder: Decoder module.
         tiling_config: Optional tiling settings.
     Yields:
-        Decoded chunk [f, h, w, c], uint8 in [0, 255].
+        The decoded video [f, h, w, c], uint8 in [0, 255].
     """
-
-    def convert_to_uint8(frames: torch.Tensor) -> torch.Tensor:
-        frames = frames.add_(1.0).mul_(127.5).clamp_(0.0, 255.0).to(torch.uint8)
-        frames = rearrange(frames[0], "c f h w -> f h w c")
-        return frames
-
-    if isinstance(latent, list):
-        latent_tensor = latent[0]
-        latent.clear()
-        latent = latent_tensor
-    is_diffusion_decoder = getattr(video_decoder, "is_diffusion_decoder", False)
-    tiled_iterator = None
-    decoded_video = None
-    try:
-        if tiling_config is not None:
-            if is_diffusion_decoder:
-                decoder_input = [latent]
-                latent = None
-                tiled_iterator = video_decoder.tiled_decode(decoder_input, tiling_config, generator=generator, interrupt_check=interrupt_check)
-            else:
-                tiled_iterator = video_decoder.tiled_decode(latent, tiling_config, generator=generator, interrupt_check=interrupt_check)
-            for frames in tiled_iterator:
-                if interrupt_check is not None and interrupt_check():
-                    return
-                yield convert_to_uint8(frames)
-        else:
-            if interrupt_check is not None and interrupt_check():
-                return
-            if is_diffusion_decoder:
-                decoder_input = [latent]
-                latent = None
-                decoded_video = video_decoder(decoder_input, generator=generator)
-            else:
-                with PhaseProgress(1) as progress:
-                    decoded_video = video_decoder(latent)
-                    progress.advance()
-            if interrupt_check is not None and interrupt_check():
-                return
-            yield convert_to_uint8(decoded_video)
-    finally:
-        if tiled_iterator is not None:
-            close = getattr(tiled_iterator, "close", None)
-            if close is not None:
-                close()
-        decoded_video = None
-        tiling_config = None
-        video_decoder = None
-        latent = None
+    video = decode_video_to_tensor(latent, video_decoder, tiling_config, interrupt_check=interrupt_check, generator=generator)
+    if video is not None:
+        yield video
 
 
 def decode_video_to_tensor(
@@ -1104,35 +780,45 @@ def decode_video_to_tensor(
     decoded_video = None
     write_pos = 0
     is_diffusion_decoder = getattr(video_decoder, "is_diffusion_decoder", False)
+
+    def write(position: int, rows: slice, cols: slice, frames: torch.Tensor) -> int:
+        # patch of the video from frame `position`, cropped to the expected size
+        frame_count = min(int(frames.shape[2]), frame_capacity - position)
+        (top, bottom, _), (left, right, _) = rows.indices(target_height), cols.indices(target_width)
+        if frame_count <= 0 or bottom <= top or right <= left:
+            return frame_count
+        frames = frames[:, :, :frame_count, : bottom - top, : right - left]
+        if frames.dtype is torch.uint8:
+            pass
+        elif is_hdr:
+            frames = vae_range_to_hdr_linear(frames, transform=hdr_transform, channel_dim=1).to(dtype=tensor_dtype)
+        else:
+            frames = frames.add_(1.0).mul_(127.5).clamp_(0.0, 255.0)
+        video_tensor[position : position + frame_count, top:bottom, left:right].copy_(frames[0].permute(1, 2, 3, 0))
+        return frame_count
+
     try:
-        if tiling_config is not None:
-            tiled_decode_kwargs = {"generator": generator, "interrupt_check": interrupt_check, "copy_emitted_chunks": False}
-            if is_diffusion_decoder:
-                tiled_decode_kwargs["output_uint8"] = tensor_dtype is torch.uint8
-                tiled_decode_kwargs["keyframes"] = keyframes
-                tiled_decode_kwargs["high_precision"] = is_hdr
-                decoder_input = [latent]
-                latent = None
-                tiled_iterator = video_decoder.tiled_decode(decoder_input, tiling_config, **tiled_decode_kwargs)
-            else:
-                tiled_iterator = video_decoder.tiled_decode(latent, tiling_config, **tiled_decode_kwargs)
+        if tiling_config is not None and is_diffusion_decoder:
+            tiled_decode_kwargs = {"generator": generator, "interrupt_check": interrupt_check, "copy_emitted_chunks": False, "output_uint8": tensor_dtype is torch.uint8, "keyframes": keyframes, "high_precision": is_hdr}
+            decoder_input = [latent]
+            latent = None
+            tiled_iterator = video_decoder.tiled_decode(decoder_input, tiling_config, **tiled_decode_kwargs)
             for frames in tiled_iterator:
                 if interrupt_check is not None and interrupt_check():
                     return None
                 if frames is None:
                     continue
-                frame_count = min(int(frames.shape[2]), frame_capacity - write_pos)
+                frame_count = write(write_pos, slice(None), slice(None), frames)
                 if frame_count <= 0:
                     break
-                frames = frames[:, :, :frame_count, :target_height, :target_width]
-                if frames.dtype is torch.uint8:
-                    pass
-                elif is_hdr:
-                    frames = vae_range_to_hdr_linear(frames, transform=hdr_transform, channel_dim=1).to(dtype=tensor_dtype)
-                else:
-                    frames = frames.add_(1.0).mul_(127.5).clamp_(0.0, 255.0)
-                video_tensor[write_pos : write_pos + frame_count].copy_(frames[0].permute(1, 2, 3, 0))
                 write_pos += frame_count
+        elif tiling_config is not None:
+            def write_patch(position: int, rows: slice, cols: slice, frames: torch.Tensor) -> None:
+                nonlocal write_pos
+                write_pos = max(write_pos, position + write(position, rows, cols, frames))
+
+            if not video_decoder.tiled_decode(latent, tiling_config, write_patch, interrupt_check):
+                return None
         else:
             if interrupt_check is not None and interrupt_check():
                 return None
@@ -1233,9 +919,9 @@ def _make_mask_1d(
 
 
 def _encoder_input(video: torch.Tensor, device: torch.device | None, dtype: torch.dtype | None) -> torch.Tensor:
-    """uint8 videos may stay on CPU; each encoded tile is moved and normalized to [-1, 1] on its own."""
+    """Videos may stay on CPU; each encoded tile is moved to ``device`` on its own, and uint8 tiles are normalized to [-1, 1]."""
     if video.dtype != torch.uint8:
-        return video
+        return video.to(device=device)
     return video.to(device=device).to(dtype).div_(127.5).sub_(1.0)
 
 
@@ -1249,8 +935,8 @@ def encode_video(
     """
     Encode a video tensor with the given encoder, optionally using spatial/temporal tiling.
     Args:
-        video: Tensor [b, c, f, h, w]. A uint8 video (0-255, possibly on CPU) is converted per tile
-            to ``device`` / ``dtype`` in [-1, 1], so the full-resolution float video never exists.
+        video: Tensor [b, c, f, h, w], possibly on CPU: each tile is moved to ``device`` on its own. A uint8 video
+            (0-255) is also converted per tile to ``dtype`` in [-1, 1], so the full-resolution float video never exists.
         video_encoder: Encoder module.
         tiling_config: Optional tiling settings.
     Returns:
@@ -1263,103 +949,38 @@ def encode_video(
             return video_encoder(_encoder_input(video, device, dtype))
     if video.shape[2] == 1 and tiling_config.spatial_config is not None:
         tiling_config = replace(tiling_config, spatial_config=None)
-
-    b, _, frames, height, width = video.shape
+    # streamed (see streaming.py): spatial tile after spatial tile, by chunks of frames (the first frame alone); the tiles blended
+    batch, _, frames, height, width = video.shape
     scale = VIDEO_SCALE_FACTORS
-    latent_shape = VideoLatentShape.from_pixel_shape(
-        VideoPixelShape(batch=b, frames=frames, height=height, width=width, fps=1.0),
-        latent_channels=getattr(video_encoder, "latent_channels", 128),
-        scale_factors=scale,
-    )
-
-    long_side = max(latent_shape.height, latent_shape.width)
-    temporal_intervals = _build_temporal_intervals(latent_shape.frames, tiling_config, scale.time)
-    height_intervals = _build_spatial_intervals(latent_shape.height, tiling_config, scale.height, long_side)
-    width_intervals = _build_spatial_intervals(latent_shape.width, tiling_config, scale.width, long_side)
-
-    output = None
-    weights = None
-
-    tiles = len(temporal_intervals.starts) * len(height_intervals.starts) * len(width_intervals.starts)
-    with vae_encoding_progress(tiles, video_encoder, enabled=video.shape[2] > 1):
-        for t_idx, h_idx, w_idx in itertools.product(
-            range(len(temporal_intervals.starts)),
-            range(len(height_intervals.starts)),
-            range(len(width_intervals.starts)),
-        ):
-            t_start = temporal_intervals.starts[t_idx]
-            t_end = temporal_intervals.ends[t_idx]
-            t_left = temporal_intervals.left_ramps[t_idx]
-            t_right = temporal_intervals.right_ramps[t_idx]
-            h_start = height_intervals.starts[h_idx]
-            h_end = height_intervals.ends[h_idx]
-            h_left = height_intervals.left_ramps[h_idx]
-            h_right = height_intervals.right_ramps[h_idx]
-            w_start = width_intervals.starts[w_idx]
-            w_end = width_intervals.ends[w_idx]
-            w_left = width_intervals.left_ramps[w_idx]
-            w_right = width_intervals.right_ramps[w_idx]
-
-            t_slice, _ = map_temporal_slice(t_start, t_end, t_left, t_right, scale.time, video.device)
-            h_slice, _ = map_spatial_slice(h_start, h_end, h_left, h_right, scale.height, video.device)
-            w_slice, _ = map_spatial_slice(w_start, w_end, w_left, w_right, scale.width, video.device)
-
-            tile = _encoder_input(video[:, :, t_slice, h_slice, w_slice], device, dtype)
-            encoded_tile = video_encoder(tile)
-            tile = None
-
-            t_len = t_end - t_start
-            h_len = h_end - h_start
-            w_len = w_end - w_start
-            encoded_tile = encoded_tile[:, :, :t_len, :h_len, :w_len]
-
-            if output is None:
-                output = torch.zeros(
-                    latent_shape.to_torch_shape(),
-                    device=encoded_tile.device,
-                    dtype=encoded_tile.dtype,
-                )
-                weights = torch.zeros(
-                    (1, 1, latent_shape.frames, latent_shape.height, latent_shape.width),
-                    device=encoded_tile.device,
-                    dtype=encoded_tile.dtype,
-                )
-
-            mask_t = _make_mask_1d(
-                t_len,
-                t_left,
-                t_right,
-                left_starts_from_0=True,
-                device=encoded_tile.device,
-                dtype=encoded_tile.dtype,
-            )
-            mask_h = _make_mask_1d(
-                h_len,
-                h_left,
-                h_right,
-                left_starts_from_0=False,
-                device=encoded_tile.device,
-                dtype=encoded_tile.dtype,
-            )
-            mask_w = _make_mask_1d(
-                w_len,
-                w_left,
-                w_right,
-                left_starts_from_0=False,
-                device=encoded_tile.device,
-                dtype=encoded_tile.dtype,
-            )
-            mask = mask_t[:, None, None] * mask_h[None, :, None] * mask_w[None, None, :]
-            mask = mask.unsqueeze(0).unsqueeze(0)
-
-            output[:, :, t_start:t_end, h_start:h_end, w_start:w_end] += encoded_tile * mask
-            weights[:, :, t_start:t_end, h_start:h_end, w_start:w_end] += mask
-
-    if output is None or weights is None:
-        with vae_encoding_progress(1, video_encoder, enabled=video.shape[2] > 1):
-            return video_encoder(_encoder_input(video, device, dtype))
-    weights = weights.clamp_min(1e-6)
-    return output / weights
+    if (frames - 1) % scale.time:
+        raise ValueError("Invalid number of frames: Encode input must have 1 + 8 * x frames (e.g., 1, 9, 17, ...). Please check your input.")
+    shape = (batch, getattr(video_encoder, "latent_channels", 128), 1 + (frames - 1) // scale.time, height // scale.height, width // scale.width)
+    tiles = _stream_tiles(shape, tiling_config, ENCODE_TILE_AREA, 0, 1, device)
+    chunks = [(0, 1)] + [(start, min(start + ENCODE_CHUNK_FRAMES, frames)) for start in range(1, frames, ENCODE_CHUNK_FRAMES)]
+    output = weights = None
+    with vae_encoding_progress(len(tiles) * len(chunks), video_encoder, enabled=frames > 1):
+        for tile in tiles:
+            stream, mask, index = EncoderStream(video_encoder), None, 0
+            rows, cols = (slice(region.start * scale.height, region.stop * scale.height) for region in tile.in_coords[3:5])
+            for start, stop in chunks:
+                latent = video_encoder(_encoder_input(video[:, :, start:stop, rows, cols], device, dtype), stream=stream)
+                if latent is None:
+                    continue
+                count, index = latent.shape[2], index + latent.shape[2]
+                if output is None:
+                    output = latent.new_zeros(shape)
+                    weights = latent.new_zeros(shape[3:]) if len(tiles) > 1 else None
+                if weights is None:
+                    output[:, :, index - count : index] = latent
+                    continue
+                if mask is None:  # blending weights of the tile, (h, w)
+                    mask = latent.new_ones(latent.shape[3:])
+                    for axis, view in ((3, (-1, 1)), (4, (1, -1))):
+                        if tile.masks_1d[axis] is not None:
+                            mask *= tile.masks_1d[axis].view(view).to(mask.dtype)
+                    weights[tile.out_coords[3], tile.out_coords[4]] += mask
+                output[:, :, index - count : index, tile.out_coords[3], tile.out_coords[4]] += latent * mask
+    return output if weights is None else output / weights.clamp_min(1e-6)
 
 
 def get_video_chunks_number(num_frames: int, tiling_config: TilingConfig | None = None) -> int:

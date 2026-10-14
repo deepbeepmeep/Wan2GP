@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from shared.utils.phase_progress import text_encoding_prompts, text_encoding_progress
 from mmgp import offload
 import inspect
@@ -879,7 +880,7 @@ class QwenImagePipeline(): #DiffusionPipeline
                 else:
                     image_latents = image_latents[:, latents.shape[1]:] 
 
-                from shared.inpainting.lanpaint import LanPaint
+                from shared.lanpaint import LanPaint
                 lanpaint_steps = {2: 2, 3: 5, 4: 10, 5: 15}.get(model_mode_int, 5)
                 lanpaint_proc = LanPaint(NSteps=lanpaint_steps)
                 denoising_strength = 1.

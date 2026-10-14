@@ -1,3 +1,4 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import ast
 import os
 import sys
@@ -1454,3 +1455,10 @@ def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None)
 
 def apply_pre_quantization(model, state_dict, quantization_map, default_dtype=None, verboseLevel=1):
     return quantization_map or {}, []
+
+
+from mmgp import offload
+from .nunchaku_rows import NunchakuRowProjection
+
+_ROW_PROJECTION = NunchakuRowProjection(sys.modules[__name__])
+offload.register_row_projection(_ROW_PROJECTION)

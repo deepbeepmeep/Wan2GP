@@ -16,11 +16,8 @@ REGISTRY = json.loads(Path(__file__).with_name('decoders.json').read_text(encodi
 
 
 def decoder_for(architecture, model_def):
-    # These variants use different conditioning/latent contracts from the
-    # baseline architectures. Register them only after checking that contract.
-    if model_def.get('ltx2_msr') or model_def.get('joyai_echo') or model_def.get('ltx2_edit_anything'):
-        return None
-    return REGISTRY['architectures'].get(architecture)
+    # Handlers declare `tiny_vae_architecture`: the registered architecture whose latent space and preview contract they share.
+    return REGISTRY['architectures'].get(model_def.get('tiny_vae_architecture', architecture))
 
 
 def prepare_decoder(name, gen=None):

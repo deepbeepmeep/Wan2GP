@@ -16,6 +16,7 @@
 # Modified from diffusers==0.29.2
 #
 # ==============================================================================
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from shared.utils.phase_progress import text_encoding_prompts
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Union, Tuple
@@ -1416,7 +1417,7 @@ class HunyuanVideoAudioPipeline(DiffusionPipeline):
                 latents_all = pred_latents     
 
                 if callback is not None:
-                    callback(i, latents_all.squeeze(0), False)
+                    callback(i, latents_all[0, :, :video_length], False)
 
         latents = latents_all.float()[:, :, :video_length] 
 

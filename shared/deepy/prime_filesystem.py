@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Prime filesystem access: free workspace, create-only outputs, configured folders."""
 
 from dataclasses import dataclass, replace
@@ -40,7 +41,7 @@ class PrimeFileAccessPolicy(FileAccessPolicy):
         root = Path(path).expanduser().resolve()
         if alias in self.root_aliases:
             raise ValueError(f"Filesystem root alias already exists: {alias}")
-        return replace(self, selected_roots=(*self.selected_roots, root), root_aliases=(*self.root_aliases, alias), workspace=root if alias.startswith("workspace") else self.workspace)
+        return replace(self, selected_roots=(*self.selected_roots, root), root_aliases=(*self.root_aliases, alias), workspace=root if alias.startswith("documents") else self.workspace)
 
     def create_only(self, path):
         target = self.resolve_path(path)
@@ -70,7 +71,7 @@ def build_prime_policy(base, workspace):
     for alias, root in zip(base.aliases, base.read_roots):
         if root == workspace:
             return replace(policy, workspace=workspace)
-    alias, index = "workspace", 2
+    alias, index = "documents", 2
     while alias in base.aliases:
-        alias, index = f"workspace{index}", index + 1
+        alias, index = f"documents{index}", index + 1
     return policy.with_root(workspace, alias)

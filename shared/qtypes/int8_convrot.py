@@ -1,9 +1,11 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import ast
 import json
 import math
 import os
 
 import torch
+from mmgp import cuda_graphs
 from optimum.quanto import QModuleMixin
 from optimum.quanto.tensor.qtype import qtype as _quanto_qtype, qtypes as _quanto_qtypes
 from optimum.quanto.tensor.weights.qbytes import WeightQBytesTensor
@@ -70,7 +72,12 @@ class Int8ConvRotWeightTensor(WeightQBytesTensor):
         return self
 
     def weight_qbytes_tensor(self):
-        return WeightQBytesTensor(self.qtype, self.axis, self.size(), self.stride(), self._data, self._scale, self.activation_qtype, self.requires_grad)
+        # quanto's tensor takes its dtype from the scale: give it the compute dtype (the INT8 kernels use the FP32 scale itself)
+        scale = self._scale if self._scale.dtype == self.dtype else self._scale.to(self.dtype)
+        return WeightQBytesTensor(self.qtype, self.axis, self.size(), self.stride(), self._data, scale, self.activation_qtype, self.requires_grad)
+
+    def dequantize(self):
+        return (self._data.to(torch.float32) * self._scale.to(torch.float32)).to(self.dtype)
 
     def __tensor_flatten__(self):
         inner_tensors = ["_data", "_scale"]
@@ -130,6 +137,7 @@ class Int8ConvRotWeightTensor(WeightQBytesTensor):
                 requires_grad=t.requires_grad,
                 compute_dtype=t.dtype,
             )
+        args = tuple(arg.weight_qbytes_tensor() if isinstance(arg, Int8ConvRotWeightTensor) else arg for arg in args)
         return WeightQBytesTensor.__torch_dispatch__.__func__(WeightQBytesTensor, op, types, args, kwargs)
 
 
@@ -137,16 +145,15 @@ def _wrap_int8_convrot_weight(weight, compute_dtype):
     if not isinstance(weight, WeightQBytesTensor) or getattr(weight, "qtype", None) != _QINT8_CONVROT_QTYPE:
         return weight
     compute_dtype = _normalize_compute_dtype(compute_dtype)
-    if isinstance(weight, Int8ConvRotWeightTensor) and weight.dtype == compute_dtype and weight._scale.dtype == compute_dtype:
+    if isinstance(weight, Int8ConvRotWeightTensor) and weight.dtype == compute_dtype:
         return weight
-    scale = weight._scale if weight._scale.dtype == compute_dtype else weight._scale.to(compute_dtype)
     return Int8ConvRotWeightTensor.create(
         weight.qtype,
         weight.axis,
         weight.size(),
         weight.stride(),
         weight._data,
-        scale,
+        weight._scale,  # the checkpoint's scale (FP32): the INT8 kernels compute with FP32 scales
         activation_qtype=weight.activation_qtype,
         requires_grad=weight.requires_grad,
         compute_dtype=compute_dtype,
@@ -182,6 +189,16 @@ def _find_layer_config(layers, base):
     return next((value for name, value in layers.items() if base.endswith(name) or name.endswith(base)), {})
 
 
+def convrot_group_size(in_features):
+    """Rotation group of a weight in WanGP's ConvRot checkpoints (shared/convert/convrot.py): 0 leaves the weight unquantized."""
+    return next((size for size in (256, 64, 16) if in_features % size == 0), 0)
+
+
+def _wangp_checkpoint(metadata):
+    # written by WanGP's ConvRot converters: every layer config follows convrot_group_size, so none needs reading from the file
+    return isinstance(metadata, dict) and metadata.get("quantization_format") == "int8_convrot" and metadata.get("convrot_format") == "comfy_quant_v1"
+
+
 def _convrot_group_size(config):
     if not isinstance(config, dict) or not bool(config.get("convrot", False)):
         return 0
@@ -208,7 +225,7 @@ def _regular_hadamard(size, device, dtype):
         h = torch.kron(h, h4)
         current_size *= 4
     h = h.mul(size ** -0.5)
-    _HADAMARD_CACHE[key] = h
+    _HADAMARD_CACHE[key] = cuda_graphs.register_constant(h)  # kept for the process: CUDA graphs read it at its address
     return h
 
 
@@ -248,6 +265,7 @@ def _debug_forward_dtype(module, input, rotated, qweight):
 
 def _collect_specs(state_dict, metadata=None):
     layers = _decode_metadata(metadata)
+    wangp = _wangp_checkpoint(metadata)
     specs = []
     for key, tensor in state_dict.items():
         if not key.endswith(".weight") or getattr(tensor, "dtype", None) != torch.int8:
@@ -258,6 +276,8 @@ def _collect_specs(state_dict, metadata=None):
         if scale is None or getattr(scale, "dtype", None) is None:
             continue
         config = _find_layer_config(layers, base)
+        if not config and wangp and (group_size := convrot_group_size(tensor.shape[1])):
+            config = {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": group_size}
         if not config and getattr(quant_config, "dtype", None) == torch.uint8:
             config = _decode_json_tensor(quant_config)
         if not isinstance(config, dict) or config.get("format") != "int8_tensorwise":
@@ -292,7 +312,7 @@ def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None,
         if scale.numel() != weight.shape[0]:
             raise RuntimeError(f"INT8 ConvRot weight scale for '{base}' has {scale.numel()} values, expected {weight.shape[0]}")
         state_dict[base + ".weight._data"] = weight
-        state_dict[base + ".weight._scale"] = scale.to(_normalize_compute_dtype(default_dtype))
+        state_dict[base + ".weight._scale"] = scale  # kept as stored (FP32): converting it here reads it from the file and rounds it
         state_dict[base + _FUSED_SPLIT_MARKER_SUFFIX] = torch.empty(0, dtype=torch.uint8, device=weight.device)
         state_dict[base + ".input_scale"] = torch.ones((), dtype=torch.float32, device=weight.device)
         state_dict[base + ".output_scale"] = torch.ones((), dtype=torch.float32, device=weight.device)

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """HTTP API and standalone UI for a persistent DeepyService."""
 from __future__ import annotations
 
@@ -11,7 +12,7 @@ from tempfile import TemporaryDirectory
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.websockets import WebSocketState
@@ -22,6 +23,8 @@ from shared.deepy.gallery import _AUDIO_EXTENSIONS, _IMAGE_EXTENSIONS, _VIDEO_EX
 from shared.deepy.voice import mount_voice_routes, save_upload
 from shared.utils.downloads import _install_routes_on_app
 from shared.utils.media_imports import persist_gallery_import
+from shared.utils.gallery_sources import MESH_IMPORT_EXTENSIONS
+from shared.utils.mesh_outputs import import_mesh_file
 from shared.authentication import password
 from shared.authentication.web import WebAuthentication, WebAuthMiddleware
 from shared.authentication.tls import HTTPSRedirect, run_http_and_https, tls_options
@@ -71,6 +74,8 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
         def version_asset(match):
             name = match[1]
             path = WEB.parents[1] / 'gradio' / name if name in {'form_sync.js', 'progress.css'} else WEB / name
+            if name == 'mesh_viewer.js':
+                path = WEB.parents[1] / 'gradio/strip_gallery.py'
             return f'assets/{name}?v={path.stat().st_mtime_ns}'
         page = re.sub(r'assets/([\w.-]+\.(?:js|css))', version_asset, page)
         if https_port is not None:
@@ -79,6 +84,9 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
 
     @app.get("/assets/{name}")
     def asset(name: str):
+        if name == 'mesh_viewer.js':
+            from shared.gradio.strip_gallery import MeshGallery
+            return Response(MeshGallery.get_viewer_javascript('assets/mesh/'), media_type='text/javascript')
         if name in {'form_sync.js', 'progress.css'}:
             return FileResponse(WEB.parents[1] / 'gradio' / name)
         if name == "icon.png":
@@ -86,6 +94,12 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
         if name not in {"chat.js", "compact_actions.js", "chat.css", "voice.js", "app.js", "app.css", "gradio_transport.js", "manifest.webmanifest", "icon.svg", "transport.js", "hybrid_transport.js", "workspaces.js", "workspaces.css", "media_view.js"}:
             raise HTTPException(404)
         return FileResponse(WEB / name, media_type="application/manifest+json" if name == "manifest.webmanifest" else None)
+
+    @app.get('/assets/mesh/{name:path}')
+    def mesh_asset(name: str):
+        if name not in {'model-viewer.min.js', 'spark/three.module.js', 'spark/three.core.js', 'spark/spark.module.min.js', 'spark/OrbitControls.js', 'spark/Pass.js'}:
+            raise HTTPException(404)
+        return FileResponse(WEB.parents[1] / 'gradio/vendor' / name, media_type='text/javascript')
 
     @app.get("/deepy_api/state")
     def state():
@@ -123,7 +137,7 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
         from shared.deepy.thumbnails import render_thumbnail
         try:
             path = service.gallery.media_path(media_id)
-            if service.gallery._detect_media_type(path) not in ('image', 'video'):
+            if service.gallery._detect_media_type(path) not in ('image', 'video', '3d'):
                 raise HTTPException(400, "Media has no visual thumbnail.")
             data = await render_thumbnail(path)
         except (KeyError, FileNotFoundError):
@@ -148,17 +162,19 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
     def update_settings(body: dict):
         return service.submit_settings(body['baseline'], body['values']) if 'baseline' in body else service.update_settings(body)
 
-    async def event_batches(after):
+    async def event_batches(after, instance):
         while not service._closing:
-            events = await run_in_threadpool(service.events_after, after)
+            events = await run_in_threadpool(service.events_after, after, instance=instance)
             if events:
                 after = events[-1]['id']
+                if events[-1]['type'] == 'snapshot':
+                    instance = events[-1]['data']['instance']
             yield events
 
     @app.get("/deepy_api/events")
-    async def events(request: Request, after: int = 0):
+    async def events(request: Request, after: int = 0, instance: str | None = None):
         async def stream():
-            async for events in event_batches(after):
+            async for events in event_batches(after, instance):
                 if await request.is_disconnected():
                     return
                 if not events:
@@ -168,18 +184,18 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.get("/deepy_api/events/poll")
-    async def poll_events(after: int = 0):
+    async def poll_events(after: int = 0, instance: str | None = None):
         # Short requests avoid consuming the browser's connection pool when
         # Gradio and Deepy are open in multiple tabs behind a proxy.
-        events = await run_in_threadpool(service.events_after, after, 0)
+        events = await run_in_threadpool(service.events_after, after, 0, instance)
         return JSONResponse(events, headers={"Cache-Control": "no-store"})
 
     @app.websocket('/deepy_api/events')
-    async def websocket_events(socket: WebSocket, after: int = 0):
+    async def websocket_events(socket: WebSocket, after: int = 0, instance: str | None = None):
         await socket.accept()
 
         async def send_events():
-            async for events in event_batches(after):
+            async for events in event_batches(after, instance):
                 for event in events:
                     # Buffered sends may never suspend. Let the receiver and
                     # Windows transport process a disconnect between messages.
@@ -230,13 +246,21 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
     @app.post("/deepy_api/media")
     async def upload(file: UploadFile = File(...), from_chat: bool = Form(False)):
         session_epoch = service._session.chat_epoch
-        output = Path(service._deps.get_server_config()['save_path'])
+        with service._mutation_lock:
+            service.prepare_media_workspace()
+            workspace_id = service.workspace_id
+            output = Path(service.workspace_output_config(workspace_id)['save_path'])
         output.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix='.import-', dir=output) as directory:
-            source = await save_upload(file, Path(directory), limit=1024 * 1024 * 1024, extensions=_IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS, preserve_filename=True)
+            source = await save_upload(file, Path(directory), limit=1024 * 1024 * 1024, extensions=_IMAGE_EXTENSIONS | _VIDEO_EXTENSIONS | _AUDIO_EXTENSIONS | set(MESH_IMPORT_EXTENSIONS), preserve_filename=True)
             def add():
                 with service._mutation_lock:
-                    path, reused = persist_gallery_import(source, output, move=True)
+                    if service.workspace_id != workspace_id:
+                        raise ValueError('The workspace changed during upload. Please import the file again.')
+                    if Path(source).suffix.lower() in MESH_IMPORT_EXTENSIONS:
+                        path, reused = import_mesh_file(source, service.workspace_output_config(workspace_id)['mesh_save_path'])
+                    else:
+                        path, reused = persist_gallery_import(source, output, move=True)
                     try:
                         return service.import_media(path, session_epoch=session_epoch, from_chat=from_chat)
                     except Exception:
@@ -263,8 +287,8 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
 
 
 def server_options(args):
-    if args.mcp_auth or args.mcp_auth_password is not None or args.mcp_auth_url is not None:
-        raise ValueError("MCP OAuth options require --mcp with a network transport.")
+    if not args.mcp_webui and (args.mcp_auth or args.mcp_auth_password is not None or args.mcp_auth_url is not None):
+        raise ValueError("MCP OAuth options require --mcp or --mcp-webui with a network transport.")
     host = "0.0.0.0" if args.listen else args.server_name or os.getenv("SERVER_NAME", "localhost")
     port = int(args.server_port) or int(os.getenv("SERVER_PORT", "7860"))
     cert, key, https_port = tls_options(args, port)
@@ -283,7 +307,7 @@ def run_server(deps, args):
         print(f"Deepy HTTPS: https://{host}:{https_port}")
     print("WanGP web authentication disabled." if auth.gate is None else "WanGP web authentication enabled.")
     service = DeepyService(deps)
-    service.configure_workspaces(args.workspaces_dir or str(WEB.parents[2] / 'workspaces'))
+    service.configure_workspaces(args.workspaces_dir or service._deps.get_server_config().get('workspaces_dir') or str(WEB.parents[2] / 'workspaces'))
     app = create_app(service, auth=auth, voice_language=args.deepy_voice_language, https_port=https_port)
     if https_port is None:
         uvicorn.run(app, host=host, port=port, ssl_certfile=cert, ssl_keyfile=key)

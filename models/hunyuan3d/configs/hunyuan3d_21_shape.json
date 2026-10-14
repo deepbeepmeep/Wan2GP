@@ -1,0 +1,10 @@
+{
+    "transformer": {"in_channels": 64, "hidden_size": 2048, "context_dim": 1024, "depth": 21, "num_heads": 16, "num_moe_layers": 6, "num_experts": 8, "moe_top_k": 2},
+    "vae": {"num_latents": 4096, "embed_dim": 64, "width": 1024, "heads": 16, "num_decoder_layers": 16, "num_freqs": 8, "scale_factor": 1.0039506158752403},
+    "image_encoder": {"hidden_size": 1024, "num_hidden_layers": 24, "num_attention_heads": 16, "use_swiglu_ffn": false, "patch_size": 14, "image_size": 518, "layer_norm_eps": 1e-6},
+    "image_size": 512,
+    "border_ratio": 0.15,
+    "bounds": 1.01,
+    "mc_level": 0.0,
+    "num_chunks": 8000
+}

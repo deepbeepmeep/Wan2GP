@@ -11,29 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# Modified for WanGP: the PLY is written by shared.mesh3d.splats (numpy) instead of plyfile (GPL).
 from pathlib import Path
 from typing import Optional
-import numpy as np
 import torch
-from einops import rearrange, repeat
-from plyfile import PlyData, PlyElement
+from einops import rearrange
 from torch import Tensor
 
+from shared.mesh3d.splats import splats_to_ply
 from ..specs import Gaussians
-
-
-def construct_list_of_attributes(num_rest: int) -> list[str]:
-    attributes = ["x", "y", "z", "nx", "ny", "nz"]
-    for i in range(3):
-        attributes.append(f"f_dc_{i}")
-    for i in range(num_rest):
-        attributes.append(f"f_rest_{i}")
-    attributes.append("opacity")
-    for i in range(3):
-        attributes.append(f"scale_{i}")
-    for i in range(4):
-        attributes.append(f"rot_{i}")
-    return attributes
 
 
 def export_ply(
@@ -41,12 +27,14 @@ def export_ply(
     scales: Tensor,  # "gaussian 3"
     rotations: Tensor,  # "gaussian 4"
     harmonics: Tensor,  # "gaussian 3 d_sh"
-    opacities: Tensor,  # "gaussian"
+    opacities: Tensor,  # "gaussian", logits as stored in the PLY
     path: Path,
     shift_and_scale: bool = False,
     save_sh_dc_only: bool = True,
     match_3dgs_mcmc_dev: Optional[bool] = False,
 ):
+    """INRIA 3DGS PLY (binary little-endian float32: x y z nx ny nz f_dc_0..2 f_rest_* opacity scale_0..2 rot_0..3, f_rest channel-major,
+    plus a `comment sh_degree N` header line). match_3dgs_mcmc_dev writes degree 3 with zero higher coefficients (normals included)."""
     if shift_and_scale:
         # Shift the scene so that the median Gaussian is at the origin.
         means = means - means.median(dim=0).values
@@ -56,50 +44,13 @@ def export_ply(
         means = means / scale_factor
         scales = scales / scale_factor
 
-    rotations = rotations.detach().cpu().numpy()
-
-    # Since current model use SH_degree = 4,
-    # which require large memory to store, we can only save the DC band to save memory.
-    f_dc = harmonics[..., 0]
-    f_rest = harmonics[..., 1:].flatten(start_dim=1)
-
+    # Since current model use SH_degree = 4, which require large memory to store, we can only save the DC band to save memory.
     if match_3dgs_mcmc_dev:
-        sh_degree = 3
-        n_rest = 3 * (sh_degree + 1) ** 2 - 3
-        f_rest = repeat(
-            torch.zeros_like(harmonics[..., :1]), "... i -> ... (n i)", n=(n_rest // 3)
-        ).flatten(start_dim=1)
-        dtype_full = [
-            (attribute, "f4")
-            for attribute in construct_list_of_attributes(num_rest=n_rest)
-            if attribute not in ("nx", "ny", "nz")
-        ]
+        sh_rest = torch.zeros(len(means), 15, 3, dtype=torch.float32, device=means.device)
     else:
-        dtype_full = [
-            (attribute, "f4")
-            for attribute in construct_list_of_attributes(
-                0 if save_sh_dc_only else f_rest.shape[1]
-            )
-        ]
-    elements = np.empty(means.shape[0], dtype=dtype_full)
-    attributes = [
-        means.detach().cpu().numpy(),
-        torch.zeros_like(means).detach().cpu().numpy(),
-        f_dc.detach().cpu().contiguous().numpy(),
-        f_rest.detach().cpu().contiguous().numpy(),
-        opacities[..., None].detach().cpu().numpy(),
-        scales.log().detach().cpu().numpy(),
-        rotations,
-    ]
-    if match_3dgs_mcmc_dev:
-        attributes.pop(1)  # dummy normal is not needed
-    elif save_sh_dc_only:
-        attributes.pop(3)  # remove f_rest from attributes
-
-    attributes = np.concatenate(attributes, axis=1)
-    elements[:] = list(map(tuple, attributes))
+        sh_rest = None if save_sh_dc_only else harmonics[..., 1:].transpose(1, 2)
     path.parent.mkdir(exist_ok=True, parents=True)
-    PlyData([PlyElement.describe(elements, "vertex")]).write(path)
+    path.write_bytes(splats_to_ply(means, scales, rotations, opacities.float().sigmoid(), harmonics[..., 0], sh_rest))
 
 
 def inverse_sigmoid(x):

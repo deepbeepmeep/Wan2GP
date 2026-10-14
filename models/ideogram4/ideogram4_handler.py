@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 
 import torch
 
@@ -33,7 +34,7 @@ IDEOGRAM4_INFOS = """## Ideogram 4
 
 Ideogram 4 is an image model specialized for prompt-following, text rendering, layout, logos, posters, typography, and graphic design.
 
-It can take a plain text prompt, but it is designed to work especially well with structured JSON prompts. In WanGP, Magic Prompt can convert a normal text prompt into Ideogram's JSON-style caption format. For best prompt adherence, use the JSON format when possible.
+It was trained on structured JSON captions; use that format for good results. In WanGP, optional Magic Prompt can convert a normal text brief into Ideogram's JSON caption format. Without Magic Prompt, write the structured caption yourself; directly passing plain text is not the upstream-supported prompting workflow.
 
 
 ## Guidance phases
@@ -170,6 +171,7 @@ class family_handler:
             "image_outputs": True,
             "device_explicit": True,
             "flux2": True,
+            "tiny_vae_architecture": "flux2_klein_4b",
             "vae_upsamplers": {"flux2_vae_pid": [1]},
             "excluded_spatial_upsamplers": ["flux2_pid"],
             "guidance_max_phases": 3,
@@ -186,10 +188,12 @@ class family_handler:
             "no_negative_prompt": True,
             "no_background_removal": True,
             "skip_prompt_template": True,
-            "resolutions_categories": ["<=2k"],
+            "resolutions_categories": ["<=1440p"],
             "vae_block_size": 16,
             "prompt_enhancer_button_label": "Magic Prompt",
             "prompt_infos": IDEOGRAM4_PROMPT_INFOS,
+            "deepy_infos": "### Ideogram 4\n\nText-to-image for logos, posters, typography and graphic design. Trained on structured JSON captions: supply JSON, or optionally enable Magic Prompt to convert a plain-text brief. Direct plain text is not the upstream-supported workflow. Use the selected Quality/Default/Turbo preset; proofread text and layout. TurboTime has its own few-step settings.",
+            "deepy_prompt_infos": '### Prompt Format\n\nSupply JSON, not a bare prose prompt. Top-level order: high_level_description (recommended), style_description (optional), compositional_deconstruction (required: background, then elements). Style order: aesthetics, lighting, photo, medium for photos; aesthetics, lighting, medium, art_style otherwise; optional color_palette comes last. Use photo OR art_style. Element order: type, optional bbox, text for text elements only, desc, optional color_palette. Bboxes are [y_min,x_min,y_max,x_max], normalized 0–1000 from top left. Example: {"high_level_description":"A simple market poster.","style_description":{"aesthetics":"bold and cheerful","lighting":"flat","medium":"graphic_design","art_style":"screen print","color_palette":["#FFF4D6","#174A8B"]},"compositional_deconstruction":{"background":"Cream paper","elements":[{"type":"text","bbox":[100,100,300,900],"text":"MARKET","desc":"Large blue sans-serif lettering"}]}}. Quote every intended visible string exactly, escape embedded quotes, and close all JSON delimiters. No Markdown fences in the actual prompt.',
             "prompt_helper_popup_dims": [78, 100],
             "prompt_enhancer_def": {
                 "selection": ["T"],

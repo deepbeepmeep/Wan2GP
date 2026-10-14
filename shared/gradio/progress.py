@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """WanGP progress values and rendering, shared by Gradio and the web app."""
 
 import inspect
@@ -81,7 +82,7 @@ class WangpProgress:
             return 0
         return .2 if self._completion[3] is None else max(0, self._completion[3] - time.monotonic())
 
-    def render(self, *, compact=False, aborting=False, active=True, hold_complete=False, bar_text=None):
+    def render(self, *, compact=False, aborting=False, active=True, hold_complete=False, bar_text=None, model_name=""):
         aborting = aborting or self.gen["abort"]
         # A standalone worker may publish its next update while the UI renders.
         position, download, title = self.position, self.download, self.description
@@ -93,12 +94,16 @@ class WangpProgress:
             active = True
         if position is None and download is None:
             return ""
-        if download is not None and not title.lower().startswith("downloading"):
-            if title.lower().startswith("loading "):
+        if download is not None and model_name:
+            title = "Downloading..."
+        elif download is not None and not title.lower().startswith("downloading"):
+            if title == "Loading...":
+                title = "Downloading..."
+            elif title.lower().startswith("loading "):
                 title = "Downloading" + title[len("Loading"):]
             else:
                 title = f"Downloading files — {title}" if title else "Downloading files"
-        if title.lower().startswith(("downloading", "loading model")):
+        if title.lower().startswith(("downloading ", "loading model")):
             title = title.removesuffix("...").removesuffix("…").rstrip()
         if aborting:
             title = f"Stopping… {title}"
@@ -132,6 +137,8 @@ class WangpProgress:
             ratio = None
         percentage = max(0, min(100, ratio * 100)) if ratio is not None else None
         classes = "wangp-progress" + (" compact" if compact else "")
+        if model_name:
+            classes += " has-model"
         if self.timing:
             classes += " token-progress"
         if not active:
@@ -143,14 +150,16 @@ class WangpProgress:
         width = f"{percentage:.2f}%" if percentage is not None else "0%"
         value = f' aria-valuenow="{percentage:.1f}"' if percentage is not None else ""
         track = "progress-track" + (" indeterminate" if percentage is None and active and "status-only" not in classes else "")
-        has_subtask_label = bool(text) and title.removeprefix("Stopping… ").lower().startswith(("downloading", "loading "))
+        has_subtask_label = bool(text) and title.removeprefix("Stopping… ").lower().startswith(("downloading", "loading"))
         percent = f"{percentage:.0f}%" if percentage is not None and not has_subtask_label else ""
         complete = percentage == 100 and (download is None or download.get("finished_at") is not None)
         tooltip = escape(title + ("\n" + text if text else ""))
         details = escape(" · ".join(item for item in (amount, speed, counter, timing) if item))
         metadata = ' · '.join(f'<span class="progress-{name}">{escape(value)}</span>' for name, value in (("amount", amount), ("counter", counter), ("speed", speed)) if value)
+        model_words = " ".join(f"<span>{escape(word)}</span>" for word in model_name.split())
+        model_html = f'<span class="progress-model" title="{escape(model_name)}">{model_words}</span>' if model_name else ""
         return f'''<div class="{classes}" data-complete="{str(complete).lower()}" style="--progress:{width}">
-            <div class="progress-heading" title="{tooltip}"><div class="progress-caption"><span class="progress-title">{escape(title)}</span><span class="progress-percent">{' - ' + percent if percent else ''}</span></div><span class="progress-timing" title="{escape(timing)}">{escape(timing)}</span></div>
+            <div class="progress-heading" title="{tooltip}">{model_html}<div class="progress-caption"><span class="progress-title">{escape(title)}</span><span class="progress-percent">{' - ' + percent if percent else ''}</span></div><span class="progress-timing" title="{escape(timing)}">{escape(timing)}</span></div>
             <div class="{track}" role="progressbar" aria-label="{escape(title or 'Progress')}" aria-valuemin="0" aria-valuemax="100"{value} title="{tooltip}">
                 <div class="progress-fill"></div><div class="progress-label">{text_html}</div><div class="progress-label progress-covered" aria-hidden="true">{text_html}</div>
             </div>
@@ -227,7 +236,8 @@ class WangpProgress:
 
             button.click(request_stop, queue=False, show_progress="hidden", api_name=False)
             return component
-        return gr.HTML(value=initial.render(active=False) if visible else "", visible=visible, container=True, padding=False, elem_classes=["wangp-progress-container"], **kwargs)
+        kwargs.setdefault("value", initial.render(active=False) if visible else "")
+        return gr.HTML(visible=visible, container=True, padding=False, elem_classes=["wangp-progress-container"], **kwargs)
 
     @classmethod
     def bind(cls, event, fn, *, inputs, outputs, component, hide=(), **kwargs):

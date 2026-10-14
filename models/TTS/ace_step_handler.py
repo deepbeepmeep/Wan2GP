@@ -1,3 +1,6 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .help import ACE1_HELP
 import os
 import re
 
@@ -330,8 +333,8 @@ class family_handler:
         if _is_ace_step15(base_model_type):
             extra_model_def = {
                 "group": "music",
-                "infos": "Generate music by combining Lyrics (`prompt`) with Music Caption (`alt_prompt`): the lyrics supply words and song sections; the caption supplies style, instruments, mood and vocal character. Audio Task selects text-only generation, a cover from Source Audio (`audio_guide`, mode `A`), Reference Timbre (`audio_guide2`, mode `B`), or both (`AB`). For a cover, supply the source lyrics and use Source Audio Strength to control adherence. Duration, BPM, key, meter and language are separate controls.",
-                "deepy_infos": "Lyrics `prompt` + sound/style caption `alt_prompt` generate music. `audio_prompt_type`: `A` = cover from `audio_guide` (use source lyrics; Source Audio Strength controls adherence), `B` = timbre from `audio_guide2`, `AB` = both. Duration/BPM/key/meter/language have separate controls.",
+                "infos": "Generate music by combining Lyrics (`prompt`) with Music Caption (`alt_prompt`): the lyrics supply words and song sections; the caption supplies style, instruments, mood and vocal character. Audio Task selects text-only generation, a cover from Source Audio (`audio_guide`, mode `A`), Reference Timbre (`audio_guide2`, mode `B`), or both (`AB`). For a cover, supply the source lyrics and use Source Audio Strength to control adherence. Duration, BPM, key, meter and language are separate controls. The music usually ends with a fade before the target duration (with ACE-Step 1.5 Turbo it lasted 67-97% of it, for example 11-13 s of a 16 s request): when a cue must fill a length, request about a third more and trim it. Songs come out mastered loud (around -10 LUFS, peaks at full scale): lower the music when mixing it under speech.",
+                "deepy_infos": "Lyrics `prompt` + sound/style caption `alt_prompt` generate music. `audio_prompt_type`: `A` = cover from `audio_guide` (use source lyrics; Source Audio Strength controls adherence), `B` = timbre from `audio_guide2`, `AB` = both. Duration/BPM/key/meter/language have separate controls. Music usually ends with a fade before duration_seconds (Turbo: 67-97% of it); to fill an exact length request ~1/3 more and trim (extract_audio, or trim_start_s/trim_duration_s in a remux_media mix). Output is mastered loud (~-10 LUFS, peaks at full scale): give it a negative gain under narration or set normalize_lufs.",
                 "deepy_prompt_infos": "Put actual lyrics in `prompt`, with short lines and [Verse], [Chorus], [Bridge] tags separated by blank lines. Keep repeated choruses consistent. Put genre, instruments, mood and vocal character in `alt_prompt`. For instrumental music use `[Instrumental]` as lyrics and describe the sound in the caption.",
                 "audio_only": True,
                 "image_outputs": False,
@@ -384,8 +387,10 @@ class family_handler:
             if _ace_step15_has_lm_definition(model_def):
                 extra_model_def["model_modes"] = ACE_STEP15_MODEL_MODES.copy()
             extra_model_def["device_explicit"] = True
+            from models.help_shared import specialities
+            extra_model_def["specialities"] = specialities("music generation")
             return extra_model_def
-        return {
+        return merge_help({
             "group": "music",
             "device_explicit": True,
             "audio_only": True,
@@ -424,7 +429,7 @@ class family_handler:
             "duration_slider": dict(ACE_STEP_DURATION_SLIDER),
             "text_prompt_enhancer_instructions": HEARTMULA_LYRIC_PROMPT,
             "prompt_enhancer_button_label": "Compose Lyrics",
-        }
+        }, ACE1_HELP)
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

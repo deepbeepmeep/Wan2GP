@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -25,6 +26,9 @@ def _debug(message: str) -> None:
 
 def _content_key(y, cache_dir, format, pixels=None):
     digest = hashlib.sha256(y.tobytes() if pixels is None else pixels).hexdigest()
+    if y.palette is not None or y.info:
+        metadata = (y.palette.mode, y.palette.tobytes()) if y.palette is not None else None
+        digest = hashlib.sha256((digest + repr((metadata, y.info))).encode()).hexdigest()
     return (str(cache_dir), format, y.mode, y.size, digest)
 
 
@@ -95,6 +99,20 @@ def _store_content(key, path):
         _content_cache.move_to_end(key)
         while len(_content_cache) > _CONTENT_CACHE_LIMIT:
             _content_cache.popitem(last=False)
+
+
+def save_image_by_content(image, cache_dir, format='png'):
+    """Reuse encoded pixels across form copies, checking mutable images each time."""
+    format = _effective_format(image, format)
+    key = _content_key(image, cache_dir, format)
+    with _lock:
+        path = _content_cache.get(key)
+        if path is not None and Path(path).is_file():
+            _content_cache.move_to_end(key)
+            return path
+    path = _save_pil_to_mode_aware_cache(image, cache_dir, format)
+    _store_content(key, path)
+    return path
 
 
 def remember_source_image(image, source, cache_dir, format, *, cache_identity=True, decoded_source=None):
@@ -182,20 +200,8 @@ def install() -> bool:
                     return path
                 _cache.pop(key, None)
 
-        raw_key = _content_key(y, cache_dir, effective_format)
-        with _lock:
-            content_path = _content_cache.get(raw_key)
-            if content_path is not None and Path(content_path).exists():
-                _content_cache.move_to_end(raw_key)
-                _debug(f"content_cache_hit id={id(y)} mode={y.mode} size={y.size} format={format_label} path={content_path}")
-                _store_identity(key, y, content_path, effective_format)
-                return content_path
-            if content_path is not None:
-                _content_cache.pop(raw_key, None)
-
-        path = _save_pil_to_mode_aware_cache(y, cache_dir, effective_format)
+        path = save_image_by_content(y, cache_dir, effective_format)
         _store_identity(key, y, path, effective_format)
-        _store_content(raw_key, path)
         _debug(f"cache_store id={id(y)} mode={y.mode} size={y.size} format={format_label} path={path}")
         return path
 
@@ -212,4 +218,4 @@ def clear() -> None:
         _content_cache.clear()
 
 
-__all__ = ["WANGP_GRADIO_IMAGE_DEBUG", "clear", "install", "remember_source_image"]
+__all__ = ["WANGP_GRADIO_IMAGE_DEBUG", "clear", "install", "remember_source_image", "save_image_by_content"]

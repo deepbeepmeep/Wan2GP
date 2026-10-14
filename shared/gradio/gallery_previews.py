@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Bounded, lazy image previews served through Gradio's authorized file route."""
 import asyncio
 from collections import OrderedDict

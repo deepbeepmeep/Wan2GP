@@ -1,3 +1,4 @@
+// Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 (() => {
   class DeepyConnection {
     constructor(base, handlers) {
@@ -10,6 +11,7 @@
       this.polling = false;
       this.pollAbort = null;
       this.cursor = 0;
+      this.instance = null;
     }
     async request(path, body, signal) {
       const options = body === undefined ? {} : body instanceof FormData ? {method: 'POST', body} : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)};
@@ -40,17 +42,28 @@
         this.pollAbort = null;
       }
     }
+    eventQuery(after) {
+      return new URLSearchParams({after, instance: this.instance});
+    }
+    receive(event) {
+      this.cursor = event.id;
+      if (event.type === 'snapshot') {
+        this.instance = event.data.instance;
+        // Reconnect snapshots must reset browser view revisions too: the new
+        // server can have exactly the same gallery counter as the old one.
+        this.handlers.snapshot(event.data);
+      } else this.handlers.event(event);
+    }
     async poll(after) {
       if (this.closed) return;
       const abort = new AbortController();
       this.pollAbort = abort;
       try {
-        const events = await this.request('events/poll?after=' + after, undefined, abort.signal);
+        const events = await this.request('events/poll?' + this.eventQuery(after), undefined, abort.signal);
         if (this.closed || this.pollAbort !== abort) return;
         this.handlers.connection?.(true);
         for (const event of events) {
-          this.cursor = event.id;
-          this.handlers.event(event);
+          this.receive(event);
         }
         this.pollAbort = null;
         this.timer = setTimeout(() => this.poll(this.cursor), 1000);
@@ -78,13 +91,14 @@
       this.disconnect();
       this.pending = this.request('state').then(state => {
         if (this.closed) return;
-        this.handlers.snapshot(state);
         this.cursor = state.cursor;
+        this.instance = state.instance;
+        this.handlers.snapshot(state);
         if (this.polling) {
           this.poll(this.cursor);
           return state;
         }
-        const url = new URL('deepy_api/events?after=' + state.cursor, this.base);
+        const url = new URL('deepy_api/events?' + this.eventQuery(state.cursor), this.base);
         url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
         // Gradio already holds heartbeat/queue SSE connections per tab. A third
         // HTTP stream exhausts the browser's six-connection pool with two tabs.
@@ -92,8 +106,7 @@
         this.source.onopen = () => this.handlers.connection?.(true);
         this.source.onmessage = event => {
           const data = JSON.parse(event.data);
-          this.cursor = data.id;
-          this.handlers.event(data);
+          this.receive(data);
         };
         this.source.onerror = () => this.fallback();
         this.source.onclose = () => this.fallback();

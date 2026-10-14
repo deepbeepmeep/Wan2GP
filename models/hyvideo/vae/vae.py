@@ -4,16 +4,43 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from diffusers.utils import BaseOutput, is_torch_version
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.models.attention_processor import SpatialNorm
+from shared.utils.phase_progress import check_abort
+from .unet_causal_3d_blocks import _fused
 from .unet_causal_3d_blocks import (
     CausalConv3d,
+    ResnetBlockCausal3D,
     UNetMidBlockCausal3D,
+    UpsampleCausal3D,
+    fused_norm_silu,
     get_down_block3d,
     get_up_block3d,
 )
+
+
+def _stream_plan(modules, start, stop, length):
+    """Backward plan along one spatial axis of DecoderCausal3D.stream_tiles: for the output range [start, stop), the input range of the
+    first module (axis length `length` at its resolution) and the crop of each module's output, then of the output layers' output: the
+    receptive field still ahead (2 per resnet, 1 per output convolution, the 2-tap parity windows of an upsampler), clamped to the frame
+    where the replicate padding is the decoder's own."""
+    lengths = [length]
+    for module in modules:
+        lengths.append(lengths[-1] * (2 if isinstance(module, UpsampleCausal3D) else 1))
+    low, high = max(start - 1, 0), min(stop + 1, lengths[-1])
+    crops = [(start - low, stop - low)]
+    for module, size in zip(reversed(modules), reversed(lengths[:-1])):
+        needed_low, needed_high = low, high
+        if isinstance(module, UpsampleCausal3D):  # even output 2m reads inputs (m - 1, m), odd 2m + 1 reads (m, m + 1)
+            low, high = max((needed_low - 1) // 2, 0), min(needed_high // 2 + 1, size)
+            crops.append((needed_low - 2 * low, needed_high - 2 * low))
+        else:
+            low, high = max(needed_low - 2, 0), min(needed_high + 2, size)
+            crops.append((needed_low - low, needed_high - low))
+    return (low, high), crops[::-1]
 
 @dataclass
 class DecoderOutput(BaseOutput):
@@ -66,7 +93,7 @@ class EncoderCausal3D(nn.Module):
         time_compression_ratio: int = 4,
         spatial_compression_ratio: int = 8,
         disable_causal: bool = False,
-        mid_block_causal_attn: bool = False,
+        mid_block_causal_attn: bool = True,
     ):
         super().__init__()
         self.layers_per_block = layers_per_block
@@ -176,6 +203,8 @@ class EncoderCausal3D(nn.Module):
             sample = self.mid_block(sample)
 
         # post-process
+        if fused_norm_silu(sample):
+            return self.conv_out.norm_silu_forward(sample, self.conv_norm_out)
         sample = self.conv_norm_out(sample)
         sample = self.conv_act(sample)
         sample = self.conv_out(sample)
@@ -220,7 +249,7 @@ class DecoderCausal3D(nn.Module):
         time_compression_ratio: int = 4,
         spatial_compression_ratio: int = 8,
         disable_causal: bool = False,
-        mid_block_causal_attn: bool = False,
+        mid_block_causal_attn: bool = True,
     ):
         super().__init__()
         self.layers_per_block = layers_per_block
@@ -297,6 +326,112 @@ class DecoderCausal3D(nn.Module):
 
         self.gradient_checkpointing = False
 
+    def _stream_mid_block(self, x):
+        """The mid block with its attention computed by chunks of query frames: the group statistics of the whole clip first, then the keys
+        and values of all the frames and each chunk's queries from chunks normalized with them, each chunk's output added to the residual
+        in place. Same values as the module without its normalized copy, query and output tensors. With upstream's frame-causal mask, each
+        frame's queries attend to that frame and all the earlier ones (restricting them to windows of frames degrades moving clips).
+        16-bit attention runs by blocks of FP32 scores (cuBLAS speed for the 512-wide head, SDPA's rounding points), one frame of queries
+        at a time."""
+        mid = self.mid_block
+        chunk_frames = max(1, (1 << 25) // x[0, :, 0].numel())  # whole-clip resnets by chunks of ~32M elements
+        x = mid.resnets[0](x, chunk_frames=chunk_frames)
+        for attn, resnet in zip(mid.attentions, mid.resnets[1:]):
+            batch, channels, frames, height, width = x.shape
+            stats = x.new_zeros(batch * attn.group_norm.num_groups, 3, dtype=torch.float64)
+            _fused.group_norm_silu_pad(x, attn.group_norm, silu=False, running=stats, apply=False)
+            tokens = height * width
+            blocks = x.dtype != torch.float32 and _fused.fp32_scores_supported()
+            step = 1 if mid.causal_attention or blocks else max(1, (1 << 17) // tokens)  # SDPA: frames of queries per call, few calls
+
+            def normalized(start, stop):
+                part = _fused.group_norm_silu_pad(x[:, :, start:stop], attn.group_norm, silu=False, running=stats, frozen=True)
+                return part.flatten(2).transpose(1, 2)
+
+            key, value = x.new_empty(batch, 1, frames * tokens, channels), x.new_empty(batch, 1, frames * tokens, channels)
+            for start in range(0, frames, step):
+                part = normalized(start, min(start + step, frames))
+                key[:, 0, start * tokens:start * tokens + part.shape[1]] = attn.to_k(part)
+                value[:, 0, start * tokens:start * tokens + part.shape[1]] = attn.to_v(part)
+            for start in range(0, frames, step):
+                stop = min(start + step, frames)
+                visible = stop * tokens if mid.causal_attention else frames * tokens
+                query = attn.to_q(normalized(start, stop))
+                if blocks:
+                    out = attn.to_out[0](_fused.attention(query, key[:, 0, :visible], value[:, 0, :visible]))
+                else:
+                    out = attn.to_out[0](F.scaled_dot_product_attention(query[:, None], key[:, :, :visible], value[:, :, :visible])[:, 0])
+                x[:, :, start:stop].add_(out.transpose(1, 2).unflatten(2, (stop - start, height, width))).div_(attn.rescale_output_factor)
+                check_abort()
+            del key, value
+            x = resnet(x, chunk_frames=chunk_frames)
+        return x
+
+    def stream_start(self, sample, global_modules):
+        """Global start of a streamed decode (see AutoencoderKLCausal3D.streamed_decode): conv_in, the mid block and the first
+        global_modules modules of the up blocks on the whole clip. Returns their output and the modules left to stream."""
+        sample = self._stream_mid_block(self.conv_in(sample))
+        modules = [module for block in self.up_blocks for module in (*block.resnets, *(block.upsamplers or ()))]
+        for module in modules[:global_modules]:
+            if isinstance(module, ResnetBlockCausal3D):
+                sample = module(sample, chunk_frames=max(1, (1 << 25) // sample[0, :, 0].numel()))
+            else:
+                sample = module(sample)
+        return sample, modules[global_modules:]
+
+    def stream_statistics(self, sample, modules, boxes, chunk_frames, group):
+        """Whole-clip estimate of the streamed GroupNorms' statistics for stream_tiles: equal boxes (latent row and column slices spread over
+        the frame) stream through all the frames chunk by chunk, `group` boxes at a time in the batch dimension, each with its own causal
+        caches, normalizing with running statistics shared by all of them; returns these statistics at the end of the clip, per batch item
+        of sample."""
+        norms = [norm for module in modules if isinstance(module, ResnetBlockCausal3D) for norm in (module.norm1, module.norm2)] + [self.conv_norm_out]
+        device = self.conv_out.conv.weight.device
+        stats, weights = {}, {}
+        for item in range(sample.shape[0]):
+            running = {norm: torch.zeros(norm.num_groups, 3, dtype=torch.float64, device=device) for norm in norms}
+            groups = [(torch.cat([sample[item:item + 1, :, :, rows, columns] for rows, columns in boxes[i:i + group]]).to(device),
+                       dict(running, frozen=set(), shared=True, weights=weights)) for i in range(0, len(boxes), group)]
+            for start in range(0, sample.shape[2], chunk_frames):
+                for parts, state in groups:
+                    x = parts[:, :, start:start + chunk_frames]
+                    for module in modules:
+                        x = module(x, state=state)
+                        check_abort()
+                    _fused.group_norm_silu_pad(x, self.conv_norm_out, running=running[self.conv_norm_out], shared=True, apply=False)
+            for norm, value in running.items():
+                stats[norm] = torch.cat([stats[norm], value]) if norm in stats else value
+        return stats
+
+    def stream_tiles(self, sample, modules, stats, tile, chunk_frames):
+        """Tile-major streamed decode with frozen GroupNorm statistics (stats: norm -> FP64 (count, mean, M2) per group): each output tile
+        streams through all the frames alone, holding only its own causal caches; every module runs on the tile's region plus the receptive
+        field still ahead of it, and its output is cropped to what the later modules need. Exact for the given statistics, so the tiles join
+        without overlap or blending, and the memory follows the tile size instead of the frame size. tile: tile side at sample resolution."""
+        batch, _, frames, height, width = sample.shape
+        device = self.conv_out.conv.weight.device
+        spatial = 2 ** sum(isinstance(module, UpsampleCausal3D) for module in modules)
+        temporal = 2 ** sum(isinstance(module, UpsampleCausal3D) and module.upsample_factor[0] == 2 for module in modules)
+        out = torch.empty(batch, self.conv_out.conv.out_channels, 1 + (frames - 1) * temporal, height * spatial, width * spatial, dtype=sample.dtype,
+                          device=device)
+        weights = {}
+        for y0 in range(0, height, tile):
+            (ya, yb), y_crops = _stream_plan(modules, y0 * spatial, min(y0 + tile, height) * spatial, height)
+            for x0 in range(0, width, tile):
+                (xa, xb), x_crops = _stream_plan(modules, x0 * spatial, min(x0 + tile, width) * spatial, width)
+                crops = [(slice(*rows), slice(*columns)) for rows, columns in zip(y_crops, x_crops)]
+                state = dict(stats, frozen=set(stats), weights=weights)
+                region = sample[:, :, :, ya:yb, xa:xb].to(device)
+                for start in range(0, frames, chunk_frames):
+                    x = region[:, :, start:start + chunk_frames]
+                    for module, (rows, columns) in zip(modules, crops):
+                        x = module(x, state=state)[..., rows, columns]
+                        check_abort()
+                    rows, columns = crops[-1]
+                    x = self.conv_out.stream_norm_silu(x, self.conv_norm_out, state)[..., rows, columns]
+                    first_frame = 0 if start == 0 else 1 + (start - 1) * temporal
+                    out[:, :, first_frame:first_frame + x.shape[2], y0 * spatial:y0 * spatial + x.shape[3], x0 * spatial:x0 * spatial + x.shape[4]] = x
+        return out
+
     def forward(
         self,
         sample: torch.FloatTensor,
@@ -354,6 +489,8 @@ class DecoderCausal3D(nn.Module):
                 sample = up_block(sample, latent_embeds)
 
         # post-process
+        if latent_embeds is None and fused_norm_silu(sample):
+            return self.conv_out.norm_silu_forward(sample, self.conv_norm_out)
         if latent_embeds is None:
             sample = self.conv_norm_out(sample)
         else:

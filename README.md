@@ -63,7 +63,41 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 
 ## 🔥 Latest Updates : 
-## 5th of October 2026: WanGP v17.00 — With Great Speed Comes Even Less VRAM
+
+## 11th of October 2026: WanGP v18.00 - Distortion of Space and Time
+
+- **LTX 2.x VAE x3 faster**: the LTX 2 VAE was rewritten in WanGP: 20s of 480p (24fps) video now takes about 28s to generate on an RTX 5090 using Profile 4. Realtime, we can see you from here...
+
+- **Wan & HunyuanVideo VAEs x2 to x3.5 faster**: I didn't want these two to feel abandoned. The Wan 2.1 VAE is up to 3.5x faster (Wan 2.2 up to 1.6x) and needs less VRAM on top of it: decoding 1080p goes from 28 s / 10.5 GB to 11 s / 4.7 GB. HunyuanVideo decodes about 2x faster. Bonus for all three: tiling seams are history on Wan (tiled = untiled) and much fainter on LTX 2 and HunyuanVideo.
+
+- **Kandinsky 6.0**: new video generator with synchronized audio (speech with lip-sync, music, sound effects), Pro 30B and Lite 3B, both distilled. Clips are short for now (5 s), but the WanGP version is low VRAM as usual and its VAE is 2x faster than the official one.
+
+- **Wan 2.2 Prism Video**: image to video with audio, derived from the Wan 2.2 architecture, natively up to 2K.
+
+- **Wan 2.1 Camera Control**: *Fun Control-Camera 1.3B* and *Uni3C 14B* take a start image and fly the camera along the path you choose.
+
+- **CUDA Graph Acceleration**: kills the CPU time that keeps your GPU waiting. Mostly visible with lighter GPU work (image models) and on modest CPUs: SenseNova +30%, Qwen Image 2.1 +10%, H3 about 0%.
+
+- **RTX 20xx / RTX 30xx**: these GPUs missed part of the v17 VRAM diet. Fixed, they now get the full menu.
+
+- **Faster Startup on RTX 50xx, Happier SSD**: on Blackwell GPUs, the NVIDIA driver optimizes the GPU code again at every launch and keeps the result in a shared 1 GB cache, too small to hold it all: 10-15 s lost at each first generation, and a cache rewritten on your SSD every time. Tick *Config → Performance → WanGP Compute Cache* to give WanGP its own cache (up to 2 GB): the work is done once and for all.
+
+- **3D Gen Models**: WanGP enters the third dimension, with plenty of synergies with the other models: rotate a 3D asset in the new *3D Viewer*, snap a view at the resolution you want and use it as a start image, or turn your generated images and videos into 3D.
+  - *One picture to a 3D asset*: **Hunyuan3D 2.1** (mesh + PBR textures), **TRELLIS.2** (textured PBR mesh), **TripoSG** (detailed mesh), **TripoSplat** (Gaussian splats), **PartCrafter** (one mesh per part)
+  - *Photos or video to a 3D scene*: **WorldMirror 2.0**, **MapAnything**, **Depth Anything 3 Points**, and **MoGe-2** from a single photo
+  - *Mesh tools*: **GeoSAM2** splits a mesh into its parts, **AnimateAnyMesh** animates a mesh from a text description
+
+- **Deepy Goes 3D**: Deepy can now look at a 3D asset from any angle, zoom or animation frame, draw layouts in SVG, and has a new *Character Sheet* skill: one 3D character in, a turnaround sheet out.
+
+- **H3 Veda Sparse**: MiniMax H3 gets learned sparse attention, with up to **2x faster generation** for higher-resolution or longer videos. Available for both the full 33B and pruned 20B FL2VA/Ref2VA models, using the same settings and LoRAs. 
+
+- **Workspace Folders**: keep each project's generated and imported media in its own folder for easier organization and backups. Choose dedicated folders for new workspaces, or use **Gallery Manager** to convert an existing workspace or choose a different storage folder. To enable this feature: *Config / Outputs* tab
+
+- **Expanded MCP Support for Agents**: external agents gain new tools to validate generation settings, manage their own workspaces, inspect images, videos and 3D assets, and transfer files. Agent activity is now visible in the Gradio interface, so you can follow their work.
+
+- **UI Improvements**: the loaded model's name stays visible in the status area, including between generations. Set a custom target resolution with the **megapixel slider** and **Aspect Ratio** selector, while compact buttons and adaptive controls make the interface fit more comfortably in narrow windows.
+
+## 7th of October 2026: WanGP v17.17 - With Great Speed Comes Even Less VRAM
 
 I went to the future and brought back **MMGP v4** for you. 
 
@@ -93,6 +127,16 @@ There are also two new upsamplers to play with:
 - **H3 VAE Upsampler x2**: double the width and height of H3 videos and images as part of VAE decoding.
 
 By pure coincidence, WanGP has just hit **10,000 GitHub stars**. If you're enjoying it, spread the word! Plenty of fellow GPU Poors could use the extra breathing room. Let's take together WanGP to **100,000 stars**.
+
+### v17.10: LTX-2.5 VFX Tools
+
+- **LTX-2.5 SDR to HDR**: LTX-2.5 now converts SDR videos to HDR10 with its own dedicated HDR LoRA (LTX-2.3 keeps its previous one). HDR videos in the *Video Gallery* also get an automatic SDR preview, so they no longer show up as a black clip in your browser.
+- **LTX-2.5 Layout to Render**: turn a rough viewport animation or playblast into a finished shot. Feed it the layout video plus one appearance reference image (a finished render of its first frame): the layout drives the camera and object placement, the reference sets the look.
+- **LTX-2.5 Alpha Gen**: extract a soft alpha matte from any video, optionally restricted by a selection mask, and get the original footage back with transparency as PNG frames (ZIP) or ProRes 4444. Pick the format in *Config → Outputs → RGBA Video Output*.
+- **Two Phases with Tiling** (LTX-2, 2.3 and 2.5): a new *Guidance Phases* choice. Phase 1 lays out the whole scene, then phase 2 refines it in overlapping tiles blended at every step. It is particularly suited to generate 4K because LTX will see in the worst case 2K tiles (bye bye freak show). Don't be surprised if it is slower since proper tiling requires a 50% overlap. 
+
+### v17.17: New MMPG RAM Allocator
+New Allocator should reduce now RAM usage: open the new *Config → RAM/VRAM Management* tab, choose *MMGP Optimized RAM Allocator* in *RAM Allocator* 
 
 ## 29th of September 2026: WanGP v13.141 — Community Release
 
@@ -324,7 +368,7 @@ On Windows, install Triton in the same environment, using the command matching y
 
 Triton 3.2 on RTX 30XX or newer can crash YuE2's optimized INT8 ConvRot kernels because it lacks `triton.language.gather`. Upgrade Triton as above and restart WanGP. RTX 20XX must stay on 3.2 and uses the existing standard INT8 path; compatibility with newer PyTorch is not guaranteed upstream. RTX 50XX users should use PyTorch 2.10 / Triton 3.6 for WanGP's optimized INT8 and NV FP4 support. Linux normally receives matching Triton through PyTorch. See the **[Triton Installation Guide](docs/INSTALLATION.md#triton-installation)** for details and RTX 20XX limitations.
 
-For optimized attention, install **SageAttention 1.0.6 on RTX 20XX** and **SageAttention 2.2.0 on RTX 30XX or newer**. SageAttention 2 requires an Ampere-or-newer GPU; GTX 10XX should use SDPA. See the **[Installation Guide](docs/INSTALLATION.md#sage-attention)** for the platform-specific commands.
+For optimized attention, install **SageAttention 1.0.6 on RTX 20XX** and **SageAttention 2.2.0 on RTX 30XX or newer**. SageAttention 2 requires an Ampere-or-newer GPU; GTX 10XX should use SDPA. On Linux, prebuilt SageAttention 2 wheels with CUDA Graph support are available from the **[WanGP SageAttention fork](https://github.com/deepbeepmeep/SageAttention/releases/tag/v2.2.0-linux.cg1)**. See the **[Installation Guide](docs/INSTALLATION.md#sage-attention)** for the platform-specific commands.
 
 ### Manual installation: (for GTX 10xx)
 

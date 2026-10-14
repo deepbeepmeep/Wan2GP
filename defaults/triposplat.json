@@ -1,0 +1,22 @@
+{
+    "model": {
+        "name": "TripoSplat Image to Gaussian Splats",
+        "architecture": "triposplat",
+        "description": "VAST / Tripo TripoSplat: one picture of an object to a 3D Gaussian splat (PLY, up to 262K Gaussians).",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/triposplat_fp16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/triposplat_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "Toy pirate ship",
+    "image_mode": 1,
+    "video_prompt_type": "I",
+    "num_inference_steps": 20,
+    "guidance_scale": 3.0,
+    "flow_shift": 3.0,
+    "batch_size": 1,
+    "seed": 42,
+    "custom_settings": {
+        "num_gaussians": 262144
+    }
+}

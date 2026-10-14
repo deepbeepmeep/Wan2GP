@@ -1,0 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import VIDEO_PROMPT, VIDEO_PROMPT_SHORT, help_text
+
+DF_HELP = help_text("SkyReels V2 Long Video", "Generate from text, animate a start image, or continue a video. **Sliding Window** extends the sequence. Keep subject descriptions and motion consistent between sections and check for drift. **Synchronous** generation is the simpler, faster starting point; **Asynchronous** spends additional steps on continuity/quality. Use the selected variant's resolution and frame-rate defaults. This model does not generate audio.", VIDEO_PROMPT, "Text/start-image/video-continuation. Sliding windows build longer video; inspect continuity. Synchronous is faster; Asynchronous adds work for quality. No generated audio.", VIDEO_PROMPT_SHORT, ["https://github.com/SkyworkAI/SkyReels-V2"])

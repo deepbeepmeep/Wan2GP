@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Notify ASGI when Uvicorn closes HTTP on EOF, before buffered writes drain."""
 import anyio
 from starlette.responses import FileResponse

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help, specialities
+from .help import INDEX25_HELP, INDEX_VOICE_INPUTS
 import os
 import re
 
@@ -155,7 +158,7 @@ def _get_index_tts2_model_def(base_model_type):
         model_def.update({
             "deepy_infos": "`prompt` = speech; `audio_guide` = required speaker sample. `audio_prompt_type`: `A` uses its voice/emotion; `AB` adds emotion from `audio_guide2`; `AB2` uses that second sample as speaker 2; `ABD2` adds `audio_guide3` as speaker 3. `alt_prompt` sets default emotion. Max duration caps output.",
             "deepy_prompt_infos": "Write exact English/Chinese speech. Inline cues persist until replaced: '[happy] Hello. [calm] We have time.' `alt_prompt` applies where no inline cue exists; text emotion overrides audio emotion. Keep delivery directions in cues or `alt_prompt`. For `AB2` / `ABD2`, label dialogue `Speaker 1:` / `Speaker 2:` / `Speaker 3:` matching sample order.",
-            "infos": "Generate speech from Text Prompt (`prompt`) and a required Speaker reference voice (`audio_guide`). In audio mode `A`, the sample supplies the speaker and emotion. Mode `AB` uses the second sample (`audio_guide2`) as an emotion reference; `AB2` uses it as a second speaker for dialogue, and `ABD2` adds a third speaker (`audio_guide3`). Default Emotion Instruction (`alt_prompt`) and inline emotion cues control delivery separately from the spoken words. Max duration caps the assembled audio.",
+            "infos": "## IndexTTS 2.0\n\n" + INDEX_VOICE_INPUTS,
             "prompt_infos": 'Write the exact words to speak, with natural punctuation, in English or Chinese. WanGP reads `[happy] Hello there. [calm] We have time.` as emotion cues followed by speech; each cue stays active until replaced. `alt_prompt` supplies the default emotion where no inline cue applies. Keep directions inside these cues or the emotion field. For `AB2` / `ABD2` dialogue, use `Speaker 1:`, `Speaker 2:` (and `Speaker 3:`) sections matching the samples. Inline/text emotion overrides the audio emotion for that segment.',
         })
     if is_v25:
@@ -166,14 +169,13 @@ def _get_index_tts2_model_def(base_model_type):
                 "default": "EN",
             },
             "infos": (
-                "### Improvements over IndexTTS 2.0\n\n"
+                "## IndexTTS 2.5\n\n" + INDEX_VOICE_INPUTS + "\n\n### Improvements over IndexTTS 2.0\n\n"
                 "- Supports **Chinese, English, Japanese, Spanish, and Arabic**.\n"
                 "- Supports **cross-lingual voice cloning**.\n"
-                "- Uses a faster **25 Hz semantic-token path**.\n"
+                "- Offers faster speech generation.\n"
                 "- Adds native speech-speed control and Pinyin, CMU phoneme, and Kana pronunciation annotations.\n\n"
                 "### Language\n\n"
-                "Language is required by IndexTTS 2.5 because it conditions both the text prefix and a learned "
-                "language embedding. Select the language matching the text; **EN** is the default.\n\n"
+                "Select the language matching the text; **English** is the default.\n\n"
                 "### Emotion control\n\n"
                 "- Put an emotion instruction in square brackets immediately before the text it controls, for "
                 "example: `[happy]` or `[calm and reassuring]`.\n"
@@ -185,13 +187,15 @@ def _get_index_tts2_model_def(base_model_type):
                 "- Values above **1.0** speak faster.\n"
                 "- Values below **1.0** speak slower.\n\n"
                 "### Text Normalization\n\n"
-                "Text Normalization expands supported written forms such as numbers and symbols before tokenization. "
+                "Text Normalization expands supported written forms such as numbers and symbols into spoken words. "
                 "Disable it when the prompt is already written exactly as it should be spoken or when testing precise "
                 "pronunciation markup."
             ),
             "prompt_infos": (
-                "Emotion example: [fear] I heard something outside. [calm] It was only the wind. "
-                "Pronunciation syntax: Chinese <行|XING2>, English <minute|M IH1 . N AH0 T>, Japanese <上手|じょうず>."
+                "### Speech and Emotion\n\nWrite the exact speech with natural punctuation in the selected language. "
+                "For dialogue, use `Speaker 1:`, `Speaker 2:` and `Speaker 3:` in reference order.\n\n"
+                "**Emotion example:** `[fear] I heard something outside. [calm] It was only the wind.`\n\n"
+                "### Pronunciation\n\nChinese: `<行|XING2>`; English: `<minute|M IH1 . N AH0 T>`; Japanese: `<上手|じょうず>`."
             ),
         })
     return model_def
@@ -287,7 +291,7 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        return {**_get_index_tts2_model_def(base_model_type), "device_explicit": base_model_type == "index_tts2", "specialities": [{"name": name} for name in ("expressive speech", "emotion transfer", "two-speaker dialogue")]}
+        return merge_help({**_get_index_tts2_model_def(base_model_type), "device_explicit": base_model_type == "index_tts2", "specialities": specialities("voice cloning", "speech dialogue") + [{"name": name} for name in ("expressive speech", "emotion transfer")]}, INDEX25_HELP if base_model_type == "index_tts25" else {})
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

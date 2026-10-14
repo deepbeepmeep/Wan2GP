@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """MCP OAuth 2.1 authorization server using the MCP SDK's protocol handlers."""
 import re
 import secrets
@@ -282,8 +283,6 @@ class OAuthRequestLimits:
 
 
 def mcp_authorization(args, transport):
-    if args.auth or args.auth_password is not None:
-        raise ValueError("MCP uses separate OAuth authentication. Use --mcp-auth and --mcp-auth-password.")
     if transport == "stdio" and (args.mcp_auth or args.mcp_auth_password is not None or args.mcp_auth_url is not None):
         raise ValueError("MCP OAuth requires an HTTP transport; stdio does not use web authentication.")
     if args.mcp_auth_url is not None and not args.mcp_auth:

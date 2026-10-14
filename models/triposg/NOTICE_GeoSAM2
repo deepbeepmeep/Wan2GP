@@ -1,0 +1,17 @@
+GeoSAM2
+Copyright 2025 VAST-AI-Research and the GeoSAM2 authors.
+
+This product includes software developed at Meta Platforms, Inc.
+(https://github.com/facebookresearch/sam2), which is licensed under
+the Apache License 2.0. The `sam2/` package and the connected-components
+CUDA kernel under `sam2/csrc/` are derived from that project.
+
+The connected-components CUDA implementation in `sam2/csrc/connected_components.cu`
+was originally adapted from https://github.com/zsef123/Connected_components_PyTorch.
+
+Portions of this project also draw inspiration from:
+  - bpy-renderer  (https://github.com/huanngzh/bpy-renderer)
+  - Samesh        (https://github.com/gtangg12/samesh)
+  - PartField     (https://github.com/nv-tlabs/PartField)
+
+All third-party components retain their original copyrights and licenses.

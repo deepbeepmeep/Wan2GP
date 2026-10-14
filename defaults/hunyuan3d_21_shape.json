@@ -1,0 +1,22 @@
+{
+    "model": {
+        "name": "Hunyuan3D 2.1 Shape 3B",
+        "architecture": "hunyuan3d_21_shape",
+        "description": "Tencent Hunyuan3D 2.1 shape model: one picture of an object to a 3D mesh (GLB, geometry only).",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/hunyuan3d_21_dit_fp16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/hunyuan3d_21_dit_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "red toy robot",
+    "image_mode": 1,
+    "video_prompt_type": "I",
+    "num_inference_steps": 30,
+    "guidance_scale": 5.0,
+    "batch_size": 1,
+    "seed": 1234,
+    "custom_settings": {
+        "octree_resolution": 256,
+        "max_faces": 0
+    }
+}

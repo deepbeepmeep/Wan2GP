@@ -1,10 +1,11 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import os
 import re
 import warnings
 
 import torch
 
-from postprocessing import seedvc
+from postprocessing.seedvc_processor import assets as seedvc_assets, component as seedvc_component
 from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
 
@@ -27,6 +28,8 @@ SCENEMA_KOKORO_DIR = "kokoro"
 SCENEMA_KOKORO_VOICE_DIR = "kokoro/voices"
 SCENEMA_KOKORO_FILES = ["config.json", "kokoro-v1_0.pth"]
 SCENEMA_KOKORO_VOICE_FILES = ["af_heart.pt"]
+SCENEMA_KOKORO_G2P_DIR = "openphonemizer"
+SCENEMA_KOKORO_G2P_FILES = ["openphonemizer_fp32.safetensors", "openphonemizer_config.json", "openphonemizer_dict.json"]
 SCENEMA_DEFAULT_PACE = 1.5
 SCENEMA_DEFAULT_DURATION_SECONDS = 120
 SCENEMA_MAX_DURATION_SECONDS = 30 * 60
@@ -355,10 +358,10 @@ def _get_scenema_download_def():
         },
         {
             "repoId": SCENEMA_REPO_ID,
-            "sourceFolderList": [SCENEMA_KOKORO_DIR, SCENEMA_KOKORO_VOICE_DIR],
-            "fileList": [SCENEMA_KOKORO_FILES, SCENEMA_KOKORO_VOICE_FILES],
+            "sourceFolderList": [SCENEMA_KOKORO_DIR, SCENEMA_KOKORO_VOICE_DIR, SCENEMA_KOKORO_G2P_DIR],
+            "fileList": [SCENEMA_KOKORO_FILES, SCENEMA_KOKORO_VOICE_FILES, SCENEMA_KOKORO_G2P_FILES],
         },
-    ] + seedvc.query_download_def(mode=seedvc.SEEDVC_MODE_SPEECH)
+    ] + seedvc_assets.query_download_def(mode=seedvc_assets.SEEDVC_MODE_SPEECH)
 
 
 def _get_dramabox_download_def():
@@ -443,7 +446,8 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        return {**(_get_dramabox_model_def() if _is_dramabox(base_model_type) else _get_scenema_model_def()), "device_explicit": True}
+        from models.help_shared import specialities
+        return {**(_get_dramabox_model_def() if _is_dramabox(base_model_type) else _get_scenema_model_def()), "device_explicit": True, "specialities": specialities("voice design", "voice cloning", "speech dialogue")}
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):
@@ -616,6 +620,8 @@ class family_handler:
             return pipeline, pipe
 
         from .scenema_audio import ScenemaAudioPipeline
+        seedvc_component.ensure_installed()
+        from postprocessing import seedvc
 
         weights_path = model_filename[0] if isinstance(model_filename, (list, tuple)) else model_filename
         if not text_encoder_filename:
@@ -628,8 +634,8 @@ class family_handler:
         alignment_whisper = _load_alignment_whisper()
         kokoro_pipeline = _load_kokoro_pipeline()
         kokoro_model = kokoro_pipeline.model
-        seedvc_model = seedvc.get_model(dtype=torch.float16, mode=seedvc.SEEDVC_MODE_SPEECH)
-        seedvc_pipe = seedvc.get_pipe(profile_no=profile, model=seedvc_model, mode=seedvc.SEEDVC_MODE_SPEECH)
+        seedvc_model = seedvc.get_model(dtype=torch.float16, mode=seedvc_assets.SEEDVC_MODE_SPEECH)
+        seedvc_pipe = seedvc.get_pipe(profile_no=profile, model=seedvc_model, mode=seedvc_assets.SEEDVC_MODE_SPEECH)
 
         pipeline = ScenemaAudioPipeline(
             model_weights_path=weights_path,

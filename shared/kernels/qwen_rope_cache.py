@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Qwen partial RoPE and paged cache writes with original rounding boundaries."""
 import torch
 import triton
@@ -5,14 +6,15 @@ import triton.language as tl
 from triton.language.extra import libdevice
 
 
-@triton.jit
+@triton.jit(do_not_specialize=("T", "QB", "QT", "QH", "KB", "KT", "KH", "VB", "VT", "VH", "CB", "CT"),
+            do_not_specialize_on_alignment=("T", "QB", "QT", "QH", "KB", "KT", "KH", "VB", "VT", "VH", "CB", "CT"))
 def _rope_cache_kernel(Q, K, V, COS, SIN, KC, VC, KS, VS, SLOTS,
-                       T: tl.constexpr, HQ: tl.constexpr, HK: tl.constexpr,
+                       T, HQ: tl.constexpr, HK: tl.constexpr,
                        D: tl.constexpr, R: tl.constexpr,
-                       QB: tl.constexpr, QT: tl.constexpr, QH: tl.constexpr,
-                       KB: tl.constexpr, KT: tl.constexpr, KH: tl.constexpr,
-                       VB: tl.constexpr, VT: tl.constexpr, VH: tl.constexpr,
-                       CB: tl.constexpr, CT: tl.constexpr,
+                       QB, QT, QH,
+                       KB, KT, KH,
+                       VB, VT, VH,
+                       CB, CT,
                        WRITE_CACHE: tl.constexpr, INT8: tl.constexpr):
     token, head = tl.program_id(0), tl.program_id(1)
     batch, time = token // T, token % T

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import torch
 import triton
+from shared.kernels.triton_autotune import model_autotune
 import triton.language as tl
 
 
@@ -15,13 +16,13 @@ THRESHOLD_GROUP_SIZE = 64
 SUMMARY_PAD = 64
 
 
-@triton.autotune(
+@model_autotune(
     # This was the winner at both 22,263 and 38,247 H3 tokens on SM89.
     # A single config also avoids first-use benchmarking on the pointer path.
     configs=[triton.Config({}, num_warps=4, num_stages=2)],
     key=["T"],
 )
-@triton.jit
+@triton.jit(do_not_specialize=['T'], do_not_specialize_on_alignment=['T'])
 def _reduce_kv_kernel(
     k,
     v,
@@ -56,14 +57,14 @@ def _reduce_kv_kernel(
     tl.store(vc + summary_offsets, tl.sum(v_values, axis=0))
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['N'], do_not_specialize_on_alignment=['N'])
 def _reduce_kc_stats_kernel(
     kc,
     kc_mean,
     kc_var_diag,
     NPAD,
     H: tl.constexpr,
-    N: tl.constexpr,
+    N,
     D: tl.constexpr,
     GROUP: tl.constexpr,
 ):
@@ -95,7 +96,7 @@ def _reduce_kc_stats_kernel(
     tl.store(kc_var_diag + batch_head * D + dims, variance)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['T', 'N'], do_not_specialize_on_alignment=['T', 'N'])
 def _diag_threshold_kernel(
     q,
     kc_mean,
@@ -107,7 +108,7 @@ def _diag_threshold_kernel(
     SQT,
     SQH,
     H: tl.constexpr,
-    N: tl.constexpr,
+    N,
     D: tl.constexpr,
     BLOCK: tl.constexpr,
     TAU: tl.constexpr,
@@ -136,7 +137,7 @@ def _diag_threshold_kernel(
     )
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['T', 'N'], do_not_specialize_on_alignment=['T', 'N'])
 def _pool_query_kernel(
     q,
     q_bar,
@@ -145,7 +146,7 @@ def _pool_query_kernel(
     SQT,
     SQH,
     H: tl.constexpr,
-    N: tl.constexpr,
+    N,
     D: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
@@ -161,7 +162,7 @@ def _pool_query_kernel(
     tl.store(q_bar + (batch_head * N + q_block) * D + dims, centroid)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['N'], do_not_specialize_on_alignment=['N'])
 def _exact_fused_threshold_kernel(
     q_bar,
     kc_mean,
@@ -169,7 +170,7 @@ def _exact_fused_threshold_kernel(
     threshold,
     scale,
     H: tl.constexpr,
-    N: tl.constexpr,
+    N,
     D: tl.constexpr,
     BLOCK_M: tl.constexpr,
     TAU: tl.constexpr,
@@ -397,3 +398,7 @@ def prepare(
 
 
 __all__ = ["prepare"]
+
+
+from shared.kernels.triton_compilation_log import install_triton_compilation_logger
+install_triton_compilation_logger()

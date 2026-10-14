@@ -1,3 +1,6 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from models.TTS.help import MINIMAX_MUSIC_HELP
 import os
 
 import torch
@@ -58,7 +61,7 @@ class family_handler:
 
     @staticmethod
     def query_model_def(base_model_type, model_def):
-        return {
+        return merge_help({
             "group": "music",
             "audio_only": True,
             "image_outputs": False,
@@ -117,7 +120,7 @@ class family_handler:
                 "Put section tags such as [verse], [chorus], [bridge], and [outro] on their own lines. "
                 "Describe genre, mood, vocal character, instruments, tempo, and arrangement in Music Description."
             ),
-        }
+        }, MINIMAX_MUSIC_HELP)
 
     @staticmethod
     def query_model_files(computeList, base_model_type, model_def=None):

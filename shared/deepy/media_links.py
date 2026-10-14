@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Rebind saved chat media URLs to the current HTTP host's file registry."""
 from __future__ import annotations
 

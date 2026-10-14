@@ -1,0 +1,14 @@
+Prism inference adaptation for WanGP.
+Upstream: https://github.com/Tencent-Hunyuan/Prism
+Revision: 8f0c2633f40ccf89e26f928c6d1771616caeb510
+Copyright (C) 2026 Tencent. MIT License.
+MOVA-360p components retain Apache-2.0 terms; see LICENSE.
+Modifications: single-device inference, shared attention and codecs, MMGP checkpoint loading, bounded activations and host progress/cancellation.
+
+LightX2V sampling recipe adapted from FlashML-org/FreeVideo (Apache-2.0):
+https://github.com/FlashML-org/FreeVideo
+Revision: 40525196a33bc7ff6a455ce9b18b74f3c827bbb1
+Sources: freevideo_engine/prism_model/sampling.py and prism_tiers.json.
+WanGP modifications: shared MMGP LoRA/weight handling, sequential layer-local
+audio CFG, CPU BF16 conditioning cache, shared attention, host cancellation.
+The original Prism/MOVA attribution and Apache-2.0 terms remain in LICENSE.

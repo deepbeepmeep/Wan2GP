@@ -1,7 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
-##### Enjoy this spagheti VRAM optimizations done by DeepBeepMeep !
-# I am sure you are a nice person and as you copy this code, you will give me officially proper credits:
-# Please link to https://github.com/deepbeepmeep/Wan2GP and @deepbeepmeep on twitter  
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import math
 from einops import rearrange
 import torch
@@ -1121,6 +1119,10 @@ class WanModel(ModelMixin, ConfigMixin):
                  vista4d = False,
                  vista4d_positional_embedding_offset = 31,
                  shotplan = False,
+                 add_control_adapter = False,
+                 in_dim_control_adapter = 24,
+                 downscale_factor_control_adapter = 8,
+                 uni3c_controlnet = None,
                  ):
 
         super().__init__()
@@ -1254,6 +1256,14 @@ class WanModel(ModelMixin, ConfigMixin):
             from ..vista4d.runtime import add_vista4d_modules
             add_vista4d_modules(self)
 
+        if add_control_adapter: # Wan Fun Control-Camera
+            from ..camera_control.fun_camera import SimpleAdapter
+            self.control_adapter = SimpleAdapter(in_dim_control_adapter, dim, kernel_size=patch_size[1:], stride=patch_size[1:], downscale_factor=downscale_factor_control_adapter)
+
+        if uni3c_controlnet is not None:
+            from ..camera_control.uni3c import Uni3CControlNet
+            self.uni3c = Uni3CControlNet(in_dim, dim, patch_size=patch_size, **uni3c_controlnet)
+
         if fantasytalking_dim > 0:
             from ..fantasytalking.model import WanCrossAttentionProcessor
             for block in self.blocks:
@@ -1358,10 +1368,18 @@ class WanModel(ModelMixin, ConfigMixin):
             setattr(target, "face_adapter_fuser_blocks", module )
         delattr(self, "face_adapter")
 
+    def adapt_uni3c_model(self):
+        # each Uni3C ControlNet block runs with the main block it feeds, so that mmgp loads them together
+        for block, uni3c_block in zip(self.blocks, self.uni3c.blocks):
+            block.uni3c = uni3c_block
+        self.uni3c_layers = len(self.uni3c.blocks)
+        del self.uni3c.blocks
+
     def apply_post_init_changes(self):
         self.adapt_modulation()
         if hasattr(self, "vace_blocks"): self.adapt_vace_model()
         if hasattr(self, "face_adapter"): self.adapt_animate_model()
+        if hasattr(self, "uni3c"): self.adapt_uni3c_model()
 
     def lock_layers_dtypes(self, hybrid_dtype = None, dtype = torch.float32):
         layer_list = [self.head, self.head.head, self.head.modulation, self.patch_embedding]
@@ -1392,6 +1410,9 @@ class WanModel(ModelMixin, ConfigMixin):
 
         if hasattr(self, "latent_encoder"):
             layer_list += [module for module in self.latent_encoder.modules() if isinstance(module, (nn.Conv3d, nn.Linear))]
+
+        if hasattr(self, "uni3c"):
+            layer_list += self.uni3c.fp32_layers()
 
         target_dype2 = hybrid_dtype if hybrid_dtype != None else dtype 
 
@@ -1576,6 +1597,8 @@ class WanModel(ModelMixin, ConfigMixin):
         animate2_ref_freqs = None,
         animate2_log_scale = 0.0,
         animate2_kv_cache = "Disabled",
+        camera_adapter_features = None,
+        uni3c_condition = None,
     ):
         # patch_dtype =  self.patch_embedding.weight.dtype
         modulation_dtype = self.time_projection[1].weight.dtype
@@ -1596,6 +1619,7 @@ class WanModel(ModelMixin, ConfigMixin):
         x = None
         output_slice = None
         output_grid_sizes = None
+        uni3c_x = None
         joint_pass = len(x_list) > 1
         is_source_x = [False] * len(x_list) if bernini_sources is not None else [ x.data_ptr() == x_list[0].data_ptr() and i > 0 for i, x in enumerate(x_list) ]
         last_x_idx  = 0
@@ -1642,6 +1666,10 @@ class WanModel(ModelMixin, ConfigMixin):
                     scail2_ref_latent = torch.cat([scail2_ref_latent, ref_mask], dim=1)
                     x = torch.cat([scail2_ref_latent.to(device=x.device, dtype=x.dtype), x], dim=2)
                     output_slice = slice(scail2_ref_latent.shape[2], scail2_ref_latent.shape[2] + real_latent_frames)
+                if uni3c_condition is not None and i == 0: # Uni3C ControlNet input: noisy latents and i2v mask, then the render latents
+                    render_latents = uni3c_condition["render_latents"]
+                    uni3c_x = self.uni3c.embed(torch.cat([x[:1, :x.shape[1] - render_latents.shape[1]], render_latents.to(x)], dim=1), uni3c_condition["condition_features"])
+                    render_latents = None
                 # embeddings
                 if bernini_enabled:
                     source_tokens, cos_parts, sin_parts = [], [], []
@@ -1665,6 +1693,8 @@ class WanModel(ModelMixin, ConfigMixin):
                     source_tokens = cos_parts = sin_parts = None
                 elif not steadydancer:
                     x = self.patch_embedding(x).to(modulation_dtype)
+                    if camera_adapter_features is not None:
+                        x += camera_adapter_features
                     if scail2_ref_mask is not None:
                         scail2_ref_mask = scail2_ref_mask.unsqueeze(0) if scail2_ref_mask.ndim == 4 else scail2_ref_mask
                         if scail2_ref_mask.shape[0] != bz:
@@ -2037,6 +2067,10 @@ class WanModel(ModelMixin, ConfigMixin):
                     if not standin_cache_enabled: get_cache("standin").clear()
                     standin_x = block(standin_x, context = None, grid_sizes = None, e= standin_e0, freqs = standin_freqs, standin_phase = 1)
 
+                uni3c_block = block.uni3c if uni3c_x is not None and block_idx < self.uni3c_layers else None
+                if uni3c_block is not None: # shared by all the guidance branches: the ControlNet does not see the text
+                    uni3c_x = uni3c_block(uni3c_x, e, uni3c_condition["freqs"])
+
                 if animate2_enabled:
                     animate2_generation = {
                         "x_list": x_list,
@@ -2072,6 +2106,12 @@ class WanModel(ModelMixin, ConfigMixin):
                             x_list[i] = block(x, context = context, hints= hints, audio_scale= audio_scale, multitalk_audio = multitalk_audio, multitalk_masks =multitalk_masks, e= e0,  motion_vec = motion_vec, lynx_ip_embeds= lynx_ip_embeds, lynx_ref_buffer = lynx_ref_buffer, sub_x_no =i,  **block_kwargs)
                             del x
                     context = hints = None
+
+                if uni3c_block is not None:
+                    uni3c_hint = uni3c_block.proj_out(uni3c_x)
+                    for i, should_calc in enumerate(x_should_calc):
+                        if should_calc: x_list[i] += uni3c_hint
+                    uni3c_hint = None
 
         if animate2_enabled:
             animate2_ref_hidden = animate2_ref_context_emb = animate2_ref_e0 = animate2_ref_freqs = None

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .infos import HIDREAM_HELP
 
 import torch
 from PIL import Image
@@ -24,7 +27,7 @@ class family_handler:
     @staticmethod
     def query_model_def(base_model_type, model_def):
         is_dev = base_model_type == "hidream_o1_dev"
-        return {
+        return merge_help({
             "image_outputs": True,
             "device_explicit": True,
             "sample_solvers": [("Flash", "flash")] if is_dev else [("Default", "default")],
@@ -53,7 +56,7 @@ class family_handler:
                 "letters_filter": "KI",
                 "default": "",
             },
-        }
+        }, HIDREAM_HELP)
 
     @staticmethod
     def query_supported_types():

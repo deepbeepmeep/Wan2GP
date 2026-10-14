@@ -1,3 +1,4 @@
+// Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 // Render-only: retain Gradio's original labels, model IDs and event handling.
 function wangpModelLabel(node, text, input = false) {
     if (!node.closest('#model_base_types_list, #model_list')) return text;

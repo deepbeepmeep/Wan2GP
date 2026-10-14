@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import importlib
@@ -8,6 +9,8 @@ from types import SimpleNamespace
 from typing import Optional, Tuple
 
 import torch
+
+from shared.kernels import fp8_backend
 
 try:
     from torch._subclasses.fake_tensor import is_fake as _torch_is_fake_tensor
@@ -311,23 +314,27 @@ def _default_quanto_qbytes_linear_forward(ctx, input, other, bias=None):
         # MPS: torch.ops.quanto.qbytes_mm has no MPS kernel → CPU fallback
         # → CPU/MPS op interleaving corrupts Metal command buffer.
         # Use native MPS dequant+matmul instead.
+        weight_scale = other._scale if other._scale.dtype == input._scale.dtype else other._scale.to(input._scale.dtype)  # INT8 ConvRot keeps FP32 scales
         if input.device.type == "mps":
             act = input._data.to(input._scale.dtype) * input._scale
-            wgt = other._data.to(input._scale.dtype) * other._scale
+            wgt = other._data.to(input._scale.dtype) * weight_scale
             output = act @ wgt.t()
             return _add_bias_in_place_or_fallback(output, bias)
-        output = torch.ops.quanto.qbytes_mm(input._data, other._data, input._scale * other._scale)
+        output = torch.ops.quanto.qbytes_mm(input._data, other._data, input._scale * weight_scale)
     else:
+        if fp8_backend.backend != "pytorch" and other._data.dtype in fp8_backend.FP8_DTYPES and input.is_cuda:
+            return fp8_backend.linear(input, other, bias)
         in_features = input.shape[-1]
         out_features = other.shape[0]
         output_shape = input.shape[:-1] + (out_features,)
+        weight_scale = other._scale if other._scale.dtype == input.dtype else other._scale.to(input.dtype)  # INT8 ConvRot keeps FP32 scales
         # MPS: same reason — qbytes_mm falls back to CPU on MPS.
         if input.device.type == "mps":
-            wgt = other._data.to(input.dtype) * other._scale
+            wgt = other._data.to(input.dtype) * weight_scale
             output = input.reshape(-1, in_features) @ wgt.t()
             output = output.reshape(output_shape)
             return _add_bias_in_place_or_fallback(output, bias)
-        output = torch.ops.quanto.qbytes_mm(input.reshape(-1, in_features), other._data, other._scale)
+        output = torch.ops.quanto.qbytes_mm(input.reshape(-1, in_features), other._data, weight_scale)
         output = output.reshape(output_shape)
     return _add_bias_in_place_or_fallback(output, bias)
 

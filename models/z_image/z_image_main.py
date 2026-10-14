@@ -143,7 +143,9 @@ class model_factory:
 
         model_class = ZImageTransformer2DModel
 
-        kwargs_light= { "writable_tensors": False, "default_dtype": torch.bfloat16, "preprocess_sd": preprocess_sd, "fused_split_map": _ZIMAGE_FUSED_SPLIT_MAP }
+        # the loader converts the unquantized weights to dtype and gives it to the quantized formats as their compute dtype, without
+        # dequantizing them (a transformer.to(dtype) would)
+        kwargs_light= { "writable_tensors": False, "default_dtype": dtype, "preprocess_sd": preprocess_sd, "fused_split_map": _ZIMAGE_FUSED_SPLIT_MAP }
         # model_filename contains all files to load (transformer + modules merged by loader)
         import json
         import accelerate
@@ -164,8 +166,6 @@ class model_factory:
 
         from wgp import save_model
         from mmgp.safetensors2 import torch_load_file
-
-        transformer.to(dtype)
 
         if module_source is not None:
             save_model(transformer, model_type, dtype, None, is_module=True, filter=list(torch_load_file(fl.locate_file(module_source))), module_source_no=1)
@@ -192,7 +192,7 @@ class model_factory:
 
         text_encoder = offload.fast_load_transformers_model(
             text_encoder_filename,
-            writable_tensors=True,
+            writable_tensors=False,
             modelClass=Qwen3ForCausalLM,
             defaultConfigPath=text_encoder_config,
             preprocess_sd=_build_qwen3_state_dict_preprocessor(text_encoder_config),
@@ -207,7 +207,7 @@ class model_factory:
 
         vae = offload.fast_load_transformers_model(
             vae_filename,
-            writable_tensors=True,
+            writable_tensors=False,
             modelClass=AutoencoderKL,
             defaultConfigPath=vae_config_path,
             default_dtype=None,

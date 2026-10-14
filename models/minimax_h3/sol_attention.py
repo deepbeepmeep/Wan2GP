@@ -1,15 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """MiniMax H3 policy for the bundled Sol-Attn kernels."""
 
 from __future__ import annotations
 
-from mmgp import offload
+from mmgp import cuda_graphs, offload
 
 from shared.attention import pay_attention
 
 
 SOL_ATTN_THRESH_TYPE = "diag"
 SOL_ATTN_MIN_TOKENS = 8192
+# the active Sol state of the running forward (tau, sink tokens): the blocks pass them to the kernels as numbers, which CUDA graphs
+# record, so they are part of the graph keys
+_graph_state = None
+cuda_graphs.register_key(lambda: _graph_state)
 
 
 class MiniMaxH3SolAttention:
@@ -24,6 +29,8 @@ class MiniMaxH3SolAttention:
         self.sink_tokens = int(layout.video_indices[layout.num_condition_video_rows])
         self.tau = float(tau)
         self.enabled = offload.shared_state.get("_attention") == "sol"
+        global _graph_state
+        _graph_state = (self.tau, self.sink_tokens) if self.enabled else None
         if self.enabled and grouped_video:
             raise ValueError("MiniMax H3 grouped masked denoising is not compatible with Sol Attention")
         if self.enabled and not self._runtime_validated:

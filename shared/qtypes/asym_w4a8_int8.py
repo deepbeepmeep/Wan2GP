@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import ast
 import json
 import os
@@ -196,7 +197,9 @@ if _TRITON_AVAILABLE:
 def _decode_w4a8_triton(qdata, s_rel, codebook, group_size, output):
     rows, k_half = qdata.shape
     grid = (triton.cdiv(rows, 16), triton.cdiv(k_half, 128))
-    codebook_arg = codebook if codebook is not None else torch.empty(1, dtype=torch.float32, device=qdata.device)
+    # Older Triton versions cannot load E4M3 FP8 tensors on Ampere GPUs.
+    s_rel = s_rel.float()
+    codebook_arg = codebook.float() if codebook is not None else torch.empty(1, dtype=torch.float32, device=qdata.device)
     _decode_w4a8_kernel[grid](qdata, s_rel, codebook_arg, output, rows, k_half, group_size,
                               qdata.stride(0), qdata.stride(1), s_rel.stride(0), s_rel.stride(1), output.stride(0), output.stride(1),
                               has_codebook=codebook is not None, block_n=16, block_kh=128, num_warps=4)
@@ -269,47 +272,66 @@ def _portable_int_mm(a_int8, b_int8):
     return torch.nn.functional.linear(a_int8.to(torch.float32), b_int8.to(torch.float32))
 
 
-def _w4a8_linear(input, weight, bias=None):
-    if _is_fake_tensor(input):
-        return input.new_empty((*input.shape[:-1], weight.shape[0]))
-    input = _rotate_activation(input, weight._convrot_group_size)
-    input_shape = input.shape
-    input_2d = input.reshape(-1, input_shape[-1]).contiguous()
-    activation, activation_scale = _quantize_activation(input_2d)
-    rows, k = activation.shape
-    n = weight.shape[0]
-    chunk_rows = _workspace_rows(k, n)
-    output = torch.empty((rows, n), dtype=input.dtype, device=input.device)
-    correction_input = None
-    if weight._correction is not None:
-        groups = k // weight._group_size
-        correction_input = activation.view(rows, groups, weight._group_size).sum(-1, dtype=torch.int32).to(input.dtype)
-        correction_input.mul_(activation_scale.to(input.dtype).unsqueeze(1))
+def _prepare_w4a8_input(input, weight):
+    """Rotate and quantize bounded token tiles; retain only the prepared INT8 input shared by projections."""
+    input = input.reshape(-1, input.shape[-1])
+    rows, k = input.shape
+    activation = torch.empty((rows, k), dtype=torch.int8, device=input.device)
+    activation_scale = torch.empty(rows, dtype=torch.float32, device=input.device)
+    correction_input = input.new_empty((rows, k // weight._group_size)) if weight._correction is not None else None
+    tile_rows = max(1, (1 << 24) // k)
+    for start in range(0, rows, tile_rows):
+        end = min(start + tile_rows, rows)
+        rotated = _rotate_activation(input[start:end], weight._convrot_group_size)
+        quantized, scale = _quantize_activation(rotated)
+        activation[start:end].copy_(quantized)
+        activation_scale[start:end].copy_(scale)
+        if correction_input is not None:
+            correction = quantized.view(end - start, -1, weight._group_size).sum(-1, dtype=torch.int32).to(input.dtype)
+            correction.mul_(scale.to(input.dtype).unsqueeze(1))
+            correction_input[start:end].copy_(correction)
+            del correction
+        del rotated, quantized, scale
+    return activation, activation_scale, correction_input, input.dtype
 
-    backend = _kernel_backend(input.device)
+
+def _w4a8_rows(prepared, weight, bias, first, last):
+    activation, activation_scale, correction_input, dtype = prepared
+    rows, k = activation.shape
+    chunk_rows = _workspace_rows(k, last - first)
+    output = torch.empty((rows, last - first), dtype=dtype, device=activation.device)
+    backend = _kernel_backend(activation.device)
     if backend is not None:
         _note_kernel(chunk_rows)
-        workspace = torch.empty((chunk_rows, k), dtype=torch.int8, device=input.device)
+        workspace = torch.empty((chunk_rows, k), dtype=torch.int8, device=activation.device)
     else:
-        _note_fallback(input.device)
+        _note_fallback(activation.device)
         workspace = None
 
-    for start in range(0, n, chunk_rows):
-        end = min(start + chunk_rows, n)
+    for start in range(first, last, chunk_rows):
+        end = min(start + chunk_rows, last)
+        tile = output[:, start - first:end - first]
         qdata = weight._data[start:end]
         s_rel = weight._s_rel[start:end]
         if backend is not None:
             decoded = _decode_w4a8_triton(qdata, s_rel, weight._codebook, weight._group_size, workspace[:end - start])
-            backend.scaled_int8_mm(activation, decoded, activation_scale, weight._s_channel[start:end], out_dtype=input.dtype, out=output[:, start:end])
+            backend.scaled_int8_mm(activation, decoded, activation_scale, weight._s_channel[start:end], out_dtype=dtype, out=tile)
         else:
             decoded = _decode_w4a8_torch(qdata, s_rel, weight._codebook, weight._group_size)
             accum = _portable_int_mm(activation, decoded)
-            output[:, start:end].copy_((accum.float() * activation_scale.float().unsqueeze(1) * weight._s_channel[start:end].float().unsqueeze(0)).to(input.dtype))
+            tile.copy_((accum.float() * activation_scale.float().unsqueeze(1) * weight._s_channel[start:end].float().unsqueeze(0)).to(dtype))
         if correction_input is not None:
-            output[:, start:end].addmm_(correction_input, weight._correction[:, start:end].to(input.dtype))
+            tile.addmm_(correction_input, weight._correction[:, start:end].to(dtype))
         if bias is not None:
-            output[:, start:end].add_(bias[start:end].to(device=input.device, dtype=input.dtype))
-    return output.reshape(*input_shape[:-1], n)
+            tile.add_(bias[start:end].to(device=activation.device, dtype=dtype))
+    return output
+
+
+def _w4a8_linear(input, weight, bias=None):
+    if _is_fake_tensor(input):
+        return input.new_empty((*input.shape[:-1], weight.shape[0]))
+    prepared = _prepare_w4a8_input(input, weight)
+    return _w4a8_rows(prepared, weight, bias, 0, weight.shape[0]).reshape(*input.shape[:-1], weight.shape[0])
 
 
 def _qfallback(callable, *args, **kwargs):
@@ -473,5 +495,31 @@ class QLinearAsymW4A8Int8(QModuleMixin, torch.nn.Linear):
         self.output_scale = state_dict.pop(prefix + "output_scale", torch.ones((), dtype=torch.float32, device=device))
         return
 
+
+class _W4A8RowProjection:
+    """MMGP row ranges without slicing/dequantizing the wrapper weight; LoRAs are applied by MMGP."""
+    @staticmethod
+    def supports(module, x):
+        weight = getattr(module, "weight", None)
+        # Slicing the optional floating-point correction GEMM can change its accumulation/rounding.
+        return isinstance(weight, AsymW4A8Int8WeightTensor) and weight._correction is None and not _is_fake_tensor(x)
+
+    @staticmethod
+    def key(module):
+        return HANDLER_NAME, module.weight._convrot_group_size
+
+    @staticmethod
+    def prepare(module, x):
+        return _prepare_w4a8_input(x, module.weight)
+
+    @staticmethod
+    def rows(module, prepared, start, stop):
+        return _w4a8_rows(prepared, module.weight, module.bias, start, stop)
+
+
+from mmgp import offload
+
+_W4A8_ROW_PROJECTION = _W4A8RowProjection()
+offload.register_row_projection(_W4A8_ROW_PROJECTION)
 
 __all__ = ["AsymW4A8Int8WeightTensor", "QLinearAsymW4A8Int8", "convert_to_quanto", "detect"]

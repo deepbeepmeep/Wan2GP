@@ -1,18 +1,18 @@
 # Copyright 2025 Alibaba Z-Image Team and The HuggingFace Team. All rights reserved.
-##### Enjoy this spagheti VRAM optimizations done by DeepBeepMeep !
-# I am sure you are a nice person and as you copy this code, you will give me officially proper credits:
-# Please link to https://github.com/deepbeepmeep/Wan2GP and @deepbeepmeep on twitter  
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 
 import math
 from typing import List, Optional, Tuple
 
 import torch
+from mmgp import cuda_graphs
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 
 from diffusers.models.normalization import RMSNorm
 
+from shared import attention_kit
 from shared.attention import pay_attention
 
 class ModuleWrapper:
@@ -35,6 +35,13 @@ def apply_rotary_emb_inplace(x_list: list, freqs_cis: torch.Tensor) -> torch.Ten
     x0.mul_(cos).addcmul_(x1, sin, value=-1)
     x1.mul_(cos).addcmul_(x0_orig, sin)
     return x.flatten(3).to(dtype)
+
+
+def _norm_rope_rows(x, norm, freqs_cis):
+    """norm then RoPE of rows of q or k (batch, tokens, heads, head_dim), as Attention.forward computes them."""
+    if norm is not None:
+        x = norm(x)
+    return x if freqs_cis is None else apply_rotary_emb_inplace([x], freqs_cis)
 
 
 ADALN_EMBED_DIM = 256
@@ -114,8 +121,18 @@ class Attention(nn.Module):
         self.norm_q = RMSNorm(self.head_dim, eps=1e-5) if qk_norm else None
         self.norm_k = RMSNorm(self.head_dim, eps=1e-5) if qk_norm else None
 
+    def _norm_rope_(self, query, key, freqs_cis):
+        """attention_kit callback: norm_q/norm_k and RoPE of q and/or k in place, by chunks of tokens."""
+        for tensor, norm in ((query, self.norm_q), (key, self.norm_k)):
+            if tensor is not None and (norm is not None or freqs_cis is not None):
+                attention_kit.rows_(tensor, lambda part, start, stop: _norm_rope_rows(part, norm, None if freqs_cis is None else freqs_cis[:, start:stop]))
+
     def forward(self, h_list: list, freqs_cis: torch.Tensor, NAG= None) -> torch.Tensor:
         """Compute self-attention with RoPE. h_list is cleared to free memory early."""
+        if NAG is None:
+            out = attention_kit.qkv_attention(h_list, self.to_q, self.to_k, self.to_v, self.n_heads, self.head_dim,
+                                              lambda query, key, group: self._norm_rope_(query, key, freqs_cis))
+            return self.to_out(out.flatten(2, 3))
         h = h_list.pop()
         query = self.to_q(h)
         key = self.to_k(h)
@@ -233,9 +250,9 @@ class ZImageTransformerBlock(nn.Module):
             scale_msa, gate_msa, scale_mlp, gate_mlp = self.adaLN_modulation(adaln_input).unsqueeze(1).chunk(4, dim=2)
             # In-place modulation for attention block
             scale_msa.add_(1.0)
-            normed = self.attention_norm1(x)
-            normed.mul_(scale_msa)
-            attn_out = self.attention_norm2(self.attention([normed], freqs_cis, NAG=NAG))
+            attn_in = [self.attention_norm1(x)]  # handed off: the attention releases it after the q/k/v projections
+            attn_in[0].mul_(scale_msa)
+            attn_out = self.attention_norm2(self.attention(attn_in, freqs_cis, NAG=NAG))
             attn_out.mul_(gate_msa.tanh_())
             x.add_(attn_out); attn_out = None
             # In-place modulation for FFN block (chunked)
@@ -386,6 +403,8 @@ class RopeEmbedder:
 
 
 class ZImageTransformer2DModel(nn.Module):
+    _cuda_graph_towers = ("noise_refiner", "context_refiner")
+
     def preprocess_loras(self, model_type, sd):
         first = next(iter(sd), None)
         if first is None:
@@ -1086,21 +1105,22 @@ class ZImageTransformer2DModel(nn.Module):
                 ctrl_seqlens_list.append(ctrl_seqlens[0])
                 x_batch = cap_embedded_ref = control_ctx_input = None
 
-        # Noise refiner
-        for layer in self.noise_refiner:
-            for i, x_i in enumerate(embedded_x_list):
-                kwargs = dict(
-                    attn_mask=per_sample_kwargs[i]["x_attn_mask"],
-                    freqs_cis=per_sample_kwargs[i]["x_freqs"],
-                    adaln_input=adaln_input,
-                )
-                if control_V2:  # v2 control
-                    # kwargs["hints"] = refiner_hints_tuple_list[i]
-                    kwargs["hints"] = refiner_hints_tuple_list[i]
-                    kwargs["hints_kwargs"] = refiner_hints_kwargs_list[i]                        
-                    kwargs["context_scale"] = control_context_scale
-                embedded_x_list[i] = layer(x_i, **kwargs)
-                x_i = None
+        with cuda_graphs.scope():
+            # Noise refiner
+            for layer in self.noise_refiner:
+                for i, x_i in enumerate(embedded_x_list):
+                    kwargs = dict(
+                        attn_mask=per_sample_kwargs[i]["x_attn_mask"],
+                        freqs_cis=per_sample_kwargs[i]["x_freqs"],
+                        adaln_input=adaln_input,
+                    )
+                    if control_V2:  # v2 control
+                        # kwargs["hints"] = refiner_hints_tuple_list[i]
+                        kwargs["hints"] = refiner_hints_tuple_list[i]
+                        kwargs["hints_kwargs"] = refiner_hints_kwargs_list[i]                        
+                        kwargs["context_scale"] = control_context_scale
+                    embedded_x_list[i] = layer(x_i, **kwargs)
+                    x_i = None
 
         if control_V2:
             # finish processing v2 control hints
@@ -1139,14 +1159,15 @@ class ZImageTransformer2DModel(nn.Module):
             NAG["cap_embed_len"] = neg_cap_embedded.shape[1]
             neg_feats =  None
 
-        for layer in self.context_refiner:
-            for i, cap_i in enumerate(cap_embedded_list):
-                cap_embedded_list[i] = layer(
-                    cap_i,
-                    attn_mask=per_sample_kwargs[i]["cap_attn_mask"],
-                    freqs_cis=per_sample_kwargs[i]["cap_freqs"],
-                )
-                cap_i = None
+        with cuda_graphs.scope():
+            for layer in self.context_refiner:
+                for i, cap_i in enumerate(cap_embedded_list):
+                    cap_embedded_list[i] = layer(
+                        cap_i,
+                        attn_mask=per_sample_kwargs[i]["cap_attn_mask"],
+                        freqs_cis=per_sample_kwargs[i]["cap_freqs"],
+                    )
+                    cap_i = None
 
         # Create unified (x + cap) for each sample
         unified_list = []
@@ -1220,26 +1241,27 @@ class ZImageTransformer2DModel(nn.Module):
             hints_list = [None] * len(x_list)
             hints_kwargs_list = [None] * len(x_list)
 
-        # Main layers
-        for layer in self.layers:
-            if callback is not None:
-                callback(-1, None, False, True)
-            if pipeline is not None and getattr(pipeline, "_interrupt", False):
-                return None
+        with cuda_graphs.scope():
+            # Main layers
+            for layer in self.layers:
+                if callback is not None:
+                    callback(-1, None, False, True)
+                if pipeline is not None and getattr(pipeline, "_interrupt", False):
+                    return None
 
-            for i, (unified_i, hints, hints_kwargs) in enumerate(zip(unified_list, hints_list, hints_kwargs_list)):
-                kwargs = {}
-                if hints is not None:
-                    kwargs.update(dict(hints= hints, hints_kwargs = hints_kwargs, context_scale = control_context_scale))
-                if NAG_index == i: kwargs["NAG"]= NAG
-                unified_list[i] = layer(
-                    unified_i,
-                    attn_mask=unified_attn_masks[i],
-                    freqs_cis=unified_freqs_list[i],
-                    adaln_input=adaln_input,
-                    **kwargs,
-                )
-                unified_i = hints = kwargs = hints_kwargs = None
+                for i, (unified_i, hints, hints_kwargs) in enumerate(zip(unified_list, hints_list, hints_kwargs_list)):
+                    kwargs = {}
+                    if hints is not None:
+                        kwargs.update(dict(hints= hints, hints_kwargs = hints_kwargs, context_scale = control_context_scale))
+                    if NAG_index == i: kwargs["NAG"]= NAG
+                    unified_list[i] = layer(
+                        unified_i,
+                        attn_mask=unified_attn_masks[i],
+                        freqs_cis=unified_freqs_list[i],
+                        adaln_input=adaln_input,
+                        **kwargs,
+                    )
+                    unified_i = hints = kwargs = hints_kwargs = None
 
         # Final layer and unpatchify
         output_list = []

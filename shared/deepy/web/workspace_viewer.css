@@ -1,3 +1,4 @@
+/* Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt) */
 .wangp-workspace-viewer {box-sizing:border-box;position:fixed;inset:0;width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:var(--background-fill-primary,#f6f9fb);color:var(--body-text-color,#163d52);font:14px/1.4 system-ui;}
 .wangp-workspace-viewer[open] {display:flex;flex-direction:column;}
 .wangp-workspace-viewer * {box-sizing:border-box;}
@@ -13,6 +14,8 @@
 .wangp-workspace-viewer [data-workspace] {max-width:100%;min-width:180px;padding:6px 30px 6px 10px;border:1px solid #ffffff50;border-radius:9px;background:var(--background-fill-primary,#fff);color:var(--body-text-color,#163d52);font:650 18px/1.4 system-ui;cursor:pointer;}
 .wangp-workspace-viewer [data-workspace] option {background:var(--background-fill-primary,#fff);color:var(--body-text-color,#163d52);font-weight:400;}
 .wv-header-actions {display:flex;gap:8px;flex-shrink:0;}
+.wv-storage {display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:9px 24px;border-bottom:1px solid var(--border-color-primary,#dce5eb);font-size:12px;}
+.wv-storage code {flex:1;min-width:0;overflow-wrap:anywhere;user-select:text;}
 .wangp-workspace-viewer [data-summary] {font-size:12px;opacity:.8;}
 .wangp-workspace-viewer button {display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--border-color-primary,#cbd9e2);border-radius:8px;padding:7px 10px;background:var(--background-fill-primary,#fff);color:inherit;font:inherit;cursor:pointer;white-space:nowrap;}
 .wangp-workspace-viewer button:hover {background:var(--background-fill-secondary,#e8f1f7);}

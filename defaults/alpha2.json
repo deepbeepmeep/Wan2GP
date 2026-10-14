@@ -3,7 +3,7 @@
 	{
 		"name": "Wan2.1 Alpha v2.0 14B",
 		"architecture" : "alpha2",
-		"description": "Wan-Alpha v2.0 generates transparent videos with fine-grained alpha detail (hair, glow, smoke). For each video, a Zip file with RGBA frames is produced.",
+		"description": "Wan-Alpha v2.0 generates transparent videos with fine alpha detail (hair, glow, smoke). A checkerboard video previews the result. Choose RGBA PNG frames in a ZIP (default) or a ProRes 4444 MOV companion in Configuration / Outputs / RGBA Video Output.",
 		"URLs": "t2v",
 		"preload_URLs": [
 			"https://huggingface.co/DeepBeepMeep/Wan2.1/resolve/main/wan_alpha_2.1_vae_rgb_channel_v2.safetensors", 

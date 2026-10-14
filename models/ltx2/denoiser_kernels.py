@@ -38,13 +38,14 @@ def scale_shift(x, scale, shift, in_place):
     return denoiser_triton.scale_shift(x, scale, shift, in_place)
 
 
-def split_rope(x, cache, layout):
+def split_rope(x, cache, layout, head_start=0, dim_head=None):
     global _rope_reported
     if (not ENABLED or denoiser_triton is None or not kernel_policy.allow_approximate()
             or torch.is_grad_enabled() or torch.compiler.is_compiling() or not x.is_cuda
             or int8_backend.triton._is_fake_tensor(x)
             or x.dtype != torch.bfloat16 or x.stride(-1) != 1 or x.stride(1) != x.shape[2]
             or len(layout.axis_cos) not in (1, 3)
+            or not 1 <= len(layout.grid_sizes) <= 3
             or not 0 <= cache.pad_size < len(layout.axis_cos)
             or (x.shape[0] > 1 and x.stride(0) < x.shape[1] * x.shape[2])
             or torch.cuda.get_device_capability(x.device) != (12, 0)):
@@ -53,7 +54,8 @@ def split_rope(x, cache, layout):
     if any(t.device != x.device or t.dtype != dtype or not t.is_contiguous()
            for t in (*layout.axis_cos, *layout.axis_sin)):
         return False
-    denoiser_triton.split_rope(x, cache, layout)
+    denoiser_triton.split_rope(x, cache, layout, head_start, dim_head)
+    torch.autograd.graph.increment_version(x)
     if not _rope_reported:
         print('[LTX] Triton compact rotary kernel is being used.')
         _rope_reported = True

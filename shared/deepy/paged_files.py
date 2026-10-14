@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Compact filesystem queries for the MCP v2 IO toolbox."""
 
 import base64
@@ -10,15 +11,15 @@ from pathlib import Path
 
 from shared.deepy import long_text
 from shared.deepy.media_registry import detect_media_type
-from shared.mcp_paging import PAGE_SIZE
+from shared.mcp.paging import PAGE_SIZE
 
 
 def directory_entries(policy, path="", pattern="*", media_type="all"):
     if not path:
         yield from policy.roots()
         return
-    if media_type not in {"all", "image", "video", "audio", "txt", "other"}:
-        raise ValueError("media_type must be all, image, video, audio, txt, or other.")
+    if media_type not in {"all", "image", "video", "audio", "3d", "txt", "other"}:
+        raise ValueError("media_type must be all, image, video, audio, 3d, txt, or other.")
     if "/" in pattern or "\\" in pattern or "**" in pattern:
         raise ValueError("list navigates one directory; use rg for recursive file search.")
     root = policy.require_read(path, directory=True)

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 Comfy Org. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # ruff: noqa: ANN001, ANN202, PLR0912, PLR0913, PLR0915
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Triton 3D neighborhood attention using NATTEN ``na3d`` semantics.
 
 Vendored from the official LTX-2.5 implementation, which in turn vendors the

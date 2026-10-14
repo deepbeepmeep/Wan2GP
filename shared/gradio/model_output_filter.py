@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import html
 import time
 from dataclasses import dataclass
@@ -34,6 +35,13 @@ FILTER_ICONS = {
             <path d="M4 12h2.5l2-4v8l2.5-8 2 8 2.5-4H20"/>
         </svg>
     """,
+    model_dropdowns.MODEL_OUTPUT_FILTER_3D: """
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/>
+            <path d="m4 7.5 8 4.5 8-4.5"/>
+            <path d="M12 12v9"/>
+        </svg>
+    """,
 }
 
 FILTER_LABELS = {
@@ -41,6 +49,7 @@ FILTER_LABELS = {
     model_dropdowns.MODEL_OUTPUT_FILTER_VIDEO: "Movie model families",
     model_dropdowns.MODEL_OUTPUT_FILTER_IMAGE: "Image-only model families",
     model_dropdowns.MODEL_OUTPUT_FILTER_AUDIO: "Audio-only model families",
+    model_dropdowns.MODEL_OUTPUT_FILTER_3D: "3D model families",
 }
 
 
@@ -52,15 +61,13 @@ class ModelOutputFilterControls:
     refresh_trigger: gr.Textbox
 
 
+_displayed_filters = [model_dropdowns.MODEL_OUTPUT_FILTER_ALL, model_dropdowns.MODEL_OUTPUT_FILTER_VIDEO, model_dropdowns.MODEL_OUTPUT_FILTER_IMAGE, model_dropdowns.MODEL_OUTPUT_FILTER_AUDIO]
+
+
 def render_filter(selected_filter):
     selected_filter = model_dropdowns.normalize_model_output_filter(selected_filter)
     items = []
-    for filter_key in (
-        model_dropdowns.MODEL_OUTPUT_FILTER_ALL,
-        model_dropdowns.MODEL_OUTPUT_FILTER_VIDEO,
-        model_dropdowns.MODEL_OUTPUT_FILTER_IMAGE,
-        model_dropdowns.MODEL_OUTPUT_FILTER_AUDIO,
-    ):
+    for filter_key in _displayed_filters:
         active = filter_key == selected_filter
         classes = "wangp-model-output-filter-link" + (" wangp-model-output-filter-link-active" if active else "")
         items.append(
@@ -72,10 +79,13 @@ def render_filter(selected_filter):
                 icon=FILTER_ICONS[filter_key],
             )
         )
-    return "<div class='wangp-model-output-filter' role='group' aria-label='Model family filter'>{}</div>".format("".join(items))
+    return "<div class='wangp-model-output-filter' role='group' aria-label='Model family filter' style='grid-template-columns: repeat({0}, minmax(30px, 42px)); width: min(100%, {1}px)'>{2}</div>".format(len(_displayed_filters), 49 * len(_displayed_filters), "".join(items))
 
 
-def create_filter(selected_filter):
+def create_filter(selected_filter, filters):
+    """`filters`: the filters to display (model_dropdowns.available_output_filters)."""
+    global _displayed_filters
+    _displayed_filters = list(filters)
     with gr.Column(scale=2, min_width=210, elem_classes=["wangp-model-output-filter-wrap"]):
         filter_html = gr.HTML(value=render_filter(selected_filter), elem_id="wangp_model_output_filter")
         with gr.Row(visible=False, elem_classes=["wangp-model-output-filter-hidden-controls"]):
@@ -209,10 +219,8 @@ def get_css():
     }
     .wangp-model-output-filter {
         display: grid;
-        grid-template-columns: repeat(4, minmax(30px, 42px));
         align-items: center;
         justify-content: center;
-        width: min(100%, 196px);
         margin: 0 auto;
         gap: clamp(2px, 1.2vw, 6px);
         padding: 0 4px;

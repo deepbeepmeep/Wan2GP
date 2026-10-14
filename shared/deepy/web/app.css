@@ -1,3 +1,4 @@
+/* Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt) */
 :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #153b51; background: #edf3f6; color-scheme: light; }
 * { box-sizing: border-box; }
 body { margin: 0; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
@@ -170,7 +171,15 @@ dialog button { width: 100%; padding: 12px; background: #0c5376; color: white; b
 #media-viewer[open] { display: flex; align-items: center; justify-content: center; }
 #media-viewer img, #media-viewer video { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
 #media-viewer audio { width: min(100%, 600px); }
-#media-viewer #close-media-viewer { position: absolute; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); width: 44px; height: 44px; padding: 10px; border: 1px solid #fff5; background: #183749; color: white; }
+#media-viewer .mesh-viewer { display: block; position: relative; width: 100%; height: 100%; background: #e1eaf0; }
+#media-viewer .mesh-viewer > :is(model-viewer, wangp-splat-viewer) { display: block; width: 100%; height: 100%; }
+#media-viewer .mesh-viewer-status { position: absolute; inset: auto 12px 12px; padding: 12px; border-radius: 10px; background: #fff; color: #153b51; }
+#media-viewer .mesh-viewer-status button { width: auto; margin: 8px; }
+#media-viewer .mesh-viewer-fallback { width: 100%; height: 100%; }
+#media-viewer .mesh-viewer-actions { position: absolute; top: max(12px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); }
+#media-viewer .mesh-viewer-actions button { display: grid; place-items: center; width: 44px; height: 44px; padding: 10px; background: #183749; }
+#media-viewer .mesh-viewer-actions svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+#media-viewer #close-media-viewer { position: absolute; z-index: 1; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); width: 44px; height: 44px; padding: 10px; border: 1px solid #fff5; background: #183749; color: white; }
 @media(max-width: 550px) { .app-header { padding: 10px 15px; } .gallery-browser { padding: 18px 12px; } .gallery-details { padding: 12px 12px 0; } #generation-progress { padding: 8px 12px; gap: 8px; } body[data-deepy-app] #assistant_chat_panel { padding: 8px !important; } .chat__input-helper { display: none !important; } }
 
 #templates-settings { min-width: 0; max-width: 100%; overflow-x: hidden; }

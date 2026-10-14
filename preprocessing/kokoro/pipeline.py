@@ -2,28 +2,7 @@ from .model import KModel
 from dataclasses import dataclass
 from huggingface_hub import hf_hub_download
 from loguru import logger
-
-
-def _patch_phonemizer_espeak_data_path() -> None:
-    import os
-    import espeakng_loader
-    from phonemizer.backend.espeak.wrapper import EspeakWrapper
-
-    if hasattr(EspeakWrapper, "set_data_path"):
-        return
-
-    @classmethod
-    def set_data_path(cls, data_path):
-        if data_path is not None:
-            os.environ["ESPEAK_DATA_PATH"] = str(data_path)
-
-    os.environ.setdefault("ESPEAK_DATA_PATH", espeakng_loader.get_data_path())
-    EspeakWrapper.set_data_path = set_data_path
-
-
-_patch_phonemizer_espeak_data_path()
-
-from misaki import en, espeak
+from misaki import en
 from typing import Callable, Generator, List, Optional, Tuple, Union
 import re
 import torch
@@ -32,26 +11,15 @@ import os
 ALIASES = {
     'en-us': 'a',
     'en-gb': 'b',
-    'es': 'e',
-    'fr-fr': 'f',
-    'hi': 'h',
-    'it': 'i',
-    'pt-br': 'p',
     'ja': 'j',
     'zh': 'z',
 }
 
+# WanGP: the espeak-ng (GPL) languages are removed; out-of-dictionary English words use the OpenPhonemizer fallback (BSD).
 LANG_CODES = dict(
     # pip install misaki[en]
     a='American English',
     b='British English',
-
-    # espeak-ng
-    e='es',
-    f='fr-fr',
-    h='hi',
-    i='it',
-    p='pt-br',
 
     # pip install misaki[ja]
     j='Japanese',
@@ -133,13 +101,9 @@ class KPipeline:
                 raise
         self.voices = {}
         if lang_code in 'ab':
-            try:
-                fallback = espeak.EspeakFallback(british=lang_code=='b')
-            except Exception as e:
-                logger.warning("EspeakFallback not Enabled: OOD words will be skipped")
-                logger.warning({str(e)})
-                fallback = None
-            self.g2p = en.G2P(trf=trf, british=lang_code=='b', fallback=fallback, unk='')
+            from .openphonemizer import OpenPhonemizerFallback
+            self.g2p = en.G2P(trf=trf, british=lang_code=='b', unk='')
+            self.g2p.fallback = OpenPhonemizerFallback(self.g2p.lexicon, device=device or 'cpu')
         elif lang_code == 'j':
             try:
                 from misaki import ja
@@ -157,10 +121,6 @@ class KPipeline:
             except ImportError:
                 logger.error("You need to `pip install misaki[zh]` to use lang_code='z'")
                 raise
-        else:
-            language = LANG_CODES[lang_code]
-            logger.warning(f"Using EspeakG2P(language='{language}'). Chunking logic not yet implemented, so long texts may be truncated unless you split them with '\\n'.")
-            self.g2p = espeak.EspeakG2P(language=language)
 
     def load_single_voice(self, voice: str):
         if voice in self.voices:

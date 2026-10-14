@@ -1,0 +1,14 @@
+{
+    "model": {
+        "name": "MoGe-2 ViT-L Photo to 3D",
+        "architecture": "moge2",
+        "description": "MoGe-2 (Microsoft) reconstructs the visible geometry of one photo in metres: a point cloud shown as Gaussian splats or a textured mesh, with normals and the camera field of view.",
+        "group": "recon3d",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/moge2_vitl_normal.safetensors"
+        ]
+    },
+    "prompt": "Street corner scan",
+    "model_mode": "points",
+    "batch_size": 1
+}

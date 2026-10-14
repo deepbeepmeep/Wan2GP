@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from .lifecycle import NotificationRun, finish_queue, record_generation, start_queue
 from .secure_store import SecureStorageError
 from .service import send_notification, send_notification_async

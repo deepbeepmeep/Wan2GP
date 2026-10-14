@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import json
@@ -29,8 +30,11 @@ _ASSISTANT_PREFILL_CHUNK_TOKENS = 1024
 ASSISTANT_THOUGHT_BUDGET_TOKENS = 4096
 ASSISTANT_STATEMENT_BUDGET_TOKENS = 4096
 ASSISTANT_TOOL_BATCH_BUDGET_TOKENS = 4096
+ASSISTANT_ACTION_BUDGET_SMALL_CONTEXT_TOKENS = 16386
+ASSISTANT_ACTION_BUDGET_BASE_CONTEXT_TOKENS = 32000
 ASSISTANT_ACTION_BUDGET_MEDIUM_CONTEXT_TOKENS = 48000
 ASSISTANT_ACTION_BUDGET_LARGE_CONTEXT_TOKENS = 64000
+ASSISTANT_ACTION_BUDGET_SMALL_TOKENS = 2048
 ASSISTANT_ACTION_BUDGET_MEDIUM_TOKENS = 6144
 ASSISTANT_ACTION_BUDGET_LARGE_TOKENS = 8192
 DEEPY_TELEMETRY_ENV = "WAN2GP_DEEPY_TELEMETRY"
@@ -48,6 +52,12 @@ ASSISTANT_THOUGHT_BUDGET_UPDATE = assistant_thought_budget_update(ASSISTANT_THOU
 
 def assistant_action_budget_tokens(context_window_tokens: int) -> int:
     context_window_tokens = int(context_window_tokens)
+    if context_window_tokens <= ASSISTANT_ACTION_BUDGET_SMALL_CONTEXT_TOKENS:
+        return ASSISTANT_ACTION_BUDGET_SMALL_TOKENS
+    if context_window_tokens < ASSISTANT_ACTION_BUDGET_BASE_CONTEXT_TOKENS:
+        context_growth = context_window_tokens - ASSISTANT_ACTION_BUDGET_SMALL_CONTEXT_TOKENS
+        budget_growth = ASSISTANT_THOUGHT_BUDGET_TOKENS - ASSISTANT_ACTION_BUDGET_SMALL_TOKENS
+        return ASSISTANT_ACTION_BUDGET_SMALL_TOKENS + budget_growth * context_growth // (ASSISTANT_ACTION_BUDGET_BASE_CONTEXT_TOKENS - ASSISTANT_ACTION_BUDGET_SMALL_CONTEXT_TOKENS)
     if context_window_tokens >= ASSISTANT_ACTION_BUDGET_LARGE_CONTEXT_TOKENS:
         return ASSISTANT_ACTION_BUDGET_LARGE_TOKENS * context_window_tokens // ASSISTANT_ACTION_BUDGET_LARGE_CONTEXT_TOKENS
     if context_window_tokens >= ASSISTANT_ACTION_BUDGET_MEDIUM_CONTEXT_TOKENS:
@@ -1142,16 +1152,19 @@ class Qwen35AssistantRuntime:
         return self._prefill_context(token_ids, seed=seed)
 
     def restore_or_replay(self, snapshot: dict[str, Any] | None, fallback_tokens: list[int], seed: int | None = None) -> tuple[str, str]:
+        replay_reason = "no exact runtime snapshot was available"
         if snapshot:
             try:
                 self.restore_snapshot(snapshot)
                 return "restored", "exact KV snapshot restored"
+            except torch.OutOfMemoryError:
+                raise
             except Exception as exc:
                 self._log(f"Exact restore failed, falling back to prefill: {exc}")
-                self.prime_context(fallback_tokens, seed=seed)
-                return "prefilled", f"exact KV restore failed: {exc}"
+                replay_reason = f"exact KV restore failed: {exc}"
+        # Leave the exception handler before replay so its traceback releases GPU temporaries.
         self.prime_context(fallback_tokens, seed=seed)
-        return "prefilled", "no exact runtime snapshot was available"
+        return "prefilled", replay_reason
 
     def extend_context(self, target_token_ids: list[int]) -> str:
         seq = self._get_active_sequence()

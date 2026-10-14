@@ -13,6 +13,7 @@
 # third party's use or distribution of any of the Tencent Hunyuan works or outputs and your exercise
 # of rights and permissions under this agreement.
 # See the License for the specific language governing permissions and limitations under the License.
+# Modified for WanGP.
 
 from shared.utils.phase_progress import vae_decoding_progress, set_phase_status
 import math

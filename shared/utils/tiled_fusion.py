@@ -1,3 +1,6 @@
+# Ported from ComfyUI-LTXVideo (https://github.com/Lightricks/ComfyUI-LTXVideo), Copyright (c) Lightricks Ltd.,
+# LTX-2 Community License Agreement. Modified for WanGP.
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Per-step tiled latent fusion geometry.
 
 One latent canvas is denoised through overlapping spatial tiles and temporal windows. At every

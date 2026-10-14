@@ -1,0 +1,16 @@
+{
+    "_source": "Ruicheng/moge-2-vitl-normal (model.pt model_config, MIT)",
+    "backbone": {"dim": 1024, "depth": 24, "heads": 16, "swiglu": false},
+    "intermediate_layers": [5, 11, 17, 23],
+    "dim_out": 1024,
+    "neck": {"dim_in": [1026, 2, 2, 2, 2], "dim_out": [null, null, null, null, null], "dim_res_blocks": [1024, 256, 128, 64, 32], "num_res_blocks": [0, 2, 2, 2, 0],
+             "resamplers": ["conv_transpose", "conv_transpose", "conv_transpose", "bilinear"]},
+    "points_head": {"dim_in": [1024, 256, 128, 64, 32], "dim_out": [null, null, null, null, 3], "dim_res_blocks": [1024, 256, 128, 64, 32], "num_res_blocks": [0, 1, 1, 1, 0],
+                    "resamplers": ["conv_transpose", "conv_transpose", "conv_transpose", "bilinear"]},
+    "normal_head": {"dim_in": [1024, 256, 128, 64, 32], "dim_out": [null, null, null, null, 3], "dim_res_blocks": [1024, 256, 128, 64, 32], "num_res_blocks": [0, 1, 1, 1, 0],
+                    "resamplers": ["conv_transpose", "conv_transpose", "conv_transpose", "bilinear"]},
+    "mask_head": {"dim_in": [1024, 256, 128, 64, 32], "dim_out": [null, null, null, null, 1], "dim_res_blocks": [1024, 256, 128, 64, 32], "num_res_blocks": [0, 1, 1, 1, 0],
+                  "resamplers": ["conv_transpose", "conv_transpose", "conv_transpose", "bilinear"]},
+    "scale_head": [1024, 1024, 1024, 1],
+    "num_tokens_range": [1200, 3600]
+}

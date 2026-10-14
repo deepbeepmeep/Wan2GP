@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# Modifications Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 """Reusable Sol-Attn Triton backend."""
 
 from .interface import prepare_kv, sol_attn, sol_attn_prepared, staged_supported, validate_runtime

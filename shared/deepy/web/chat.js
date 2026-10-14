@@ -1,3 +1,4 @@
+// Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 
 window.__wangpAssistantChatNS = window.__wangpAssistantChatNS || {};
 window.__wangpAssistantChatPending = window.__wangpAssistantChatPending || [];
@@ -74,16 +75,17 @@ WAC.syncComposerLayout = function () {
   const mode = window.innerWidth <= 900 ? 'mobile' : 'desktop';
   if (panel.dataset.composerLayoutMode === mode && panel.classList.contains('has-fixed-composer-layout')) return;
   WAC.resetComposerLayout();
-  const panelRect = panel.getBoundingClientRect();
-  const shellRect = shellBlock.getBoundingClientRect();
-  const inputRect = input.getBoundingClientRect();
-  if (panelRect.height <= 0 || shellRect.height <= 0 || inputRect.height <= 0) return;
+  // Measure layout sizes, independent of the dock's opening transform.
+  const naturalHeight = panel.offsetHeight;
+  const shellHeight = shellBlock.offsetHeight;
+  const inputHeight = input.offsetHeight;
+  if (naturalHeight <= 0 || shellHeight <= 0 || inputHeight <= 0) return;
   const historyMinHeight = parseFloat(window.getComputedStyle(dock).getPropertyValue('--chat-history-min-height')) || 112;
   const viewportLimit = Math.max(320, window.innerHeight - 36);
-  const panelHeight = Math.min(panelRect.height, viewportLimit);
-  const nonHistoryHeight = Math.max(0, panelRect.height - shellRect.height);
+  const panelHeight = Math.min(naturalHeight, viewportLimit);
+  const nonHistoryHeight = Math.max(0, naturalHeight - shellHeight);
   const availableHistoryHeight = Math.max(historyMinHeight, panelHeight - nonHistoryHeight);
-  const maxRequestHeight = Math.max(inputRect.height, inputRect.height + availableHistoryHeight - historyMinHeight);
+  const maxRequestHeight = Math.max(inputHeight, inputHeight + availableHistoryHeight - historyMinHeight);
   panel.style.height = `${panelHeight}px`;
   panel.style.setProperty('--chat-request-max-height', `${maxRequestHeight}px`);
   panel.dataset.composerLayoutMode = mode;
@@ -128,8 +130,9 @@ WAC.captureAutoscrollState = function () {
   if (WAC.compactScrollState) return WAC.compactScrollState;
   const scroll = WAC.scroll();
   if (!scroll) return { atBottom: true, top: 0 };
+  // Follow the first message, but retain the welcome page's reading position.
   return {
-    atBottom: WAC.isNearBottom(),
+    atBottom: WAC.state.order.length === 0 || WAC.isNearBottom(),
     top: Math.max(0, scroll.scrollTop),
   };
 };
@@ -139,7 +142,7 @@ WAC.applyAutoscrollState = function (state) {
   const scroll = WAC.scroll();
   if (!scroll) return;
   if (state) {
-    const top = state.atBottom ? Math.max(0, scroll.scrollHeight - scroll.clientHeight) : Math.max(0, Number(state.top || 0));
+    const top = state.atBottom && WAC.state.order.length > 0 ? Math.max(0, scroll.scrollHeight - scroll.clientHeight) : Math.max(0, Number(state.top || 0));
     // Writing even the current position can interrupt native touch/smooth scrolling.
     if (scroll.scrollTop !== top) scroll.scrollTop = top;
   }
@@ -1213,9 +1216,9 @@ WAC.setDockOpen = function (open, focusInput = true) {
   WAC.syncDockState();
   WAC.syncDockLayout();
   if (WAC.dockOpen) {
+    WAC.syncComposerLayout();
+    if (firstOpen && WAC.state.order.length > 0) WAC.scrollToBottomAfterLayout();
     window.setTimeout(() => {
-      WAC.syncComposerLayout();
-      if (firstOpen) WAC.scrollToBottomAfterLayout();
       const input = WAC.requestInput();
       if (input && focusInput) input.focus();
     }, 140);

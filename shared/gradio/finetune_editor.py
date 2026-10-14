@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import copy
@@ -87,8 +88,11 @@ class FinetuneEditorUI:
     loras_root_text: gr.Textbox
     loras_text: gr.Textbox
     loras_multipliers_text: gr.Textbox
-    resolution_categories_editor: gr.Textbox
+    lock_resolutions_editor: gr.Checkbox
     resolutions_editor: gr.Textbox
+    resolution_budget_editor: gr.Textbox
+    resolution_budget_tiled_editor: gr.Textbox
+    resolution_min_editor: gr.Textbox
     infos_editor: gr.Textbox
     prompt_infos_editor: gr.Textbox
     finetune_params_tab: gr.Tab
@@ -198,8 +202,11 @@ def create_editor() -> FinetuneEditorUI:
                                 loras_text = LocalFilePickerTextbox(label="Always Loaded LoRAs", file_extensions=LORA_FILE_EXTENSIONS, multiselect=True, popup_title="Select LoRA Files", default_dir_input=loras_root_text, compress_root_input=loras_root_text).mount()
                                 loras_multipliers_text = gr.Textbox(label="LoRAs Multipliers", value="", lines=1, max_lines=4)
                         with gr.Tab("Resolutions"):
-                            resolution_categories_editor = gr.Textbox(label="Resolution Categories Conditions (OR operator between lines)", value="", lines=6, max_lines=10, placeholder=">=720&<=1440")
-                            gr.HTML("<div class='wangp-finetune-editor-hint'>Example: <code>&gt;=720&amp;&lt;=1440</code> keeps only categories from 720p through 1440p. Separate lines are OR conditions.</div>", padding=False, container=False)
+                            with gr.Row():
+                                resolution_budget_editor = gr.Textbox(label="Maximum Resolution", value="", placeholder="4096x4096 or 16777216", lines=1)
+                                resolution_min_editor = gr.Textbox(label="Minimum Resolution", value="", placeholder="512x512 or 262144", lines=1)
+                            resolution_budget_tiled_editor = gr.Textbox(label="Maximum With Tiling", value="", placeholder="3840x2176 or 8355840", lines=1, visible=False)
+                            lock_resolutions_editor = gr.Checkbox(label="Lock Resolutions", value=False)
                             resolutions_editor = gr.Textbox(label="Custom Resolutions (one WxH value per line)", value="", lines=6, max_lines=10, placeholder="1024x2048")
                             gr.HTML("<div class='wangp-finetune-editor-hint'>Example: <code>1024x2048</code> is saved as <code>1024x2048 (1:2)</code>.</div>", padding=False, container=False)
                         with gr.Tab("Help"):
@@ -279,8 +286,11 @@ def create_editor() -> FinetuneEditorUI:
         loras_root_text=loras_root_text,
         loras_text=loras_text,
         loras_multipliers_text=loras_multipliers_text,
-        resolution_categories_editor=resolution_categories_editor,
+        lock_resolutions_editor=lock_resolutions_editor,
         resolutions_editor=resolutions_editor,
+        resolution_budget_editor=resolution_budget_editor,
+        resolution_budget_tiled_editor=resolution_budget_tiled_editor,
+        resolution_min_editor=resolution_min_editor,
         infos_editor=infos_editor,
         prompt_infos_editor=prompt_infos_editor,
         finetune_params_tab=finetune_params_tab,
@@ -508,7 +518,7 @@ def _open_outputs(ui: FinetuneEditorUI) -> list:
         ui.loras_root_text,
         ui.loras_text,
         ui.loras_multipliers_text,
-        ui.resolution_categories_editor,
+        ui.lock_resolutions_editor,
         ui.resolutions_editor,
         ui.infos_editor,
         ui.prompt_infos_editor,
@@ -542,6 +552,9 @@ def _open_outputs(ui: FinetuneEditorUI) -> list:
         ui.editor_actions,
         ui.delete_confirm,
         ui.export_button,
+        ui.resolution_budget_editor,
+        ui.resolution_budget_tiled_editor,
+        ui.resolution_min_editor,
     ]
 
 
@@ -597,7 +610,7 @@ def _save_inputs(ui: FinetuneEditorUI, state) -> list:
         ui.custom_url_3_text,
         ui.loras_text,
         ui.loras_multipliers_text,
-        ui.resolution_categories_editor,
+        ui.lock_resolutions_editor,
         ui.resolutions_editor,
         ui.infos_editor,
         ui.prompt_infos_editor,
@@ -611,6 +624,9 @@ def _save_inputs(ui: FinetuneEditorUI, state) -> list:
         ui.enhancer_system_3_editor,
         ui.enhancer_system_3_tokens,
         ui.use_current_settings,
+        ui.resolution_budget_editor,
+        ui.resolution_budget_tiled_editor,
+        ui.resolution_min_editor,
     ]
 
 
@@ -649,6 +665,11 @@ def open_editor(deps: FinetuneEditorDeps, state, source_model_type_override=None
     custom_updates = _custom_url_component_updates(deps, source_model_type, model_for_values)
     loras_update = _loras_component_update(deps, source_model_type, model_for_values)
     source_def = deps.get_model_def(source_model_type)
+    model_for_values = resolution_utils.migrate_resolution_definition(model_for_values, legacy_lists=(raw_current if editor_mode else raw_source).get("settings_version", 0) < 2.80)
+    effective_def = deps.get_model_def(current_model_type)
+    for key in ("resolution_budget", "resolution_budget_tiled", "resolution_min", "resolutions", "lock_resolutions"):
+        if key not in model_for_values and key in effective_def:
+            model_for_values[key] = effective_def[key]
     finetunes_info = str(source_def.get("finetunes_infos", "") or "").strip()
     finetune_param_updates = _finetune_param_component_updates(_finetune_param_specs(deps, source_model_type), model_for_values)
     enhancer_updates = _prompt_enhancer_component_updates(deps, source_model_type, model_for_values)
@@ -676,7 +697,7 @@ def open_editor(deps: FinetuneEditorDeps, state, source_model_type_override=None
         field_values["text_encoder_URLs"],
         *custom_updates,
         *loras_update,
-        _format_resolution_categories_value(model_for_values.get("resolutions_categories", "")),
+        model_for_values.get("lock_resolutions", False),
         _format_resolutions_value(model_for_values.get("resolutions", "")),
         _format_help_value(model_for_values.get("infos", "")),
         _format_help_value(model_for_values.get("prompt_infos", "")),
@@ -687,10 +708,13 @@ def open_editor(deps: FinetuneEditorDeps, state, source_model_type_override=None
         gr.update(visible=editor_mode),
         gr.update(visible=False),
         gr.update(value=_finetune_json_path(original_id) if editor_mode else None, visible=editor_mode),
+        str(model_for_values.get("resolution_budget") or ""),
+        gr.update(value=str(model_for_values.get("resolution_budget_tiled") or ""), visible=bool(source_def.get("phase_2_spatial_tiling") and source_def.get("guidance_max_phases", 0) >= 2)),
+        str(model_for_values.get("resolution_min") or ""),
     )
 
 
-def save_finetune(deps: FinetuneEditorDeps, state, mode, original_id, source_model_type, creator_source_mode, import_file, id_text, auto_id, name, description, urls, urls2, text_encoder_urls, custom_url_1, custom_url_2, custom_url_3, loras, loras_multipliers, resolution_categories, resolutions, infos, prompt_infos, finetune_param_1, finetune_param_2, finetune_param_3, enhancer_system_1, enhancer_system_1_tokens, enhancer_system_2, enhancer_system_2_tokens, enhancer_system_3, enhancer_system_3_tokens, use_current_settings, create_new=False, create_new_output_count=0, skip_redirect_save=False):
+def save_finetune(deps: FinetuneEditorDeps, state, mode, original_id, source_model_type, creator_source_mode, import_file, id_text, auto_id, name, description, urls, urls2, text_encoder_urls, custom_url_1, custom_url_2, custom_url_3, loras, loras_multipliers, lock_resolutions, resolutions, infos, prompt_infos, finetune_param_1, finetune_param_2, finetune_param_3, enhancer_system_1, enhancer_system_1_tokens, enhancer_system_2, enhancer_system_2_tokens, enhancer_system_3, enhancer_system_3_tokens, use_current_settings, resolution_budget=None, resolution_budget_tiled=None, resolution_min=None, create_new=False, create_new_output_count=0, skip_redirect_save=False):
     mode = "editor" if str(mode or "") == "editor" else "creator"
     original_id = str(original_id or "").strip()
     source_model_type = str(source_model_type or "").strip()
@@ -722,7 +746,6 @@ def save_finetune(deps: FinetuneEditorDeps, state, mode, original_id, source_mod
     custom_values = _custom_url_values(deps, source_model_type, [custom_url_1, custom_url_2, custom_url_3])
     loras_value = _parse_loras_value(deps, source_model_type, loras)
     loras_multipliers_value = _parse_loras_multipliers_value(loras_multipliers)
-    resolution_categories_value, resolution_categories_problems = _parse_resolution_categories_value(resolution_categories)
     resolutions_value, resolutions_problems = _parse_resolutions_value(resolutions)
     editable_fields = _editable_url_fields(deps, source_model_type, raw_source)
     urls_required = "URLs" in raw_source.get("model", {}) or bool(raw_existing and "URLs" in raw_existing.get("model", {}))
@@ -733,8 +756,15 @@ def save_finetune(deps: FinetuneEditorDeps, state, mode, original_id, source_mod
     problems = _validate_inputs(deps, mode, original_id, source_model_type, id_text, auto_id, name, description, editable_fields, values, urls_required, source_name)
     problems.extend(_validate_url_values(url_inputs))
     problems.extend(_validate_finetune_param_values(finetune_param_specs, finetune_param_values))
-    problems.extend(resolution_categories_problems)
     problems.extend(resolutions_problems)
+    bounds = {}
+    for key, value in (("resolution_budget", resolution_budget), ("resolution_budget_tiled", resolution_budget_tiled), ("resolution_min", resolution_min)):
+        bounds[key], errors = _parse_resolution_budget_value(value)
+        problems.extend(errors)
+    try:
+        resolution_utils.validate_resolution_definition({**deps.get_model_def(source_model_type), **bounds, "resolutions": resolutions_value, "lock_resolutions": bool(lock_resolutions)})
+    except ValueError as error:
+        problems.append(str(error))
     if problems:
         gr.Info("Finetune not saved:\n- " + "\n- ".join(problems))
         return _no_create_new_action_updates(create_new_output_count) if create_new else _no_action_updates()
@@ -743,7 +773,14 @@ def save_finetune(deps: FinetuneEditorDeps, state, mode, original_id, source_mod
     settings_to_copy = _settings_to_copy(deps, state, _settings_source_model_type(mode, original_id, source_model_type)) if use_current_settings else None
     enhancer_specs = _prompt_enhancer_system_specs(deps, source_model_type)
     enhancer_values = [(enhancer_system_1, enhancer_system_1_tokens), (enhancer_system_2, enhancer_system_2_tokens), (enhancer_system_3, enhancer_system_3_tokens)]
-    raw_output = _build_finetune_json(mode, source_model_type, raw_source, raw_existing, name, description, editable_fields, values, custom_values, loras_value, loras_multipliers_value, resolution_categories_value, resolutions_value, infos, prompt_infos, finetune_param_specs, finetune_param_values, enhancer_specs, enhancer_values, settings_to_copy)
+    raw_output = _build_finetune_json(mode, source_model_type, raw_source, raw_existing, name, description, editable_fields, values, custom_values, loras_value, loras_multipliers_value, lock_resolutions, resolutions_value, infos, prompt_infos, finetune_param_specs, finetune_param_values, enhancer_specs, enhancer_values, settings_to_copy)
+    for key, value in bounds.items():
+        if value is None and key not in deps.get_model_def(source_model_type) and key not in raw_output["model"]:
+            raw_output["model"].pop(key, None)
+        else:
+            # An explicit null clears an inherited handler recommendation.
+            raw_output["model"][key] = value
+    raw_output["settings_version"] = deps.settings_version
     url_fields_changed = mode == "editor" and _url_fields_changed((raw_existing or {}).get("model", {}), raw_output.get("model", {}), [*FINETUNE_URL_FIELDS, *custom_values.keys(), *FINETUNE_LORA_FIELDS])
     old_path = _finetune_json_path(original_id) if mode == "editor" else None
     new_path = _finetune_json_path(model_id)
@@ -788,6 +825,13 @@ def import_finetune(deps: FinetuneEditorDeps, state, import_file, skip_redirect_
     if not architecture:
         gr.Info("Finetune not imported: model.architecture is required.")
         return _no_action_updates()
+    try:
+        resolution_utils.fix_resolution_settings(raw_output)
+        resolution_utils.validate_resolution_definition(raw_output["model"])
+    except ValueError as error:
+        gr.Info(f"Finetune not imported: {error}")
+        return _no_action_updates()
+    raw_output["settings_version"] = deps.settings_version
     source_model_type = str(raw_output["model"].get(FINETUNE_SOURCE_MODEL_KEY) or architecture).strip()
     _compress_model_path_fields(raw_output["model"], [*FINETUNE_URL_FIELDS, "loras", *_custom_url_keys(deps, source_model_type)])
     model_id = _sanitize_model_id(Path(import_path).stem)
@@ -1371,7 +1415,7 @@ def _settings_to_copy(deps: FinetuneEditorDeps, state, model_type: str) -> dict:
     return settings
 
 
-def _build_finetune_json(mode, source_model_type, raw_source, raw_existing, name, description, editable_fields, values, custom_values, loras_value, loras_multipliers_value, resolution_categories_value, resolutions_value, infos, prompt_infos, finetune_param_specs, finetune_param_values, enhancer_specs, enhancer_values, settings_to_copy):
+def _build_finetune_json(mode, source_model_type, raw_source, raw_existing, name, description, editable_fields, values, custom_values, loras_value, loras_multipliers_value, lock_resolutions, resolutions_value, infos, prompt_infos, finetune_param_specs, finetune_param_values, enhancer_specs, enhancer_values, settings_to_copy):
     raw_output = copy.deepcopy(raw_existing if mode == "editor" and raw_existing else raw_source)
     model_section = copy.deepcopy(raw_output.get("model", {}))
     model_section.pop("finetunes_infos", None)
@@ -1393,7 +1437,8 @@ def _build_finetune_json(mode, source_model_type, raw_source, raw_existing, name
             model_section.pop(key, None)
     _set_optional_list_field(model_section, "loras", loras_value)
     _set_optional_list_field(model_section, "loras_multipliers", loras_multipliers_value)
-    _set_optional_resolution_categories(model_section, resolution_categories_value)
+    model_section.pop("resolutions_categories", None)
+    model_section["lock_resolutions"] = bool(lock_resolutions)
     _set_optional_resolutions(model_section, resolutions_value)
     _set_optional_markdown(model_section, "infos", infos)
     _set_optional_markdown(model_section, "prompt_infos", prompt_infos)
@@ -1472,14 +1517,16 @@ def _parse_multiline(value) -> list[str]:
     return values
 
 
-def _parse_resolution_categories_value(value):
-    expressions = _parse_multiline(value)
-    problems = [
-        f"Resolution Categories: '{expression}' does not match any known category."
-        for expression in expressions
-        if not any(resolution_utils.category_allowed(category, [expression]) for category in resolution_utils.GROUP_THRESHOLDS)
-    ]
-    return expressions, problems
+def _parse_resolution_budget_value(value):
+    if value is None or str(value).strip() == "":
+        return None, []
+    value = str(value).strip().lower()
+    try:
+        parsed = int(value) if value.isdecimal() else value
+        resolution_utils.resolution_pixels(parsed)
+        return parsed, []
+    except ValueError:
+        return None, ['Resolution bounds must be positive integer pixels or "WIDTHxHEIGHT".']
 
 
 def _parse_resolutions_value(value):
@@ -1502,14 +1549,6 @@ def _format_list(value) -> str:
     if isinstance(value, (list, tuple)):
         return "\n".join(fl.compress_path(str(item)) for item in value)
     return fl.compress_path(str(value))
-
-
-def _format_resolution_categories_value(value) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, (list, tuple)):
-        return "\n".join(str(item) for item in value)
-    return ""
 
 
 def _format_resolutions_value(value) -> str:
@@ -1599,18 +1638,9 @@ def _set_optional_list_field(model_section: dict, key: str, values) -> None:
         model_section.pop(key, None)
 
 
-def _set_optional_resolution_categories(model_section: dict, values) -> None:
-    if values:
-        model_section["resolutions_categories"] = values
-    else:
-        model_section.pop("resolutions_categories", None)
-
-
 def _set_optional_resolutions(model_section: dict, values) -> None:
-    if values:
-        model_section["resolutions"] = values
-    else:
-        model_section.pop("resolutions", None)
+    # An empty list must also override presets inherited from the handler.
+    model_section["resolutions"] = values or []
 
 
 def _compress_model_path_fields(model_section: dict, keys) -> None:
@@ -1970,6 +2000,10 @@ def get_css() -> str:
     padding: 0 !important;
     flex: 0 0 26px !important;
     font-size: 14px !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
 }
 .wangp-finetune-editor-delete-confirm {
     border: 0 !important;

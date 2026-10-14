@@ -112,7 +112,7 @@ For example:
 - pinnedMemory: True (every model), False, or a model id or list of model ids to keep in reserved RAM. Every model pinned to reserved RAM is transferred up to 2 times faster to the GPU, but this requires more RAM.
 - partialPinning: pin only the main blocks of the pinned models (their towers of repeated blocks), not their other parameters.
 - pinnedPEFTLora: also pin the LoRA weights stored in PEFT modules of the models (False by default).
-- perc_reserved_mem_max: maximum share of the RAM that may be reserved, as a fraction (for instance 0.4). 0 by default: the *perc_reserved_mem_max* environment variable, else 40% on Windows and 80% on Linux.
+- perc_reserved_mem_max: maximum share of the RAM that may be reserved, as a fraction (for instance 0.4). 0 by default: the *perc_reserved_mem_max* environment variable, else 40% on Windows and 60% on Linux.
 - smartPinning: None by default. Minimum pinning of the models processed block by block that *pinnedMemory* does not pin. With *asyncTransfers*, 0 copies their blocks ahead, with a background thread, into a small staging ring of reserved RAM (three of the largest such blocks), from which they are transferred to the GPU like pinned blocks while the previous blocks are computed, with the same VRAM; a number n > 0 also pins 1 block in n of these models, spread evenly. When the GPU spends long enough on each block (high resolutions, long videos, large models), blocks copied through the ring are as fast as pinned blocks; when blocks are computed quickly, copying them through RAM becomes the limit.
 - quantizeTransformer: True by default. The 'transformer' model of the pipe, usually the video or image generator, is quantized on the fly to 8 bits. If you want to save time on disk and reduce the loading time, you may want to load directly a prequantized model. If you don't want to quantize the generator, set *quantizeTransformer* to *False*.
 - extraModelsToQuantize: list of additional model ids of models to quantize on the fly. If the corresponding model is already quantized, this option is ignored.
@@ -219,12 +219,12 @@ Recycles more efficiently the VRAM no longer used: several GB less peak VRAM wit
 from mmgp import allocator
 allocator.install()   # before anything initializes CUDA, e.g. at the top of the application
 ```
-- *install(mode = "vmm", spill = False)*: replaces PyTorch's CUDA allocator. It must be called before CUDA is initialized, as PyTorch cannot replace an allocator it has started. With *spill = True*, what VRAM has no room for goes to system RAM instead of raising an out of memory error (slower).
+- *install(mode = "vmm", spill = False)*: replaces PyTorch's CUDA allocator. It must be called before CUDA is initialized, as PyTorch cannot replace an allocator it has started. With *spill = True*, what VRAM has no room for goes to system RAM instead of raising an out of memory error (slower); when RAM is too short to pin it, the CUDA driver allocates it as for PyTorch's allocator (on Windows, in shared GPU memory).
 - *stats(device = None)*: allocated, reserved and peak bytes of the allocator. *torch.cuda.memory_allocated / memory_reserved / max_memory_allocated / max_memory_reserved / reset_peak_memory_stats / memory_stats / empty_cache* are redirected to it.
 
 Requirements: Windows (x64) or Linux (x86_64, glibc 2.17+), PyTorch 2.3 or newer, an NVIDIA driver supporting CUDA 11.2+ (no CUDA toolkit needed). The prebuilt libraries are in *mmgp/allocator*; after changing *vmm_alloc.cpp*, rebuild them with `python -m mmgp.allocator.build` (MSVC on Windows, which also rebuilds the Linux library through WSL when available; g++ on Linux).
 
-Differences with PyTorch's allocator: running out of VRAM raises an out of memory error (PyTorch's own *torch.OutOfMemoryError* with PyTorch 2.6 to 2.15) instead of slowly spilling into shared GPU memory, and *torch.cuda.memory_snapshot* is not available.
+Differences with PyTorch's allocator: without *spill*, running out of VRAM raises an out of memory error (PyTorch's own *torch.OutOfMemoryError* with PyTorch 2.6 to 2.15) instead of slowly spilling into shared GPU memory, and *torch.cuda.memory_snapshot* is not available.
 
 ### VRAM debug mode
 Which tensors fill the VRAM at its peak, and where in the code they come from: with the allocator installed, *mmgp.allocator.debug* records every allocation above a size threshold with the innermost module running (its path in the models that mmgp loads), a tag and the Python stack, and copies these records at the peak of each phase (one phase per model that mmgp loads to the GPU) and when an allocation fails.

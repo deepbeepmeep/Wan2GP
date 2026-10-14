@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import os
 
 import gradio as gr
@@ -32,8 +33,10 @@ class family_handler:
         result = {
             **({"accelerated": "native"} if base_model_type in (_TURBO_MODEL_TYPE, _TURBO_EDIT_MODEL_TYPE) else {}),
             "device_explicit": True,
+            "cuda_graphs": ["transformer"],
             "image_outputs": True,
             "system_configs": vae_configs(),
+            "tiny_vae_architecture": "t2v",
             "guidance_max_phases": 1 if base_model_type in (_RAW_MODEL_TYPE, _RAW_EDIT_MODEL_TYPE) else 0,
             "NAG": True,
             "NAG_scale": {"min": 1.0, "max": 1.5, "step": 0.01},
@@ -67,7 +70,8 @@ class family_handler:
             ],
             "no_negative_prompt": False,
             "no_background_removal": True,
-            "resolutions_categories": ["<=2k"],
+            "resolutions_categories": ["<=2048sq"],
+            "resolution_budget": "2048x2048",
             "vae_block_size": 16,
             "vae_upsampler": [1],
             "vae_upsamplers": {"qwen_vae_pid(1.5)": [1]},

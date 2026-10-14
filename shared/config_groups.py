@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 SYSTEM_CONFIG_KEYS = ("system_configs", "system_configs2", "system_configs3")
 USER_CONFIG_KEY = "configs"
 CONFIG_KEYS = SYSTEM_CONFIG_KEYS + (USER_CONFIG_KEY,)

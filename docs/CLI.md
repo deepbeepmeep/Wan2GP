@@ -130,18 +130,22 @@ Queue completed: 3/3 tasks in 5m 23s
 
 ```bash
 --mcp                              # Start WanGP as an MCP server without the web UI
---mcp-transport TRANSPORT          # stdio, sse, or streamable-http
+--mcp-webui                        # Override Agents config: enable MCP with the web UI
+--no-mcp-webui                     # Override Agents config: disable MCP with the web UI
+--mcp-transport TRANSPORT          # stdio (default with --mcp), sse, or streamable-http (default with the web UI)
 --mcp-host HOST                    # Host for HTTP transports
---mcp-port PORT                    # Port for HTTP transports
---mcp-api-version {1,2}            # WanGP API contract; latest (2) by default, 1 for compatibility
---mcp-async                        # Permit wait=false in v2; disabled by default
+--mcp-port PORT                    # Override Configuration > Agents port for HTTP transports (default: 8000)
+--mcp-api-version {1,2,2.1}        # WanGP API contract; latest (2.1) by default
+--mcp-async                        # Permit wait=false in v2/v2.1; disabled by default
 --mcp-console-output               # Mirror WanGP output while serving MCP
 --mcp-allow-read-file-system       # Allow agents to submit arbitrary server file paths (disabled by default)
 ```
 
-Media IDs returned by the Gallery remain usable when filesystem reads are disabled. Streamable HTTP and SSE servers also expose short-lived Gallery upload/download URLs; stdio does not provide HTTP media transfer.
+MCP is off by default with the web UI, including after upgrading. Control autostart with **Enable MCP with Web UI** under **Configuration > Agents**. When enabled, agents' generations join the queue shown in the browser, run after the tasks already waiting and appear in every open page's progress and preview; their outputs go to the agent's workspace without switching the gallery you are viewing. In this mode asynchronous calls are always available. Set **MCP Server Port** under **Configuration > Agents** and restart, or override it for one launch with `--mcp-port PORT`. `--mcp-webui` and `--no-mcp-webui` override the saved autostart choice for one launch without changing it. See [MCP server inside the web UI](API.md#mcp-server-inside-the-web-ui).
 
-The default MCP interface is now v2. Existing clients that use historical tool names or parameters must launch with `python wgp.py --mcp --mcp-api-version 1`. Use `--mcp-api-version 2` to pin v2 explicitly. Both `--mcp-api-version` and `--mcp-async` also work with `python -m shared.mcp_server`. The number selects the WanGP tool API, not the MCP protocol version; unsupported numbers are rejected. API v1 retains its original wait behavior. In v2, generation and post-processing wait by default; `--mcp-async` enables optional asynchronous calls without changing that default. See [API migration](API.md#mcp-api-v2-and-migration).
+Media IDs returned by the Gallery remain usable when unrestricted filesystem reads are disabled. V2.1 also provides output-folder reads and a writable session workspace. Streamable HTTP and SSE servers expose short-lived file and Gallery upload/download URLs; stdio downloads use binary MCP resources with byte-range support.
+
+The default MCP interface is v2.1, with `remux_media`, native visual inspection, file delivery and searchable documentation. Existing clients can pin an earlier contract with `--mcp-api-version 1` or `--mcp-api-version 2`. Both `--mcp-api-version` and `--mcp-async` also work with `python -m shared.mcp`. The number selects the WanGP tool API, not the MCP protocol version; unsupported versions are rejected. API v1 retains its original wait behavior. In v2/v2.1, generation and post-processing wait by default; `--mcp-async` enables optional asynchronous calls without changing that default. See [v2.1 additions](API.md#mcp-api-v21-additions) and [API migration](API.md#mcp-api-v2-and-migration).
 
 ### Examples
 ```bash
@@ -226,7 +230,7 @@ For Flux dev at 1024x1024, a manual 6000 MB shortened the profile 4 steps by abo
 ```bash
 --perc-reserved-mem-max FLOAT # Share of RAM that pinning may lock, as a fraction (0.4 = 40%)
 ```
-Pinned ("reserved") RAM makes the transfers to the GPU fast, but nothing else can use it. *Configuration / RAM/VRAM Management / Reserved RAM for Pinning* sets the share of RAM that WanGP may pin, in percent (0 = automatic: 40% on Windows, 80% on Linux). `--perc-reserved-mem-max` takes precedence over this setting, which takes precedence over the `perc_reserved_mem_max` environment variable.
+Pinned ("reserved") RAM makes the transfers to the GPU fast, but nothing else can use it. *Configuration / RAM/VRAM Management / Reserved RAM for Pinning* sets the share of RAM that WanGP may pin, in percent (0 = automatic: 40% on Windows, 60% on Linux). `--perc-reserved-mem-max` takes precedence over this setting, which takes precedence over the `perc_reserved_mem_max` environment variable.
 
 When the models do not all fit in it, WanGP reserves first the parts used at every step; with [Smart Memory Pinning](#smart-memory-pinning), the rest still reaches the GPU almost as fast, so a smaller share mostly costs speed on short steps.
 
@@ -245,21 +249,31 @@ The *MMGP Optimized VRAM Allocator* (*Configuration / RAM/VRAM Management / VRAM
 | Flux dev 1024x1024 (image decoding) | about 1.3 GB |
 | Deepy, Bonsai 2 27B, 20K-token prompt | about 0.2 GB |
 
-The gain grows with the resolution and duration. The setting applies when WanGP starts; `--vram-allocator` takes precedence over it. It works on Windows and Linux with PyTorch 2.3 or newer and NVIDIA GPUs; elsewhere, WanGP says so at startup and uses PyTorch's allocator. The VRAM used by other programs on the same GPU (another WanGP, ComfyUI, a game, a browser) is left to them; only when a generation would otherwise stop with an out of memory error does WanGP take the VRAM they are not using, which Windows then moves to system RAM. When the error happens anyway, its message shows the VRAM free on the whole GPU and for WanGP, how much more was needed, and why it was refused.
+The gain grows with the resolution and duration. The setting applies when WanGP starts; `--vram-allocator` takes precedence over it. It works on Windows and Linux with PyTorch 2.3 or newer and NVIDIA GPUs; elsewhere, WanGP says so at startup and uses PyTorch's allocator. The VRAM used by other programs on the same GPU (another WanGP, ComfyUI, a game, a browser) is left to them; only when WanGP would otherwise run out of VRAM does it take the VRAM they are not using, which Windows then moves to system RAM. When the error happens anyway, its message shows the VRAM free on the whole GPU and for WanGP, how much more was needed, and why it was refused.
 
-*With RAM Spilling* (the default), when VRAM runs out, what no longer fits goes to system RAM instead of stopping the generation: the steps that use it are much slower, but a generation slightly too large for your VRAM can finish. Spilling stops, with an out of memory error, when it would leave less than a tenth of the RAM (at least 4 GB) available. On a GPU that also drives your display, the screen may flash or go black for a moment meanwhile, without affecting the generation. Without spilling (`vmm`), running out of VRAM stops the generation with an out of memory error, instead of slowly spilling into shared GPU memory as the NVIDIA driver otherwise does on Windows.
+*With RAM Spilling* (the default), when VRAM runs out, what no longer fits goes to system RAM instead of stopping the generation: the steps that use it are much slower, but a generation slightly too large for your VRAM can finish. When that would leave less than a tenth of the RAM (at least 4 GB) available, the NVIDIA driver takes over on Windows and places what no longer fits in shared GPU memory, as it does with PyTorch's allocator: a generation that finishes with PyTorch's allocator also finishes with this one. On a GPU that also drives your display, the screen may flash or go black for a moment meanwhile, without affecting the generation. Without spilling (`vmm`), running out of VRAM stops the generation with an out of memory error, instead of slowly spilling into shared GPU memory as the NVIDIA driver otherwise does on Windows.
 
-### VRAM Debug Mode
+### RAM Allocator
 ```bash
---vram-allocator vmm --vram-debug 16   # Record the allocations of 16 MB and more
+--ram-allocator mmgp      # MMGP RAM Allocator (default)
+--ram-allocator default   # PyTorch's CPU allocator
 ```
-For developers and agents looking for VRAM to save: with the *MMGP Optimized VRAM Allocator*, `--vram-debug MIN_MB` records every allocation of `MIN_MB` and more with the model module that made it and its Python stack. After each generation WanGP writes a report to `vram_debug` in the output folder: for each phase (text encoding, denoising, decoding), the tensors alive at its peak with their sizes, modules and source lines, the totals of the short-lived scratch buffers, and the large tensors still alive at the end. `python -m mmgp.allocator.debug summary <report.json>` prints a report, `python -m mmgp.allocator.debug diff <before.json> <after.json>` compares the peaks of two runs. Generation speed is unchanged.
+Same as *Configuration > RAM/VRAM Management > RAM Allocator*. PyTorch keeps the RAM of the CPU tensors it frees (decoded frames, converted weights, frames waiting to be saved) to reuse it later: after a generation or after a model is released, several GB can stay in use, and on Windows the *committed* memory shown by the Task Manager can grow up to twice what these tensors need. With the *MMGP RAM Allocator*, the RAM of the CPU tensors of 1 MB and more goes back to the system when the queue is done, when a model is released, and whenever the RAM runs short (before the VRAM allocator would have to spill into RAM). While generations of the same model follow one another, up to 2 GB of it (5% of the RAM on smaller PCs) is kept for the next one, which reuses it at full speed; nothing is released in the middle of a generation unless the RAM runs short. It also commits only what each tensor needs, where PyTorch's allocator on Windows can commit up to twice as much.
+
+The setting applies when WanGP starts; `--ram-allocator` takes precedence over it. It works on Windows and Linux with PyTorch 2.6 to 2.15; elsewhere, WanGP says so at startup and uses PyTorch's allocator.
 
 ### Windows Power Throttling
 ```bash
 --no-prevent-power-throttling # Let Windows slow down WanGP in the background to save power
 ```
 On Windows, WanGP asks by default to keep its full CPU speed when its window is minimized or in the background. Windows may otherwise slow down a background application several times, which slows down generation on the steps where the GPU waits for the CPU. On a laptop running on battery, `--no-prevent-power-throttling` saves power at the cost of slower generations while WanGP is in the background.
+
+You can also change **Configuration / Performance / Prevent Windows Background Power Throttling**, then save and restart the server. It applies to the server process and all browser sessions, without raising process priority. Explicit `--prevent-power-throttling` or `--no-prevent-power-throttling` launch options override the saved choice. This is separate from **Continue Browser Actions in Background**, which lets pending interface actions and updates continue while the tab is in the background. Already-started generation queues run on the server and continue even when all browser tabs are closed, regardless of this browser option.
+
+### Compute Cache
+*Configuration / Performance / WanGP Compute Cache* (off by default, shown with RTX 50xx and other NVIDIA Blackwell GPUs). With these GPUs, PyTorch and the other GPU libraries ship their code in a form that the NVIDIA driver optimizes for the exact GPU each time WanGP starts, which costs about 10-15 seconds at the first generation. The driver keeps the result in a cache shared by every program and limited to 1 GB, where models push out one another's code and other programs trim it, so the work is done again after restarts and rewritten on the disk at each launch. Older GPUs run the shipped code as is and do not need this option.
+
+The option keeps this cache in a folder of its own: `ComputeCache` in the WanGP folder, or the *Compute Cache Folder* you choose (relative to the WanGP folder, or a full path). The code of each model is completed over its first few launches (the driver optimizes a limited amount per launch). After that, the first generation after a restart starts sooner, and nothing more is written to the disk at launch, which spares the SSD. It may take up to 2 GB of disk space. The setting applies when WanGP starts.
 
 ### Smart Memory Pinning
 *Configuration / RAM/VRAM Management / Smart Memory Pinning* (On by default) speeds up the models that the memory profile does not keep in Reserved RAM: the text encoders with Profile 4, every model with Profile 5, and the part of a model that does not fit when *Reserved RAM for Pinning* is low. With it, they reach the GPU almost as fast as the models kept in Reserved RAM, for about 1-2 GB of Reserved RAM.
@@ -318,7 +332,7 @@ JSON entries take precedence over `--loras`. Unlisted keys use the root from `--
 ```bash
 --settings PATH              # Path to folder containing default settings for all models
 --config PATH                # Config folder for wgp_config.json and queue.zip
---workspaces-dir FOLDER       # Gallery workspaces for Gradio/Web (default: ./workspaces)
+--workspaces-dir FOLDER       # Workspace manifests/media; overrides Config / Outputs (default: ./workspaces)
 --verbose LEVEL              # Information level 0-2 (default: 1)
 ```
 

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import json
 import os
 import time
@@ -7,7 +8,9 @@ from typing import Any, Callable
 
 from shared.utils.audio_metadata import save_audio_metadata
 from shared.utils.audio_video import save_image_metadata
+from shared.utils.gallery_sources import AUDIO, MESH, VIDEO, source_for_path
 from shared.utils.video_metadata import save_video_metadata
+from shared.utils.workspace_storage import recording_gallery
 
 
 def _ensure_creation_metadata(configs: Any) -> Any:
@@ -24,20 +27,25 @@ def _ensure_creation_metadata(configs: Any) -> Any:
     return saved_configs
 
 
-def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bool, audio_only: bool, gen: dict[str, Any], *, get_processed_queue: Callable[[dict[str, Any]], tuple[list[Any], list[Any], list[Any], list[Any]]], metadata_choice: str = "metadata", embedded_images: Any = None, replace_last_file: bool = False, lock: Any = None, verbose_level: int = 0, write_metadata: bool = True) -> None:
-    file_list, file_settings_list, audio_file_list, audio_file_settings_list = get_processed_queue(gen)
+def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bool, audio_only: bool, gen: dict[str, Any], *, get_processed_queue: Callable[[dict[str, Any]], dict[str, tuple[list[Any], list[Any]]]], metadata_choice: str = "metadata", embedded_images: Any = None, replace_last_file: bool = False, lock: Any = None, verbose_level: int = 0, write_metadata: bool = True, output_role: str = "final") -> None:
+    galleries = get_processed_queue(gen)
     paths = [video_path] if not isinstance(video_path, list) else video_path
     queue_lock = lock if lock is not None else nullcontext()
     for no, path in enumerate(paths):
+        source = AUDIO if audio_only else source_for_path(path)
         previous_path = None
         saved_configs = _ensure_creation_metadata(configs)
         if configs is not None and write_metadata:
-            if metadata_choice == "json":
+            saved_configs["output_role"] = output_role
+            if metadata_choice in ("json", "json_metadata"):
                 with open(os.path.splitext(path)[0] + ".json", "w") as f:
                     json.dump(saved_configs, f, indent=4)
-            elif metadata_choice == "metadata":
+            if metadata_choice in ("metadata", "json_metadata"):
                 if audio_only:
                     save_audio_metadata(path, saved_configs)
+                elif source is MESH:
+                    from shared.utils.mesh_outputs import save_mesh_metadata
+                    save_mesh_metadata(path, saved_configs)
                 elif is_image:
                     save_image_metadata(path, saved_configs)
                 else:
@@ -46,25 +54,24 @@ def record_file_metadata(video_path: str | list[str], configs: Any, is_image: bo
             action = "saved to" if write_metadata else "added to gallery from"
             if audio_only:
                 print(f"Audio file {action} Path: {path}")
+            elif source is MESH:
+                print(f"3D asset {action} Path: {path}")
             elif is_image:
                 print(f"Image file {action} Path: {path}")
             else:
                 print(f"Video file {action} Path: {path}")
         with queue_lock:
-            if audio_only:
-                audio_file_list.append(path)
-                audio_file_settings_list.append(saved_configs)
+            file_list, file_settings_list = galleries[source.id]
+            if replace_last_file and source is VIDEO and not is_image and no == 0 and len(file_list) > 0:
+                previous_path = file_list[-1]
+                file_list[-1] = path
+                file_settings_list[-1] = saved_configs
             else:
-                if replace_last_file and not is_image and no == 0 and len(file_list) > 0:
-                    previous_path = file_list[-1]
-                    file_list[-1] = path
-                    file_settings_list[-1] = saved_configs
-                else:
-                    file_list.append(path)
-                    file_settings_list.append(saved_configs)
-            gen["last_was_audio"] = audio_only
+                file_list.append(path)
+                file_settings_list.append(saved_configs)
+            recording_gallery(gen)["last_gallery_source"] = source.id
         if previous_path is not None and previous_path != path:
-            if metadata_choice == "json":
+            if metadata_choice in ("json", "json_metadata"):
                 previous_json_path = os.path.splitext(previous_path)[0] + ".json"
                 if os.path.isfile(previous_json_path):
                     os.remove(previous_json_path)

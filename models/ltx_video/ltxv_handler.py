@@ -1,3 +1,6 @@
+# Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+from models.help_shared import merge_help
+from .infos import LTXV_HELP
 import torch
 from shared.utils.hf import build_hf_url
 
@@ -39,7 +42,7 @@ class family_handler():
         extra_model_def["dont_cat_preguide"]= True
         extra_model_def["vae_block_size"] = 32
         extra_model_def["multiple_images_as_text_prompts"] = True
-        return extra_model_def
+        return merge_help(extra_model_def, LTXV_HELP)
 
     @staticmethod
     def query_supported_types():

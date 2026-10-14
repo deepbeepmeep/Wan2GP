@@ -13,6 +13,7 @@
 # third party's use or distribution of any of the Tencent Hunyuan works or outputs and your exercise
 # of rights and permissions under this agreement.
 # See the License for the specific language governing permissions and limitations under the License.
+# Modified for WanGP.
 
 from shared.utils.phase_progress import text_encoding_progress
 import json
@@ -98,7 +99,7 @@ def load_text_encoder(
 
     from mmgp import offload
     # text_encoder = offload.fast_load_transformers_model(text_encoder_path, forcedConfigPath=  os.path.join(os.path.dirname(text_encoder_path), "config.json"))
-    text_encoder = offload.fast_load_transformers_model(text_encoder_path,  writable_tensors= True , modelClass=Qwen2_5_VLForConditionalGeneration,  defaultConfigPath= fl.locate_file(os.path.join("Qwen2.5-VL-7B-Instruct", "config.json")) )
+    text_encoder = offload.fast_load_transformers_model(text_encoder_path,  writable_tensors= False , modelClass=Qwen2_5_VLForConditionalGeneration,  defaultConfigPath= fl.locate_file(os.path.join("Qwen2.5-VL-7B-Instruct", "config.json")) )
 
     # text_encoder = AutoModel.from_pretrained(text_encoder_path, low_cpu_mem_usage=True)
     

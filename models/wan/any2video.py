@@ -1,4 +1,5 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+# Modifications Copyright (c) 2025-2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 import gc
 import logging
 import math
@@ -39,7 +40,7 @@ from shared.utils.vace_preprocessor import VaceVideoProcessor
 from shared.utils.basic_flowmatch import FlowMatchScheduler
 from shared.utils.euler_scheduler import EulerScheduler
 from shared.utils.lcm_scheduler import LCMScheduler
-from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image, fit_image_into_canvas
+from shared.utils.utils import get_outpainting_frame_location, resize_lanczos, calculate_new_dimensions, convert_image_to_tensor, convert_tensor_to_image, fit_image_into_canvas, guide_mask_to_float, guide_to_float
 from .multitalk.multitalk_utils import MomentumBuffer, adaptive_projected_guidance, match_and_blend_colors, match_and_blend_colors_with_mask
 from .wanmove.trajectory import replace_feature, create_pos_feature_map
 from .alpha.utils import load_gauss_mask, apply_alpha_shift
@@ -642,6 +643,7 @@ class WanAny2V:
         scail = model_type in ["scail"] 
         scail2 = model_def.get("scail2", False) or model_type in ["scail2_14B", "scail2_1.3B"]
         vista4d = model_type in ["vista4d"]
+        fun_camera, uni3c = model_def.get("fun_camera", False), model_def.get("uni3c", False)
         svi_pro = model_def.get("svi2pro", False)
         svi_mode = 2 if svi_pro  else 0 
         svi_ref_pad_num = 0
@@ -661,7 +663,7 @@ class WanAny2V:
         extended_input_dim = 0
         ref_images_before = False            
         # image2video 
-        if model_def.get("i2v_class", False) and not (animate or animate2 or scail or scail2):
+        if model_def.get("i2v_class", False) and not (animate or animate2 or scail or scail2 or fun_camera):
             any_end_frame = False
             if infinitetalk:
                 new_shot = "0" in video_prompt_type
@@ -874,7 +876,7 @@ class WanAny2V:
 
         # Animate 2
         if animate2:
-            input_frames = input_frames[:, :frame_num].to(device=self.device, dtype=self.VAE_dtype)
+            input_frames = guide_to_float(input_frames[:, :frame_num].to(self.device)).to(self.VAE_dtype)  # uint8 guides converted on the GPU
             if not input_ref_images:
                 input_ref_images = [image_start if image_start is not None else convert_image_to_tensor(pre_video_frame)]
             image_ref = input_ref_images[0].to(device=self.device, dtype=self.VAE_dtype)
@@ -961,6 +963,19 @@ class WanAny2V:
             ref_images_count = 0
             lat_frames = scail2_conditioning["lat_frames"]
 
+        # Wan Fun Control-Camera: start image latent in the first latent frame (no i2v mask) and the camera path adapter features
+        if fun_camera:
+            from .camera_control.fun_camera import prepare_fun_camera
+            lat_h, lat_w = height // self.vae_stride[1], width // self.vae_stride[2]
+            y = torch.zeros(self.vae.model.z_dim, lat_frames, lat_h, lat_w, device=self.device)
+            if input_video is not None:
+                clip_image_start = input_video[:, -1].to(self.device)
+                y[:, :1] = self.vae.encode([clip_image_start.unsqueeze(1).to(self.VAE_dtype)], VAE_tile_size)[0]
+            else:
+                kwargs["clip_fea"] = torch.zeros(1, 257, 1280, device=self.device)  # upstream zeroes the image features without start image
+            kwargs.update({"y": y, "camera_adapter_features": prepare_fun_camera(self, model_mode, input_custom, custom_settings, lat_frames, height, width)})
+            y = None
+
         # Clip image
         if hasattr(self, "clip") and clip_image_start is not None:                                   
             clip_image_size = self.clip.model.image_size
@@ -977,7 +992,7 @@ class WanAny2V:
                 kwargs["animate2_ref_clip_fea"] = self.clip.visual([animate2_clip_image_ref[:, None, :, :]])
                 animate2_clip_image_ref = None
             if steadydancer:
-                kwargs['steadydancer_clip_fea_c'] = self.clip.visual([input_frames[:, :1]])
+                kwargs['steadydancer_clip_fea_c'] = self.clip.visual([guide_to_float(input_frames[:, :1])])
 
         # Recam Master & Lucy Edit
         if recam or lucy_edit:
@@ -1002,6 +1017,11 @@ class WanAny2V:
             from .vista4d.preprocess import prepare_vista4d_condition
             kwargs.update(prepare_vista4d_condition(self, input_frames, input_custom, frame_num, height, width, VAE_tile_size, fps=bbargs.get("fps", model_def.get("fps", 16)), custom_settings=custom_settings, model_mode=model_mode))
             freqs = get_vista4d_rotary_pos_embed((lat_frames, height // self.vae_stride[1], width // self.vae_stride[2]), self.device)
+
+        if uni3c: # the start image lifted to a point cloud and rendered along the camera path
+            from .camera_control.uni3c import prepare_uni3c
+            kwargs["uni3c_condition"] = prepare_uni3c(self, input_video[:, -1], model_mode, input_custom, custom_settings, lat_frames, height, width, VAE_tile_size)
+            if kwargs["uni3c_condition"] is None: return None
 
         bernini_sources_by_key = {"": []}
         if bernini:
@@ -1030,7 +1050,7 @@ class WanAny2V:
             injection_denoising_step = 0
             inject_from_start = False
             if input_frames != None and denoising_strength < 1 :
-                color_reference_frame = input_frames[:, -1:].clone()
+                color_reference_frame = guide_to_float(input_frames[:, -1:]).clone()
                 if prefix_frames_count > 0:
                     overlapped_frames_num = prefix_frames_count
                     overlapped_latents_frames_num = (overlapped_frames_num -1 // 4) + 1 
@@ -1056,7 +1076,7 @@ class WanAny2V:
                     injection_denoising_step = 0
 
             if input_masks is not None and not "U" in video_prompt_type:
-                image_mask_latents = torch.nn.functional.interpolate(input_masks, size= source_latents.shape[-2:], mode="nearest").unsqueeze(0)
+                image_mask_latents = torch.nn.functional.interpolate(guide_mask_to_float(input_masks), size= source_latents.shape[-2:], mode="nearest").unsqueeze(0)
                 if image_mask_latents.shape[2] !=1:
                     image_mask_latents = torch.cat([ image_mask_latents[:,:, :1], torch.nn.functional.interpolate(image_mask_latents, size= (source_latents.shape[-3]-1, *source_latents.shape[-2:]), mode="nearest") ], dim=2)
                 image_mask_latents = torch.where(image_mask_latents>=0.5, 1., 0. )[:1].to(self.device)
@@ -1148,8 +1168,9 @@ class WanAny2V:
         # Vace
         if vace :
             # vace context encode
-            input_frames = [input_frames.to(self.device)] +([] if input_frames2 is None else [input_frames2.to(self.device)])            
-            input_masks = [input_masks.to(self.device)] + ([] if input_masks2 is None else [input_masks2.to(self.device)])
+            # uint8 guides and masks (model_def "uint8_guides") are converted on the GPU: a quarter of the transfer, no float copy in RAM
+            input_frames = [guide_to_float(input_frames.to(self.device))] +([] if input_frames2 is None else [guide_to_float(input_frames2.to(self.device))])            
+            input_masks = [guide_mask_to_float(input_masks.to(self.device))] + ([] if input_masks2 is None else [guide_mask_to_float(input_masks2.to(self.device))])
             if lynx and input_ref_images is not None:
                 input_ref_images,input_ref_masks = input_ref_images[:-1], input_ref_masks[:-1]
             input_ref_images = None if input_ref_images is None else [ u.to(self.device) for u in input_ref_images]
@@ -1846,12 +1867,16 @@ class WanAny2V:
                 BGRA_frames = None
             if videos.dtype != torch.uint8:
                 videos = videos.clamp_(-1, 1).add_(1.0).mul_(127.5).round_().clamp_(0, 255).to(torch.uint8)
+            ret["x"] = videos
             if BGRA_frames is not None:
-                from io import BytesIO
-                from .alpha.utils import write_zip_file
-                with BytesIO() as stream:
-                    write_zip_file(stream, BGRA_frames)
-                    ret["side_files"] = {".zip": stream.getvalue()}
+                from shared.utils.rgba_video import rgba_video_side_files
+                output_format = sys.modules["wgp"].server_config.get("rgba_video_output", "png_zip")
+                if callable(set_progress_status):
+                    set_progress_status("Exporting RGBA Video")
+                side_files = rgba_video_side_files(BGRA_frames, fps, output_format, interrupt_check=lambda: self._interrupt)
+                if side_files is None:
+                    return None
+                ret["side_files"] = side_files
         return ret
 
     def get_loras_transformer(self, get_model_recursive_prop, base_model_type, model_type, video_prompt_type, model_mode, **kwargs):

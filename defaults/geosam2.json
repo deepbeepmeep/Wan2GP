@@ -1,0 +1,20 @@
+{
+    "model": {
+        "name": "GeoSAM2 3D Part Segmentation",
+        "architecture": "geosam2",
+        "description": "GeoSAM2 (VAST, CVPR 2026) splits an existing mesh into its parts, automatically or from point prompts on rendered views: one GLB with one node per part.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/3D/resolve/main/geosam2_fp32.safetensors"
+        ]
+    },
+    "prompt": "segmented mesh",
+    "image_mode": 1,
+    "video_prompt_type": "",
+    "alt_prompt": "",
+    "batch_size": 1,
+    "seed": 3,
+    "custom_settings": {
+        "postprocess_pa": 0.02,
+        "auto_segment": 1
+    }
+}

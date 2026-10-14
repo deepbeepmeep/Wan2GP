@@ -1,3 +1,4 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
 from __future__ import annotations
 
 import html
@@ -15,6 +16,7 @@ from markdown.extensions.tables import TableExtension, TableProcessor
 
 from shared.deepy import video_tools as deepy_video_tools
 from shared.utils.gallery_media import gallery_media_ids
+from shared.utils.gallery_sources import MESH_EXTENSIONS
 from shared.utils.markdown import EscapeHtmlExtension
 from shared.deepy.config import DEEPY_TYPE_PRIME, normalize_deepy_type
 
@@ -1091,6 +1093,14 @@ def build_tool_call_label(
         legends = arguments.get("legends")
         legend_label = " with Legends" if isinstance(legends, list) and any(str(legend or "").strip() for legend in legends) else ""
         return _finish_tool_call_label(f"{label}{layout_label}{legend_label}")
+    if normalized_name == "render_3d_views":
+        count = sum(len(value) for value in (arguments.get("views"), arguments.get("angles")) if isinstance(value, list))
+        frame = arguments.get("frame_no")
+        label = "Render 3D View" if count <= 1 else f"Render {count} 3D Views"
+        return _finish_tool_call_label(label if frame is None else f"{label} at Frame {frame}")
+    if normalized_name == "draw_svg":
+        name = _humanize_tool_value(arguments.get("name"))
+        return _finish_tool_call_label(f"Draw {name}" if name else "Draw SVG Image")
     if normalized_name == "add_to_gallery":
         paths = arguments.get("paths")
         sources = paths if isinstance(paths, list) else [arguments.get("path")] if arguments.get("path") else []
@@ -1551,7 +1561,7 @@ def _attachments_from_tool_result(result: dict[str, Any] | None, file_access_pol
         url = str(download["url"]).strip()
         kind = _attachment_kind(filename, "download")
         source_path = _physical_attachment_path(result.get("output_file") or result.get("path"), file_access_policy)
-        preview = _attachment_from_path(source_path) if source_path and kind in {"image", "video", "audio"} else None
+        preview = _attachment_from_path(source_path) if source_path and kind in {"image", "video", "audio", "3d"} else None
         bundled_thumbnail = {"audio": _AUDIO_THUMBNAIL_PATH, "archive": _ARCHIVE_THUMBNAIL_PATH}.get(kind)
         thumb_url = str(preview.get("thumb_url", "")) if preview is not None else (_bundled_thumbnail_url(bundled_thumbnail) if bundled_thumbnail else "")
         return [{"href": url, "label": f"Download {filename}", "subtitle": subtitle, "thumb_url": thumb_url, "kind": kind, "path_key": url, "path": source_path, "download": filename}]
@@ -1581,8 +1591,7 @@ def _attachments_from_tool_result(result: dict[str, Any] | None, file_access_pol
         if not output_file or path_key in seen_paths:
             continue
         seen_paths.add(path_key)
-        ext = os.path.splitext(output_file)[1].lower()
-        label = "Generated image" if ext in _IMAGE_EXTENSIONS else ("Generated video" if ext in _VIDEO_EXTENSIONS else ("Generated audio" if ext in _AUDIO_EXTENSIONS else "Generated file"))
+        label = {"image": "Generated image", "video": "Generated video", "audio": "Generated audio", "3d": "Generated 3D asset"}.get(_attachment_kind(output_file), "Generated file")
         attachment = _attachment_from_path(output_file, label)
         if attachment is not None:
             attachments.append(attachment)
@@ -1633,6 +1642,8 @@ def _attachment_from_path(path: str, label: str | None = None) -> dict[str, Any]
     elif ext in _AUDIO_EXTENSIONS:
         kind = "audio"
         thumb_url = _audio_thumbnail_url()
+    elif ext in MESH_EXTENSIONS and os.path.isfile(os.path.splitext(normalized_path)[0] + '.png'):
+        thumb_url = href + '/thumbnail'
     return {
         "path_key": path_key,
         "path": normalized_path,
@@ -1654,6 +1665,8 @@ def _attachment_kind(path: str, default: str = "file") -> str:
         return "video"
     if ext in _AUDIO_EXTENSIONS:
         return "audio"
+    if ext in MESH_EXTENSIONS:
+        return "3d"
     return "file" if ext else default
 
 
@@ -1676,6 +1689,7 @@ def _attachment_icon(kind: str) -> str:
         "download": "<path d='M24 6v24'></path><path d='m15 22 9 9 9-9'></path><path d='M10 39h28'></path>",
         "image": "<rect x='6' y='8' width='36' height='32' rx='4'></rect><circle cx='17' cy='19' r='3'></circle><path d='m10 35 9-9 6 6 5-5 8 8'></path>",
         "video": "<rect x='6' y='10' width='36' height='28' rx='4'></rect><path d='m20 18 11 6-11 6z'></path>",
+        "3d": "<path d='m24 6 16 9v18L24 42 8 33V15l16-9ZM8 15l16 9 16-9M24 24v18'></path>",
         "file": "<path d='M13 5h15l7 7v31H13z'></path><path d='M28 5v8h7M19 23h10M19 29h10M19 35h7'></path>",
     }
     icon_kind = kind if kind in icons else "file"
@@ -1913,17 +1927,21 @@ def _render_attachments(attachments: list[dict[str, Any]]) -> str:
             continue
         label = html.escape(str(attachment.get("label", "Open file")))
         subtitle = html.escape(str(attachment.get("subtitle", "")))
+        download_name = str(attachment.get("download", "")).strip()
+        media_format = os.path.splitext(str(attachment.get('path') or download_name))[1].lower()
+        # Reclassify retained attachments too: older conversations stored meshes as generic files.
+        kind = '3d' if media_format in MESH_EXTENSIONS else str(attachment.get('kind', 'file'))
+        format_attribute = f" data-media-format='{html.escape(media_format[1:])}'" if kind == '3d' else ''
         thumb_url = str(attachment.get("thumb_url", "")).strip()
         subtitle_html = f"<span class='chat__attachment-subtitle'>{subtitle}</span>" if len(subtitle) > 0 else ""
         thumb_html = (
             f"<img class='chat__attachment-thumb' loading='lazy' src='{html.escape(thumb_url)}' alt='{label}'>"
             if len(thumb_url) > 0
-            else _attachment_icon(str(attachment.get("kind", "file")).strip().lower())
+            else _attachment_icon(kind.strip().lower())
         )
-        download_name = str(attachment.get("download", "")).strip()
         link_attributes = f" download='{html.escape(download_name)}'" if download_name else " target='_blank' rel='noopener'"
         cards.append(
-            f"<a class='chat__attachment' data-media-kind='{html.escape(str(attachment.get('kind', 'file')))}' href='{html.escape(href)}'{link_attributes}>"
+            f"<a class='chat__attachment' data-media-kind='{html.escape(kind)}'{format_attribute} href='{html.escape(href)}'{link_attributes}>"
             f"{thumb_html}"
             "<span class='chat__attachment-meta'>"
             f"<span class='chat__attachment-title'>{label}</span>"

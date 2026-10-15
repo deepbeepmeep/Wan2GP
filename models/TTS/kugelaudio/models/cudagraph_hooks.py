@@ -58,7 +58,7 @@ class KugelAudioCudaGraphHooks:
             dtype=model_dtype,
         )
         self._decode_cache_position = torch.zeros(1, device=model_device, dtype=torch.long)
-        self._kit = AutoRegressiveCudaGraphKit("kugelaudio")
+        self._kit = AutoRegressiveCudaGraphKit("kugelaudio", owner=self.model)
         self._max_batch_size = int(max_batch_size)
         self._max_cache_tokens = int(max_cache_tokens)
 

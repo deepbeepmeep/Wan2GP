@@ -98,7 +98,7 @@ _TOOLBOX_MEDIA_PARAMETERS = {
     "resize_crop": ("media_id",),
     "side_by_side": ("media_ids",),
     "render_3d_views": ("media_id",),
-    "merge_videos": ("video_ids",),
+    "merge_videos": ("media_ids",),
     "get_media_details": ("media_id",),
     "image_channels": ("media_id",),
     "create_mask": ("media_id",),
@@ -484,7 +484,10 @@ def _gallery_item(session, media_id: str) -> dict[str, Any]:
         record = next((record for record in _gallery_history(session).values() if lookup in record["settings"]["gallery_media_ids"]), None)
         if record is not None and _gallery_path_exists(session, record.get("path", "")):
             return copy.deepcopy(record)
-    raise KeyError(f"Unknown WanGP media_id: {media_id}")
+        known = [identifier for record in _gallery_history(session).values() for identifier in record["settings"]["gallery_media_ids"]]
+    known = [identifier for identifier in known if identifier != lookup]  # an id whose file is gone has no alternative
+    close = sorted({identifier for identifier in known if identifier.startswith(lookup)}) or difflib.get_close_matches(lookup, known, n=2, cutoff=0.9)  # a truncated or mistyped id
+    raise KeyError(f"Unknown WanGP media_id: {media_id}" + (f". Did you mean {' or '.join(close[:2])}?" if close and len(lookup) > 8 else ""))
 
 
 def resolve_gallery_media_path(session, media_id: str) -> str:
@@ -541,7 +544,7 @@ def _compact_model_metadata(records: list[dict[str, Any]]) -> list[dict[str, Any
 def _compact_deepy_model_metadata(record: dict[str, Any]) -> dict[str, Any]:
     compact = {key: copy.deepcopy(record[key]) for key in ("model_type", "name", "family", "family_label", "base_model_type", "finetune", "main_output", "outputs", "inputs") if record.get(key) not in (None, "", [], {})}
     compact["capabilities"] = [key for key, enabled in record.get("capabilities", {}).items() if enabled]
-    compact.update({key: copy.deepcopy(record[key]) for key in ("accelerated", "size", "specialities", "matched_specialities", "unmatched_specialities", "word_matches", "substring_matches", "resolution_budget", "resolution_budget_tiled", "resolution_min", "lock_resolutions", "allowed_resolutions", "vae_block_size", "resolution_assessment") if key in record})
+    compact.update({key: copy.deepcopy(record[key]) for key in ("accelerated", "size", "specialities", "matched_specialities", "unmatched_specialities", "word_matches", "substring_matches", "resolution_budget", "resolution_budget_tiled", "resolution_min", "max_width", "max_height", "lock_resolutions", "allowed_resolutions", "vae_block_size", "resolution_assessment") if key in record})
     if record.get("sliding_window") and "sliding_window" not in compact["capabilities"]:
         compact["capabilities"].append("sliding_window")
     compact["media_inputs"] = {kind: copy.deepcopy(values) if kind == "custom_file" else [key for key, enabled in values.items() if enabled] for kind, values in record.get("media_inputs", {}).items() if isinstance(values, dict) and any(values.values())}
@@ -1229,8 +1232,10 @@ def _resolve_toolbox_arguments(session, toolbox, action: str, arguments: dict[st
             resolved_inputs.append(resolved_input)
         resolved["media_inputs"] = resolved_inputs
     if action == "draw_svg" and isinstance(resolved.get("svg"), str):  # each href resolved under this server's media and file rules
-        from shared.deepy import svg_drawing
+        from shared.deepy import long_text as deepy_long_text, svg_drawing
 
+        resolved["svg"] = deepy_long_text.resolve_prompt_file(resolved["svg"], file_access_policy, read_only=True)  # @file("...") markup, read under this server's file rules
+        resolved.update({key: resolve_media_id(resolved[key], key) for key in ("video_id", "like_video_id") if resolved.get(key) is not None})  # descriptions kept: they carry the overlay rules
         resolved["svg"] = svg_drawing.rewrite(resolved["svg"], {reference: resolve_media_id(reference, f"svg href {reference}") for reference in svg_drawing.references(resolved["svg"])})
     if action == "image_channels" and resolved.get("channel_sources") is not None:
         raw_sources = resolved["channel_sources"]
@@ -1414,7 +1419,19 @@ class _JobRecord:
             for record in _gallery_records(self.session, limit=500):
                 if (self.session._root / record["path"]).resolve() in generated_paths:
                     path = None if self.file_store is None or self.file_store.policy is None else self.file_store.policy.virtualize_path((self.session._root / record["path"]).resolve())
-                    result["gallery_items"].append(_output_record(_compact_gallery_record(record), path))
+                    item = _output_record(_compact_gallery_record(record), path)
+                    if item["media_type"] == "audio":  # songs often stop well before their requested length: say where, once per job
+                        from shared.deepy.video_tools import quiet_ranges
+                        quiet = quiet_ranges(str((self.session._root / record["path"]).resolve()))
+                        if quiet and item.get("duration_seconds", 0) - quiet[-1][1] < 0.1 and quiet[-1][1] - quiet[-1][0] >= 1:
+                            item["sound_ends_seconds"] = quiet[-1][0]
+                    elif item["media_type"] == "video":  # a generated shot can cut away to another shot or go black: measured, not seen
+                        from shared.deepy.video_tools import picture_checks
+                        item.update(picture_checks(str((self.session._root / record["path"]).resolve())))
+                        if "cut_times_seconds" in item:
+                            item["note"] = ("The model cut to other shots at cut_times_seconds. Look at a frame just after each cut: if it no longer shows the requested "
+                                            "subject (a cutaway to objects, hands or other people), the shot failed there: use the part before the cut or regenerate it shorter.")
+                    result["gallery_items"].append(item)
         if self.file_store is not None:
             policy = self.file_store.policy
             for artifact in result["artifacts"]:
@@ -1536,7 +1553,7 @@ class _JobStore:
                 saved = self.state.get_job(job_id)
                 if saved is not None:
                     return RecoveredJob(saved, self._session, self._owner)
-            raise KeyError(f"Unknown WanGP job_id: {job_id}")
+            raise KeyError(f"Unknown WanGP job_id: {job_id}. Jobs are not kept across a WanGP restart: the outputs of finished jobs are in the Gallery (wangp_list_gallery); submit unfinished ones again.")
         return record
 
     def once(self, request_id, payload, submit):

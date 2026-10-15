@@ -39,7 +39,7 @@ SETTING_HINTS = {
     **dict.fromkeys(("accelerator", "accelerator_profile", "profile"), "an accelerator profile's settings"),
 }
 # Model information returned beside template settings and in model metadata: never a setting.
-MODEL_INFO_KEYS = frozenset({"accelerated", "media_inputs", "resolution_budget", "resolution_budget_tiled", "resolution_min", "lock_resolutions", "allowed_resolutions", "vae_block_size"})
+MODEL_INFO_KEYS = frozenset({"accelerated", "media_inputs", "resolution_budget", "resolution_budget_tiled", "resolution_min", "max_width", "max_height", "lock_resolutions", "allowed_resolutions", "vae_block_size"})
 
 
 @cache

@@ -57,7 +57,13 @@ gradio-app {
 }
 .wangp-settings-actions {
     position: sticky !important;
+    /* Let the gallery and any separate media panel push controls below the
+       viewport instead of covering the preview. The bound scrolls with them. */
+    top: var(--wangp-actions-gallery-top, auto);
     bottom: max(8px, env(safe-area-inset-bottom));
+}
+.wangp-settings-actions,
+.wangp-media-actions {
     z-index: 20;
     flex: 0 0 auto !important;
     padding: 8px;
@@ -66,15 +72,37 @@ gradio-app {
     border-radius: 18px;
     background: transparent;
 }
-.wangp-settings-actions.is-floating {
+.wangp-settings-actions.is-floating,
+.wangp-media-actions.is-floating {
     border-color: color-mix(in srgb, var(--studio-border, var(--border-color-primary)) 20%, transparent);
     background: color-mix(in srgb, var(--studio-surface, var(--background-fill-primary)) 60%, transparent);
     -webkit-backdrop-filter: blur(16px) saturate(130%);
     backdrop-filter: blur(16px) saturate(130%);
     box-shadow: 0 6px 22px rgb(0 0 0 / 8%);
 }
-.wangp-settings-actions button {
+.wangp-settings-actions button,
+.wangp-media-actions button {
     min-width: min(100%, 104px) !important;
+}
+/* Media actions keep their original handlers and a separate landing slot.
+   Only geometry is supplied by JS; panel styling and positioning live here. */
+.wangp-media-actions.is-floating {
+    position: fixed !important;
+    left: var(--wangp-media-actions-left);
+    bottom: var(--wangp-media-actions-bottom);
+    width: var(--wangp-media-actions-width) !important;
+    max-height: calc(100dvh - var(--wangp-media-actions-bottom) - 8px);
+    overflow-y: auto;
+}
+.wangp-media-actions-slot {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    height: var(--wangp-media-actions-height);
+    pointer-events: none;
+}
+.wangp-media-actions-slot[hidden] {
+    display: none;
 }
 /* Preview visibility still follows the same Gradio generation-state column,
    although its contents now stay beside the gallery rather than in the bar. */

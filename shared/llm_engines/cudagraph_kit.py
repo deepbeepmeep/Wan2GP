@@ -89,8 +89,9 @@ class CUDAGraphRunner:
 class AutoRegressiveCudaGraphKit:
     """Reusable helper to attach graph-safe KV writers and replay decode callables."""
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, owner=None) -> None:
         self._name = name
+        self._owner = owner
         self._runners: dict[str, CUDAGraphRunner] = {}
         self._attached_caches: list[object] = []
         self._attached_cache_ids: set[int] = set()
@@ -118,6 +119,14 @@ class AutoRegressiveCudaGraphKit:
         return final_capacity
 
     def run(self, runner_name: str, fn: Callable[..., object], *inputs: torch.Tensor) -> object:
+        if self._owner is not None:
+            from mmgp import runtime
+            if runtime.requires_layer_offload(self._owner):
+                # Keep the caller's KV cache and sequence state while MMGP streams layers.
+                for runner in self._runners.values():
+                    runner.release()
+                self._runners.clear()
+                return fn(*inputs)
         runner = self._runners.get(runner_name)
         if runner is None:
             runner = CUDAGraphRunner(f"{self._name}:{runner_name}", fn)

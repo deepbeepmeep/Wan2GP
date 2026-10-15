@@ -1,0 +1,1 @@
+{"hidden_size": 3072, "num_heads": 24, "depth": 5, "depth_single": 28, "mlp_ratio": 3.0, "context_dim": 20480}

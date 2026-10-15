@@ -72,8 +72,7 @@ def _cuda_linear(x, weight, scale, bias):
     """FP8 tensor cores: x quantized to FP8 with one scale, the weight scale applied by cuBLASLt (one value) or to the output."""
     from shared.qtypes import scaled_fp8
     scale_b, output_scale = scaled_fp8._scaled_mm_weight_scale(scale.reshape(-1) if scale.numel() > 1 else scale, weight)
-    x8, scale_a = scaled_fp8._quantize_activation(x.contiguous(), weight.dtype)
-    out = torch._scaled_mm(x8, weight.t(), scale_a, scale_b.to(torch.float32), bias=bias if output_scale is None else None, out_dtype=x.dtype)
+    out = scaled_fp8._scaled_mm_rows(x.contiguous(), weight.t(), scale_b.to(torch.float32), bias if output_scale is None else None, x.dtype)
     if output_scale is not None:
         out.mul_(output_scale.to(out.dtype).view(1, -1))
         if bias is not None:

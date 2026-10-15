@@ -58,6 +58,7 @@ from shared.deepy.debug_bootstrap import capture_external_logs
 from shared import extra_settings
 from shared.deepy import filesystem as deepy_filesystem, image_channels as deepy_image_channels, long_text as deepy_long_text, media_registry, session_store, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
 from shared.deepy.paged_files import list_directory_page
+from shared.deepy.tool_aliases import canonical_arguments
 from shared.mcp.paging import PAGE_SIZE, ResultPages
 from shared.utils.gallery_media import gallery_media_ids
 
@@ -123,6 +124,11 @@ def _compaction_budget_note(max_new_tokens: int) -> list[str]:
     """The summary's real room when it is below the usual 1,200 words (about two tokens per word with identifiers)."""
     words = max(150, int(max_new_tokens) // 2)
     return [f"This summary must fit within about {words} words: keep the request ledger and identifiers, and shorten the rest to fit."] if words < 1200 else []
+
+
+# summary cap, as a share of the context window (6.4K tokens at 32K): production summaries need 3.5-5K, while a runaway one (each
+# summary absorbing the previous, 8-10K by the end of a long session) is cut and retried shorter
+_COMPACTION_SUMMARY_WINDOW_SHARE = 0.2
 
 
 _COMPACTION_TOO_LONG_RETRY = (
@@ -2691,7 +2697,7 @@ class DeepyZeroTools:
         if not has_time_args and not has_frame_args:
             if allow_empty:
                 return {"mode": "time", "start_time": None, "end_time": None, "duration": None, "start_frame": None, "end_frame": None, "num_frames": None}, None
-            return None, {"status": "error", "error": "Provide at least one of start_time, end_time, duration, start_frame, end_frame, or num_frames."}
+            return None, {"status": "error", "error": "Provide at least one of start_s, end_s, duration_s, start_frame, end_frame, or num_frames."}
         if has_frame_args:
             if str(source_media.get("media_type", "") or "").strip() != "video":
                 return None, {"status": "error", "error": "Frame-based extraction is only supported when media_id references a video."}
@@ -2748,17 +2754,17 @@ class DeepyZeroTools:
                 "end_frame": resolved_end_frame,
                 "num_frames": resolved_num_frames,
             }, None
-        start_time, error_result = self._parse_time_value(start_time, "start_time")
+        start_time, error_result = self._parse_time_value(start_time, "start_s")
         if error_result is not None:
             return None, error_result
-        end_time, error_result = self._parse_time_value(end_time, "end_time")
+        end_time, error_result = self._parse_time_value(end_time, "end_s")
         if error_result is not None:
             return None, error_result
-        duration, error_result = self._parse_time_value(duration, "duration")
+        duration, error_result = self._parse_time_value(duration, "duration_s")
         if error_result is not None:
             return None, error_result
         if end_time is not None and duration is not None:
-            return None, {"status": "error", "error": "Specify either end_time or duration, not both."}
+            return None, {"status": "error", "error": "Specify either end_s or duration_s, not both."}
         if start_time is None:
             start_time = 0.0
         return {"mode": "time", "start_time": start_time, "end_time": end_time, "duration": duration, "start_frame": None, "end_frame": None, "num_frames": None}, None
@@ -4377,9 +4383,9 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Draw SVG",
-        description="Draw an image from SVG markup and add it to the image gallery: shapes, paths, gradients, text, clip paths, masks, filters (blur, shadows) and transforms, for character sheets, posters, storyboards, diagrams, layout guides or masks. <image href> may name gallery images (a 3D asset gives its preview) or authorized image files: they are embedded. url() may only point to #ids of the drawing. Inspect the result and redraw to refine it; the PNG keeps the SVG source in its settings. With duration_s it makes a silent video clip instead, animated by SVG animation elements: <animate attributeName=\"opacity\" from=\"0\" to=\"1\" begin=\"0.5s\" dur=\"1s\" fill=\"freeze\"/> fades a title in, <animateTransform attributeName=\"transform\" type=\"scale\" from=\"1\" to=\"1.1\" dur=\"4s\" fill=\"freeze\"/> slowly zooms a group holding a gallery image, and an <image> with no animation gives a still clip (title card, end card). Supported: animate (numbers, lists of numbers, colours), animateTransform (translate, scale, rotate, skewX, skewY; additive=\"sum\" adds to the existing transform), set; with begin, dur, from/to or values with keyTimes, calcMode linear, discrete or spline with keySplines, fill=\"freeze\" and repeatCount. CSS animations and scripts are not run.",
+        description="Draw an image from SVG markup and add it to the image gallery: shapes, paths, gradients, text, clip paths, masks, filters (blur, shadows) and transforms, for character sheets, posters, storyboards, diagrams, layout guides or masks. <image href> may name gallery images (a 3D asset gives its preview) or authorized image files: they are embedded. url() may only point to #ids of the drawing. Inspect the result and redraw to refine it; the result keeps its SVG source, which media_settings returns for a redraw. With duration_s it makes a silent video clip instead, animated by SVG animation elements: <animate attributeName=\"opacity\" from=\"0\" to=\"1\" begin=\"0.5s\" dur=\"1s\" fill=\"freeze\"/> fades a title in, <animateTransform attributeName=\"transform\" type=\"scale\" from=\"1\" to=\"1.1\" dur=\"4s\" fill=\"freeze\"/> slowly zooms a group holding a gallery image, and an <image> with no animation gives a still clip (title card, end card). Text content cannot be animated: for a countdown or counter, put one <text opacity=\"0\"> per value, each shown in turn with <set attributeName=\"opacity\" to=\"1\" begin=\"2s\" dur=\"1s\"/>, and a progress ring whose stroke-dashoffset animates from 0 to its circumference. Supported: animate (numbers, lists of numbers, colours), animateTransform (translate, scale, rotate, skewX, skewY; additive=\"sum\" adds to the existing transform), set; with begin, dur, from/to or values with keyTimes, calcMode linear, discrete or spline with keySplines, fill=\"freeze\" and repeatCount. CSS animations and scripts are not run. With video_id it draws over an existing video instead: designed on-screen text and graphics burned into the picture, never subtitles.",
         parameters={
-            "svg": {"type": "string", "description": "Complete SVG document: <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"W\" height=\"H\" viewBox=\"0 0 W H\">...</svg>. Up to 2,000,000 characters of markup; embedded images may total 48 MB."},
+            "svg": {"type": "string", "description": "Complete SVG document: <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"W\" height=\"H\" viewBox=\"0 0 W H\">...</svg>. Up to 2,000,000 characters of markup; embedded images may total 48 MB. A long drawing can be written to a file (write_text, append_text) and passed as the exact reference @file(\"@documents/drawing.svg\"): calls stay small, and edit changes the file in place for a redraw."},
             "width": {"type": "integer", "minimum": 1, "maximum": 4096, "description": "Optional output width in pixels; the SVG's own size by default. Given alone, width or height keeps the aspect ratio.", "required": False},
             "height": {"type": "integer", "minimum": 1, "maximum": 4096, "description": "Optional output height in pixels.", "required": False},
             "background": {"type": "string", "description": "Optional background color name or hex value; transparent by default.", "required": False},
@@ -4387,10 +4393,13 @@ class DeepyZeroTools:
             "duration_s": {"type": "number", "minimum": 0.1, "maximum": 60, "description": "Optional: make a silent video clip of this length, animated by the SVG animation elements (background black by default). Leave it out for an image (a sheet, a poster, an infographic).", "required": False},
             "fps": {"type": "number", "minimum": 1, "maximum": 60, "description": "Frame rate of the clip; default 24, or like_video_id's.", "required": False},
             "like_video_id": {"type": "string", "description": "Optional video whose size and frame rate the clip takes, so it merges with it directly; draw the SVG in that video's aspect ratio.", "required": False},
+            "video_id": {"type": "string", "description": "Optional video to draw over: the drawing is burned into its picture from start_s to end_s, the video showing through its transparent parts, and the result is a new video with the same sound and subtitle tracks (the original stays in the Gallery). For designed on-screen text and graphics: titles, lower thirds, labels, signs, UI screens, timers, scores, exact to the character. Never for subtitles or captions of spoken words: burned in, they cannot be removed; add those as a subtitle track (remux_media subtitle_tracks). Draw the SVG at the video's size (its width, height and viewBox); its animations start at start_s.", "required": False},
+            "start_s": {"type": "number", "minimum": 0, "description": "With video_id: when the drawing appears, in seconds of the video; 0 by default.", "required": False},
+            "end_s": {"type": "number", "minimum": 0, "description": "With video_id: when it disappears; the end of the video by default.", "required": False},
         },
         pause_runtime=False,
     )
-    def draw_svg(self, svg: str, width: int | None = None, height: int | None = None, background: str | None = None, name: str | None = None, duration_s: float | None = None, fps: float | None = None, like_video_id: str | None = None) -> dict[str, Any]:
+    def draw_svg(self, svg: str, width: int | None = None, height: int | None = None, background: str | None = None, name: str | None = None, duration_s: float | None = None, fps: float | None = None, like_video_id: str | None = None, video_id: str | None = None, start_s: float | None = None, end_s: float | None = None) -> dict[str, Any]:
         from shared.deepy import svg_drawing
         from shared.utils.mesh_outputs import ensure_preview, preview_path
 
@@ -4398,6 +4407,7 @@ class DeepyZeroTools:
         self._set_status("Drawing SVG...", kind="tool")
         self._update_tool_progress("running", "Drawing", {"status": "running"})
         try:
+            svg = deepy_long_text.resolve_prompt_file(svg, self._file_access_policy(), read_only=True)  # @file("...") reads markup kept in an authorized file
             embedded = {}
             for reference in svg_drawing.references(svg):
                 record = self._resolve_media_record_input(reference)
@@ -4410,7 +4420,26 @@ class DeepyZeroTools:
                     embedded[reference] = svg_drawing.data_uri(record["path"])
                 else:
                     raise ValueError(f"href {reference} is a {record.get('media_type')}; extract an image from it first.")
-            if duration_s is None:
+            if video_id is not None:
+                if any(value is not None for value in (duration_s, fps, like_video_id, width, height)):
+                    raise ValueError("video_id draws over that video at its size and frame rate: leave duration_s, fps, like_video_id, width and height out; start_s and end_s set when the drawing shows.")
+                source, error_result = self._resolve_video_media(video_id, "video_id")
+                if error_result is not None:
+                    return error_result
+                fps, width, height, frame_count = get_video_info(source["path"])
+                length = frame_count / fps
+                start_s, end_s = float(start_s or 0), length if end_s is None else float(end_s)
+                if not 0 <= start_s < end_s <= length + 0.5 / fps:
+                    raise ValueError(f"start_s and end_s must lie within the video's {length:g} s, start_s before end_s.")
+                end_s = min(end_s, length)
+                video_codec, video_container = self._get_video_output_settings()
+                stem = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name or f"{Path(source['path']).stem}_drawn")).strip("_") or "drawing"
+                output_path = self._resolve_direct_output_path(f"{stem}{deepy_video_tools.get_video_container_extension(video_container)}", False, False)
+                frames = svg_drawing.render_frames(svg_drawing.rewrite(svg, embedded), end_s - start_s, fps, width, height, background or None, mode="RGBA")
+                deepy_video_tools.overlay_frames(frames, source["path"], output_path, fps, start_s, video_codec=video_codec, video_container=video_container, audio_codec=self._get_video_audio_output_codec())
+            elif start_s is not None or end_s is not None:
+                raise ValueError("start_s and end_s apply to drawing over a video: set video_id.")
+            elif duration_s is None:
                 if like_video_id is not None or fps is not None:
                     raise ValueError("fps and like_video_id apply to clips: set duration_s.")
                 image = svg_drawing.rasterize(svg_drawing.rewrite(svg, embedded), None if width is None else int(width), None if height is None else int(height), background or None)
@@ -4433,7 +4462,11 @@ class DeepyZeroTools:
             self._set_status(f"SVG drawing failed: {exc}", kind="error")
             return result
         embedded_text = f"{len(embedded)} embedded image{'s' if len(embedded) != 1 else ''}"
-        if duration_s is None:
+        if video_id is not None:
+            settings = self._build_direct_media_settings(source, f'Drawn from SVG over "{Path(source["path"]).name}" from {start_s:g} to {end_s:g} s ({embedded_text})', svg=svg)
+            self._update_video_metadata_fields(output_path, settings)
+            size = (width, height)
+        elif duration_s is None:
             stem = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name or "drawing")).strip("_") or "drawing"
             output_path = self._resolve_direct_output_path(f"{stem}.png", True, False)
             image.save(output_path)
@@ -4443,8 +4476,10 @@ class DeepyZeroTools:
             settings = self._build_deepy_settings("An animated SVG drawing.", f"Drawn from SVG as a {float(duration_s):g} s clip at {fps:g} fps ({embedded_text})", svg=svg)
             self._update_video_metadata_fields(output_path, settings)
             size = tuple(map(int, settings["resolution"].split("x")))
-        record = self._record_direct_media(output_path, settings, is_image=duration_s is None, audio_only=False, label="SVG drawing" if duration_s is None else "SVG clip")
-        result = {"status": "done", "media_id": "" if record is None else record.get("media_id", ""), "width": size[0], "height": size[1], **({} if duration_s is None else {"duration_seconds": settings.get("duration_seconds"), "fps": fps}), "embedded_media": list(embedded), "output_file": output_path, "error": ""}
+        is_image = duration_s is None and video_id is None
+        record = self._record_direct_media(output_path, settings, is_image=is_image, audio_only=False, label="SVG overlay" if video_id is not None else "SVG drawing" if is_image else "SVG clip")
+        result = {"status": "done", "media_id": "" if record is None else record.get("media_id", ""), **({} if video_id is None else {"source_media_id": source["media_id"], "start_s": round(start_s, 3), "end_s": round(end_s, 3)}),
+                  "width": size[0], "height": size[1], **({} if is_image else {"duration_seconds": settings.get("duration_seconds"), "fps": fps}), "embedded_media": list(embedded), "output_file": output_path, "error": ""}
         self._update_tool_progress("done", "Done", result)
         self._set_status("SVG drawing created.", kind="tool")
         return result
@@ -4462,7 +4497,7 @@ class DeepyZeroTools:
                 "description": "Optional frame number to extract from the source video.",
                 "required": False,
             },
-            "time_seconds": {
+            "time_s": {
                 "type": "number",
                 "description": "Optional exact playback time in seconds. Prefer this for the currently selected video frame because it matches the player position more accurately.",
                 "required": False,
@@ -4470,7 +4505,7 @@ class DeepyZeroTools:
         },
         pause_runtime=False,
     )
-    def extract_image(self, media_id: str, frame_no: int | None = None, time_seconds: float | None = None) -> dict[str, Any]:
+    def extract_image(self, media_id: str, frame_no: int | None = None, time_s: float | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         source_media, error_result = self._resolve_video_media(media_id, "media_id")
         if error_result is not None:
@@ -4479,18 +4514,18 @@ class DeepyZeroTools:
             frame_no = None if frame_no is None or str(frame_no).strip() == "" else int(frame_no)
         except Exception:
             return {"status": "error", "media_id": str(media_id or "").strip(), "frame_no": frame_no, "output_file": "", "error": "frame_no must be an integer."}
-        time_seconds, error_result = self._parse_time_value(time_seconds, "time_seconds", required=False)
+        time_seconds, error_result = self._parse_time_value(time_s, "time_s", required=False)
         if error_result is not None:
-            return {"status": "error", "media_id": str(media_id or "").strip(), "frame_no": frame_no, "time_seconds": time_seconds, "output_file": "", "error": error_result["error"]}
+            return {"status": "error", "media_id": str(media_id or "").strip(), "frame_no": frame_no, "time_s": time_seconds, "output_file": "", "error": error_result["error"]}
         if frame_no is None and time_seconds is None:
-            return {"status": "error", "media_id": str(media_id or "").strip(), "frame_no": None, "time_seconds": None, "output_file": "", "error": "frame_no or time_seconds is required."}
+            return {"status": "error", "media_id": str(media_id or "").strip(), "frame_no": None, "time_s": None, "output_file": "", "error": "frame_no or time_s is required."}
         self._set_status("Extracting image...", kind="tool")
-        self._update_tool_progress("running", "Extracting", {"status": "running", "media_id": source_media.get("media_id", ""), "frame_no": frame_no, "time_seconds": time_seconds})
+        self._update_tool_progress("running", "Extracting", {"status": "running", "media_id": source_media.get("media_id", ""), "frame_no": frame_no, "time_s": time_seconds})
         source_path = str(source_media.get("path", "")).strip()
         try:
             resolved_frame_no = deepy_video_tools.resolve_video_frame_no(source_path, frame_no=frame_no, time_seconds=time_seconds)
         except Exception as exc:
-            return {"status": "error", "media_id": source_media.get("media_id", ""), "frame_no": frame_no, "time_seconds": time_seconds, "output_file": "", "error": str(exc)}
+            return {"status": "error", "media_id": source_media.get("media_id", ""), "frame_no": frame_no, "time_s": time_seconds, "output_file": "", "error": str(exc)}
         source_name = os.path.splitext(os.path.basename(source_path))[0]
         output_suffix = f"frame{resolved_frame_no}" if time_seconds is None else f"frame{resolved_frame_no}_t{int(round(float(time_seconds or 0.0) * 1000.0))}ms"
         output_name = f"{source_name}_{output_suffix}.png"
@@ -4502,7 +4537,7 @@ class DeepyZeroTools:
                 "status": "error",
                 "media_id": source_media.get("media_id", ""),
                 "frame_no": resolved_frame_no,
-                "time_seconds": time_seconds,
+                "time_s": time_seconds,
                 "output_file": "",
                 "error": str(exc),
             }
@@ -4518,7 +4553,7 @@ class DeepyZeroTools:
             "media_id": "" if media_record is None else media_record.get("media_id", ""),
             "source_media_id": source_media.get("media_id", ""),
             "frame_no": resolved_frame_no,
-            "time_seconds": time_seconds,
+            "time_s": time_seconds,
             "output_file": output_path,
             "error": "",
         }
@@ -4528,23 +4563,23 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Extract Video",
-        description="Extract a video segment from a previously resolved video using either time-based arguments (start_time, end_time, duration) or frame-based arguments (start_frame, end_frame, num_frames).",
+        description="Extract a video segment from a previously resolved video using either time-based arguments (start_s, end_s, duration_s) or frame-based arguments (start_frame, end_frame, num_frames).",
         parameters={
             "media_id": {
                 "type": "string",
                 "description": "The media id for the source video returned by Resolve Media.",
             },
-            "start_time": {
+            "start_s": {
                 "type": "number",
-                "description": "Optional start time in seconds. Defaults to the beginning when only end_time or duration is provided.",
+                "description": "Optional start time in seconds. Defaults to the beginning when only end_s or duration_s is provided.",
                 "required": False,
             },
-            "end_time": {
+            "end_s": {
                 "type": "number",
                 "description": "Optional end time in seconds.",
                 "required": False,
             },
-            "duration": {
+            "duration_s": {
                 "type": "number",
                 "description": "Optional segment duration in seconds.",
                 "required": False,
@@ -4570,9 +4605,9 @@ class DeepyZeroTools:
     def extract_video(
         self,
         media_id: str,
-        start_time: float | None = None,
-        end_time: float | None = None,
-        duration: float | None = None,
+        start_s: float | None = None,
+        end_s: float | None = None,
+        duration_s: float | None = None,
         start_frame: int | None = None,
         end_frame: int | None = None,
         num_frames: int | None = None,
@@ -4583,9 +4618,9 @@ class DeepyZeroTools:
             return error_result
         segment_args, error_result = self._resolve_segment_args(
             source_media,
-            start_time=start_time,
-            end_time=end_time,
-            duration=duration,
+            start_time=start_s,
+            end_time=end_s,
+            duration=duration_s,
             start_frame=start_frame,
             end_frame=end_frame,
             num_frames=num_frames,
@@ -4598,9 +4633,9 @@ class DeepyZeroTools:
             "status": "running",
             "media_id": source_media.get("media_id", ""),
             "mode": segment_args["mode"],
-            "start_time": segment_args["start_time"],
-            "end_time": segment_args["end_time"],
-            "duration": segment_args["duration"],
+            "start_s": segment_args["start_time"],
+            "end_s": segment_args["end_time"],
+            "duration_s": segment_args["duration"],
         }
         if segment_args["mode"] == "frame":
             progress_payload.update({"start_frame": segment_args["start_frame"], "end_frame": segment_args["end_frame"], "num_frames": segment_args["num_frames"]})
@@ -4639,7 +4674,7 @@ class DeepyZeroTools:
                 comments += " through the end of the video"
         else:
             comments = f'Extracted video segment from "{os.path.basename(source_path)}" starting at {segment_args["start_time"]:.3f}s'
-            if start_time is None and (end_time is not None or duration is not None):
+            if start_s is None and (end_s is not None or duration_s is not None):
                 comments = f'Extracted video segment from "{os.path.basename(source_path)}" starting at the beginning'
             if segment_args["end_time"] is not None:
                 comments += f" ending at {segment_args['end_time']:.3f}s"
@@ -4661,9 +4696,9 @@ class DeepyZeroTools:
             "media_id": "" if media_record is None else media_record.get("media_id", ""),
             "source_media_id": source_media.get("media_id", ""),
             "mode": segment_args["mode"],
-            "start_time": segment_args["start_time"],
-            "end_time": segment_args["end_time"],
-            "duration": segment_args["duration"],
+            "start_s": segment_args["start_time"],
+            "end_s": segment_args["end_time"],
+            "duration_s": segment_args["duration"],
             "output_file": output_path,
             "error": "",
         }
@@ -4678,18 +4713,19 @@ class DeepyZeroTools:
         parameters={
             "media_id": {"type": "string", "description": "Audio or video media ID or authorized file.", "required": True},
             "audio_track_no": {"type": "integer", "description": "1-based audio stream; default 1.", "required": False},
-            "start_time": {"type": "number", "description": "Start in seconds; default 0.", "required": False},
-            "duration": {"type": "number", "description": "Seconds to analyze; omitted analyzes through the end.", "required": False},
+            "start_s": {"type": "number", "description": "Start in seconds; default 0.", "required": False},
+            "duration_s": {"type": "number", "description": "Seconds to analyze; omitted analyzes through the end.", "required": False},
             "silence_db": {"type": "number", "description": "Silence RMS threshold in dBFS (-120..0); default -50.", "required": False},
-            "min_silence": {"type": "number", "description": "Minimum silence interval in seconds; default 0.2.", "required": False},
+            "min_silence_s": {"type": "number", "description": "Minimum silence interval in seconds; default 0.2.", "required": False},
             "preview": {"type": "boolean", "description": "Create a playable Gallery excerpt; default false.", "required": False},
-            "preview_seconds": {"type": "number", "description": "Excerpt length, at most 30 seconds; default 10. Starts at start_time.", "required": False},
+            "pitch": {"type": "boolean", "description": "Optional, for an isolated voice (a vocal stem or speech, not a full mix): voice_pitch_hz, its median pitch; female voices mostly sit above about 165 Hz, male ones below.", "required": False},
+            "preview_s": {"type": "number", "description": "Excerpt length, at most 30 seconds; default 10. Starts at start_s.", "required": False},
             "window_s": {"type": "number", "description": "Optional envelope window in seconds (0.1..600, at most 600 windows): adds lists of RMS, peak and loudest momentary loudness per window (window i starts at start_s + i * window_s), for finding climaxes, gaps and balance in one call.", "required": False},
         },
         pause_runtime=False,
     )
-    def inspect_audio(self, media_id: str, audio_track_no: int = 1, start_time: float = 0.0, duration: float | None = None, silence_db: float = -50.0, min_silence: float = 0.2, preview: bool = False, preview_seconds: float = 10.0, window_s: float | None = None) -> dict[str, Any]:
-        from shared.deepy.audio_inspection import inspect_audio
+    def inspect_audio(self, media_id: str, audio_track_no: int = 1, start_s: float = 0.0, duration_s: float | None = None, silence_db: float = -50.0, min_silence_s: float = 0.2, preview: bool = False, preview_s: float = 10.0, pitch: bool = False, window_s: float | None = None) -> dict[str, Any]:
+        from shared.deepy.audio_inspection import inspect_audio, voice_pitch
 
         self._sync_recent_media()
         source = self._resolve_media_record_input(media_id)
@@ -4697,8 +4733,10 @@ class DeepyZeroTools:
             raise ValueError("media_id must reference audio or video.")
         self._set_status("Inspecting Audio", kind="tool")
         output = self._resolve_direct_output_path(f"{Path(source['path']).stem}_preview.wav", False, True) if preview else None
-        result = inspect_audio(source["path"], audio_track_no=audio_track_no, start_time=start_time, duration=duration, silence_db=silence_db, min_silence=min_silence, preview_path=output, preview_seconds=preview_seconds, window_s=window_s)
+        result = inspect_audio(source["path"], audio_track_no=audio_track_no, start_time=start_s, duration=duration_s, silence_db=silence_db, min_silence=min_silence_s, preview_path=output, preview_seconds=preview_s, window_s=window_s)
         result["source_media_id"] = source["media_id"]
+        if pitch:
+            result["voice_pitch_hz"] = voice_pitch(source["path"], start_time=start_s, duration=duration_s)
         if output:
             settings = self._build_direct_media_settings(source, "Audio inspection preview")
             record = self._record_direct_media(output, settings, is_image=False, audio_only=True, label="Audio Preview")
@@ -4708,23 +4746,23 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Extract Audio",
-        description="Extract audio from a previously resolved video or audio file using either time-based arguments (start_time, end_time, duration) or, for video sources, frame-based arguments (start_frame, end_frame, num_frames).",
+        description="Extract audio from a previously resolved video or audio file using either time-based arguments (start_s, end_s, duration_s) or, for video sources, frame-based arguments (start_frame, end_frame, num_frames).",
         parameters={
             "media_id": {
                 "type": "string",
                 "description": "The media id for the source video or audio returned by Resolve Media.",
             },
-            "start_time": {
+            "start_s": {
                 "type": "number",
                 "description": "Optional start time in seconds. Defaults to the beginning.",
                 "required": False,
             },
-            "end_time": {
+            "end_s": {
                 "type": "number",
                 "description": "Optional end time in seconds.",
                 "required": False,
             },
-            "duration": {
+            "duration_s": {
                 "type": "number",
                 "description": "Optional segment duration in seconds.",
                 "required": False,
@@ -4755,9 +4793,9 @@ class DeepyZeroTools:
     def extract_audio(
         self,
         media_id: str,
-        start_time: float | None = None,
-        end_time: float | None = None,
-        duration: float | None = None,
+        start_s: float | None = None,
+        end_s: float | None = None,
+        duration_s: float | None = None,
         start_frame: int | None = None,
         end_frame: int | None = None,
         num_frames: int | None = None,
@@ -4774,9 +4812,9 @@ class DeepyZeroTools:
             return {"status": "error", "media_id": source_media.get("media_id", ""), "actual_media_type": actual_media_type, "media_type": actual_media_type, "output_file": "", "error": f"media_id must reference audio or video, not a {actual_media_type}."}
         segment_args, error_result = self._resolve_segment_args(
             source_media,
-            start_time=start_time,
-            end_time=end_time,
-            duration=duration,
+            start_time=start_s,
+            end_time=end_s,
+            duration=duration_s,
             start_frame=start_frame,
             end_frame=end_frame,
             num_frames=num_frames,
@@ -4796,9 +4834,9 @@ class DeepyZeroTools:
             "status": "running",
             "media_id": source_media.get("media_id", ""),
             "mode": segment_args["mode"],
-            "start_time": segment_args["start_time"],
-            "end_time": segment_args["end_time"],
-            "duration": segment_args["duration"],
+            "start_s": segment_args["start_time"],
+            "end_s": segment_args["end_time"],
+            "duration_s": segment_args["duration"],
             "audio_track_no": audio_track_no,
         }
         if segment_args["mode"] == "frame":
@@ -4842,7 +4880,7 @@ class DeepyZeroTools:
         else:
             if segment_args["start_time"] is not None:
                 comments += f" starting at {segment_args['start_time']:.3f}s"
-                if start_time is None and (end_time is not None or duration is not None):
+                if start_s is None and (end_s is not None or duration_s is not None):
                     comments = comments.replace(f" starting at {segment_args['start_time']:.3f}s", " starting at the beginning")
             if segment_args["end_time"] is not None:
                 comments += f" ending at {segment_args['end_time']:.3f}s"
@@ -4856,9 +4894,9 @@ class DeepyZeroTools:
             "media_id": "" if media_record is None else media_record.get("media_id", ""),
             "source_media_id": source_media.get("media_id", ""),
             "mode": segment_args["mode"],
-            "start_time": segment_args["start_time"],
-            "end_time": segment_args["end_time"],
-            "duration": segment_args["duration"],
+            "start_s": segment_args["start_time"],
+            "end_s": segment_args["end_time"],
+            "duration_s": segment_args["duration"],
             "audio_track_no": 1 if audio_track_no is None else audio_track_no,
             "output_file": output_path,
             "error": "",
@@ -4871,7 +4909,7 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Transcribe Media",
-        description="Transcribe the spoken content of a previously resolved audio or video media item with Whisper medium, returning segment timestamps by default and optionally using word timestamps instead. Timestamps are tightened to the detected speech, so a pause before a word is not counted in it, and speech_intervals lists where speech is heard. For speech over music, transcribe the clean voice file, or isolate the voice first (remove_background audio treatment).",
+        description="Transcribe the spoken content of a previously resolved audio or video media item with Whisper, returning segment timestamps by default and optionally using word timestamps instead. Timestamps are tightened to the detected speech, so a pause before a word is not counted in it, and speech_intervals lists where speech is heard. For speech over music, transcribe the clean voice file, or isolate the voice first (remove_background audio treatment).",
         parameters={
             "media_id": {
                 "type": "string",
@@ -5123,9 +5161,22 @@ class DeepyZeroTools:
                 "subtitle_track_count": (sum(stream.get("codec_type") == "subtitle" for stream in ffmpeg.probe(video_path).get("streams", [])) if video_path and include_video_subtitles else 0) + len(subtitle_tracks or []),
                 "output_file": output_path, "error": "",
             }
-            if mode == "mix" and (quiet := deepy_video_tools.quiet_ranges(output_path)):  # measured on the mix: music shorter than the cut, silent cards, gaps
+            if mode in ("mix", "replace") and (quiet := deepy_video_tools.quiet_ranges(output_path)):  # measured on the result: a soundtrack shorter than the cut, silent cards, gaps
                 result["quiet_ranges_seconds"] = quiet
-                result["warning"] = f"The mix is nearly silent (below -45 dBFS) at {', '.join(f'{start:g}-{end:g} s' for start, end in quiet)}: unless intended, extend or add music or sound there."
+                duration = deepy_video_tools.get_media_duration(output_path)
+                if not video_media and quiet[-1][1] >= duration - 0.1:  # an audio master ending in silence: dead air, not a fade (a fade is audible)
+                    result["warning"] = (f"The last {duration - quiet[-1][0]:.1f} s of this audio are silence after the sound ends: remix with trim_duration_s={quiet[-1][0] + 0.5:.2f} "
+                                         "so the file (and any duration quoted from it) ends with the music.")
+                elif quiet[-1][1] >= duration - 0.1 and duration - quiet[-1][0] >= 1:  # a film ending in dead air: the music stopped before the picture
+                    result["warning"] = (f"The picture runs on in silence for its last {duration - quiet[-1][0]:.1f} s (from {quiet[-1][0]:g} s): a finished film ends with its sound. "
+                                         "Use music at least as long as the cut, faded out at the very end (fade_out_s), or end the cut where the sound ends.")
+                else:
+                    result["warning"] = f"The mix is nearly silent (below -45 dBFS) at {', '.join(f'{start:g}-{end:g} s' for start, end in quiet)}: unless intended, extend or add music or sound there."
+            if mode == "mix" and video_media and not include_video_audio and deepy_video_tools._has_audio_stream(video_path):
+                own = deepy_video_tools.quiet_ranges(video_path)  # a video whose soundtrack is all silence loses nothing
+                if not own or own[0][0] > 0.1 or own[0][1] < deepy_video_tools.get_media_duration(video_path) - 0.1:
+                    result["note"] = ("The video's own soundtrack was left out (include_video_audio false). Lip-synced shots carry their speech in it, aligned with the lips: "
+                                      "keep it (include_video_audio true) and add only music and other sounds, rather than placing the speech files again.")
             self._update_tool_progress("done", "Done", result)
             self._set_status("Media Remux Complete.", kind="tool")
             return result
@@ -5316,23 +5367,23 @@ class DeepyZeroTools:
         display_name="Merge Videos",
         description="Join videos end to end in the given order, with a cut, a crossfade or a fade through black or white at each join; the soundtracks follow the picture. Clips are fitted to the first video's size and frame rate (a clip of another aspect ratio gets black bars: make title and end cards at each format's size), and a clip without sound gets silence. Soundtracks keep their levels (no limiter): master a final cut with remux_media (mode mix, normalize_lufs).",
         parameters={
-            "video_ids": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 32, "description": "Media ids of the videos, in playing order."},
+            "media_ids": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 32, "description": "Media ids of the videos, in playing order."},
             "transitions": {"type": ["string", "array"], "anyOf": [{"type": "string", "enum": list(deepy_video_tools.MERGE_TRANSITIONS)}, {"type": "array", "items": {"type": "string", "enum": list(deepy_video_tools.MERGE_TRANSITIONS)}, "minItems": 1, "maxItems": 31}], "description": "Optional transition for all joins (such as \"crossfade\"), or a list with one per join; each is cut (default), crossfade, fade_black or fade_white.", "required": False},
             "transition_s": {"type": "number", "minimum": 0.05, "maximum": 10, "description": "Optional length of each crossfade or fade in seconds (default 1). The two clips overlap by this time, so the result is shorter than their sum.", "required": False},
         },
         pause_runtime=False,
     )
-    def merge_videos(self, video_ids: list[str], transitions: str | list[str] | None = None, transition_s: float = 1.0) -> dict[str, Any]:
+    def merge_videos(self, media_ids: list[str], transitions: str | list[str] | None = None, transition_s: float = 1.0) -> dict[str, Any]:
         self._sync_recent_media()
         sources = []
-        for index, video_id in enumerate(video_ids):
-            media, error_result = self._resolve_video_media(video_id, f"video_ids[{index}]")
+        for index, video_id in enumerate(media_ids):
+            media, error_result = self._resolve_video_media(video_id, f"media_ids[{index}]")
             if error_result is not None:
                 return error_result
             sources.append(media)
         media_ids = [media.get("media_id", "") for media in sources]
         self._set_status("Merging videos...", kind="tool")
-        self._update_tool_progress("running", "Merging", {"status": "running", "video_ids": media_ids})
+        self._update_tool_progress("running", "Merging", {"status": "running", "media_ids": media_ids})
         video_codec, video_container = self._get_video_output_settings()
         names = [os.path.basename(str(media.get("path", "")).strip()) for media in sources]
         output_path = self._resolve_direct_output_path(f"merged_{len(sources)}_videos{deepy_video_tools.get_video_container_extension(video_container)}", False, False)
@@ -5343,11 +5394,17 @@ class DeepyZeroTools:
             self._update_tool_progress("error", "Error", result)
             self._set_status(f"Video merge failed: {exc}", kind="error")
             return result
-        joins = sorted(set(transitions or ["cut"]))
+        joins = sorted(set([transitions] if isinstance(transitions, str) else transitions or ["cut"]))  # one name for every join, or one per join
         merged_settings = self._build_direct_media_settings(sources[-1], f"Merged {len(sources)} videos ({', '.join(joins)}): " + ", ".join(names))
         self._update_video_metadata_fields(output_path, merged_settings)
         media_record = self._record_direct_media(output_path, merged_settings, is_image=False, audio_only=False, label="Merged video")
         result = {"status": "done", "output_file": output_path, "media_id": "" if media_record is None else media_record.get("media_id", ""), "video_ids": media_ids, "duration_seconds": merged_settings.get("duration_seconds"), "error": ""}
+        # silent inserts (drawn cards, animations, mute shots) leave dead air in the cut: measured, so the mix covers it before delivery
+        silent = deepy_video_tools.quiet_ranges(output_path, min_seconds=2.0) if deepy_video_tools._has_audio_stream(output_path) else [[0.0, deepy_video_tools.get_media_duration(output_path)]]
+        if silent:
+            result["quiet_ranges_seconds"] = silent
+            result["warning"] = (f"This cut is silent for {sum(end - start for start, end in silent):.1f} s ({', '.join(f'{start:g}-{end:g} s' for start, end in silent)}): "
+                                 "cover those stretches with narration or music in the mix (remux_media mode mix) before delivering, unless silence is intended there.")
         self._update_tool_progress("done", "Done", result)
         self._set_status("Video merge finished.", kind="tool")
         return result
@@ -5838,14 +5895,14 @@ class DeepyZeroTools:
                     "properties": {
                         "media_id": {"type": "string", "description": "A media id returned by Resolve Media."},
                         "frame_no": {"type": "integer", "minimum": 0, "description": "Optional video frame number. If omitted for a video, frame 0 is used."},
-                        "time_seconds": {"type": "number", "minimum": 0, "description": "Optional exact video time in seconds. Do not combine it with frame_no."},
-                        "view": {"type": "string", "enum": list(_MESH_VIEWS), "description": "Optional view of a 3D asset (left / right: the object's own sides); frame_no / time_seconds select its animation frame."},
+                        "time_s": {"type": "number", "minimum": 0, "description": "Optional exact video time in seconds. Do not combine it with frame_no."},
+                        "view": {"type": "string", "enum": list(_MESH_VIEWS), "description": "Optional view of a 3D asset (left / right: the object's own sides); frame_no / time_s select its animation frame."},
                     },
                     "required": ["media_id"],
                 },
                 "minItems": 1,
                 "maxItems": 5,
-                "description": "Ordered visual inputs. Repeat the same video media_id with different frame_no or time_seconds values to inspect multiple frames jointly. Images omit both selectors. Use exactly one of media_id, media_ids, or media_inputs.",
+                "description": "Ordered visual inputs. Repeat the same video media_id with different frame_no or time_s values to inspect multiple frames jointly. Images omit both selectors. Use exactly one of media_id, media_ids, or media_inputs.",
                 "required": False,
             },
             "question": {
@@ -5857,13 +5914,13 @@ class DeepyZeroTools:
                 "description": "Optional frame number to inspect for every video or animated 3D asset supplied through media_id or media_ids. If omitted, video frame 0 and the 3D rest pose are used. Do not use it with media_inputs.",
                 "required": False,
             },
-            "time_seconds": {"type": "number", "minimum": 0, "description": "Optional time in seconds of the frame to inspect for every video supplied through media_id or media_ids, instead of frame_no. Do not use it with media_inputs.", "required": False},
+            "time_s": {"type": "number", "minimum": 0, "description": "Optional time in seconds of the frame to inspect for every video supplied through media_id or media_ids, instead of frame_no. Do not use it with media_inputs.", "required": False},
             "bbox": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 1000}, "minItems": 4, "maxItems": 4, "description": "Optional normalized [x_min,y_min,x_max,y_max] crop, applied before resize.", "required": False},
         },
         pause_runtime=True,
         pause_reason="vision",
     )
-    def inspect_media(self, media_id: str | None = None, question: str = "", frame_no: int | None = None, media_ids: list[str] | None = None, media_inputs: list[dict[str, Any]] | None = None, bbox: list[int] | None = None, time_seconds: float | None = None) -> dict[str, Any]:
+    def inspect_media(self, media_id: str | None = None, question: str = "", frame_no: int | None = None, media_ids: list[str] | None = None, media_inputs: list[dict[str, Any]] | None = None, bbox: list[int] | None = None, time_s: float | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         single_media_id = str(media_id or "").strip()
         question = str(question or "").strip()
@@ -5884,9 +5941,9 @@ class DeepyZeroTools:
             bbox = deepy_vision.normalize_inspection_bbox(bbox)
         except ValueError as exc:
             return {"status": "error", "media_id": single_media_id, "media_ids": list(media_ids or []), "media_inputs": list(media_inputs or []), "question": question, "answer": "", "error": str(exc)}
-        if media_inputs is not None and (frame_no is not None or time_seconds is not None):
-            return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": media_inputs, "question": question, "answer": "", "error": "Do not combine frame_no or time_seconds with media_inputs; put them inside each video input."}
-        selector = {"frame_no": frame_no, **({"time_seconds": time_seconds} if time_seconds is not None else {})}
+        if media_inputs is not None and (frame_no is not None or time_s is not None):
+            return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": media_inputs, "question": question, "answer": "", "error": "Do not combine frame_no or time_s with media_inputs; put them inside each video input."}
+        selector = {"frame_no": frame_no, **({"time_s": time_s} if time_s is not None else {})}
         raw_inputs = list(media_inputs or []) if media_inputs is not None else [{"media_id": value, **selector} for value in ([single_media_id] if single_media_id else list(media_ids or []))]
         if not 1 <= len(raw_inputs) <= self._vision_max_images:
             return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"Provide between 1 and {self._vision_max_images} visual inputs."}
@@ -5894,14 +5951,14 @@ class DeepyZeroTools:
         for index, raw_input in enumerate(raw_inputs):
             if not isinstance(raw_input, dict):
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}] must be an object."}
-            unknown_keys = set(raw_input) - {"media_id", "frame_no", "time_seconds", "bbox", "view"}
+            unknown_keys = set(raw_input) - {"media_id", "frame_no", "time_s", "bbox", "view"}
             if unknown_keys:
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"Unsupported media_inputs[{index}] field: {sorted(unknown_keys)[0]}."}
             requested_media_id = raw_input.get("media_id", "")
             if not isinstance(requested_media_id, str) or len(requested_media_id.strip()) == 0:
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].media_id must be a non-empty string."}
             input_frame_no = raw_input.get("frame_no", None)
-            input_time_seconds = raw_input.get("time_seconds", None)
+            input_time_seconds = raw_input.get("time_s", None)
             try:
                 input_frame_no = None if input_frame_no is None or str(input_frame_no).strip() == "" else int(input_frame_no)
             except Exception:
@@ -5909,13 +5966,13 @@ class DeepyZeroTools:
             try:
                 input_time_seconds = None if input_time_seconds is None or str(input_time_seconds).strip() == "" else float(input_time_seconds)
             except Exception:
-                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].time_seconds must be a number."}
+                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].time_snds must be a number."}
             if input_frame_no is not None and input_time_seconds is not None:
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}] cannot combine frame_no and time_seconds."}
             if input_frame_no is not None and input_frame_no < 0:
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].frame_no must be non-negative."}
             if input_time_seconds is not None and (not math.isfinite(input_time_seconds) or input_time_seconds < 0):
-                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].time_seconds must be a finite non-negative number."}
+                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].time_snds must be a finite non-negative number."}
             try:
                 input_bbox = deepy_vision.normalize_inspection_bbox(raw_input.get("bbox"))
             except ValueError as exc:
@@ -5983,16 +6040,16 @@ class DeepyZeroTools:
                 "type": "string",
                 "description": "One video media id returned by Resolve Media.",
             },
-            "start_time_seconds": {
+            "start_s": {
                 "type": "number",
                 "minimum": 0,
                 "description": "Optional start of the inspected time range in seconds (default 0).",
                 "required": False,
             },
-            "end_time_seconds": {
+            "end_s": {
                 "type": "number",
                 "exclusiveMinimum": 0,
-                "description": "Optional end of the inspected time range in seconds, after start_time_seconds (default: the end of the video).",
+                "description": "Optional end of the inspected time range in seconds, after start_s (default: the end of the video).",
                 "required": False,
             },
             "question": {
@@ -6004,23 +6061,24 @@ class DeepyZeroTools:
                 "description": "Optional mid-resolution mode that uses one-quarter as many frames with a 512²-pixel budget instead of a 256²-pixel budget.",
                 "required": False,
             },
-            "min_frames_between_samples": {
+            "min_gap_frames": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "Optional minimum number of source-video frames between samples. It can only reduce the sample count and never exceeds the tool maximum. Do not combine with min_seconds_between_samples.",
+                "description": "Optional minimum number of source-video frames between samples. It can only reduce the sample count and never exceeds the tool maximum. Do not combine with min_gap_s.",
                 "required": False,
             },
-            "min_seconds_between_samples": {
+            "min_gap_s": {
                 "type": "number",
                 "exclusiveMinimum": 0,
-                "description": "Optional minimum seconds between samples. It can only reduce the sample count and never exceeds the tool maximum. Do not combine with min_frames_between_samples.",
+                "description": "Optional minimum seconds between samples. It can only reduce the sample count and never exceeds the tool maximum. Do not combine with min_gap_frames.",
                 "required": False,
             },
         },
         pause_runtime=True,
         pause_reason="vision",
     )
-    def inspect_video(self, media_id: str, start_time_seconds: float = 0.0, end_time_seconds: float | None = None, question: str = "", mid_res_sampling: bool = False, min_frames_between_samples: int | None = None, min_seconds_between_samples: float | None = None) -> dict[str, Any]:
+    def inspect_video(self, media_id: str, start_s: float = 0.0, end_s: float | None = None, question: str = "", mid_res_sampling: bool = False, min_gap_frames: int | None = None, min_gap_s: float | None = None) -> dict[str, Any]:
+        start_time_seconds, end_time_seconds, min_frames_between_samples, min_seconds_between_samples = start_s, end_s, min_gap_frames, min_gap_s
         self._sync_recent_media()
         requested_media_id = str(media_id or "").strip()
         question = str(question or "").strip()
@@ -6031,7 +6089,7 @@ class DeepyZeroTools:
         if not isinstance(mid_res_sampling, bool):
             return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "mid_res_sampling must be a boolean."}
         if min_frames_between_samples is not None and min_seconds_between_samples is not None:
-            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "Use either min_frames_between_samples or min_seconds_between_samples, not both."}
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "Use either min_gap_frames or min_gap_s, not both."}
         if min_frames_between_samples is not None:
             try:
                 parsed_min_frames = int(min_frames_between_samples)
@@ -6039,30 +6097,30 @@ class DeepyZeroTools:
                     raise ValueError
                 min_frames_between_samples = parsed_min_frames
             except Exception:
-                return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "min_frames_between_samples must be an integer greater than zero."}
+                return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "min_gap_frames must be an integer greater than zero."}
         if min_seconds_between_samples is not None:
             try:
                 min_seconds_between_samples = float(min_seconds_between_samples)
             except Exception:
                 min_seconds_between_samples = float("nan")
             if not math.isfinite(min_seconds_between_samples) or min_seconds_between_samples <= 0:
-                return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "min_seconds_between_samples must be a finite number greater than zero."}
+                return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "min_gap_s must be a finite number greater than zero."}
         try:
             start_time_seconds = float(start_time_seconds)
             end_time_seconds = math.inf if end_time_seconds is None else float(end_time_seconds)  # omitted: the end of the video
         except Exception:
-            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "start_time_seconds and end_time_seconds must be numbers."}
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "start_s and end_s must be numbers."}
         if not math.isfinite(start_time_seconds) or start_time_seconds < 0:
-            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "start_time_seconds must be a finite non-negative number."}
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "start_s must be a finite non-negative number."}
         if math.isnan(end_time_seconds) or end_time_seconds <= start_time_seconds:
-            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "end_time_seconds must be greater than start_time_seconds."}
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "end_s must be greater than start_s."}
         if self.session is None:
             return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "Assistant session is not available."}
         media_record = self._resolve_media_record_input(requested_media_id)
         if media_record is None:
             return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": f"Unknown media id: {requested_media_id}."}
         if media_record.get("media_type") != "video":
-            return {"status": "error", "media_id": media_record.get("media_id", ""), "media_type": media_record.get("media_type", ""), "question": question, "answer": "", "error": "Inspect Video requires a video."}
+            return {"status": "error", "media_id": media_record.get("media_id", ""), "media_type": media_record.get("media_type", ""), "question": question, "answer": "", "error": f"Inspect Video requires a video; this media is {media_record.get('media_type', 'not a video')}: ask inspect_media with the same media_id and question."}
         if self._vision_query_callback is None:
             return {"status": "error", "media_id": media_record.get("media_id", ""), "question": question, "answer": "", "error": "Deepy vision inspection is not available."}
         media_path = str(media_record.get("path", "") or "").strip()
@@ -6073,7 +6131,7 @@ class DeepyZeroTools:
             return {"status": "error", "media_id": media_record.get("media_id", ""), "question": question, "answer": "", "error": "Could not determine the video frame rate or frame count."}
         duration_seconds = int(frame_count) / effective_fps
         if start_time_seconds >= duration_seconds:
-            return {"status": "error", "media_id": media_record.get("media_id", ""), "question": question, "answer": "", "error": f"start_time_seconds must be before the video duration ({duration_seconds:.3f} seconds)."}
+            return {"status": "error", "media_id": media_record.get("media_id", ""), "question": question, "answer": "", "error": f"start_s must be before the video duration ({duration_seconds:.3f} seconds)."}
         sampled_end_seconds = min(end_time_seconds, duration_seconds)
         start_frame = deepy_video_tools.resolve_video_frame_no(media_path, time_seconds=start_time_seconds)
         end_frame = deepy_video_tools.resolve_video_frame_no(media_path, time_seconds=sampled_end_seconds)
@@ -6094,9 +6152,9 @@ class DeepyZeroTools:
             inspection_records.append(inspection_record)
         progress = {
             "status": "running", "media_id": media_record.get("media_id", ""), "question": question,
-            "start_time_seconds": start_time_seconds, "end_time_seconds": sampled_end_seconds, "sample_count": sample_count,
+            "start_s": start_time_seconds, "end_s": sampled_end_seconds, "sample_count": sample_count,
             "max_pixels_per_image": max_image_edge * max_image_edge, "mid_res_sampling": mid_res_sampling,
-            "min_frames_between_samples": min_frames_between_samples, "min_seconds_between_samples": min_seconds_between_samples,
+            "min_gap_frames": min_frames_between_samples, "min_gap_s": min_seconds_between_samples,
         }
         self._update_tool_progress("running", f"Inspecting {sample_count} video frames", progress)
         result = self._vision_query_callback(inspection_records, question, None, max_image_edge)
@@ -6105,14 +6163,20 @@ class DeepyZeroTools:
             result.pop("media_ids", None)
             result.update({
                 "media_id": media_record.get("media_id", ""), "start_frame_no": start_frame, "end_frame_no": end_frame,
-                "start_time_seconds": start_time_seconds, "end_time_seconds": sampled_end_seconds,
-                "requested_end_time_seconds": end_time_seconds, "sample_count": sample_count,
+                "start_s": start_time_seconds, "end_s": sampled_end_seconds,
+                "requested_end_s": end_time_seconds, "sample_count": sample_count,
                 "max_pixels_per_image": max_image_edge * max_image_edge, "mid_res_sampling": mid_res_sampling,
-                "min_frames_between_samples": min_frames_between_samples, "min_seconds_between_samples": min_seconds_between_samples,
+                "min_gap_frames": min_frames_between_samples, "min_gap_s": min_seconds_between_samples,
             })
-            if black := deepy_video_tools.black_ranges(media_path, start_time_seconds, sampled_end_seconds):  # measured, whatever the sampled frames suggested
-                result["black_ranges_seconds"] = black
-                result["warning"] = f"The picture is black for {sum(end - begin for begin, end in black):.1f} s of this range ({', '.join(f'{begin:g}-{end:g} s' for begin, end in black)}): unless that is an intended fade, regenerate or cut it."
+            checks = deepy_video_tools.picture_checks(media_path, start_time_seconds, sampled_end_seconds)  # measured, whatever the sampled frames suggested
+            result.update(checks)
+            warnings = []
+            if black := checks.get("black_ranges_seconds"):
+                warnings.append(f"The picture is black for {sum(end - begin for begin, end in black):.1f} s of this range ({', '.join(f'{begin:g}-{end:g} s' for begin, end in black)}): unless that is an intended fade, regenerate or cut it.")
+            if cuts := checks.get("cut_times_seconds"):
+                warnings.append(f"The picture cuts at {', '.join(f'{time:g}' for time in cuts)} s. In an edited sequence these are its shot changes; inside one generated shot, the model cut away to another shot: keep the part before the cut, or regenerate the shot shorter.")
+            if warnings:
+                result["warning"] = " ".join(warnings)
         return result
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
@@ -6182,7 +6246,7 @@ class DeepyZeroTools:
 
     def validate_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         lookup_name = str(tool_name or "").strip()
-        call_args = dict(arguments or {})
+        call_args = canonical_arguments(lookup_name, dict(arguments or {}))
         for _method, metadata in self._iter_tools():
             if metadata["name"] != lookup_name:
                 continue
@@ -6256,7 +6320,7 @@ class DeepyZeroTools:
         for method, metadata in self._iter_tools():
             if metadata["name"] != tool_name:
                 continue
-            return method(**dict(arguments or {}))
+            return method(**canonical_arguments(tool_name, dict(arguments or {})))
         raise KeyError(f"Unknown assistant tool: {tool_name}")
 
 
@@ -7967,7 +8031,7 @@ class AssistantEngine:
     def _compaction_output_budget(self, prior_messages: list[dict[str, Any]], current_messages: list[dict[str, Any]], before_tokens: int, context_window_tokens: int, generation_reserve_tokens: int) -> int:
         fixed_tokens = self._rewritten_history_token_count(prior_messages, current_messages)
         target_tokens = min(int(before_tokens) - 1, int(context_window_tokens) - self._resolved_compaction_reserve_tokens(generation_reserve_tokens, context_window_tokens))
-        return max(0, target_tokens - fixed_tokens)
+        return max(0, min(target_tokens - fixed_tokens, int(context_window_tokens * _COMPACTION_SUMMARY_WINDOW_SHARE)))
 
     def _validate_compaction_reduction(self, prior_messages: list[dict[str, Any]], current_messages: list[dict[str, Any]], before_tokens: int, context_window_tokens: int, generation_reserve_tokens: int) -> int:
         candidate_tokens = self._rewritten_history_token_count(prior_messages, current_messages)

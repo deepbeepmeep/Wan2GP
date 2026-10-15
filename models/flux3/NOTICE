@@ -1,0 +1,9 @@
+Transformer and sampling implementation adapted from:
+https://github.com/black-forest-labs/flux-3-image-klein
+Revision: 45e57c9fb06f9751cdced29a65c5d2171003be05
+Copyright Black Forest Labs. Apache License 2.0; see LICENSE.
+
+Qwen3-VL components are reused from WanGP's local Transformers implementation.
+Copyright 2025 The Qwen Team and The HuggingFace Inc. team; Apache License 2.0.
+
+Model weights have separate terms; see WEIGHTS_LICENSE.md and WEIGHTS_NOTICE.md.

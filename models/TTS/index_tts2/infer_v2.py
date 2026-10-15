@@ -1668,7 +1668,7 @@ class QwenEmotion:
             device=first_param.device,
             dtype=first_param.dtype,
         )
-        self._cg_kit = AutoRegressiveCudaGraphKit("index_tts2_qwen_emo")
+        self._cg_kit = AutoRegressiveCudaGraphKit("index_tts2_qwen_emo", owner=self.model)
         self._cg_max_cache_tokens = target_tokens
         self._cg_decode_cache_position = torch.zeros(1, device=first_param.device, dtype=torch.long)
         return True

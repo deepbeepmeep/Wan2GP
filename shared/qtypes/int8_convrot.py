@@ -3,6 +3,7 @@ import ast
 import json
 import math
 import os
+from types import MethodType
 
 import torch
 from mmgp import cuda_graphs
@@ -357,7 +358,39 @@ def split_fused_weights(state_dict, fused_split_map, quantization_map=None, allo
 def apply_pre_quantization(model, state_dict, quantization_map, default_dtype=None, verboseLevel=1):
     for key in [key for key, value in state_dict.items() if key.endswith(_FUSED_SPLIT_MARKER_SUFFIX) and torch.is_tensor(value) and value.numel() == 0]:
         state_dict.pop(key, None)
-    return quantization_map or {}, []
+    hooks = []
+    for name, module in model.named_modules():
+        if not isinstance(module, torch.nn.Embedding) or (quantization_map or {}).get(name, {}).get("weights") != _QTYPE_NAME:
+            continue
+        group = state_dict.pop(name + ".convrot_group_size")
+        group_size = int(group.item())
+        compute_dtype = default_dtype or module.weight.dtype
+
+        def install_embedding(model, name=name, group_size=group_size, compute_dtype=compute_dtype):
+            embedding = model.get_submodule(name)
+            embedding._convrot_group_size = group_size
+            embedding.weight = torch.nn.Parameter(_wrap_int8_convrot_weight(embedding.weight, compute_dtype), requires_grad=False)
+            embedding.forward = MethodType(_embedding_forward, embedding)
+
+        hooks.append(install_embedding)
+    return quantization_map or {}, hooks
+
+
+def _embedding_forward(module, input):
+    # An embedding gathers rows of W, unlike a linear which multiplies by W.T.
+    # Undo the checkpoint's input-axis rotation on only the selected rows; never
+    # dequantize the full vocabulary table. Keep stored FP32 scales intact.
+    weight = module.qweight
+    rows = torch.nn.functional.embedding(input, weight._data).float()
+    rows.mul_(torch.nn.functional.embedding(input, weight._scale))
+    output = _rotate_activation(rows, module._convrot_group_size).to(weight.dtype)
+    if module.max_norm is not None:
+        norms = output.float().norm(p=module.norm_type, dim=-1, keepdim=True)
+        output.mul_((module.max_norm / norms.clamp_min(1e-7)).clamp_max_(1).to(output))
+    embed_scale = getattr(module, "embed_scale", None)
+    if torch.is_tensor(embed_scale):
+        embed_scale = embed_scale.to(output)
+    return output if embed_scale is None else output * embed_scale
 
 
 def detect_quantization_label_from_filename(filename, verboseLevel=0):
@@ -421,10 +454,10 @@ class QLinearInt8ConvRot(QModuleMixin, torch.nn.Linear):
         qweight = self.qweight
         prepared = getattr(self, '_wangp_prequantized_input', None)
         if prepared is not None:
-            return int8_backend.kitchen_linear_prequantized(qweight, self.bias, *prepared)
+            return int8_backend.linear_prequantized(qweight, self.bias, *prepared)
         fusion = getattr(self, '_wangp_linear_fusion', None)
         if fusion is not None:
-            return int8_backend.kitchen_linear_fused(input, qweight, self.bias, *fusion)
+            return int8_backend.linear_fused(input, qweight, self.bias, self._convrot_group_size, *fusion)
         if not torch.compiler.is_compiling() and _is_fake_tensor(input):
             return input.new_empty((*input.shape[:-1], qweight.shape[0]))
         original_input = input
@@ -435,7 +468,7 @@ class QLinearInt8ConvRot(QModuleMixin, torch.nn.Linear):
                     and input.is_cuda and input.dtype in (torch.bfloat16, torch.float16, torch.float32)):
                 return int8_backend.kitchen_linear(input, qweight, self.bias, convrot=True)
             if (quanto_int8_inject.FUSED_CONVROT_ENABLED and quanto_int8_inject._PATCH_STATE.enabled
-                    and not quanto_int8_inject._RUNTIME_DISABLED and self._convrot_group_size == 256
+                    and self._convrot_group_size == 256
                     and input.is_cuda and input.dtype == torch.bfloat16
                     and input.numel() // input.shape[-1] <= 4 and not quanto_int8_inject._prefer_native_quanto_path(input)):
                 return quanto_int8_inject.fused_convrot_linear(input, qweight, self.bias)

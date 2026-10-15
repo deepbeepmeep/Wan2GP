@@ -3,6 +3,7 @@ import math
 
 import torch
 from mmgp import cuda_graphs
+from shared.kernels import ops
 from torch import Tensor, nn
 import torch.nn.functional as F
 
@@ -210,7 +211,8 @@ class Flux(nn.Module):
             scale = scale.squeeze(1)
         else:
             shift, scale = final_layer.adaLN_modulation(vec).chunk(2, dim=1)
-        modulated = torch.addcmul(shift[:, None, :], 1 + scale[:, None, :], normed)
+        normed_list, normed = [normed], None
+        modulated = ops.scale_shift(normed_list, scale[:, None, :], shift[:, None, :], in_place=False, fused_add=True)
         if final_layer.linear is None:
             raise RuntimeError("Final layer projection is not available.")
         base_tokens = final_layer.linear(modulated)
@@ -222,7 +224,8 @@ class Flux(nn.Module):
         final_layer = self.final_layer
         normed = final_layer.norm_final(tokens)
         shift, scale = final_layer.adaLN_modulation(vec).chunk(2, dim=1)
-        modulated = torch.addcmul(shift[:, None, :], 1 + scale[:, None, :], normed)
+        normed_list, normed = [normed], None
+        modulated = ops.scale_shift(normed_list, scale[:, None, :], shift[:, None, :], in_place=False, fused_add=True)
 
         proj_dtype = self.proj_out_means.weight.dtype
         modulated = modulated.to(proj_dtype)

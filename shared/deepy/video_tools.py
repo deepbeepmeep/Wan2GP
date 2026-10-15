@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import math
 import os
@@ -32,7 +33,7 @@ def _get_ffmpeg_path() -> str:
 
 
 def _run_ffmpeg(args: list[str]) -> None:
-    result = subprocess.run([_get_ffmpeg_path(), "-y", "-v", "error", *args], capture_output=True, text=True)
+    result = subprocess.run([_get_ffmpeg_path(), "-y", "-v", "error", *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "ffmpeg command failed").strip())
 
@@ -137,14 +138,21 @@ def get_video_thumbnail_data_url(video_path: str) -> str:
     return data_url
 
 
-def black_ranges(path: str, start_s: float = 0.0, end_s: float | None = None, *, min_seconds: float = 1.0) -> list[list[float]]:
-    """Stretches of black picture in [start_s, end_s] (seconds): ffmpeg blackdetect, nearly every pixel below 10 % luminance."""
+def picture_checks(path: str, start_s: float = 0.0, end_s: float | None = None, *, min_black_s: float = 1.0) -> dict[str, list]:
+    """Measured picture events in [start_s, end_s] (seconds), in one decode: "black_ranges_seconds" (ffmpeg blackdetect, nearly every
+    pixel below 10 % luminance) and "cut_times_seconds" (hard cuts: a frame whose ffmpeg scene score is at least 0.08 and 3 times the
+    highest of the 6 frames on either side; cuts score 0.14-1, down to 0.14 between dark shots, while continuous motion stays at most
+    0.1 and close to its neighbours). Only non-empty entries are returned."""
     span = [] if end_s is None or not math.isfinite(end_s) else ["-t", f"{end_s - start_s:.3f}"]
-    command = [_get_ffmpeg_path(), "-v", "info", "-ss", f"{start_s:.3f}", *span, "-i", path, "-an", "-vf", f"scale=160:-2,blackdetect=d={min_seconds:g}:pix_th=0.10", "-f", "null", "-"]
-    process = subprocess.run(command, capture_output=True, text=True, errors="replace")
+    picture = f"scale=160:-2,blackdetect=d={min_black_s:g}:pix_th=0.10,select='gte(scene,0)',metadata=print:key=lavfi.scene_score"
+    process = subprocess.run([_get_ffmpeg_path(), "-v", "info", "-ss", f"{start_s:.3f}", *span, "-i", path, "-an", "-vf", picture, "-f", "null", "-"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if process.returncode:
         raise RuntimeError(process.stderr.strip()[-500:] or "ffmpeg could not decode the video.")
-    return [[round(start_s + float(begin), 2), round(start_s + float(end), 2)] for begin, end in re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", process.stderr)]
+    times, scores = [float(time) for time in re.findall(r"pts_time:([\d.]+)", process.stderr)], [float(score) for score in re.findall(r"lavfi\.scene_score=([\d.]+)", process.stderr)]
+    cuts = [time for index, (time, score) in enumerate(zip(times, scores)) if score >= 0.08 and score >= 3 * max(scores[max(0, index - 6):index] + scores[index + 1:index + 7] or [0])]
+    checks = {"black_ranges_seconds": [[round(start_s + float(begin), 2), round(start_s + float(end), 2)] for begin, end in re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", process.stderr)],
+              "cut_times_seconds": [round(start_s + time, 2) for time in cuts]}
+    return {key: value for key, value in checks.items() if value}
 
 
 def quiet_ranges(path: str, *, threshold_db: float = -45.0, min_seconds: float = 1.0) -> list[list[float]]:
@@ -153,10 +161,35 @@ def quiet_ranges(path: str, *, threshold_db: float = -45.0, min_seconds: float =
     process = subprocess.run(command, capture_output=True, text=True, errors="replace")
     if process.returncode:
         raise RuntimeError(process.stderr.strip()[-500:] or "ffmpeg could not decode the audio.")
+    duration = get_media_duration(path)
     starts = [max(0.0, float(value)) for value in re.findall(r"silence_start: (-?[\d.]+)", process.stderr)]
     ends = [float(value) for value in re.findall(r"silence_end: ([\d.]+)", process.stderr)]
-    ends += [get_media_duration(path)] * (len(starts) - len(ends))  # a silence lasting to the end
-    return [[round(start, 2), round(end, 2)] for start, end in zip(starts, ends)]
+    ends += [duration] * (len(starts) - len(ends))  # a silence lasting to the end
+    ranges = [[round(start, 2), round(end, 2)] for start, end in zip(starts, ends)]
+    audio_end = max((float(stream["duration"]) for stream in ffmpeg.probe(path)["streams"] if stream.get("codec_type") == "audio" and "duration" in stream), default=duration)
+    if duration - audio_end >= min_seconds:  # the audio stream stops before the picture: nothing plays after it
+        if ranges and ranges[-1][1] >= audio_end - 0.05:
+            ranges[-1][1] = round(duration, 2)
+        else:
+            ranges.append([round(audio_end, 2), round(duration, 2)])
+    return ranges
+
+
+def _pipe_frames(command: list[str], first, frames, failure: str) -> None:
+    """Run ffmpeg with the PIL frames (first, then the rest) written to its standard input."""
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        process.stdin.write(first.tobytes())
+        for frame in frames:
+            process.stdin.write(frame.tobytes())
+    except BrokenPipeError:
+        pass
+    finally:
+        with contextlib.suppress(BrokenPipeError):
+            process.stdin.close()  # also when a frame fails to render, so that ffmpeg stops waiting for input
+        error = process.stderr.read().decode(errors="replace")
+        if process.wait():
+            raise RuntimeError(error.strip() or failure)
 
 
 def encode_frames(frames, output_path: str, fps: float, *, video_codec: str | None = None, video_container: str | None = None) -> str:
@@ -168,18 +201,27 @@ def encode_frames(frames, output_path: str, fps: float, *, video_codec: str | No
     command = [_get_ffmpeg_path(), "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", f"{fps:g}", "-i", "pipe:0",
                *(["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"] if width % 2 or height % 2 else []), *get_video_encode_args(video_codec, video_container),
                *(["-movflags", "+faststart"] if str(video_container or "mp4").strip().lower() == "mp4" else []), output_path]
-    process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-    try:
-        process.stdin.write(first.tobytes())
-        for frame in frames:
-            process.stdin.write(frame.tobytes())
-        process.stdin.close()
-    except BrokenPipeError:
-        pass
-    finally:
-        error = process.stderr.read().decode(errors="replace")
-        if process.wait():
-            raise RuntimeError(error.strip() or "ffmpeg could not encode the frames.")
+    _pipe_frames(command, first, frames, "ffmpeg could not encode the frames.")
+    return output_path
+
+
+def overlay_frames(frames, video_path: str, output_path: str, fps: float, start_s: float = 0.0, *, video_codec: str | None = None, video_container: str | None = None, audio_codec: str | None = None) -> str:
+    """Burn RGBA PIL frames of the video's size into its picture from start_s, one per video frame; the overlay's alpha shows the video
+    through. Audio is copied when the container stays the same, and subtitle tracks are kept."""
+    frames = iter(frames)
+    first = next(frames)
+    streams = ffmpeg.probe(video_path).get("streams", [])
+    video = next(stream for stream in streams if stream.get("codec_type") == "video")
+    if first.size != (int(video["width"]), int(video["height"])):
+        raise ValueError(f"The drawing renders at {first.width}x{first.height} over a {video['width']}x{video['height']} video: draw it in the video's aspect ratio, e.g. width=\"{video['width']}\" height=\"{video['height']}\" viewBox=\"0 0 {video['width']} {video['height']}\".")
+    output_extension = os.path.splitext(output_path)[1].lower()
+    subtitle_args = [arg for index, stream in enumerate(stream for stream in streams if stream.get("codec_type") == "subtitle") for arg in _subtitle_codec_args(index, stream, output_extension)]
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    command = [_get_ffmpeg_path(), "-y", "-v", "error", "-i", video_path, "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{first.width}x{first.height}", "-framerate", f"{fps:g}", "-i", "pipe:0",
+               "-filter_complex", f"[1:v]setpts=PTS-STARTPTS+{float(start_s):g}/TB[drawing];[0:v][drawing]overlay=eof_action=pass[video]", "-map", "[video]", "-map", "0:a?", "-map", "0:s?",
+               *get_video_encode_args(video_codec, video_container), *(["-c:a", "copy"] if os.path.splitext(video_path)[1].lower() == output_extension else _get_mp4_audio_encode_args(audio_codec)), *subtitle_args,
+               *(["-movflags", "+faststart"] if str(video_container or "mp4").strip().lower() == "mp4" else []), output_path]
+    _pipe_frames(command, first, frames, "ffmpeg could not draw over the video.")
     return output_path
 
 
@@ -559,6 +601,18 @@ def replace_audio(video_path: str, audio_path: str, output_path: str, *, audio_c
     return output_path
 
 
+def _subtitle_codec_args(index: int, stream: dict, output_extension: str) -> list[str]:
+    """Codec of output subtitle stream index for a text subtitle stream: MP4/MOV store mov_text, Matroska SRT."""
+    codec = str(stream.get("codec_name", "")).lower()
+    if output_extension in {".mp4", ".mov"}:
+        if codec not in {"mov_text", "subrip", "ass", "ssa", "webvtt", "text"}:
+            raise ValueError(f"Subtitle codec {codec} cannot be written to {output_extension}; choose MKV.")
+        return [f"-c:s:{index}", "copy" if codec == "mov_text" else "mov_text"]
+    if output_extension == ".mkv":
+        return [f"-c:s:{index}", "subrip" if codec == "mov_text" else "copy"]
+    return []
+
+
 def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_path: str | None = None, include_video_audio: bool = False, gains_db: list[float] | None = None, audio_codec: str | None = None, standalone_audio_codec: str | None = None, subtitle_tracks: list[dict] | None = None, include_video_subtitles: bool = True,
                 offsets_s: list[float] | None = None, fade_in_s: list[float] | None = None, fade_out_s: list[float] | None = None, video_audio_gain_db: float | None = None, normalize_lufs: float | None = None,
                 trim_start_s: list[float] | None = None, trim_duration_s: list[float] | None = None, gain_points: list | None = None, ducking: dict | None = None, audio_languages: list[str] | None = None) -> str:
@@ -621,13 +675,7 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
         for index, track in enumerate(subtitle_tracks):
             subtitle_args += ["-map", f"{first_subtitle_input + index}:s:0"]
         for index, stream in enumerate(source_subtitles + [next(item for item in ffmpeg.probe(track["path"]).get("streams", []) if item.get("codec_type") == "subtitle") for track in subtitle_tracks]):
-            codec = str(stream.get("codec_name", "")).lower()
-            if output_extension in {".mp4", ".mov"}:
-                if codec not in {"mov_text", "subrip", "ass", "ssa", "webvtt", "text"}:
-                    raise ValueError(f"Subtitle codec {codec} cannot be written to {output_extension}; choose MKV.")
-                subtitle_args += [f"-c:s:{index}", "copy" if codec == "mov_text" else "mov_text"]
-            elif output_extension == ".mkv":
-                subtitle_args += [f"-c:s:{index}", "subrip" if codec == "mov_text" else "copy"]
+            subtitle_args += _subtitle_codec_args(index, stream, output_extension)
             if index < len(source_subtitles):
                 tags = stream.get("tags", {})
                 title = tags.get("title") or tags.get("handler_name")
@@ -706,12 +754,15 @@ def remux_media(audio_paths: list[str], output_path: str, *, mode: str, video_pa
         tracks, under = ducking.get("tracks"), ducking.get("under")
         depth, attack, release = float(ducking.get("depth_db", 10)), float(ducking.get("attack_s", 0.2)), float(ducking.get("release_s", 0.6))
         valid = lambda value: isinstance(value, int) and not isinstance(value, bool) and 0 <= value < len(audio_paths)
-        if mode != "mix" or not tracks or not under or not all(valid(item) or item == "video" and include_video_audio for item in tracks) or not all(map(valid, under)) or set(tracks) & set(under):
-            raise ValueError('ducking needs mix mode, "tracks" (indexes of audio_ids to lower, or "video" with include_video_audio) and "under" (indexes of the speech files), with no index in both.')
+        own = lambda item: valid(item) or item == "video" and include_video_audio  # "video": the video's own soundtrack
+        if mode != "mix" or not tracks or not under or not all(map(own, tracks)) or not all(map(own, under)) or set(tracks) & set(under):
+            raise ValueError('ducking needs mix mode, "tracks" (what dips: indexes of audio_ids, or "video" with include_video_audio) and "under" (the voices: indexes of audio_ids, '
+                             'or "video" for the speech of lip-synced shots in the video), with no item in both.')
         if not (1 <= depth <= 40 and 0.01 <= attack <= 5 and 0.01 <= release <= 5):
             raise ValueError("ducking depth_db must be 1..40, attack_s and release_s 0.01..5 seconds.")
-        spans = sorted((start + (offsets_s[index] if offsets_s else 0.0), end + (offsets_s[index] if offsets_s else 0.0))
-                       for index in under for start, end in speech_intervals(audio_paths[index], start_time=excerpt(index)[0], duration=excerpt(index)[1] or None, isolated=True))
+        spans = sorted([*((start + (offsets_s[index] if offsets_s else 0.0), end + (offsets_s[index] if offsets_s else 0.0))
+                          for index in under if index != "video" for start, end in speech_intervals(audio_paths[index], start_time=excerpt(index)[0], duration=excerpt(index)[1] or None, isolated=True)),
+                        *(speech_intervals(video_path) if "video" in under else ())])  # the video's soundtrack may hold ambience: speech found against its background
         merged = []
         for start, end in spans:  # pauses shorter than a full dip and recovery keep the music down
             if merged and start - merged[-1][1] < attack + release:
@@ -816,7 +867,7 @@ def _gain_expression(points: list[tuple[float, float]]) -> str:
 
 def _graph_loudness(args: list[str]) -> float:
     """Integrated loudness (LUFS) of a filter graph's [measure] output, from FFmpeg's EBU R128 summary."""
-    result = subprocess.run([_get_ffmpeg_path(), "-hide_banner", "-nostats", *args, "-f", "null", "-"], capture_output=True, text=True)
+    result = subprocess.run([_get_ffmpeg_path(), "-hide_banner", "-nostats", *args, "-f", "null", "-"], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise RuntimeError((result.stderr or "ffmpeg loudness measurement failed").strip())
     loudness = float(re.findall(r"\bI:\s*(-?[\d.]+)\s*LUFS", result.stderr)[-1])

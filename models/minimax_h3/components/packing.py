@@ -149,7 +149,7 @@ def _fill_audio_condition_positions(position_ids, start, anchors, history_origin
 def build_packed_sequence(text_token_tags, num_latent_frames, latent_height, latent_width, num_audio_latents,
                           patch_size, keyframe_anchors=(), video_time_scale=1.0, audio_condition_anchors=(),
                           target_condition_audio_latents=0, target_condition_video_frames=0,
-                          target_spatial_context=None):
+                          target_spatial_context=None, audio_time_offset=0.0):
     _, patch_h, patch_w = patch_size
     rows_per_frame = (latent_height // patch_h) * (latent_width // patch_w)
     text_len = int(text_token_tags.shape[0])
@@ -190,8 +190,8 @@ def build_packed_sequence(text_token_tags, num_latent_frames, latent_height, lat
         condition_cursor = rows.stop
 
     _fill_audio_condition_positions(position_ids, condition_audio_start, audio_condition_anchors,
-                                    float(text_len), target_origin, width_grid)
-    _fill_audio_positions(position_ids, slice(audio_start, video_start), num_audio_latents, target_origin, width_grid)
+                                    float(text_len), target_origin + audio_time_offset, width_grid)
+    _fill_audio_positions(position_ids, slice(audio_start, video_start), num_audio_latents, target_origin + audio_time_offset, width_grid)
     target = position_ids[video_start:].view(num_latent_frames, rows_per_frame, 3)
     target[:, :, 0] = target_times[:, None]
     target[:, :, 1:] = frame_grid[None]
@@ -211,7 +211,7 @@ def build_packed_sequence(text_token_tags, num_latent_frames, latent_height, lat
 def build_ref2va_packed_sequence(text_token_tags, references, num_latent_frames, latent_height, latent_width,
                                  num_audio_latents, patch_size, video_time_scale=1.0, keyframe_anchors=(),
                                  audio_condition_anchors=(), target_condition_audio_latents=0,
-                                 target_condition_video_frames=0, target_spatial_context=None):
+                                 target_condition_video_frames=0, target_spatial_context=None, audio_time_offset=0.0):
     _, patch_h, patch_w = patch_size
     text_len = int(text_token_tags.shape[0])
     target_frame_grid, target_width_grid = _frame_grid(latent_height, latent_width, patch_h, patch_w,
@@ -289,10 +289,10 @@ def build_ref2va_packed_sequence(text_token_tags, references, num_latent_frames,
         condition_cursor = rows.stop
 
     _fill_audio_condition_positions(position_ids, keyframe_audio_start, audio_condition_anchors,
-                                    time_cursor, target_origin, target_width_grid)
+                                    time_cursor, target_origin + audio_time_offset, target_width_grid)
     audio_start = cursor
     video_start = audio_start + target_audio_rows
-    _fill_audio_positions(position_ids, slice(audio_start, video_start), num_audio_latents, target_origin,
+    _fill_audio_positions(position_ids, slice(audio_start, video_start), num_audio_latents, target_origin + audio_time_offset,
                           target_width_grid)
     target = position_ids[video_start:].view(num_latent_frames, rows_per_target_frame, 3)
     target[:, :, 0] = target_times[:, None]

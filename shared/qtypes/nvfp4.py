@@ -361,6 +361,36 @@ def _nvfp4_swap_nibbles(tensor):
     return ((tensor & 0x0F) << 4) | ((tensor & 0xF0) >> 4)
 
 
+_ROW_SLICE_BYTES = 64 << 20  # scratch of the activation rows quantized and multiplied at a time: FP4 values and block scales
+_ROW_SLICE_MIN = 16384  # rows per FP4 GEMM, which lose tensor core throughput on fewer rows
+
+
+def _nvfp4_rows(x2d, out_shape, out_dtype, quantize, gemm):
+    """gemm(quantize(x), out rows) (FP4 activations multiplied into their rows of the output) by slices of 128-row tiles when x2d
+    spans two or more: the FP4 copy of x2d never exceeds one slice. Its scales are per block of 16 values of a row with a fixed
+    tensor scale, so the slices quantize as the whole tensor does."""
+    rows, k = x2d.shape
+    step = max(_ROW_SLICE_MIN, _ROW_SLICE_BYTES // (k // 2 + k // 16) // 128 * 128)
+    step = -(-rows // (max(1, rows // step) * 128)) * 128  # slices of even size, none below the minimum
+    out = None
+    for start in range(0, rows, step):
+        prepared = quantize(x2d[start:start + step])
+        if out is None:  # allocated once the temporaries of the first quantization are released
+            out = torch.empty(out_shape, dtype=out_dtype, device=x2d.device)
+        gemm(prepared, out[start:start + step])
+        del prepared
+    return out
+
+
+def _kitchen_scaled_mm_nvfp4(out, qx, weight_fp4, qx_scale, weight_scale, alpha, bias):
+    """comfy-kitchen 0.2.35 scaled_mm_nvfp4 (cuBLAS FP4 GEMM) written to out, rows of a larger output (the wrapper allocates its own)."""
+    wrap = _ck_cuda._wrap_for_dlpack
+    bias = torch.empty(0, device=qx.device, dtype=torch.float16) if bias is None else bias
+    _ck_cuda._C.cublas_gemm_blockwise_fp4(wrap(weight_fp4), wrap(weight_scale.view(torch.uint8)), wrap(qx), wrap(qx_scale.view(torch.uint8)),
+                                          wrap(out), _ck_cuda.DTYPE_TO_CODE[out.dtype], wrap(bias), wrap(_ck_cuda.get_cublas_workspace()),
+                                          False, wrap(alpha), torch.cuda.current_stream(qx.device).cuda_stream)
+
+
 def _nvfp4_linear_cuda_comfy(input, weight, bias=None):
     _nvfp4_note_kernel(_NVFP4_BACKEND_COMFY)
     x2d = input.reshape(-1, input.shape[-1])
@@ -390,42 +420,18 @@ def _nvfp4_linear_cuda_comfy(input, weight, bias=None):
         alpha = alpha.to(device)
     if bias is not None and torch.is_tensor(bias) and bias.dtype != out_dtype:
         bias = bias.to(out_dtype)
-    orig_rows = x2d.shape[0]
-    pad_16x = (orig_rows % 16) != 0
     if layout == _NVFP4_LAYOUT_TENSORCORE:
-        input_scale = input_scale.to(torch.float32)
-        tensor_scale = alpha.to(torch.float32)
-        qx, qx_scale = _ck_cuda.quantize_nvfp4(x2d, input_scale, 0.0, pad_16x)
-        out = _ck_cuda.scaled_mm_nvfp4(
-            qx,
-            weight_fp4,
-            tensor_scale_a=input_scale,
-            tensor_scale_b=tensor_scale,
-            block_scale_a=qx_scale,
-            block_scale_b=weight_scale,
-            bias=bias,
-            out_dtype=out_dtype,
-        )
+        act_scale = input_scale.to(torch.float32)
+        alpha = act_scale * alpha.to(torch.float32)
     else:
         alpha = alpha * input_scale
-        if alpha.dtype != torch.float32:
-            alpha = alpha.to(torch.float32)
         act_scale = _nvfp4_get_act_scale(device)
-        qx, qx_scale = _ck_cuda.quantize_nvfp4(x2d, act_scale, 0.0, pad_16x)
         weight_fp4 = _nvfp4_swap_nibbles(weight_fp4)
-        out = _ck_cuda.scaled_mm_nvfp4(
-            qx,
-            weight_fp4,
-            act_scale,
-            input_scale,
-            qx_scale,
-            weight_scale,
-            bias=bias,
-            out_dtype=out_dtype,
-            alpha=alpha,
-        )
-    if pad_16x:
-        out = out[:orig_rows]
+    alpha = alpha.to(torch.float32).reshape(1)
+    # cuBLAS takes the activations padded to 16 rows, written to the output rows padded the same way
+    out = _nvfp4_rows(x2d, (-(-x2d.shape[0] // 16) * 16, weight.size(0)), out_dtype,
+                      lambda x: _ck_cuda.quantize_nvfp4(x, act_scale, 0.0, x.shape[0] % 16 != 0),
+                      lambda q, out: _kitchen_scaled_mm_nvfp4(out[:q[0].shape[0]], q[0], weight_fp4, q[1], weight_scale, alpha, bias))[:x2d.shape[0]]
     if out.dtype != orig_dtype:
         out = out.to(orig_dtype)
     return out.reshape(*input.shape[:-1], weight.size(0))
@@ -476,21 +482,18 @@ def _nvfp4_linear_cuda_lightx2v(input, weight, bias=None):
         alpha = alpha * input_scale
     else:
         quant_scale = input_scale
-    qx, qx_scale = _lx_gemm.scaled_nvfp4_quant(x2d, quant_scale)
-    if layout == _NVFP4_LAYOUT_TENSORCORE:
-        qx = _nvfp4_swap_nibbles(qx)
-    if not qx.is_contiguous():
-        qx = qx.contiguous()
-    if not qx_scale.is_contiguous():
-        qx_scale = qx_scale.contiguous()
-    out = _lx_gemm.cutlass_scaled_nvfp4_mm(
-        qx,
-        weight_fp4,
-        qx_scale,
-        weight_scale,
-        alpha=alpha,
-        bias=bias,
-    )
+
+    def quantize(x):
+        qx, qx_scale = _lx_gemm.scaled_nvfp4_quant(x, quant_scale)
+        if layout == _NVFP4_LAYOUT_TENSORCORE:  # nibbles of the uint8 activations swapped in place: one temporary
+            low = qx & 0x0F
+            qx.bitwise_right_shift_(4).bitwise_or_(low.bitwise_left_shift_(4))
+            del low
+        return qx.contiguous(), qx_scale.contiguous()
+
+    # the op behind lightx2v's cutlass_scaled_nvfp4_mm, which allocates its own BF16 output
+    out = _nvfp4_rows(x2d, (x2d.shape[0], weight.size(0)), torch.bfloat16, quantize,
+                      lambda q, out: torch.ops.lightx2v_kernel.cutlass_scaled_nvfp4_mm_sm120.default(out, q[0], weight_fp4, q[1], weight_scale, alpha, bias))
     if out.dtype != orig_dtype:
         out = out.to(orig_dtype)
     return out.reshape(*input.shape[:-1], weight.size(0))
@@ -532,6 +535,9 @@ _FP4_LUT_BASE = torch.tensor(
 )
 _FP4_LUT_CACHE = {}
 _FP4_BYTE_LUT_CACHE = {}
+
+
+_DEQUANT_SLICE_BYTES = 32 << 20  # temporaries of the portable dequantization for one slice of rows
 
 
 def _get_fp4_lut(device, dtype):
@@ -593,36 +599,31 @@ def _dequantize_nvfp4_weight(
         alpha = alpha.to(device)
     if input_global_scale.device != device:
         input_global_scale = input_global_scale.to(device)
-    if layout == _NVFP4_LAYOUT_TENSORCORE and device.type == "cuda" and _ck_cuda_available:
-        try:
-            return _ck_cuda.dequantize_nvfp4(weight_u8, alpha.to(torch.float32), scale, output_type=dtype)
-        except Exception:
-            pass
+    # Kitchen's dequantize_nvfp4 contract: contiguous input, rows and unpacked columns in multiples of 16, FP32/FP16/BF16 output
+    if (layout == _NVFP4_LAYOUT_TENSORCORE and device.type == "cuda" and _ck_cuda_available and weight_u8.shape[0] % 16 == 0
+            and weight_u8.shape[1] % 8 == 0 and weight_u8.is_contiguous() and dtype in (torch.float32, torch.float16, torch.bfloat16)):
+        return _ck_cuda.dequantize_nvfp4(weight_u8, alpha.to(torch.float32), scale, output_type=dtype)
 
     m, k_bytes = weight_u8.shape
-    byte_lut = _get_fp4_byte_lut(device, dtype)
+    if scale.shape[0] < m:
+        raise RuntimeError(f"NVFP4 scale row mismatch: expected at least {m} rows, got {scale.shape[0]}")
+    # FP4 value * block scale is exact in FP32 (FP64 for an FP64 output); the per-tensor factor rounds it once more, then the output dtype
+    compute = torch.promote_types(dtype, torch.float32)
+    byte_lut = _get_fp4_byte_lut(device, compute)
     if layout == _NVFP4_LAYOUT_TENSORCORE:
-        idx = _nvfp4_swap_nibbles(weight_u8).to(torch.int32)
+        byte_lut = byte_lut.flip(1)  # tensorcore packing stores the first value of a byte in its high nibble
+        factor = alpha.to(compute)
     else:
-        idx = weight_u8.to(torch.int32)
-    out = byte_lut[idx].reshape(m, k_bytes * 2)
-
-    scale = _deswizzle_nvfp4_scale(scale, out.shape[1], block_size=block_size, dtype=dtype)
-    if scale.shape[0] < out.shape[0]:
-        raise RuntimeError(
-            f"NVFP4 scale row mismatch: expected at least {out.shape[0]} rows, got {scale.shape[0]}"
-        )
-    if scale.shape[0] != out.shape[0]:
-        scale = scale[:out.shape[0]]
-    out = out.view(out.shape[0], scale.shape[1], block_size)
-    out.mul_(scale.unsqueeze(-1))
-    out = out.view(out.shape[0], -1)
-
-    if layout == _NVFP4_LAYOUT_TENSORCORE:
-        scale_factor = alpha.to(dtype)
-    else:
-        scale_factor = alpha.to(dtype) * input_global_scale.to(dtype)
-    out.mul_(scale_factor)
+        factor = alpha.to(compute) * input_global_scale.to(compute)
+    block_scale = _deswizzle_nvfp4_scale(scale, k_bytes * 2, block_size=block_size)[:m]
+    out = torch.empty((m, k_bytes * 2), dtype=dtype, device=device)
+    step = max(1, _DEQUANT_SLICE_BYTES // (k_bytes * (4 + 2 * compute.itemsize)))  # int32 indices and two compute values per packed byte
+    for start in range(0, m, step):
+        rows = min(step, m - start)
+        values = torch.nn.functional.embedding(weight_u8[start:start + rows].to(torch.int32), byte_lut).view(rows, -1, block_size)
+        values.mul_(block_scale[start:start + rows].to(compute).unsqueeze(-1))
+        torch.mul(values.view(rows, -1), factor, out=out[start:start + rows])
+        del values
     return out
 
 

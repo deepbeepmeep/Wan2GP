@@ -16,7 +16,7 @@ from .constants import (H3_AUDIO_REFINEMENT_SETTING, H3_CONTROL_LATENT_CONTINUAT
                         h3_grouped_masking_enabled)
 from .dialogue import H3_DIALOGUE_GENERATION, H3_DIALOGUE_MAX_TOTAL_SECONDS, H3_DIALOGUE_PROMPT_INFOS, load_dialogue_whisper
 from .minimax_h3_main import (AUDIO_VAE_FILE, LATENT_UPSCALER_FILE, LATENT_UPSCALER_FOLDER, TEXT_ENCODER_FOLDER,
-                              VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE, VIDEO_VAE_INT8_FILE)
+                              VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE, VIDEO_VAE_INT8_FILE, VIDEO_VAE_LIGHT_FILE, VIDEO_VAE_LIGHT_INT8_FILE)
 from .pdd import PDD_BLOCK_SIZE, PDD_NUM_STEPS
 from .vae_upsampler import X2_VAE_DESCRIPTION, X2_VAE_FILE, X2_VAE_INT8_FILE, X2_VAE_METHOD, X2_VAE_VALUE, query_x2_vae_files
 from .viggle import VIGGLE_ARCHITECTURE, VIGGLE_ASSET_FOLDER, VIGGLE_INFOS, VIGGLE_PROMPT_FILE, VIGGLE_REPO_ID
@@ -63,7 +63,7 @@ FL2VA_DEEPY_INFOS = """Generate video and stereo sound from `prompt`. `image_sta
 
 Control Video (`video_guide`) is split across sliding windows, each window receiving its own section. `GV` (Denoise Control Video) edits its frames: lower Denoising Strength preserves more source content; Whole Frame at strength 1 gives full freedom. A mask selects the edited area. `VU` (In-Context Guide) supplies its unchanged frames as `<Video 1>` for LoRAs trained on FL2VA to transform a source video; name it `<Video 1>` in the prompt. Without such a LoRA, FL2VA is not trained to follow `VU`; for motion/appearance references, use Ref2VA Reference Video. Inject Frames uses ordered `image_refs` and explicit positions (`1` = first frame, `L` = last frame of the window, `X` = skip a window without consuming an image). A frame on a window's first or last frame acts as its start or end image; frames inside the overlap are unused. Per window, pictures are numbered: start or continued frame (`<Picture 1>`), end image, then that window's injected frames by time.
 
-`audio_prompt_type`: empty = generate video and audio; `A` = `audio_guide` is the soundtrack; `K` = the control video's audio track is the soundtrack (`GV` or `VU`); `2` = keep control frames and generate their audio (`GV`). The video follows a soundtrack and WanGP keeps it as the output audio when it covers the video; a shorter one permits generated sound afterward. For visible speech in soundtrack mode, identify the character and explicitly request `speaking with natural lip movements synchronized` or equivalent lip-sync wording, without mentioning a supplied audio track. No transcript is required; exact lip sync is not guaranteed.
+`audio_prompt_type`: empty = generate video and audio; `A` = `audio_guide` is the soundtrack; `K` = the control video's audio track is the soundtrack (`GV` or `VU`); `2` = keep control frames and generate their audio (`GV`). The video follows a soundtrack and WanGP keeps it as the output audio when it covers the video; a shorter one permits generated sound afterward. For visible speech in soundtrack mode, identify the character and explicitly request `speaking with natural lip movements synchronized` or equivalent lip-sync wording, without mentioning a supplied audio track or its language. Do not write the spoken words (no `<d>` dialogue): given a written line, H3 voices its own dialogue and the mouth often stops following the soundtrack. Keep the speaker's action to speaking: smiles, gestures and nods compete with the mouth. Exact lip sync is not guaranteed.
 
 Use `capabilities` for window limits. WanGP rounds overlap to compatible values (1, 18, 35, ...); `video_length` sets total duration across windows. Read `prompt_infos` for H3's structured prompt syntax.
 """
@@ -97,7 +97,7 @@ Both control video modes are split across sliding windows: each window receives 
 - **Generate Video based on Control Video + its Audio Track and Text Prompt (Soundtrack Kept):** select one of the control video modes. H3 uses both its frames and its existing audio track, which is kept as the soundtrack like an uploaded one; with **Denoise Control Video**, the visual changes follow the denoising and mask settings.
 - **Generate Audio based on Control Video and Text Prompt:** select **Denoise Control Video**. WanGP keeps the control video's frames unchanged and asks H3 to create a new soundtrack.
 
-For visible speech in soundtrack mode, identify the character and explicitly request synchronized speaking, for example `The woman is speaking with natural lip movements synchronized.` You do not need to write the spoken words or mention a supplied audio track. See the prompt guidance for examples; supplying speech alone does not guarantee visible speaking or exact lip sync.
+For visible speech in soundtrack mode, identify the character and explicitly request synchronized speaking, for example `The woman is speaking with natural lip movements synchronized.` Do not write the spoken words or mention the supplied audio track or its language: given a written line, the model voices its own dialogue and the mouth often stops following the soundtrack. Keep the action to speaking: smiles and gestures compete with the mouth. See the prompt guidance for examples; supplying speech alone does not guarantee visible speaking or exact lip sync.
 
 ### Longer videos
 
@@ -137,7 +137,7 @@ Ref2VA generates a new video with native 32 kHz stereo audio from text plus mult
 - **Generate Video based on Soundtrack and Text Prompt (Soundtrack Kept):** upload a speech or music track that must be heard exactly as it is. H3 creates the video around it and WanGP keeps the original audio in the final file, in sync across sliding windows.
 - **Generate Video based on Reference / Control Video + its Audio Track and Text Prompt (Soundtrack Kept):** the same, using the whole audio track of the reference video or of the control video. A reference video (or its excerpts) still guides appearance and motion; a control video (in-context or denoised) drives the generation in sync with its own audio. Requires a single reference video, excerpts from one, or a control video.
 
-A kept soundtrack is not a reference: do not mention a supplied audio track or assign it an `<Audio N>` label in the prompt. For visible speech, identify the character and include `speaking with natural lip movements synchronized` or equivalent lip-sync wording. No transcript is required; see the prompt guidance for examples.
+A kept soundtrack is not a reference: do not mention a supplied audio track or assign it an `<Audio N>` label in the prompt. For visible speech, identify the character and include `speaking with natural lip movements synchronized` or equivalent lip-sync wording. Do not write the spoken words (no `<d>` dialogue) or name the language, and keep the action to speaking; see the prompt guidance for examples.
 
 ### Excerpts from one Reference Video
 
@@ -227,7 +227,7 @@ A start image, an end image or a video to continue can be combined with the cont
 - **Generate Video based on Soundtrack and Text Prompt:** an uploaded soundtrack is kept and the video follows it.
 - **Generate Video based on Control Video + its Audio Track:** keep the control video's own soundtrack, for example the music of a dance video.
 
-A kept soundtrack stays in the saved output, but visible speech also depends on the prompt and the pose guide. Identify the character and explicitly request synchronized speaking, for example `The woman is speaking with natural lip movements synchronized.` You do not need to write the spoken words or mention a supplied audio track. A pose guide showing a still mouth or a lowered face can compete with speaking motion; keeping the soundtrack does not guarantee exact lip sync.
+A kept soundtrack stays in the saved output, but visible speech also depends on the prompt and the pose guide. Identify the character and explicitly request synchronized speaking, for example `The woman is speaking with natural lip movements synchronized.` Do not write the spoken words or mention the supplied audio track or its language: given a written line, the model voices its own dialogue and the mouth often stops following the soundtrack. Keep the action to speaking: smiles and gestures compete with the mouth. A pose guide showing a still mouth or a lowered face can compete with speaking motion; keeping the soundtrack does not guarantee exact lip sync.
 
 ### Recommended settings
 
@@ -236,7 +236,7 @@ The branch is guidance-distilled: keep **Guidance** at 1. Upstream demonstration
 See the [ControlNet-Union 2.0 model card](https://huggingface.co/alibaba-pai/MiniMax-H3-Fun-Controlnet-Union-2.0) for upstream details.
 """
 
-CONTROL_DEEPY_INFOS = f"""Generate video and stereo sound from `prompt` guided by a control video (`video_guide`) through the ControlNet-Union branch; the output uses the control video's aspect ratio. `video_prompt_type`: `PV` = Open Pose motion, `DV` = depth, `EV` = Canny edges, `SV` = soft shapes/scribble, `CV` = grayscale recolorize, `V` = video already a control map (HED, MLSD, layout...), `MV` = inpainting only. Add `A` (masked area) or `NA` (non-masked area) with `video_mask` to regenerate only part of the frame; masks need a preprocessing mode or `V` with spatial outpainting enabled. `control_net_weight` (0-2, default 1) sets control strength. Long control videos are split across sliding windows (max 362 frames each). {CONTROL_CONTINUATION_INFOS} `image_start` / `image_end` / `video_source` anchor frames and should match the control video. `audio_prompt_type`: empty = generate audio; `A` = keep `audio_guide` as soundtrack; `K` = keep the control video's soundtrack. For visible speech in soundtrack mode, identify the speaker and explicitly request `speaking with natural lip movements synchronized` or equivalent lip-sync wording, without mentioning a supplied audio track. No transcript is required; face pose can compete with speech, and exact lip sync is not guaranteed. Guidance stays 1. Read `prompt_infos` for H3's structured prompt syntax."""
+CONTROL_DEEPY_INFOS = f"""Generate video and stereo sound from `prompt` guided by a control video (`video_guide`) through the ControlNet-Union branch; the output uses the control video's aspect ratio. `video_prompt_type`: `PV` = Open Pose motion, `DV` = depth, `EV` = Canny edges, `SV` = soft shapes/scribble, `CV` = grayscale recolorize, `V` = video already a control map (HED, MLSD, layout...), `MV` = inpainting only. Add `A` (masked area) or `NA` (non-masked area) with `video_mask` to regenerate only part of the frame; masks need a preprocessing mode or `V` with spatial outpainting enabled. `control_net_weight` (0-2, default 1) sets control strength. Long control videos are split across sliding windows (max 362 frames each). {CONTROL_CONTINUATION_INFOS} `image_start` / `image_end` / `video_source` anchor frames and should match the control video. `audio_prompt_type`: empty = generate audio; `A` = keep `audio_guide` as soundtrack; `K` = keep the control video's soundtrack. For visible speech in soundtrack mode, identify the speaker and explicitly request `speaking with natural lip movements synchronized` or equivalent lip-sync wording, without mentioning a supplied audio track or its language. Do not write the spoken words (no `<d>` dialogue); face pose and gestures compete with speech, and exact lip sync is not guaranteed. Guidance stays 1. Read `prompt_infos` for H3's structured prompt syntax."""
 
 CONTROL_DEEPY_INFOS += """\n\nSpatial outpainting: use `video_prompt_type: V` (Use Control Video as is), the original RGB `video_guide`, and `video_guide_outpainting` as four space-separated percentages (top bottom left right), e.g. `0 0 25 25`. No `video_mask` is needed for borders alone. Alternatively, set `video_guide_outpainting_ratio`, e.g. `16:9`, with `video_guide_outpainting: 0 0 0 0` for balanced expansion; `#` disables expansion. `resolution` is the final canvas. Enabling expansion routes the visible source and automatic border mask through ControlNet inpainting, not FL2VA denoising; no Grouped Rows requirement. With expansion disabled, `V` retains its normal prepared-control-map behavior. For simultaneous interior edits, use `VA` or `MVA` plus `video_mask`; masked pose/depth/edge/shape/grayscale modes also support expansion. Describe the completed scene and new surroundings; the original rectangle is guided, not copied pixel for pixel."""
 
@@ -701,6 +701,8 @@ class family_handler:
                 "bf16": {"name": "BF16", "video_vae_file": VIDEO_VAE_FILE, "x2_vae_file": X2_VAE_FILE},
                 "fp8mix": {"name": "FP8 Mixed Precision", "video_vae_file": VIDEO_VAE_FP8MIX_FILE, "x2_vae_file": X2_VAE_FILE},
                 "int8_convrot": {"name": "INT8 ConvRot Decoder", "video_vae_file": VIDEO_VAE_INT8_FILE, "x2_vae_file": X2_VAE_INT8_FILE},
+                "lightvae": {"name": "LightVAE Lite BF16", "video_vae_file": VIDEO_VAE_LIGHT_FILE, "x2_vae_file": X2_VAE_FILE},
+                "lightvae_int8": {"name": "LightVAE Lite INT8 ConvRot", "video_vae_file": VIDEO_VAE_LIGHT_INT8_FILE, "x2_vae_file": X2_VAE_INT8_FILE},
             },
             "system_configs3": {
                 "_name": "DiT Denoising Priority",
@@ -850,7 +852,9 @@ class family_handler:
         result["infos"] += still_infos
         result["deepy_infos"] += still_infos + " Set `image_mode` to `1`."
         result["infos"] += "\n\n**MiniMax H3 VAE:** " + X2_VAE_DESCRIPTION
+        result["infos"] += "\n\n**LightVAE Lite:** the Video VAE selector offers a smaller 12-layer decoder in BF16 or INT8 ConvRot. Both keep the original H3 encoder for first/last frames and references. Decoded detail can differ from the full VAE. Selecting MiniMax H3 VAE upsampling replaces LightVAE with the X2 decoder."
         result["deepy_infos"] += " MiniMax H3 VAE replaces the default VAE and handles decoding and upsampling together. Choose `h3_vae*2` to double the output width and height, `h3_vae*1.5` to enlarge them by half, or `h3_vae*1` to keep the original size."
+        result["deepy_infos"] += " Video VAE configs `lightvae` and `lightvae_int8` select LightVAE's 12-layer decoder with the original H3 encoder; decoding may change detail. VAE upsampling overrides this choice with the X2 decoder."
         result["prompt_infos"] += still_prompt_infos
         result["deepy_prompt_infos"] += still_prompt_infos
         return result
@@ -1083,9 +1087,9 @@ class family_handler:
         video_vae_file = model_def.get("video_vae_file", VIDEO_VAE_FILE)
         if video_vae_file in (VIDEO_VAE_FILE, VIDEO_VAE_FP8MIX_FILE):
             vae_files.append(video_vae_file)
-        if video_vae_file == VIDEO_VAE_INT8_FILE:
+        if video_vae_file in (VIDEO_VAE_INT8_FILE, VIDEO_VAE_LIGHT_FILE, VIDEO_VAE_LIGHT_INT8_FILE):
             source_folders.append("minimax_h3")
-            file_lists.append([VIDEO_VAE_INT8_FILE.rsplit("/", 1)[-1]])
+            file_lists.append([video_vae_file.rsplit("/", 1)[-1]])
         if "audio_vae_file" not in model_def:
             vae_files.append(AUDIO_VAE_FILE)
         if vae_files:
@@ -1106,9 +1110,9 @@ class family_handler:
         if base_model_type == VIGGLE_ARCHITECTURE:
             downloads.append({"repoId": VIGGLE_REPO_ID, "sourceFolderList": [VIGGLE_ASSET_FOLDER], "fileList": [[VIGGLE_PROMPT_FILE]]})
         if base_model_type == TTS_REF2VA_PRUNED_ARCHITECTURE and H3_DIALOGUE_GENERATION:
-            from shared.deepy.assets import query_deepy_download_defs
+            from shared.deepy.assets import whisper_download_def
 
-            downloads.extend(query_deepy_download_defs())
+            downloads.append(whisper_download_def())
         return downloads
 
     @staticmethod

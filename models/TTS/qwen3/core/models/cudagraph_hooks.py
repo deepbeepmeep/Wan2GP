@@ -86,7 +86,7 @@ class Qwen3TTSCudaGraphHooks:
             return
 
         self.release()
-        self._kit = AutoRegressiveCudaGraphKit("qwen3_tts")
+        self._kit = AutoRegressiveCudaGraphKit("qwen3_tts", owner=self.talker)
         self._max_batch_size = int(max_batch_size)
         self._max_talker_tokens = int(max_talker_tokens)
         self._max_subtalker_tokens = int(max_subtalker_tokens)

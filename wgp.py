@@ -183,7 +183,7 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-WanGP_version = "18.05"
+WanGP_version = "18.10"
 VIDEO_LENGTH_ROUNDING = "ceil"  # how a requested video length is fitted to the model's frame steps: "floor", "ceil" (never shorter than requested) or "nearest"
 set_video_length_rounding(VIDEO_LENGTH_ROUNDING)
 settings_version = 2.80
@@ -225,6 +225,7 @@ _HANDLER_MODULES = [
     "shared.qtypes.nunchaku_fp4",
     "shared.qtypes.asym_w4a8_int8",
     "shared.qtypes.int8_convrot",
+    "shared.qtypes.gptq_int4",
     "shared.qtypes.gguf",
 ]
 for handler in _HANDLER_MODULES:
@@ -340,12 +341,13 @@ def pil_to_base64_uri(pil_image, format="png", quality=75):
             # Audio or unknown file type - can't convert to image
             return None
 
+    if format.lower() == "jpeg" and (pil_image.mode in ("RGBA", "LA", "PA") or "transparency" in pil_image.info):
+        format = "png"
+
     buffer = io.BytesIO()
     try:
         img_to_save = pil_image
-        if format.lower() == 'jpeg' and pil_image.mode == 'RGBA':
-            img_to_save = pil_image.convert('RGB')
-        elif format.lower() == 'png' and pil_image.mode not in ['RGB', 'RGBA', 'L', 'P']:
+        if format.lower() == 'png' and pil_image.mode not in ['RGB', 'RGBA', 'L', 'P']:
              img_to_save = pil_image.convert('RGBA')
         elif pil_image.mode == 'P':
              img_to_save = pil_image.convert('RGBA' if 'transparency' in pil_image.info else 'RGB')
@@ -2432,7 +2434,8 @@ def finalize_generation_with_state(current_state):
 
 def generate_queue_html(queue):
     if len(queue) <= 1:
-        return "<div style='text-align: center; color: grey; padding: 20px;'>Queue is empty.</div>"
+        message = "Generation in progress. No additional items queued." if len(queue) == 1 and is_generation_in_progress() else "Queue is empty."
+        return f"<div style='text-align: center; color: grey; padding: 20px;'>{message}</div>"
 
     top_button_html = ""
     bottom_button_html = ""
@@ -2575,6 +2578,8 @@ def update_generation_status(html_content):
 
 family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.ltx2.ltx2_handler", "models.ltx2.ltx_audio_tts_handler", "models.longcat.longcat_handler", "models.minimax_h3.minimax_h3_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.ming_image.ming_handler", "models.kandinsky5.kandinsky_handler", "models.kandinsky6.kandinsky6_handler",  "models.z_image.z_image_handler", "models.hidream.hidream_handler", "models.ideogram4.ideogram4_handler", "models.krea2.krea2_handler", "models.magi_human.magi_human_handler", "models.sensenova_u1.sensenova_u1_handler", "models.hunyuan3d.hunyuan3d_handler", "models.trellis2.trellis2_handler", "models.triposg.triposg_handler", "models.animate_any_mesh.animate_any_mesh_handler", "models.triposplat.triposplat_handler", "models.worldmirror.worldmirror_handler", "models.recon3d.recon3d_handler",  "models.TTS.ace_step_handler", "models.TTS.chatterbox_handler", "models.TTS.qwen3_handler", "models.TTS.heartmula_handler", "models.TTS.kugelaudio_handler", "models.TTS.index_tts2_handler", "models.TTS.stable_audio3_handler", "models.TTS.omnivoice_handler", "models.TTS.minimax_music3.minimax_music3_handler", "models.TTS.auk.auk_handler", "models.TTS.yue2.yue2_handler"]
 family_handlers.append("models.prism.prism_handler")
+family_handlers.append("models.flux3.flux3_handler")
+family_handlers.append("models.TTS.fish_audio.fish_audio_handler")
 DEFAULT_LORA_ROOT = "loras" #"models.cosmos3.cosmos3_handler",
 
 def get_lora_root():
@@ -2712,7 +2717,7 @@ if not Path(config_load_filename).is_file():
         "profile" : profile_type.LowRAM_LowVRAM,
         "video_profile": profile_type.LowRAM_LowVRAM,
         "image_profile": profile_type.LowRAM_LowVRAM,
-        "audio_profile": 3.5,
+        "audio_profile": 3,
         "preload_model_policy": [],
         "UI_theme": "default",
         "floating_generate_button": True,
@@ -2798,7 +2803,7 @@ def _normalize_profile_defaults(config):
     base_profile = config.get("profile", profile_type.LowRAM_LowVRAM)
     config.setdefault("video_profile", base_profile)
     config.setdefault("image_profile", base_profile)
-    config.setdefault("audio_profile", 3.5)
+    config.setdefault("audio_profile", 3)
     return config["video_profile"], config["image_profile"], config["audio_profile"]
 
 def _normalize_output_paths(config):
@@ -3642,7 +3647,7 @@ def save_model(model, model_type, dtype,  config_file,  submodel_no = 1,  is_mod
         with open(finetune_file, "w", encoding="utf-8") as writer:
             writer.write(json.dumps(saved_finetune_def, indent=4))
 
-def save_quantized_model(model, model_type, model_filename, dtype, config_file, submodel_no=1, convrot_layout=None):
+def save_quantized_model(model, model_type, model_filename, dtype, config_file, submodel_no=1, convrot_layout=None, convrot_prefixes=None):
     if "quanto" in model_filename or "convrot" in model_filename: return
     source_filename = model_filename
     model_def = get_model_def(model_type)
@@ -3677,7 +3682,7 @@ def save_quantized_model(model, model_type, model_filename, dtype, config_file, 
         if args.convrot:
             from shared.convert.convrot import save_convrot_model
             source_path = source_filename if os.path.isfile(source_filename) else fl.locate_file(source_filename)
-            save_convrot_model(model, source_path, model_filename_path, layout=convrot_layout, verboseLevel=verbose_level)
+            save_convrot_model(model, source_path, model_filename_path, layout=convrot_layout, verboseLevel=verbose_level, prefixes=convrot_prefixes)
         else:
             offload.save_model(model, model_filename_path, do_quantize=True, config_file_path=config_file)
         print(f"New quantized file '{model_filename}' had been created for finetune Id '{model_type}'.")
@@ -4031,13 +4036,14 @@ def init_pipe(pipe, kwargs, profile, output_type="video"):
     if preload == 0 and preload_mode(output_type) == "manual": # the VRAM preload of this kind of output, also when a generation overrides its memory profile
         preload = server_config.get(f"{_normalize_output_type(output_type)}_preload_in_VRAM", 0)
     kwargs["readAhead"] = server_config.get("read_ahead", False)
+    kwargs["preloadExperts"] = preload > 0
     kwargs["perc_reserved_mem_max"] = args.perc_reserved_mem_max or server_config.get("perc_reserved_mem_max", 0) / 100 # 0: mmgp's environment variable or default
 
     kwargs["extraModelsToQuantize"]=  None
     source_budgets = kwargs.get("budgets", None)
     if source_budgets is None:  kwargs["budgets"] = source_budgets = {}
     mmgp_profile = int(profile)
-    if mmgp_profile in (2, 4, 5):
+    if mmgp_profile in (1, 2, 3, 4, 5):
         default_transformer_budget = default_transformer2_budget= kwargs.get("budgets", 100) 
         if isinstance(default_transformer_budget, dict):
             default_transformer_budget = default_transformer_budget.get("transformer", 100) 
@@ -4047,8 +4053,6 @@ def init_pipe(pipe, kwargs, profile, output_type="video"):
         if "transformer2" in pipe:
             budgets["transformer2"] = default_transformer2_budget if preload  == 0 else preload
         source_budgets.update(budgets)
-    elif mmgp_profile == 3:
-        source_budgets.update({ "*" : "80%" }) # a model larger than 80% of the VRAM is processed block by block
 
     if "transformer2" in pipe:
         if profile in [3,4]:
@@ -4263,8 +4267,8 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
     check_download_cancelled(gen)
     profile = compute_profile(override_profile, output_type)
     lm_decoder_engine_obtained = resolve_lm_decoder_engine(lm_decoder_engine, model_def.get("lm_engines", []) )
-    if lm_decoder_engine_obtained in ("cg", "vllm") and int(profile) not in [ 1, 3]:
-        _load_models_info(f"Unable to use LM Engine '{lm_decoder_engine_obtained}' as it requires a Memory Profile such as 1,3 or 3+ that loads entirely the Main Models in VRAM. Switching to Legacy LM Engine...")
+    if lm_decoder_engine_obtained in ("cg", "vllm") and int(profile) not in [ 1, 3] and not model_def.get("lm_engine_supports_offload", False):
+        _load_models_info(f"LM Engine '{lm_decoder_engine_obtained}' has no declared support for this model with Memory Profiles 2/4/5. Switching to Legacy LM Engine...")
         lm_decoder_engine_obtained = "legacy"
     preview_mode = server_config.get("generation_preview", "rgb")
     preview_name = preview_path = preview_decoder = None
@@ -4299,7 +4303,7 @@ def load_models(model_type, override_profile = -1, output_type="video", config_i
             pipe["tiny_vae"] = preview_decoder
             kwargs["coTenantsMap"]["tiny_vae"] = "*"
         mmgp_profile = init_pipe(pipe, kwargs, profile, output_type)
-        if mmgp_profile in (2, 4, 5) and preload_mode(output_type) == "dynamic":
+        if mmgp_profile in (1, 3) or mmgp_profile in (2, 4, 5) and preload_mode(output_type) == "dynamic":
             kwargs["autoPreload"] = auto_preload_store(model_type)
         loras_transformer = kwargs.pop("loras", [])
         if "transformer" in pipe:
@@ -8005,11 +8009,12 @@ def generate_media(
                             w, h = image_refs[0].size
                             if outpainting_dims != None:
                                 h, w = get_outpainting_full_area_dimensions(h, w, outpainting_dims, video_guide_outpainting_ratio)
-                            image_size = calculate_new_dimensions(height, width, h, w, fit_canvas, block_size=block_size)
+                            image_size = calculate_new_dimensions(height, width, h, w, fit_canvas, block_size=block_size, max_width=model_def.get("max_width"), max_height=model_def.get("max_height"))
                             sample_fit_canvas = None 
                             ref_pose_tensor  = resize_and_remove_background(image_refs[nb_frames_positions:nb_frames_positions+1], image_size[1], image_size[0],
                                                                                             False, True, 
                                                                                             fit_into_canvas= model_def.get("fit_into_canvas_image_refs", 1),
+                                                                                            max_width=model_def.get("max_width"), max_height=model_def.get("max_height"),
                                                                                             block_size=block_size,
                                                                                             outpainting_dims =outpainting_dims,
                                                                                             outpainting_ratio = video_guide_outpainting_ratio,
@@ -8062,7 +8067,7 @@ def generate_media(
                     w, h = image_refs[0].size
                     if outpainting_dims != None:
                         h, w = get_outpainting_full_area_dimensions(h, w, outpainting_dims, video_guide_outpainting_ratio)
-                    image_size = calculate_new_dimensions(height, width, h, w, fit_canvas, block_size=block_size)
+                    image_size = calculate_new_dimensions(height, width, h, w, fit_canvas, block_size=block_size, max_width=model_def.get("max_width"), max_height=model_def.get("max_height"))
                 sample_fit_canvas = None
                 if repeat_no == 1:
                     if fit_crop:
@@ -8101,6 +8106,7 @@ def generate_media(
                         src_ref_images, src_ref_masks  = resize_and_remove_background(src_ref_images , image_size[1], image_size[0],
                                                                                         remove_background_images_ref > 0, any_background_ref, 
                                                                                         fit_into_canvas= model_def.get("fit_into_canvas_image_refs", 1),
+                                                                                        max_width=model_def.get("max_width"), max_height=model_def.get("max_height"),
                                                                                         block_size=block_size,
                                                                                         outpainting_dims =outpainting_dims,
                                                                                         outpainting_ratio = video_guide_outpainting_ratio,
@@ -11666,7 +11672,7 @@ def change_resolution_picker(state):
 
 def preview_resolution_mp(state, megapixels, ratio):
     model_def = get_model_def(get_state_model_type(state))
-    resolution = resolution_utils.megapixels_to_resolution(megapixels, ratio, model_def.get("vae_block_size", 16))
+    resolution = resolution_utils.megapixels_to_resolution(megapixels, ratio, model_def.get("vae_block_size", 16), model_def)
     return gr.update(label=resolution_mp_label(resolution))
 
 
@@ -11674,10 +11680,11 @@ def commit_resolution_mp(state, megapixels, ratio):
     model_def = get_model_def(get_state_model_type(state))
     if model_def.get("lock_resolutions"):
         return gr.update(), gr.update(), gr.update()
-    resolution = resolution_utils.megapixels_to_resolution(megapixels, ratio, model_def.get("vae_block_size", 16))
+    resolution = resolution_utils.megapixels_to_resolution(megapixels, ratio, model_def.get("vae_block_size", 16), model_def)
     choices, resolution = get_resolution_choices(resolution, model_def)
     groups, selected, group = resolution_utils.group_resolution_choices(choices, resolution)
-    return gr.update(choices=selected, value=resolution), gr.update(choices=[(resolution_utils.GROUP_LABELS.get(item, item), item) for item in groups], value=group), gr.update(label=resolution_mp_label(resolution))
+    values = resolution_utils.megapixel_controls(resolution, choices, model_def, server_config.get("enable_4k_resolutions", 0) == 1)
+    return gr.update(choices=selected, value=resolution), gr.update(choices=[(resolution_utils.GROUP_LABELS.get(item, item), item) for item in groups], value=group), gr.update(value=values["value"], minimum=values["minimum"], maximum=values["maximum"], label=resolution_mp_label(resolution))
 
 
 def get_max_frames(nb):
@@ -11704,10 +11711,10 @@ def change_guidance_phases(state, guidance_phases, video_prompt_type):
     return gr.update(visible= guidance_phases >=3 and visible_phases >=3 and multiple_submodels) , gr.update(visible=phase_controls_visible), gr.update(visible=phase_controls_visible and switch_threshold_def.visible, label=switch_threshold_def.label), gr.update(visible= guidance_phases >=3 and visible_phases >=3), gr.update(visible= guidance_phases >=2 and visible_phases >=2), gr.update(visible= guidance_phases >=3 and visible_phases >=3), video_prompt_type, gr.update(visible=phase_2_steps_def.visible)
 
 
-memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: each model loaded whole in VRAM, all models kept in Reserved RAM. The fastest generations and model switches, needs the most RAM and VRAM", 1),
+memory_profile_choices= [   ("Profile 1, HighRAM_HighVRAM: Profile 2 with Dynamic Preload. All models kept in Reserved RAM; as many layers as fit stay in VRAM, the rest are streamed", 1),
                             ("Profile 2, HighRAM_LowVRAM: all models kept in Reserved RAM, sent to the GPU part by part. Runs models larger than your VRAM, leaves VRAM for long videos or large images and switches models fast, needs a lot of RAM", 2),
-                            ("Profile 3, LowRAM_HighVRAM: each model loaded whole in VRAM, only the main models kept in Reserved RAM. Fast generations with less RAM, needs enough VRAM for the whole model", 3),
-                            ("Profile 3+, VeryLowRAM_HighVRAM (Recommended for Audio): Profile 3 without any Reserved RAM. Audio models are small enough to fit whole in VRAM, where their language models run much faster; models load more slowly", 3.5),
+                            ("Profile 3, LowRAM_HighVRAM (Recommended for Audio): Profile 4 with Dynamic Preload. Only the main models kept in Reserved RAM; as many layers as fit stay in VRAM, the rest are streamed", 3),
+                            ("Profile 3+, VeryLowRAM_HighVRAM: Profile 3 without any Reserved RAM. Dynamic Preload keeps as much of each model in VRAM as fits; models load more slowly", 3.5),
                             ("Profile 4, LowRAM_LowVRAM (Recommended): only the main models kept in Reserved RAM, sent to the GPU part by part. The most versatile: runs models larger than your VRAM and leaves VRAM for long videos or large images", 4),
                             ("Profile 4+, LowRAM_LowVRAM+: Profile 4 sending one part at a time. Saves up to about 1 GB of VRAM, slightly slower", 4.5),
                             ("Profile 5, VerylowRAM_LowVRAM (Fail safe): almost no Reserved RAM, all models sent to the GPU part by part. For PCs short of RAM and VRAM, slower with short steps such as images", 5)]
@@ -13263,28 +13270,28 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                     with gr.Tab("Information", id="video_info"):
                         video_info = gr.HTML(visible=True, min_height=100, value=get_default_video_info()) 
-                        with gr.Row(**default_visibility_false) as audio_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as audio_buttons_row:
                             video_info_extract_audio_settings_btn = gr.Button("Extract Settings", min_width= 1, size ="sm")
                             video_info_to_audio_guide_btn = gr.Button("To Audio Source", min_width= 1, size ="sm", visible = any_audio_guide)
                             video_info_to_audio_guide2_btn = gr.Button("To Audio Source 2", min_width= 1, size ="sm", visible = any_audio_guide2 )
                             video_info_to_audio_source_btn = gr.Button("To Soundtrack", min_width= 1, size ="sm", visible=audio_processor_api.has_audio_source_soundtrack())
                             video_info_eject_audio_btn = gr.Button("Eject Audio File", min_width= 1, size ="sm")
-                        with gr.Row(**default_visibility_false) as deleted_audio_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as deleted_audio_buttons_row:
                             video_info_eject_deleted_audio_btn = gr.Button("Eject Deleted File", min_width= 1, size ="sm")
-                        with gr.Row(**default_visibility_false) as video_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as video_buttons_row:
                             video_info_extract_settings_btn = gr.Button("Extract Settings", min_width= 1, size ="sm")
                             video_info_to_video_source_btn = gr.Button("To Video Source", min_width= 1, size ="sm", visible = any_video_source)
                             video_info_to_control_video_btn = gr.Button("To Control Video", min_width= 1, size ="sm", visible = any_control_video )
                             video_info_eject_video_btn = gr.Button("Eject Video", min_width= 1, size ="sm")
-                        with gr.Row(**default_visibility_false) as deleted_video_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as deleted_video_buttons_row:
                             video_info_eject_deleted_video_btn = gr.Button("Eject Deleted File", min_width= 1, size ="sm")
-                        with gr.Row(**default_visibility_false) as mesh_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as mesh_buttons_row:
                             video_info_extract_mesh_settings_btn = gr.Button("Extract Settings", min_width= 1, size ="sm")
                             video_info_to_mesh_input_btn = gr.Button("To Input Mesh", min_width= 1, size ="sm", visible = any_mesh_input)
                             video_info_eject_mesh_btn = gr.Button("Eject 3D Asset", min_width= 1, size ="sm")
-                        with gr.Row(**default_visibility_false) as deleted_mesh_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as deleted_mesh_buttons_row:
                             video_info_eject_deleted_mesh_btn = gr.Button("Eject Deleted File", min_width= 1, size ="sm")
-                        with gr.Row(**default_visibility_false) as image_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as image_buttons_row:
                             video_info_extract_image_settings_btn = gr.Button("Extract Settings", min_width= 1, size ="sm")
                             video_info_to_start_image_btn = gr.Button("To Start Image", size ="sm", min_width= 1, visible = any_start_image )
                             video_info_to_end_image_btn = gr.Button("To End Image", size ="sm", min_width= 1, visible = any_end_image)
@@ -13300,14 +13307,14 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             PP_late_audio_replace_voice_sample = late_audio_ui["replace_voice_sample"]
                             PP_late_audio_replace_voice_sample2_row = late_audio_ui["replace_voice_sample2_row"]
                             PP_late_audio_replace_voice_sample2 = late_audio_ui["replace_voice_sample2"]
-                        with gr.Row():
+                        with gr.Row(elem_classes=["wangp-media-actions"] if floating_generate_button else None):
                             video_info_audio_postprocessing_btn = gr.Button("Apply Audio Postprocessing", size="sm", visible=True)
                             video_info_eject_audio2_btn = gr.Button("Eject Audio", size="sm", visible=True)
                     with gr.Tab("Post Processing", id= "post_processing", visible = late_video_postprocessing_visible) as video_postprocessing_tab:
                         with gr.Group(elem_classes= "postprocess"):
                             with gr.Column():
                                 PP_temporal_upsampling, PP_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation, PP_temporal_upsampling_method, PP_temporal_upsampling_multiplier, PP_spatial_upsampling_method, PP_spatial_upsampling_ratio, PP_spatial_upsampler_parameter_state, PP_spatial_upsampler_prompt, PP_spatial_upsampler_reference_images, PP_spatial_upsampler_param, PP_spatial_upsampler_param2, PP_spatial_upsampler_extra, PP_spatial_upsampler_media_outputs, PP_spatial_upsampler_help_target_id = gen_upsampling_dropdowns("", "", 0, 0.5, element_class="postprocess", image_outputs=False, late_postprocessing=True, spatial_parameter_values={})
-                        with gr.Row():
+                        with gr.Row(elem_classes=["wangp-media-actions"] if floating_generate_button else None):
                             video_info_postprocessing_btn = gr.Button("Apply Postprocessing", size ="sm", visible=True)
                             video_info_eject_video2_btn = gr.Button("Eject Media", size ="sm", visible=True)
                     with gr.Tab("Audio Remuxing", id= "audio_remuxing", visible = late_audio_remuxing_visible) as audio_remuxing_tab:
@@ -13327,7 +13334,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             PP_replace_voice_sample = late_remux_ui["replace_voice_sample"]
                             PP_replace_voice_sample2_row = late_remux_ui["replace_voice_sample2_row"]
                             PP_replace_voice_sample2 = late_remux_ui["replace_voice_sample2"]
-                        with gr.Row():
+                        with gr.Row(elem_classes=["wangp-media-actions"] if floating_generate_button else None):
                             video_info_remux_audio_btn = gr.Button("Remux Audio", size ="sm", visible=True)
                             video_info_eject_video3_btn = gr.Button("Eject Video", size ="sm", visible=True)
                     with gr.Tab("Import Media to Galleries", id= "video_add"):

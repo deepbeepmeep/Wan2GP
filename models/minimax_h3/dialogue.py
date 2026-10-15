@@ -202,9 +202,10 @@ def build_h3_dialogue_prompt(turn: DialogueTurn, has_reference: bool) -> str:
 
 
 def load_dialogue_whisper() -> torch.nn.Module:
-    from shared.deepy.transcription import _load_whisper_medium
+    from shared.deepy.assets import whisper_model_name
+    from shared.deepy.transcription import load_whisper
 
-    model = _load_whisper_medium(torch.device("cpu"))
+    model = load_whisper(whisper_model_name(), torch.device("cpu"))
     alignment_heads = model.alignment_heads
     del model._buffers["alignment_heads"]
     object.__setattr__(model, "alignment_heads", alignment_heads)

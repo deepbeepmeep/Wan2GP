@@ -292,10 +292,11 @@ def _concatenate_dramabox_segments(chunks: list[torch.Tensor], sample_rate: int,
 
 
 def _load_dramabox_alignment_whisper():
-    from shared.deepy.transcription import _load_whisper_medium
+    from shared.deepy.assets import whisper_model_name
+    from shared.deepy.transcription import load_whisper
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    alignment_whisper = _load_whisper_medium(device)
+    alignment_whisper = load_whisper(whisper_model_name(), device)
     alignment_heads = alignment_whisper.alignment_heads
     del alignment_whisper._buffers["alignment_heads"]
     object.__setattr__(alignment_whisper, "alignment_heads", alignment_heads)
@@ -439,13 +440,14 @@ class DramaBoxAudioPipeline(LTXAudioTTSPipelineBase):
         *,
         debug_prompt: bool = False,
         set_progress_status=None,
+        offloadobj=None,
     ) -> list[tuple[_DramaBoxSegment, torch.Tensor]]:
         if not any(segment.expected_text for segment, _ in generated_segments):
             return generated_segments
         if set_progress_status is not None:
             set_progress_status("Loading Whisper Alignment")
-        for model in (self.model, self.text_encoder, self.text_embedding_projection, self.video_embeddings_connector, self.audio_embeddings_connector, self.audio_encoder, self.audio_decoder, self.vocoder):
-            self._unload_managed_model(model)
+        if offloadobj is not None:
+            offloadobj.unload_all()  # the VRAM of the DramaBox models goes to Whisper, loaded outside MMGP
         alignment_whisper = _load_dramabox_alignment_whisper()
         processed: list[tuple[_DramaBoxSegment, torch.Tensor]] = []
         try:
@@ -461,7 +463,6 @@ class DramaBoxAudioPipeline(LTXAudioTTSPipelineBase):
                 trimmed = _trim_leading_extra_words_tensor(alignment_whisper, audio, sample_rate, segment.expected_text, "en", debug_prompt=debug_prompt, label="DramaBox Audio")
                 processed.append((segment, _clean_segment_audio(trimmed, sample_rate, debug=debug_prompt)))
         finally:
-            self._unload_managed_model(alignment_whisper)
             try:
                 alignment_whisper.to("cpu")
             except Exception:
@@ -493,6 +494,7 @@ class DramaBoxAudioPipeline(LTXAudioTTSPipelineBase):
         duration_seconds: Optional[float] = None,
         set_progress_status=None,
         verbose_level: int = 0,
+        offloadobj=None,
         **kwargs
     ) -> Optional[dict]:
         self._interrupt = False
@@ -584,7 +586,7 @@ class DramaBoxAudioPipeline(LTXAudioTTSPipelineBase):
             return None
 
         if remove_unexpected_words and not self._interrupt:
-            generated_segments = self._remove_unexpected_words(generated_segments, output_audio_sampling_rate, debug_prompt=debug_prompt, set_progress_status=set_progress_status)
+            generated_segments = self._remove_unexpected_words(generated_segments, output_audio_sampling_rate, debug_prompt=debug_prompt, set_progress_status=set_progress_status, offloadobj=offloadobj)
 
         if set_progress_status is not None:
             set_progress_status("Combining Audio Segments")

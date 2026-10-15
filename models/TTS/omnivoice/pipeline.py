@@ -164,10 +164,8 @@ class OmniVoicePipeline:
         self.ckpt_root = Path(ckpt_root) if ckpt_root is not None else Path(fl.get_download_location())
         self._interrupt = False
         self._early_stop = False
-        self._whisper_model = None
+        self._whisper_model = None  # the configured Whisper, loaded on first need (_get_whisper_model) and released after each stage
         self._whisper_device = None
-        self._owns_whisper_model = False
-        self._active_offloadobj = None
         self._verbose_level = 0
 
         assets = self._resolve_assets(model_weights_path)
@@ -188,11 +186,6 @@ class OmniVoicePipeline:
         self.model.eval().requires_grad_(False)
         self.audio_tokenizer.eval().requires_grad_(False)
 
-    def set_whisper_model(self, whisper_model) -> None:
-        self._whisper_model = whisper_model
-        self._whisper_device = torch.device("cpu")
-        self._owns_whisper_model = False
-
     def _abort_requested(self) -> bool:
         return bool(self._interrupt)
 
@@ -208,30 +201,22 @@ class OmniVoicePipeline:
         self.model._transcribe_reference_callback = None
         self._release_whisper_model()
 
-    def _get_whisper_model(self, offloadobj=None):
+    def _get_whisper_model(self):
+        # Outside MMGP, beside the loaded OmniVoice models (FP16 on the GPU), so that they are not unloaded for it.
         if self._whisper_model is None:
-            raise RuntimeError("OmniVoice Whisper support requires the handler-provided MMGP-managed Whisper model.")
-        if offloadobj is not None:
-            offloadobj.ensure_model_loaded("whisper")
-        device = next(self._whisper_model.parameters()).device
-        self._whisper_device = device
-        return self._whisper_model, device
+            from shared.deepy.assets import whisper_model_name
+            from shared.deepy.transcription import _whisper_on, load_whisper
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self._whisper_model, self._whisper_device = _whisper_on(load_whisper(whisper_model_name(), device), device), device
+        return self._whisper_model, self._whisper_device
 
     def _release_whisper_model(self) -> None:
-        if not self._owns_whisper_model:
+        if self._whisper_model is None:
             return
-        model = self._whisper_model
-        self._whisper_model = None
-        self._whisper_device = None
-        if model is not None:
-            del model
+        self._whisper_model = self._whisper_device = None
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-    @staticmethod
-    def _whisper_uses_fp16(whisper_model, whisper_device: torch.device) -> bool:
-        return whisper_device.type == "cuda" and getattr(whisper_model, "_model_dtype", None) == torch.float16
 
     def _auto_transcribe_reference_audio(self, ref_audio, ref_wav: np.ndarray, sample_rate: int) -> str:
         signature = _transcription_cache_key(ref_audio)
@@ -241,17 +226,14 @@ class OmniVoicePipeline:
             return cached_text
 
         print("OmniVoice auto-transcribing reference audio with Whisper...")
-        whisper_model, whisper_device = self._get_whisper_model(self._active_offloadobj)
+        whisper_model, whisper_device = self._get_whisper_model()
         waveform = np.asarray(ref_wav, dtype=np.float32)
         if waveform.ndim == 2:
             waveform = waveform.mean(axis=0)
         waveform_tensor = torch.from_numpy(waveform)
         if int(sample_rate) != 16000:
             waveform_tensor = torchaudio.functional.resample(waveform_tensor, int(sample_rate), 16000)
-        try:
-            result = whisper_model.transcribe(waveform_tensor.numpy().astype(np.float32), verbose=None, fp16=self._whisper_uses_fp16(whisper_model, whisper_device))
-        finally:
-            self._release_whisper_model()
+        result = whisper_model.transcribe(waveform_tensor.numpy().astype(np.float32), verbose=None, fp16=whisper_device.type == "cuda")
         transcript = str(result.get("text", "") or "").strip()
         if not transcript:
             raise ValueError("Whisper could not transcribe the OmniVoice reference audio. Provide the transcript manually in the Voice instruction/reference transcript field.")
@@ -355,12 +337,12 @@ class OmniVoicePipeline:
                 unit_word_indices.append(word_index)
         return units, unit_word_indices
 
-    def _transcribe_generated_segment_words(self, segment_audio: torch.Tensor, offloadobj=None) -> list[dict]:
-        whisper_model, whisper_device = self._get_whisper_model(offloadobj)
+    def _transcribe_generated_segment_words(self, segment_audio: torch.Tensor) -> list[dict]:
+        whisper_model, whisper_device = self._get_whisper_model()
         waveform = segment_audio.detach().to(device="cpu", dtype=torch.float32).flatten()
         if self.sample_rate != 16000:
             waveform = torchaudio.functional.resample(waveform, self.sample_rate, 16000)
-        result = whisper_model.transcribe(waveform.numpy().astype(np.float32), verbose=None, fp16=self._whisper_uses_fp16(whisper_model, whisper_device), word_timestamps=True)
+        result = whisper_model.transcribe(waveform.numpy().astype(np.float32), verbose=None, fp16=whisper_device.type == "cuda", word_timestamps=True)
         words = []
         for item in list(result.get("segments", []) or []):
             for word in list(item.get("words", []) or []):
@@ -387,10 +369,10 @@ class OmniVoicePipeline:
                 return cut_sample if cut_sample < sample_count else None
         return None
 
-    def _post_process_generated_segment_end(self, segment_audio: torch.Tensor, segment_text: str, segment_index: int, total_segments: int, *, offloadobj=None, verbose_level: int = 0) -> torch.Tensor:
+    def _post_process_generated_segment_end(self, segment_audio: torch.Tensor, segment_text: str, segment_index: int, total_segments: int, *, verbose_level: int = 0) -> torch.Tensor:
         expected_words = self._words_from_text(segment_text)
         expected_units = self._speech_units_from_text(segment_text)
-        words = self._transcribe_generated_segment_words(segment_audio, offloadobj=offloadobj)
+        words = self._transcribe_generated_segment_words(segment_audio)
         whisper_words = []
         for word in words:
             whisper_words.extend(self._words_from_text(str(word.get("word", "") or "")))
@@ -735,7 +717,6 @@ class OmniVoicePipeline:
         adjust_speed_to_max_duration: bool,
         auto_end_trim: bool,
         callback,
-        offloadobj=None,
         verbose_level: int = 0,
         preserve_voice_design: bool = False,
     ) -> Optional[dict]:
@@ -815,7 +796,7 @@ class OmniVoicePipeline:
                 break
             segment_audio, segment_tokens = segment_result
             if auto_end_trim:
-                segment_audio = self._post_process_generated_segment_end(segment_audio, segment_text, segment_index, len(segments), offloadobj=offloadobj, verbose_level=verbose_level)
+                segment_audio = self._post_process_generated_segment_end(segment_audio, segment_text, segment_index, len(segments), verbose_level=verbose_level)
             _poll_early_stop(segment_index + 1)
             duration_truncated = False
             if max_total_samples is not None:
@@ -869,7 +850,6 @@ class OmniVoicePipeline:
         audio_guide2: Optional[str] = None,
         audio_guide3: Optional[str] = None,
         audio_prompt_type: str = "",
-        offloadobj=None,
         custom_settings=None,
         duration_seconds: Optional[float] = None,
         pause_seconds: float = 0.2,
@@ -882,7 +862,6 @@ class OmniVoicePipeline:
             self._verbose_level = int(verbose_level or 0)
         except (TypeError, ValueError):
             self._verbose_level = 0
-        self._active_offloadobj = offloadobj
 
         text = _read_text_or_file(input_prompt, "Prompt")
         if not text.strip():
@@ -925,21 +904,23 @@ class OmniVoicePipeline:
             finally:
                 self._release_whisper_model()
             segments = self._parse_two_speaker_dialogue(text, auto_split_seconds, speaker_prompts)
-            return self._generate_segments(
-                segments=segments,
-                speaker_prompts=speaker_prompts,
-                language=language,
-                instruct=voice_clone_instruct,
-                generation_config=generation_config,
-                pause_seconds=pause_seconds,
-                duration_seconds=duration_value,
-                adjust_speed_to_max_duration=adjust_speed_to_max_duration,
-                auto_end_trim=auto_end_trim,
-                callback=callback,
-                offloadobj=offloadobj,
-                verbose_level=self._verbose_level,
-                preserve_voice_design=False,
-            )
+            try:
+                return self._generate_segments(
+                    segments=segments,
+                    speaker_prompts=speaker_prompts,
+                    language=language,
+                    instruct=voice_clone_instruct,
+                    generation_config=generation_config,
+                    pause_seconds=pause_seconds,
+                    duration_seconds=duration_value,
+                    adjust_speed_to_max_duration=adjust_speed_to_max_duration,
+                    auto_end_trim=auto_end_trim,
+                    callback=callback,
+                    verbose_level=self._verbose_level,
+                    preserve_voice_design=False,
+                )
+            finally:
+                self._release_whisper_model()
 
         if mode == "A":
             if not audio_guide:
@@ -955,18 +936,20 @@ class OmniVoicePipeline:
             instruct = instruction_or_ref.strip() or None
 
         segments = [(0, segment) for segment in self._split_text_sequence(text, auto_split_seconds, speaker_prompts.get(0))]
-        return self._generate_segments(
-            segments=segments,
-            speaker_prompts=speaker_prompts,
-            language=language,
-            instruct=instruct,
-            generation_config=generation_config,
-            pause_seconds=pause_seconds,
-            duration_seconds=duration_value,
-            adjust_speed_to_max_duration=adjust_speed_to_max_duration,
-            auto_end_trim=auto_end_trim,
-            callback=callback,
-            offloadobj=offloadobj,
-            verbose_level=self._verbose_level,
-            preserve_voice_design=mode == "",
-        )
+        try:
+            return self._generate_segments(
+                segments=segments,
+                speaker_prompts=speaker_prompts,
+                language=language,
+                instruct=instruct,
+                generation_config=generation_config,
+                pause_seconds=pause_seconds,
+                duration_seconds=duration_value,
+                adjust_speed_to_max_duration=adjust_speed_to_max_duration,
+                auto_end_trim=auto_end_trim,
+                callback=callback,
+                verbose_level=self._verbose_level,
+                preserve_voice_design=mode == "",
+            )
+        finally:
+            self._release_whisper_model()

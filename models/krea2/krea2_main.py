@@ -181,7 +181,9 @@ class Krea2Pipeline:
         self.transformer = transformer
         self.vae = vae
         self.encoder = encoder
-        self.text_encoder_cache = TextEncoderCache()
+        # an entry keeps 12 encoder layers over the 512 padded tokens (~31 MB): the padding rows stay, as they still shape SageAttention's
+        # key quantization; the default 100 MB would hold 3 prompts
+        self.text_encoder_cache = TextEncoderCache(max_size_mb=512)
         self.dtype = dtype
         self.compression = 8
         self.channels = 16

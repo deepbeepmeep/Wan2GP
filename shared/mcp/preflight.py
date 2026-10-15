@@ -212,7 +212,8 @@ def preflight(session, prepare_generation, prepare_postprocess, settings=None, m
                     elif len(visuals) == 1 and visuals[0]["role"] == "image_start" and "S" in effective.get("image_prompt_type", "") or "K" in effective.get("video_prompt_type", "") and all(item["role"] == "image_refs" for item in visuals):
                         from shared.utils.utils import calculate_new_dimensions
                         source = visuals[0]  # the start image, or the first reference that K makes the main subject / landscape
-                        height, width = calculate_new_dimensions(canvas["height"], canvas["width"], source["height"], source["width"], fit, block_size=block)
+                        limits = {key: model_def[key] for key in ("max_width", "max_height") if "K" in effective.get("video_prompt_type", "") and model_def.get(key) is not None}
+                        height, width = calculate_new_dimensions(canvas["height"], canvas["width"], source["height"], source["width"], fit, block_size=block, **limits)
                         task["sizing"]["initial_dimensions"] = {"width": width, "height": height}
                         task["sizing"]["dimensions_from"] = source["role"] if source["role"] == "image_start" else "image_refs[0] (video_prompt_type K: the first reference sets the canvas; use I to keep the requested resolution)"
                     else:

@@ -1,0 +1,39 @@
+# Copyright (c) 2026 DeepBeepMeep - part of WanGP, WanGP Community License 2.0 (see LICENSE.txt)
+"""Symmetric INT4 weights with FP16 scales per group of 128 input columns (GPTQ without activation order, zero point 8), as routed
+expert banks. Each byte holds two columns, the even one in its low nibble: the rows of a GPTQ qweight [in / 8, out] int32 tensor,
+transposed and read as bytes. The banks optionally apply a ConvRot rotation (the weights quantized after a regular Hadamard
+transform of groups of input columns, see int8_convrot). Linear layers in this format are not handled."""
+import torch
+
+from shared.kernels.cpu_experts import INT4_GROUP, NativeExpertFormat
+
+HANDLER_NAME = "gptq_int4"
+
+
+class Int4GroupExperts(NativeExpertFormat):
+    """Routed experts: w13 = gate then up rows [2 * intermediate, hidden / 2], w2 = down rows [hidden, intermediate / 2], uint8."""
+    name, native, block = "int4_group", INT4_GROUP, 128
+
+    def tensors(self, experts, hidden, intermediate):
+        g = self.block
+        return {"w13_weight": ((experts, 2 * intermediate, hidden // 2), torch.uint8), "w2_weight": ((experts, hidden, intermediate // 2), torch.uint8),
+                "w13_scales": ((experts, 2 * intermediate, hidden // g), torch.float16), "w2_scales": ((experts, hidden, intermediate // g), torch.float16)}
+
+    def matches(self, tensors):
+        return tensors["w13_weight"].dtype == torch.uint8 and tensors["w13_scales"].dtype == torch.float16
+
+    def dequantize_matrix(self, weight, scale):
+        rows, half = weight.shape
+        values = torch.stack((weight & 15, weight >> 4), -1).view(rows, 2 * half).float() - 8
+        return (values.view(rows, -1, self.block) * scale.float()[:, :, None]).view(rows, 2 * half)
+
+
+EXPERT_FORMATS = (Int4GroupExperts(),)
+
+
+def detect(state_dict, verboseLevel=1, metadata=None):
+    return {"matched": False, "kind": "none", "details": {}}
+
+
+def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None, metadata=None):
+    return {"state_dict": state_dict, "quant_map": {}}

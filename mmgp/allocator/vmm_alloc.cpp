@@ -2005,6 +2005,22 @@ EXPORT void vmm_release_pool(int device, MempoolId id) {
     }
 }
 
+EXPORT int64_t vmm_pool_live(int device, unsigned long long first, unsigned long long second) {  // allocations alive in a graph pool
+    std::lock_guard<std::mutex> guard(lock);
+    auto found = devices.find(device);
+    if (found == devices.end()) return 0;
+    auto pool = found->second.pools.find({first, second});
+    return pool == found->second.pools.end() ? 0 : static_cast<int64_t>(pool->second.live);
+}
+
+EXPORT int vmm_in_pool(void* ptr, int device, unsigned long long first, unsigned long long second) {  // ptr starts a live allocation of that pool
+    std::lock_guard<std::mutex> guard(lock);
+    auto found = devices.find(device);
+    if (found == devices.end()) return 0;
+    auto pool = found->second.pool_of.find(reinterpret_cast<CUdeviceptr>(ptr));
+    return pool != found->second.pool_of.end() && pool->second == MempoolId{first, second};
+}
+
 EXPORT void vmm_configure(size_t large, size_t chunk, int spill_modes) {  // spill_modes: 1 pinned system RAM, 2 the driver's allocation
     std::lock_guard<std::mutex> guard(lock);
     large_threshold = large;

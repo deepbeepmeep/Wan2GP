@@ -1100,6 +1100,8 @@ def build_tool_call_label(
         return _finish_tool_call_label(label if frame is None else f"{label} at Frame {frame}")
     if normalized_name == "draw_svg":
         name = _humanize_tool_value(arguments.get("name"))
+        if arguments.get("video_id"):
+            return _finish_tool_call_label(f"Draw {name or 'SVG'} over Video")
         return _finish_tool_call_label(f"Draw {name}" if name else "Draw SVG Image")
     if normalized_name == "add_to_gallery":
         paths = arguments.get("paths")

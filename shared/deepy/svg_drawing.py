@@ -51,7 +51,8 @@ def _parse(svg: str) -> ET.Element:
     try:
         root = ET.fromstring(svg)
     except ET.ParseError as error:
-        raise ValueError(f"Invalid SVG markup: {error}.") from error
+        hint = ' A prefix such as xlink: needs its declaration on the <svg> element (xmlns:xlink="http://www.w3.org/1999/xlink"), or use plain href.' if "unbound prefix" in str(error) else ""
+        raise ValueError(f"Invalid SVG markup: {error}.{hint}") from error
     if root.tag not in ("svg", f"{{{SVG_NS}}}svg"):
         raise ValueError("The root element must be <svg>.")
     return root
@@ -240,10 +241,10 @@ PARALLEL_FRAMES = 24  # animated clips with at least this many distinct frames r
 _ROOT = Path(__file__).resolve().parents[2]
 
 
-def _render(svg: str, options: dict):
+def _render(svg: str, options: dict, mode: str):
     import resvg_py
 
-    return Image.open(io.BytesIO(bytes(resvg_py.svg_to_bytes(svg_string=svg, **options)))).convert("RGB")
+    return Image.open(io.BytesIO(bytes(resvg_py.svg_to_bytes(svg_string=svg, **options)))).convert(mode)
 
 
 def _runs(texts):
@@ -259,7 +260,7 @@ def _runs(texts):
     yield previous, repeat
 
 
-def _render_parallel(runs, options: dict, workers: int):
+def _render_parallel(runs, options: dict, mode: str, workers: int):
     """Frames of the runs in order, rendered by worker processes (svg_frame_worker) with one frame in flight each, so that no pipe can block."""
     processes = [subprocess.Popen([sys.executable, "-m", "shared.deepy.svg_frame_worker"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=_ROOT) for _ in range(workers)]
 
@@ -270,7 +271,7 @@ def _render_parallel(runs, options: dict, workers: int):
 
     try:
         for process in processes:
-            process.stdin.write(json.dumps(options).encode("utf-8") + b"\n")
+            process.stdin.write(json.dumps({"options": options, "mode": mode}).encode("utf-8") + b"\n")
         in_flight = deque()
         for process, (text, repeat) in zip(processes, runs):
             send(process, text)
@@ -283,7 +284,7 @@ def _render_parallel(runs, options: dict, workers: int):
             frame_width, frame_height = struct.unpack("<II", header)
             if frame_width == 0:
                 raise ValueError(process.stdout.read(frame_height).decode("utf-8"))
-            frame = Image.frombytes("RGB", (frame_width, frame_height), process.stdout.read(frame_width * frame_height * 3))
+            frame = Image.frombytes(mode, (frame_width, frame_height), process.stdout.read(frame_width * frame_height * len(mode)))
             if (following := next(runs, None)) is not None:
                 send(process, following[0])
                 in_flight.append((process, following[1]))
@@ -294,9 +295,9 @@ def _render_parallel(runs, options: dict, workers: int):
             process.wait()
 
 
-def render_frames(svg: str, duration: float, fps: float, width: int | None = None, height: int | None = None, background: str = "black"):
-    """RGB frames of a self-contained drawing over duration seconds. Identical consecutive frames render once (a drawing without animation
-    renders a single frame); long animations render on several worker processes at once."""
+def render_frames(svg: str, duration: float, fps: float, width: int | None = None, height: int | None = None, background: str | None = "black", mode: str = "RGB"):
+    """RGB (or RGBA) frames of a self-contained drawing over duration seconds. Identical consecutive frames render once (a drawing without
+    animation renders a single frame); long animations render on several worker processes at once."""
     if references(svg):
         raise ValueError("The drawing still has external references.")
     root = _parse(svg)
@@ -307,7 +308,7 @@ def render_frames(svg: str, duration: float, fps: float, width: int | None = Non
     options = {"width": width, "height": height, "zoom": zoom, "background": background}
     count = max(1, round(duration * fps))
     runs = _runs(frame_at(root, index / fps) for index in range(count)) if animated else iter([(svg, count)])
-    rendered = _render_parallel(runs, options, min(12, max(1, (os.cpu_count() or 2) // 2))) if animated and count >= PARALLEL_FRAMES else ((_render(text, options), repeat) for text, repeat in runs)
+    rendered = _render_parallel(runs, options, mode, min(12, max(1, (os.cpu_count() or 2) // 2))) if animated and count >= PARALLEL_FRAMES else ((_render(text, options, mode), repeat) for text, repeat in runs)
     for frame, repeat in rendered:
         if max(frame.size) > MAX_SIDE:
             raise ValueError(f"The drawing renders at {frame.width}x{frame.height}; set width or height (at most {MAX_SIDE}).")

@@ -28,8 +28,7 @@ from shared import attention_kit
 from shared.attention import pay_attention
 
 from .interrupt import GenerationInterrupted
-from . import denoiser_kernels
-from shared.kernels import int8_backend
+from shared.kernels import ops as kernels
 from .pdd import MiniMaxH3ParallelHead
 from .sol_attention import MiniMaxH3SolAttention
 from mmgp import cuda_graphs
@@ -122,27 +121,6 @@ def _take(x_list):
     return x
 
 
-def _rms_norm_(norm, tensor, chunk_bytes=256 << 20):
-    """norm(tensor) written back into tensor by chunks of tokens: the same values, without nn.RMSNorm's full-size output and temporary."""
-    rows = max(1, chunk_bytes // (tensor[0, 0].numel() * tensor.element_size()))
-    for start in range(0, tensor.shape[1], rows):
-        part = tensor[:, start:start + rows]
-        part.copy_(norm(part))
-    return tensor
-
-
-def _rope_(tensors, rope):
-    """Split-half RoPE applied in place to each tensor, with one scratch buffer."""
-    pairs = rope.shape[-2]
-    cosine, sine = rope[..., 0], rope[..., 1]
-    scratch = torch.empty_like(tensors[0][..., :pairs])
-    for tensor in tensors:
-        first, second = tensor[..., :pairs], tensor[..., pairs:2 * pairs]
-        scratch.copy_(first)
-        first.mul_(cosine).addcmul_(second, sine, value=-1)
-        second.mul_(cosine).addcmul_(scratch, sine)
-
-
 def _to_dtype(x_list, dtype):
     x = _take(x_list)
     return x if x.dtype == dtype else x.to(dtype)
@@ -192,20 +170,11 @@ class MLP(nn.Module):
         x = _take(x_list)
         expanded = self.fc1(x)
         del x
-        return self._finish(expanded, residual, residual_scale)
+        expanded_list, expanded = [expanded], None
+        return self._finish(expanded_list, residual, residual_scale)
 
-    def _finish(self, expanded, residual=None, residual_scale=None):
-        if denoiser_kernels.can_linear(self.fc2, expanded):
-            return int8_backend.linear_with_fusion(self.fc2, expanded, input_act="swiglu",
-                                                   residual=residual, residual_scale=residual_scale,
-                                                   out=residual if denoiser_kernels.DEEP_FUSIONS else None)
-        gate, value = expanded.chunk(2, dim=-1)
-        F.silu(gate, inplace=True).mul_(value)
-        del expanded, value
-        output = self.fc2(gate)
-        if residual is not None:
-            output.mul_(residual_scale).add_(residual)
-        return output
+    def _finish(self, expanded_list, residual=None, residual_scale=None):
+        return kernels.swiglu_linear(self.fc2, expanded_list, residual, residual_scale)
 
     def forward(self, x_list, residual=None, gate=None, segments=None):
         x = _take(x_list)
@@ -213,25 +182,19 @@ class MLP(nn.Module):
         if chunk_size > 0:
             chunk_size = max(1, x.shape[0] * self.hidden // (2 * self.ffn))
         if residual is not None:
-            if denoiser_kernels.DEEP_FUSIONS:
-                for offset in range(0, x.shape[0], chunk_size or x.shape[0]):
-                    end = min(x.shape[0], offset + (chunk_size or x.shape[0]))
-                    expanded = self.fc1(x[offset:end])
-                    for start, stop, row in segments:
-                        lo, hi = max(start, offset), min(stop, end)
-                        if hi > lo:
-                            output = self._finish(expanded[lo-offset:hi-offset], residual[lo:hi], gate[row].to(x.dtype))
-                            residual[lo:hi].copy_(output)
-                    del expanded
-            else:
+            for offset in range(0, x.shape[0], chunk_size or x.shape[0]):
+                end = min(x.shape[0], offset + (chunk_size or x.shape[0]))
+                expanded = self.fc1(x[offset:end])
                 for start, stop, row in segments:
-                    for offset in range(start, stop, chunk_size or max(1, stop-start)):
-                        end = min(stop, offset + (chunk_size or stop-start))
-                        output = self._project([x[offset:end]], residual[offset:end], gate[row].to(x.dtype))
-                        residual[offset:end].copy_(output)
+                    lo, hi = max(start, offset), min(stop, end)
+                    if hi > lo:
+                        output = self._finish([expanded[lo-offset:hi-offset]], residual[lo:hi], gate[row].to(x.dtype))
+                        residual[lo:hi].copy_(output)
+                del expanded
             return residual
         if chunk_size <= 0 or x.shape[0] <= chunk_size:
-            return self._project([x])
+            x_list, x = [x], None
+            return self._project(x_list)
         for start in range(0, x.shape[0], chunk_size):
             output = self._project([x[start:start + chunk_size]])
             x[start:start + output.shape[0]].copy_(output)
@@ -254,29 +217,14 @@ class Attention(nn.Module):
             from .vdn_attention import VDNHybridAttention
             self.vdn = VDNHybridAttention(hidden, heads, head_dim, dtype=dtype, device=device)
 
-    def _norm_qk(self, query, key):
-        return _rms_norm_(self.q_norm, query), _rms_norm_(self.k_norm, key)
+    def _norm_rope_(self, query, key, rope, packed_rope, allow_fusion):
+        kernels.split_half_norm_rope_(query, key, rope, packed_rope, self.q_norm, self.k_norm, allow_fusion=allow_fusion)
 
-    def _norm_rope_(self, query, key, rope, packed_rope, fused_rms):
-        """RMSNorm + RoPE in place of q and/or k (attention_kit callback, per head)."""
-        if fused_rms:
-            if query is not None and key is not None:
-                denoiser_kernels.rms_rope(query, key, rope, packed_rope, self.q_norm, self.k_norm)
-            else:  # the paired kernels normalize each (token, head) row on its own: the two halves of the heads form the pair
-                tensor, norm = (query, self.q_norm) if key is None else (key, self.k_norm)
-                half = tensor.shape[2] // 2
-                denoiser_kernels.rms_rope(tensor[:, :, :half], tensor[:, :, half:], rope, packed_rope, norm, norm)
-            return
-        tensors = [(tensor, norm) for tensor, norm in ((query, self.q_norm), (key, self.k_norm)) if tensor is not None]
-        for tensor, norm in tensors:
-            _rms_norm_(norm, tensor)
-        if rope is not None:
-            _rope_([tensor for tensor, _ in tensors], rope)
-
-    def _out_projection(self, attention, seq_len, residual, gate, segments):
-        output = attention.reshape(seq_len, -1)
+    def _out_projection(self, attention_list, seq_len, residual, gate, segments):
+        output = _take(attention_list).reshape(seq_len, -1)
         if residual is not None:
-            return denoiser_kernels.gated_linear(self.out_proj, output, residual, gate, segments)
+            output_list, output = [output], None
+            return kernels.gated_linear(self.out_proj, output_list, residual, gate, segments)
         return self.out_proj(output)
 
     def forward(self, x_list, rope=None, transformer_options=None, residual=None, gate=None, segments=None, input_again=None):
@@ -288,14 +236,15 @@ class Attention(nn.Module):
         packed_rope = None
         if isinstance(rope, tuple):
             rope, packed_rope = rope
-        fused_rms = rope is not None and not use_sol and not hasattr(self, "vdn") and denoiser_kernels.can_rms(x, packed_rope, self.q_norm, self.k_norm)
+        allow_fusion = not use_sol and not hasattr(self, "vdn")
         split_qkv = hasattr(self, "q_proj")
         if split_qkv and not use_sol and not hasattr(self, "vdn"):
             x_list, x = [x], None
             attention = attention_kit.qkv_attention(x_list, self.q_proj, self.k_proj, self.v_proj, self.heads, self.head_dim,
-                                                    lambda query, key, group: self._norm_rope_(query, key, rope, packed_rope, fused_rms),
+                                                    lambda query, key, group: self._norm_rope_(query, key, rope, packed_rope, allow_fusion),
                                                     attention_fn=self.veda if use_veda else None)
-            return self._out_projection(attention, seq_len, residual, gate, segments)
+            attention_list, attention = [attention], None
+            return self._out_projection(attention_list, seq_len, residual, gate, segments)
         if split_qkv and hasattr(self, "vdn"):  # VDN projects q, k and v when it needs them: its linear branch reads them raw
             x_list, x, vdn_input = [x], None, None
             return self.vdn(x_list, (self.q_proj, self.k_proj, self.v_proj), lambda query, key: self._norm_rope_(query, key, rope, packed_rope, False),
@@ -304,13 +253,12 @@ class Attention(nn.Module):
             x_list, x = [x], None
             attention = self.sol_attention.attention(x_list, (self.q_proj, self.k_proj, self.v_proj), (self.q_norm, self.k_norm), rope,
                                                      self.q_norm.eps, self.heads, self.head_dim)
-            return self._out_projection(attention, seq_len, residual, gate, segments)
+            attention_list, attention = [attention], None
+            return self._out_projection(attention_list, seq_len, residual, gate, segments)
         if split_qkv:
             projections = (self.q_proj, self.k_proj, self.v_proj)
-            if denoiser_kernels.DEEP_FUSIONS and all(denoiser_kernels.can_linear(layer, x) for layer in projections):
-                query, key, value = int8_backend.linear_multi(projections, x)
-            else:
-                query, key, value = (layer(x) for layer in projections)
+            x_list, x = [x], None
+            query, key, value = kernels.project_many(projections, x_list)
             x = None  # only the projections read it: released before the norms, at the peak of the block
             query = query.view(1, seq_len, self.heads, self.head_dim)
             key = key.view(1, seq_len, self.heads, self.head_dim)
@@ -331,21 +279,18 @@ class Attention(nn.Module):
             vdn_input = query = key = value = None
             return self.vdn(x_handoff, qkv, lambda query, key: self._norm_rope_(query, key, rope, packed_rope, False), self.out_proj)
         if use_sol:
-            from shared.sol_attn import qk_rms_norm_rope_
-            qk_rms_norm_rope_(query, key, self.q_norm.weight, self.k_norm.weight, rope, self.q_norm.eps)
-        elif fused_rms:
-            query, key = denoiser_kernels.rms_rope(query, key, rope, packed_rope, self.q_norm, self.k_norm)
+            kernels.sol_rms_rope_(query, self.q_norm.weight, rope, self.q_norm.eps)
+            kernels.sol_rms_rope_(key, self.k_norm.weight, rope, self.k_norm.eps)
         else:
-            query, key = self._norm_qk(query, key)
+            self._norm_rope_(query, key, rope, packed_rope, allow_fusion)
         qkv_list = [query, key, value]
         del query, key, value
-        if rope is not None and not use_sol and not fused_rms:
-            _rope_(qkv_list[:2], rope)
         if use_veda:
             attention = self.veda(qkv_list, attention_kit.HeadGroup(range(self.heads), range(self.heads), None))
         else:
             attention = pay_attention(qkv_list, recycle_q=True) if self.sol_attention is None else self.sol_attention(qkv_list, use_sol)
-        return self._out_projection(attention, seq_len, residual, gate, segments)
+        attention_list, attention = [attention], None
+        return self._out_projection(attention_list, seq_len, residual, gate, segments)
 
 
 class RefinerBlock(nn.Module):
@@ -401,18 +346,11 @@ class AdalnProj(nn.Module):
         return output.chunk(self.expand, dim=-1)
 
 
-def _modulate(hidden, shift_scale_list, segments):
-    shift, scale = shift_scale_list
-    shift_scale_list.clear()
-    shift, scale = shift.to(hidden.dtype), scale.to(hidden.dtype)
-    for start, stop, row in segments:
-        hidden[start:stop].mul_(1.0 + scale[row]).add_(shift[row])
-    return hidden
-
-
 def _norm_modulate(norm, hidden, shift_scale, segments):
-    output = denoiser_kernels.norm_modulate(hidden, norm, *shift_scale, segments)
-    return _modulate(norm(hidden), shift_scale, segments) if output is None else output
+    # Hidden is the borrowed residual; only the normalized result is disposable.
+    shift, scale = shift_scale
+    shift_scale.clear()
+    return kernels.norm_modulate([hidden], norm, shift, scale, segments)
 
 
 def _gated_residual(hidden_list, gate_list, branch_list, segments):
@@ -458,8 +396,8 @@ class DiTBlock(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
         h_list = [_norm_modulate(self.norm1, residual_list[0], [shift_msa, scale_msa], segments)]
         if (not residual_signature_elements and not hasattr(self.attn, 'vdn')
-                and denoiser_kernels.can_linear(self.attn.out_proj, residual_list[0])
-                and denoiser_kernels.can_linear(self.mlp.fc2, residual_list[0])):
+                and kernels.can_linear(self.attn.out_proj, residual_list[0])
+                and kernels.can_linear(self.mlp.fc2, residual_list[0])):
             hidden = self.attn(h_list, rope=rope, residual=residual_list[0], gate=gate_msa, segments=segments)
             h_list = [_norm_modulate(self.norm2, hidden, [shift_mlp, scale_mlp], segments)]
             return self.mlp(h_list, residual=hidden, gate=gate_mlp, segments=segments)
@@ -745,7 +683,7 @@ class MiniMaxH3Model(nn.Module):
     def _layout(self, text_tags, latent_t, latent_h, latent_w, audio_t, payload):
         target_spatial_context = payload.get("target_spatial_context")
         signature = (text_tags.numel(), latent_t, latent_h, latent_w, audio_t,
-                     payload["fps"],
+                     payload["fps"], payload.get("audio_time_offset", 0.0),
                      target_spatial_context,
                      payload.get("target_audio_condition_latents", 0),
                      payload.get("target_video_condition_frames", 0),
@@ -769,13 +707,13 @@ class MiniMaxH3Model(nn.Module):
                                                       keyframe_anchors=anchors, audio_condition_anchors=audio_anchors,
                                                       target_condition_audio_latents=target_audio_condition_latents,
                                                       target_condition_video_frames=target_video_condition_frames,
-                                                      target_spatial_context=target_spatial_context)
+                                                       target_spatial_context=target_spatial_context, audio_time_offset=payload.get("audio_time_offset", 0.0))
             else:
                 layout = build_packed_sequence(text_tags, latent_t, latent_h, latent_w, audio_t, self.patch_size,
                                                anchors, video_time_scale, audio_condition_anchors=audio_anchors,
                                                target_condition_audio_latents=target_audio_condition_latents,
                                                target_condition_video_frames=target_video_condition_frames,
-                                               target_spatial_context=target_spatial_context)
+                                               target_spatial_context=target_spatial_context, audio_time_offset=payload.get("audio_time_offset", 0.0))
         payload["layout_signature"], payload["layout"] = signature, layout
         return layout
 
@@ -960,8 +898,8 @@ class MiniMaxH3Model(nn.Module):
         self.sol_attention.begin_forward(layout, device, dtype, payload["attention_sparsity"], target_video_order is not None)
         if hasattr(self, "veda_attention"):
             self.veda_attention.begin_forward(layout, (latent_t, latent_h // self.patch_size[1], latent_w // self.patch_size[2]), payload, device, dtype)
-        if not self.sol_attention.enabled and not hasattr(self.blocks[0].attn, "vdn"):
-            rope = denoiser_kernels.prepare_rope(rope)
+        if not hasattr(self.blocks[0].attn, "vdn"):  # Sol layers ignore the Kitchen table; shorter sequences use it
+            rope = kernels.prepare_split_half_rope(rope)
         if vdn := getattr(self.blocks[0].attn, "vdn", None):
             for block in self.blocks:
                 block.attn.vdn.begin_forward(layout, latent_t, latent_h, latent_w, self.patch_size)

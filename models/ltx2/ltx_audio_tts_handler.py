@@ -6,6 +6,7 @@ import warnings
 import torch
 
 from postprocessing.seedvc_processor import assets as seedvc_assets, component as seedvc_component
+from shared.deepy.assets import whisper_download_def, whisper_model_name
 from shared.utils import files_locator as fl
 from shared.utils.hf import build_hf_url
 
@@ -21,9 +22,6 @@ LTX23_AUDIO_VAE_FILENAME = "ltx-2.3-22b_audio_vae.safetensors"
 LTX23_VOCODER_FILENAME = "ltx-2.3-22b_vocoder.safetensors"
 LTX23_TEXT_EMBEDDING_PROJECTION_FILENAME = "ltx-2.3-22b_text_embedding_projection.safetensors"
 LTX23_EMBEDDINGS_CONNECTOR_FILENAME = "ltx-2.3-22b_embeddings_connector.safetensors"
-SCENEMA_WHISPER_MEDIUM_REPO = "DeepBeepMeep/Wan2.1"
-SCENEMA_WHISPER_MEDIUM_DIR = "whisper_medium"
-SCENEMA_WHISPER_MEDIUM_FILES = ["config.json", "model.safetensors"]
 SCENEMA_KOKORO_DIR = "kokoro"
 SCENEMA_KOKORO_VOICE_DIR = "kokoro/voices"
 SCENEMA_KOKORO_FILES = ["config.json", "kokoro-v1_0.pth"]
@@ -351,11 +349,7 @@ def _get_scenema_download_def():
             "sourceFolderList": [_GEMMA_FOLDER],
             "fileList": [LTX_AUDIO_TTS_TOKENIZER_FILES],
         },
-        {
-            "repoId": SCENEMA_WHISPER_MEDIUM_REPO,
-            "sourceFolderList": [SCENEMA_WHISPER_MEDIUM_DIR],
-            "fileList": [SCENEMA_WHISPER_MEDIUM_FILES],
-        },
+        whisper_download_def(),
         {
             "repoId": SCENEMA_REPO_ID,
             "sourceFolderList": [SCENEMA_KOKORO_DIR, SCENEMA_KOKORO_VOICE_DIR, SCENEMA_KOKORO_G2P_DIR],
@@ -376,18 +370,14 @@ def _get_dramabox_download_def():
             "sourceFolderList": [_GEMMA_FOLDER],
             "fileList": [LTX_AUDIO_TTS_TOKENIZER_FILES],
         },
-        {
-            "repoId": SCENEMA_WHISPER_MEDIUM_REPO,
-            "sourceFolderList": [SCENEMA_WHISPER_MEDIUM_DIR],
-            "fileList": [SCENEMA_WHISPER_MEDIUM_FILES],
-        },
+        whisper_download_def(),
     ]
 
 
 def _load_alignment_whisper():
-    from shared.deepy.transcription import _load_whisper_medium
+    from shared.deepy.transcription import load_whisper
 
-    alignment_whisper = _load_whisper_medium(torch.device("cpu"))
+    alignment_whisper = load_whisper(whisper_model_name(), torch.device("cpu"))
     alignment_heads = alignment_whisper.alignment_heads
     del alignment_whisper._buffers["alignment_heads"]
     object.__setattr__(alignment_whisper, "alignment_heads", alignment_heads)

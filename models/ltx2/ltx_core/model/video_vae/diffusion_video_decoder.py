@@ -20,7 +20,7 @@ import torch
 from shared.utils.phase_progress import GenerationAborted, PhaseProgress
 import torch.nn.functional as F
 from einops import rearrange
-from packaging.version import InvalidVersion, Version
+from shared.kernels import vae_ops
 from torch import nn
 from tqdm import tqdm
 
@@ -34,32 +34,13 @@ from .tiling import TilingConfig, compute_trapezoidal_mask_1d
 _NA_SCORE_BUDGET = 2**25
 _NA_KV_STACK_BUDGET = 2**28
 _MLP_TOKEN_CHUNK = 4096
-_MIN_TRITON_VERSION = Version("3.2.0")
-
-
-def _triton_status() -> tuple[bool, str]:
-    try:
-        import triton
-    except (ImportError, OSError):
-        return False, "not installed"
-    try:
-        version = Version(triton.__version__)
-    except InvalidVersion:
-        return False, f"unknown version {triton.__version__}"
-    if version < _MIN_TRITON_VERSION:
-        return False, str(version)
-    if not torch.cuda.is_available():
-        return False, f"{version}, CUDA unavailable"
-    return True, str(version)
-
-
-_TRITON_NA_AVAILABLE, _TRITON_VERSION = _triton_status()
+_TRITON_NA_AVAILABLE, _TRITON_VERSION = vae_ops.neighborhood_status()
 
 
 def _attention_backend_message() -> str:
     if _TRITON_NA_AVAILABLE:
         return f"Triton {_TRITON_VERSION}"
-    return f"eager tiled SDPA (Triton {_TRITON_VERSION}; minimum {_MIN_TRITON_VERSION})"
+    return f"eager tiled SDPA (Triton {_TRITON_VERSION}; minimum 3.2.0)"
 
 
 class _DecodeInterrupted(GenerationAborted):
@@ -275,20 +256,12 @@ def _na3d_eager(qkv_list: list[torch.Tensor], kernel_size: tuple[int, int, int])
 
 
 def _na3d(qkv_list: list[torch.Tensor], kernel_size: tuple[int, int, int]) -> torch.Tensor:
-    if _TRITON_NA_AVAILABLE and qkv_list[0].is_cuda:
-        from .triton_na import na3d
-
-        return na3d(qkv_list, kernel_size)
-    return _na3d_eager(qkv_list, kernel_size)
+    return vae_ops.neighborhood_attention(qkv_list, kernel_size, _na3d_eager)
 
 
 def _joint_na3d(qkv_list: list[torch.Tensor], keyframe_times: torch.Tensor, kernel_size: tuple[int, int, int]) -> tuple[torch.Tensor, torch.Tensor]:
-    if _TRITON_NA_AVAILABLE and qkv_list[0].is_cuda:
-        from .triton_na import joint_na3d
-
-        time = qkv_list[0].shape[1]
-        return joint_na3d(qkv_list, video_keyframe_slots(keyframe_times, time), keyframe_video_slots(keyframe_times, time), kernel_size)
-    return joint_na3d_eager(qkv_list, keyframe_times, kernel_size)
+    return vae_ops.neighborhood_attention(qkv_list, kernel_size, joint_na3d_eager, keyframe_times=keyframe_times,
+                                          slots=(video_keyframe_slots, keyframe_video_slots))
 
 
 class NeighborhoodAttention3D(nn.Module):

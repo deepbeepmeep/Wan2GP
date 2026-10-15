@@ -3,6 +3,29 @@
 import torch
 from torch._subclasses.fake_tensor import is_fake
 
+_ROW_SLICE_BYTES = 64 << 20  # scratch of the activation rows quantized at a time: 4-bit values and their group scales
+_ROW_SLICE_MIN = 32768  # rows per W4A4 GEMM: its FP4 GEMM loses up to 10 % on fewer rows at some shapes
+
+
+def w4a4_linear(ops, x, weight, bias, fp4, alpha, wcscales, act_unsigned):
+    """Nunchaku's W4A4 linear of x (M, K): activations (and the low-rank branch input) quantized and multiplied by slices of 256-row
+    tiles when x spans two or more, each written to its rows of the output, so that their quantized copy never exceeds one slice. The
+    quantization is per row, so the slices compute what the whole tensor does."""
+    rows, k = x.shape
+    out = torch.empty((-(-rows // 256) * 256, weight.shape[0]), dtype=weight._proj_up.dtype, device=x.device)
+    if bias is not None and bias.dtype != out.dtype:
+        bias = bias.to(out.dtype)
+    step = max(_ROW_SLICE_MIN, _ROW_SLICE_BYTES // (k // 2 + k // 16) // 256 * 256)
+    step = -(-rows // (max(1, rows // step) * 256)) * 256  # slices of even size, none below the minimum
+    for start in range(0, rows, step):
+        qx, ascales, lora_act = ops.svdq_quantize_w4a4_act_fuse_lora_cuda(x[start:start + step], lora_down=weight._proj_down,
+                                                                          smooth=weight._smooth_factor, fp4=fp4, pad_size=256)
+        ops.svdq_gemm_w4a4_cuda(act=qx, wgt=weight._qweight, out=out[start:start + qx.shape[0]], ascales=ascales, wscales=weight._wscales,
+                                lora_act_in=lora_act, lora_up=weight._proj_up, bias=bias, fp4=fp4, alpha=alpha, wcscales=wcscales,
+                                act_unsigned=act_unsigned)
+        del qx, ascales, lora_act
+    return out[:rows]
+
 
 class NunchakuRowProjection:
     def __init__(self, handler):

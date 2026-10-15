@@ -5,6 +5,7 @@ import torch.utils.checkpoint
 from torch import nn
 from transformers.modeling_outputs import BaseModelOutputWithPooling
 from transformers.modeling_utils import PreTrainedModel
+from shared.kernels import ops
 
 from .configuration_neo_vit import NEOVisionConfig
 
@@ -73,13 +74,7 @@ def apply_rotary_emb_1d(
     cos = cos_cached[positions] # Shape: (positions.shape, dim_part / 2)
     sin = sin_cached[positions] # Shape: (positions.shape, dim_part / 2)
     
-    x1 = x[..., 0::2]
-    x2 = x[..., 1::2]
-    
-    scratch.copy_(x1)
-    x1.mul_(cos).addcmul_(x2, sin, value=-1)
-    x2.mul_(cos).addcmul_(scratch, sin)
-    return x
+    return ops.paired_rope_(x, cos, sin, scratch, interleaved=True)
 
 
 def apply_2d_rotary_pos_emb(

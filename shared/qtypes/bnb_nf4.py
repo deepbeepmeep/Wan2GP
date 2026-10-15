@@ -19,10 +19,14 @@ try:
     from bitsandbytes.autograd._functions import matmul_4bit as _bnb_matmul_4bit
     from bitsandbytes.functional import dequantize_4bit as _bnb_dequantize_4bit
     from bitsandbytes.functional import QuantState as _BNBQuantState
+    from bitsandbytes import cextension as _bnb_cextension
 except Exception:  # pragma: no cover
     _bnb_matmul_4bit = None
     _bnb_dequantize_4bit = None
     _BNBQuantState = None
+    _bnb_cextension = None
+# bitsandbytes 4-bit CUDA ops need its native GPU library, which it replaces with an error-raising mock when it cannot load one
+_BNB_GPU_LIBRARY = _bnb_cextension is not None and isinstance(_bnb_cextension.lib, _bnb_cextension.CudaBNBNativeLibrary)
 
 
 HANDLER_NAME = "bnb_nf4"
@@ -49,7 +53,6 @@ _BNB_NF4_SPLIT_FIELDS = {
 _BNB_NF4_SHARE_FIELDS = ("weight.quant_map",)
 
 _BNB_NF4_KERNEL_LOGGED = False
-_BNB_NF4_KERNEL_FAILED_LOGGED = False
 _BNB_NF4_FALLBACK_LOGGED = False
 _BNB_NF4_DEQUANT_FALLBACK_LOGGED = False
 
@@ -77,13 +80,6 @@ def _note_kernel():
     if not _BNB_NF4_KERNEL_LOGGED:
         print("BNB NF4: using bitsandbytes 4-bit kernels.")
         _BNB_NF4_KERNEL_LOGGED = True
-
-
-def _note_kernel_failed(exc):
-    global _BNB_NF4_KERNEL_FAILED_LOGGED
-    if not _BNB_NF4_KERNEL_FAILED_LOGGED:
-        print(f"BNB NF4: bitsandbytes kernel unavailable ({type(exc).__name__}: {exc}); using fallback.")
-        _BNB_NF4_KERNEL_FAILED_LOGGED = True
 
 
 def _state_from_tensor(tensor):
@@ -286,7 +282,7 @@ def _dequantize_bnb_nf4_weight(weight_u8, absmax, quant_map, shape, blocksize, d
 def _bnb_nf4_linear(input, weight, bias=None):
     if torch.is_tensor(input) and _is_fake_tensor(input):
         return input.new_empty((*input.shape[:-1], weight.size(0)))
-    if torch.is_tensor(input) and _bnb_matmul_4bit is not None:
+    if torch.is_tensor(input) and _bnb_matmul_4bit is not None and (input.device.type != "cuda" or _BNB_GPU_LIBRARY):
         bias_arg = bias
         if bias_arg is not None and torch.is_tensor(bias_arg):
             if bias_arg.device != input.device or bias_arg.dtype != input.dtype:
@@ -294,11 +290,8 @@ def _bnb_nf4_linear(input, weight, bias=None):
         quant_state = weight.bnb_quant_state(input.device)
         packed_weight = weight._data if weight._data.device == input.device else weight._data.to(input.device)
         if input.device.type == "cuda" and input.numel() == input.shape[-1] and input.shape[-1] % weight._blocksize == 0:
-            try:
-                _note_kernel()
-                return _bnb_matmul_4bit(input, packed_weight.t(), quant_state=quant_state, bias=bias_arg)
-            except Exception as exc:
-                _note_kernel_failed(exc)
+            _note_kernel()
+            return _bnb_matmul_4bit(input, packed_weight.t(), quant_state=quant_state, bias=bias_arg)
         if _bnb_dequantize_4bit is not None:
             _note_bnb_dequant_fallback()
             qweight = _bnb_dequantize_4bit(packed_weight, quant_state).to(input.dtype)

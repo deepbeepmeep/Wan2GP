@@ -35,6 +35,8 @@ from .veda.attention import generation_context as veda_generation_context
 
 AUDIO_SAMPLE_RATE = 32000
 AUDIO_LATENT_FPS = 40
+# Allow audio repair before the final overlap frame; False restores the original continuation behavior.
+H3_EXTENDED_AUDIO_REPAIR = True
 SOL_ATTN_TAU_END = 0.8
 H3_TWO_PHASE_SCALE = 2.0
 H3_PHASE_2_SIGMAS = (H3_PHASE_2_NOISE_LEVEL_START_DEFAULT, 0.6316, 0.3158, 0.0)
@@ -821,8 +823,13 @@ class MiniMaxH3Pipeline:
             frame_num = frozen_control_video.shape[1]
         history_frames = continuation[:, -continuation_count:-1] if continuation_count > 1 else None
         history_count = 0 if history_frames is None else history_frames.shape[1]
-        if audio_conditioning_end is not None and audio_conditioning_end < history_count / fps:
-            raise ValueError("H3 native continuation regenerates only the last overlap frame's audio; the source soundtrack ends too early to repair this join.")
+        audio_start_seconds = history_count / fps
+        if audio_conditioning_end is not None and audio_conditioning_end < audio_start_seconds:
+            if not H3_EXTENDED_AUDIO_REPAIR:
+                raise ValueError("H3 native continuation regenerates only the last overlap frame's audio; the source soundtrack ends too early to repair this join.")
+            # Regenerate the missing history tail on the audio grid while retaining every copied video frame.
+            audio_start_seconds = max(0, math.floor(audio_conditioning_end * AUDIO_LATENT_FPS) / AUDIO_LATENT_FPS)
+        audio_time_offset = (audio_start_seconds - history_count / fps) * AUDIO_LATENT_FPS
         target_frames = frame_num - history_count
         aligned_target_frames = 1 if image_outputs else normalize_frame_count(target_frames, 5, 17, 5)
         if target_frames <= 0:
@@ -970,15 +977,17 @@ class MiniMaxH3Pipeline:
             if waveform is not None:
                 overlap_samples = round(continuation_count / fps * AUDIO_SAMPLE_RATE)
                 continuation_waveform = _fit_audio_samples(waveform[0], overlap_samples).unsqueeze(0)
-                history_samples = round(history_count / fps * AUDIO_SAMPLE_RATE)
+                history_samples = round(audio_start_seconds * AUDIO_SAMPLE_RATE)
                 history_waveform = continuation_waveform[..., :history_samples] if history_samples else None
                 continuation_audio = self._encode_audio(continuation_waveform)
                 boundary_latents = (continuation_audio.shape[-1] if not history_count else
                                     min(continuation_audio.shape[-1], max(1, round(AUDIO_LATENT_FPS / fps))))
                 history_latents = continuation_audio.shape[-1] - boundary_latents
+                if audio_time_offset < 0:
+                    history_latents = round(audio_start_seconds * AUDIO_LATENT_FPS)
                 if audio_conditioning_end is not None:
                     condition_tokens = max(0, math.floor(audio_conditioning_end * AUDIO_LATENT_FPS + 1e-9))
-                    boundary_tokens = max(0, math.floor((audio_conditioning_end - history_count / fps) * AUDIO_LATENT_FPS + 1e-9))
+                    boundary_tokens = max(0, math.floor((audio_conditioning_end - audio_start_seconds) * AUDIO_LATENT_FPS + 1e-9))
                     condition_tokens = min(condition_tokens, history_latents + boundary_tokens)
                     continuation_audio = continuation_audio[..., :condition_tokens]
                 if history_latents:
@@ -1044,15 +1053,15 @@ class MiniMaxH3Pipeline:
         for reference_audio in self._prepare_audio_references(reference_sources):
             self._add_audio_reference(reference_audio, presentation, audio_latents, refs)
         if (refinement_mode or soundtrack or not self.reference_mode or self.fixed_prompt is not None) and any(flag in (audio_prompt_type or "") for flag in "AK") and waveform is not None:
-            condition_start = round(history_count / fps * AUDIO_SAMPLE_RATE)
-            condition_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)
+            condition_start = round(audio_start_seconds * AUDIO_SAMPLE_RATE)
+            condition_samples = round((target_frames / fps - audio_time_offset / AUDIO_LATENT_FPS) * AUDIO_SAMPLE_RATE)
             condition_waveform = waveform[..., condition_start:condition_start + condition_samples]
             if condition_waveform.shape[-1]:
                 target_audio_condition = self._encode_audio(condition_waveform)
         elif control_known_frames is not None and waveform is not None:
             target_audio_condition = self._encode_audio(waveform[..., :round(control_known_frames.shape[1] / fps * AUDIO_SAMPLE_RATE)])
         if target_audio_condition is not None and audio_conditioning_end is not None:
-            condition_tokens = max(0, math.floor((audio_conditioning_end - history_count / fps) * AUDIO_LATENT_FPS + 1e-9))
+            condition_tokens = max(0, math.floor((audio_conditioning_end - audio_start_seconds) * AUDIO_LATENT_FPS + 1e-9))
             target_audio_condition = target_audio_condition[..., :condition_tokens]
         if self.reference_mode:
             visual_ref_count = sum(ref["kind"] in ("image", "video", "video_audio") for ref in refs)
@@ -1114,7 +1123,7 @@ class MiniMaxH3Pipeline:
 
         latent_t = video_latent_frames(aligned_target_frames)
         latent_h, latent_w = math.ceil(height / 16), math.ceil(width / 16)
-        audio_t = round(aligned_target_frames / fps * AUDIO_LATENT_FPS)
+        audio_t = round(aligned_target_frames / fps * AUDIO_LATENT_FPS - audio_time_offset)
         generator = torch.Generator(device="cpu").manual_seed(int(seed))
         cond_video_rows, cond_audio_rows = self._prepare_condition_rows(visual_latents, audio_latents, generator)
         target_video_condition_frames = 0 if target_video_condition is None else target_video_condition.shape[2]
@@ -1140,7 +1149,7 @@ class MiniMaxH3Pipeline:
         payload = {"keyframes": keyframes or None, "audio_keyframes": audio_keyframes or None,
                    "refs": refs or None, "cond_video_rows": cond_video_rows,
                    "cond_audio_rows": cond_audio_rows, "frame_count": aligned_target_frames, "text_token_tags": text_tags,
-                   "fps": fps, "target_audio_condition_latents": target_audio_condition_latents,
+                   "fps": fps, "audio_time_offset": audio_time_offset, "target_audio_condition_latents": target_audio_condition_latents,
                    "target_video_condition_frames": target_video_condition_frames,
                    "attention_sparsity": float(attention_sparsity)}
         if control_rows is not None:
@@ -1663,7 +1672,7 @@ class MiniMaxH3Pipeline:
             source_latents = source_noise = source_buffer = editable_mask = None
             payload = {"keyframes": None, "audio_keyframes": None, "refs": None, "cond_video_rows": None,
                        "cond_audio_rows": None, "frame_count": aligned_target_frames, "text_token_tags": text_tags,
-                       "fps": fps, "target_audio_condition_latents": 0,
+                       "fps": fps, "audio_time_offset": audio_time_offset, "target_audio_condition_latents": 0,
                        "target_video_condition_frames": target_video_condition_frames,
                        "attention_sparsity": float(attention_sparsity)}
             active_loras = list(getattr(self.transformer, "_loras_active_adapters", ()))
@@ -1710,11 +1719,10 @@ class MiniMaxH3Pipeline:
             set_progress_status("Decoding H3 Stereo Audio")
         decoded_audio = self.audio_vae.decode(audio)[0]
         audio = None
-        target_samples = round(target_frames / fps * AUDIO_SAMPLE_RATE)
+        target_samples = round((target_frames / fps - audio_time_offset / AUDIO_LATENT_FPS) * AUDIO_SAMPLE_RATE)
         decoded_audio = _fit_audio_samples(decoded_audio, target_samples) if self.audio_only else decoded_audio[..., :target_samples]
 
         output_prefix = history_frames
-        output_prefix_count = history_count
         if output_prefix is not None:
             if (two_phase or self.vae.upsampling) and output_prefix.shape[-2:] != decoded_video.shape[-2:]:
                 output_prefix = _resize_video(output_prefix, decoded_video.shape[-2], decoded_video.shape[-1])
@@ -1722,10 +1730,10 @@ class MiniMaxH3Pipeline:
                 output_prefix = output_prefix.clamp(-1.0, 1.0).add_(1.0).mul_(127.5).round_().to(torch.uint8) if tiled_phase_2 else to_uint8(output_prefix)
             decoded_video = torch.cat((output_prefix.to(decoded_video), decoded_video), dim=1)
             if history_waveform is not None:
-                prefix_samples = round(output_prefix_count / fps * AUDIO_SAMPLE_RATE)
+                prefix_samples = round(audio_start_seconds * AUDIO_SAMPLE_RATE)
                 prefix_audio = _fit_audio_samples(history_waveform[0].to(decoded_audio), prefix_samples)
             else:
-                prefix_samples = round(output_prefix_count / fps * AUDIO_SAMPLE_RATE)
+                prefix_samples = round(audio_start_seconds * AUDIO_SAMPLE_RATE)
                 prefix_audio = torch.zeros((2, prefix_samples), dtype=decoded_audio.dtype, device=decoded_audio.device)
             decoded_audio = torch.cat((prefix_audio, decoded_audio), dim=1)
 

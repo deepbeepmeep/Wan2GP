@@ -18,13 +18,13 @@ from shared.deepy import video_tools as deepy_video_tools
 from shared.deepy.audio_inspection import speech_intervals
 from shared.deepy.assets import (
     WHISPER_MEDIUM_CONFIG_FILENAME,
+    WHISPER_MEDIUM_DOWNLOAD_DEF,
     WHISPER_MEDIUM_FOLDER,
-    WHISPER_MEDIUM_REPO,
     WHISPER_MEDIUM_REQUIRED_FILES,
     WHISPER_MEDIUM_WEIGHTS_FILENAME,
+    WHISPER_LARGE_V3_DOWNLOAD_DEF,
     WHISPER_LARGE_V3_FOLDER,
-    WHISPER_LARGE_V3_REPO,
-    query_deepy_download_defs,
+    whisper_model_name,
 )
 from shared.ffmpeg_setup import download_ffmpeg
 from shared.utils import files_locator as fl
@@ -58,18 +58,17 @@ def _whisper_medium_files_present(model_dir: Path | None) -> bool:
     return all((model_dir / filename).is_file() for filename in _WHISPER_MEDIUM_REQUIRED_FILES)
 
 
-def _ensure_whisper_medium_assets(model_dir: Path | None = None) -> None:
+def _ensure_whisper_medium_assets(model_dir: Path | None = None, gen=None) -> None:
     if _whisper_medium_files_present(model_dir):
         return
     from shared.utils.download import process_files_def
-    for download_def in query_deepy_download_defs():
-        process_files_def(**download_def)
+    process_files_def(**WHISPER_MEDIUM_DOWNLOAD_DEF, gen=gen)
 
 
-def _whisper_medium_dir() -> Path:
+def _whisper_medium_dir(gen=None) -> Path:
     located = fl.locate_folder(WHISPER_MEDIUM_FOLDER, error_if_none=False)
     located_path = None if located is None else Path(located).resolve()
-    _ensure_whisper_medium_assets(located_path)
+    _ensure_whisper_medium_assets(located_path, gen)
     located = fl.locate_folder(WHISPER_MEDIUM_FOLDER, error_if_none=False)
     if located is not None:
         resolved = Path(located).resolve()
@@ -80,8 +79,14 @@ def _whisper_medium_dir() -> Path:
     )
 
 
-def _load_whisper_medium(device: torch.device) -> whisper.Whisper:
-    model_dir = _whisper_medium_dir()
+def load_whisper(model_name: str, device: torch.device, **kwargs) -> whisper.Whisper:
+    """A Whisper model by name (whisper_model_name() gives the configured one); kwargs: check_cancelled, gen."""
+    return (_load_whisper_medium if model_name == "medium" else _load_whisper_large_v3)(device, **kwargs)
+
+
+def _load_whisper_medium(device: torch.device, *, check_cancelled=lambda: None, gen=None) -> whisper.Whisper:
+    check_cancelled()
+    model_dir = _whisper_medium_dir(gen)
     config_path = model_dir / WHISPER_MEDIUM_CONFIG_FILENAME
     weights_path = model_dir / WHISPER_MEDIUM_WEIGHTS_FILENAME
     if not config_path.is_file():
@@ -91,7 +96,7 @@ def _load_whisper_medium(device: torch.device) -> whisper.Whisper:
     with config_path.open("r", encoding="utf-8") as reader:
         config = json.load(reader)
     alignment_heads = str(config.get("alignment_heads", "") or "").strip()
-    return _load_whisper(config["dims"], weights_path, device, alignment_heads.encode("ascii") if alignment_heads else None)
+    return _load_whisper(config["dims"], weights_path, device, alignment_heads.encode("ascii") if alignment_heads else None, check_cancelled=check_cancelled)
 
 
 class _SkipRandomInitialization(TorchDispatchMode):
@@ -107,15 +112,22 @@ def _load_whisper(dims, weights_path, device, alignment_heads, preprocess_sd=Non
     with _SkipRandomInitialization():
         model = whisper.model.Whisper(whisper.model.ModelDimensions(**dims))
     check_cancelled()
-    # Whisper keeps normalization weights in float32 and casts projections during inference.
-    offload.load_model_data(model, str(weights_path), writable_tensors=False, default_dtype=torch.float32, preprocess_sd=preprocess_sd)
+    # The FP16 checkpoints keep their projections in FP16: Whisper casts them to the input dtype at each call, as it would FP32 copies
+    # of the same values. LayerNorm computes in FP32 with FP32 weights.
+    offload.load_model_data(model, str(weights_path), writable_tensors=False, default_dtype=None, preprocess_sd=preprocess_sd)
     check_cancelled()
+    for module in model.modules():
+        if isinstance(module, torch.nn.LayerNorm):
+            module.float()
     if alignment_heads:
         model.set_alignment_heads(alignment_heads)
     model.eval()
-    if device.type == "cuda":
-        return model.to(device=device)
-    return model.to(device=device, dtype=torch.float32)
+    return model.to(device=device)
+
+
+def _whisper_on(model, device):
+    """Whisper ready to run on `device`: its FP16 weights on CUDA; FP32 on the CPU, converted once instead of at every call."""
+    return model.to(device=device) if device.type == "cuda" else model.to(device=device, dtype=torch.float32)
 
 
 def _large_v3_state_dict(state_dict):
@@ -139,7 +151,7 @@ def _load_whisper_large_v3(device, *, check_cancelled=lambda: None, gen=None):
     check_cancelled()
     folder = fl.locate_folder(WHISPER_LARGE_V3_FOLDER, error_if_none=False)
     if not _whisper_medium_files_present(Path(folder) if folder else None):
-        process_files_def(repoId=WHISPER_LARGE_V3_REPO, sourceFolderList=[WHISPER_LARGE_V3_FOLDER], fileList=[["config.json", "model.safetensors"]], gen=gen)
+        process_files_def(**WHISPER_LARGE_V3_DOWNLOAD_DEF, gen=gen)
     check_cancelled()
     config_path = fl.locate_file(f"{WHISPER_LARGE_V3_FOLDER}/config.json")
     weights_path = fl.locate_file(f"{WHISPER_LARGE_V3_FOLDER}/model.safetensors")
@@ -215,12 +227,13 @@ def _serialize_segments(segments: list[dict[str, Any]], timestamp_type: str | No
     return serialized
 
 
-def transcribe_media(source_path: str, *, timestamp_type: str | None = None, audio_track_no: int | None = None, device: str | None = None, model_name: str = "medium", language: str | None = None, prepared_model: list | None = None, check_cancelled=lambda: None, duration_seconds: float | None = None) -> dict[str, Any]:
+def transcribe_media(source_path: str, *, timestamp_type: str | None = None, audio_track_no: int | None = None, device: str | None = None, model_name: str | None = None, language: str | None = None, prepared_model: list | None = None, check_cancelled=lambda: None, duration_seconds: float | None = None) -> dict[str, Any]:
     normalized_timestamp_type = normalize_timestamp_type(timestamp_type)
     source_path = str(source_path or "").strip()
     if len(source_path) == 0 or not os.path.isfile(source_path):
         raise FileNotFoundError(f"Media file not found: {source_path}")
     device = torch.device(device if device is not None else "cuda" if torch.cuda.is_available() else "cpu")
+    model_name = model_name or whisper_model_name()
     started = time.perf_counter()
     audio_path, temporary_paths = _prepare_audio_input(source_path, audio_track_no=audio_track_no, duration_seconds=duration_seconds)
     prepared = time.perf_counter()
@@ -229,11 +242,11 @@ def transcribe_media(source_path: str, *, timestamp_type: str | None = None, aud
     try:
         check_cancelled()
         if prepared_model is None:
-            model = {"medium": _load_whisper_medium, "large-v3": _load_whisper_large_v3}[model_name](device)
+            model = load_whisper(model_name, device)
         else:
             model = prepared_model.pop()
             check_cancelled()
-            model.to(device=device)
+        model = _whisper_on(model, device)
         check_cancelled()
         if prepared_model is not None:
             # Check at encoder/decoder boundaries, including each decoded token.

@@ -180,3 +180,28 @@ def speech_intervals(path, *, start_time=0.0, duration=None, isolated=None, marg
         else:
             spans.append([start, end])
     return [(round(float(start), 3), round(float(end), 3)) for start, end in spans if end - start >= min_speech]
+
+
+def voice_pitch(path, *, start_time=0.0, duration=None):
+    """Median fundamental frequency (Hz) of an isolated voice (a vocal stem or speech), from the autocorrelation of its clearly
+    voiced 64 ms frames between 70 and 1000 Hz, or None without enough voiced frames: female voices mostly sit above about 165 Hz,
+    male ones below. Meaningless on a full mix, whose instruments dominate the autocorrelation."""
+    command = [_get_ffmpeg_path(), "-nostdin", "-hide_banner", "-loglevel", "error", "-ss", str(start_time), "-i", str(path), *(["-t", str(duration)] if duration else []),
+               "-vn", "-af", "lowpass=f=1200", "-ac", "1", "-ar", str(SPEECH_RATE), "-f", "f32le", "pipe:1"]
+    completed = subprocess.run(command, capture_output=True)
+    if completed.returncode:
+        raise ValueError(f"Audio decoding failed: {completed.stderr.decode(errors='replace')[-1500:]}")
+    size = 1024
+    samples = np.frombuffer(completed.stdout, dtype="<f4")
+    frames = samples[: len(samples) // size * size].reshape(-1, size).astype(np.float64)
+    loud = frames[10 * np.log10(np.square(frames).mean(axis=1) + 1e-12) > -40]
+    if len(loud) < 10:
+        return None
+    loud = loud - loud.mean(axis=1, keepdims=True)
+    spectrum = np.fft.rfft(loud, 2 * size)
+    correlation = np.fft.irfft(spectrum * np.conj(spectrum), 2 * size)[:, :size]
+    low, high = SPEECH_RATE // 1000, SPEECH_RATE // 70
+    lags = low + np.argmax(correlation[:, low:high], axis=1)
+    clarity = correlation[np.arange(len(lags)), lags] / (correlation[:, 0] + 1e-12)
+    voiced = lags[clarity > 0.6]
+    return None if len(voiced) < 10 else round(float(np.median(SPEECH_RATE / voiced)), 1)

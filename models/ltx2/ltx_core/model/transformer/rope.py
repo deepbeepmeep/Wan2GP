@@ -5,7 +5,7 @@ from typing import Callable, Tuple
 
 import numpy as np
 import torch
-from ....denoiser_kernels import split_rope
+from shared.kernels.ops import compact_rope_ as split_rope
 
 
 USE_FP32_ROPE_FREQS = False

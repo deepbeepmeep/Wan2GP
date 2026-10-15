@@ -126,6 +126,10 @@ def install(mode="vmm", large_mb=256, chunk_mb=32, spill=False):
     lib.vmm_same_graph_storage.restype = ctypes.c_int
     lib.vmm_graph_storage_overlaps.argtypes = (ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int)
     lib.vmm_graph_storage_overlaps.restype = ctypes.c_int
+    lib.vmm_pool_live.argtypes = (ctypes.c_int, ctypes.c_ulonglong, ctypes.c_ulonglong)
+    lib.vmm_pool_live.restype = ctypes.c_int64
+    lib.vmm_in_pool.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_ulonglong, ctypes.c_ulonglong)
+    lib.vmm_in_pool.restype = ctypes.c_int
     _install_oom_error(lib)
     _lib, active = lib, mode
     _redirect_torch_memory_functions()
@@ -176,6 +180,16 @@ def graph_warmup(pool):
     finally:
         _warmup.depth -= 1
         _lib.vmm_end_warmup(device, *pool)
+
+
+def pool_live(pool, device=None):
+    """Number of allocations alive in a graph pool."""
+    return _lib.vmm_pool_live(_device_index(device), *pool)
+
+
+def in_pool(tensor, pool):
+    """Whether the storage of tensor is an allocation of this graph pool."""
+    return bool(_lib.vmm_in_pool(tensor.untyped_storage().data_ptr(), tensor.device.index, *pool))
 
 
 def in_graph_warmup():

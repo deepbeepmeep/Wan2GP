@@ -599,11 +599,22 @@ class DeepyPrimeTools:
         metadata = self._api_session.get_model_metadata(model_type) or {}
         return str(metadata.get("name", "") or model_type.replace("_", " ").replace("-", " ").title()).strip(), metadata
 
+    def _template_label_settings(self, template: Any) -> dict[str, Any]:
+        from shared.mcp.server import _deepy_template_settings
+
+        task, _, name = str(template).partition("/")
+        try:
+            return _deepy_template_settings(self._api_session, task, name.strip() or "default")["settings"]
+        except (KeyError, ValueError):  # an unknown task or template: the call itself reports it, the label stays generic
+            return {}
+
     def _generation_label_context(self, source: Any) -> tuple[str, str]:
         tasks = self._generation_settings(source)
         model_names = []
         media_kinds = []
         for settings in tasks:
+            if settings.get("template") and not settings.get("model_type"):  # a template reference: name the model the template runs
+                settings = {**self._template_label_settings(settings["template"]), **settings}
             model_name, metadata = self._model_label_metadata(settings.get("model_type", ""))
             if model_name and model_name not in model_names:
                 model_names.append(model_name)
@@ -683,7 +694,7 @@ class DeepyPrimeTools:
             settings = arguments.get("settings")
             if settings is None and isinstance(arguments.get("arguments"), dict):
                 settings = arguments["arguments"].get("source")
-            if settings is None and arguments.get("model_type"):
+            if settings is None and (arguments.get("model_type") or arguments.get("template")):
                 settings = arguments  # members already streamed from an incomplete settings object
             if settings is None:
                 return self.get_tool_display_name(tool_name)

@@ -156,7 +156,7 @@ class model_factory:
         mesh = merge_vertices(Mesh(mesh.vertices.float(), mesh.faces))
         mesh = decimate(mesh, max_faces or self.paint_config["default_faces"])
         bake_size = min(2 * texture_size, 4096)
-        unwrap = BackgroundUnwrap(mesh)  # xatlas runs on the CPU while the views are generated
+        unwrap = BackgroundUnwrap(mesh, max_faces=40000)  # bounded CPU regions, overlapped with view generation
         try:
             set_phase_status("Rendering Views")
             renderer = MeshRenderer(mesh.vertices, mesh.faces, None, bake_size, self.device)
@@ -181,7 +181,7 @@ class model_factory:
                 for i in range(2):
                     images[i] = images[i].resize((RENDER_SIZE, RENDER_SIZE))
             set_phase_status("Unwrapping UVs")
-            mesh = unwrap.result()
+            mesh = unwrap.result(check_abort=check_abort, progress=True)
         finally:
             unwrap.close()
         uvs = torch.stack([mesh.uvs[:, 0], 1 - mesh.uvs[:, 1]], dim=1)  # upstream reads xatlas' uvs with v up (OBJ)

@@ -85,16 +85,57 @@ class _Worker:
         payload = io.BytesIO()
         for array in arrays:
             np.save(payload, array)
-        self.output = {}
-        self.process = subprocess.Popen([sys.executable, "-I", self.SCRIPT, job, *(str(int(value)) for value in arguments)], stdin=subprocess.PIPE,
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        self.thread = threading.Thread(target=lambda: self.output.update(zip(("stdout", "stderr"), self.process.communicate(payload.getvalue()))), daemon=True)
+        self.output, self.progress = {}, None
+        read_fd, write_fd = os.pipe()
+        reader = os.fdopen(read_fd, "rb")
+        try:
+            self.process = subprocess.Popen([sys.executable, "-I", self.SCRIPT, job, *(str(int(value)) for value in arguments)], stdin=subprocess.PIPE,
+                                            stdout=subprocess.PIPE, stderr=write_fd, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except BaseException:
+            reader.close()
+            raise
+        finally:
+            os.close(write_fd)
+
+        def read_status():
+            errors = []
+            with reader:
+                for line in reader:
+                    if line.startswith(b"UV_PROGRESS "):
+                        self.progress = tuple(map(int, line.split()[1:]))
+                    else:
+                        errors.append(line)
+            self.output["stderr"] = b"".join(errors)
+
+        status_thread = threading.Thread(target=read_status, daemon=True)
+        status_thread.start()
+
+        def communicate():
+            self.output["stdout"] = self.process.communicate(payload.getvalue())[0]
+            status_thread.join()
+
+        self.thread = threading.Thread(target=communicate, daemon=True)
         self.thread.start()
 
-    def result(self, count: int) -> list[np.ndarray]:
-        self.thread.join()
+    def result(self, count: int, *, check_abort=None, progress=None) -> list[np.ndarray]:
+        if check_abort is None and progress is None:
+            self.thread.join()
+        else:
+            reported = None
+            while self.thread.is_alive():
+                if check_abort is not None:
+                    check_abort()
+                current = self.progress
+                if progress is not None and current is not None and current != reported:
+                    progress(*current)
+                    reported = current
+                self.thread.join(timeout=0.1)
+            if check_abort is not None:
+                check_abort()
         if self.process.returncode:
             raise RuntimeError(f"Mesh worker failed: {self.output['stderr'].decode(errors='replace').strip()}")
+        if progress is not None and self.progress is not None:
+            progress(*self.progress)
         stream = io.BytesIO(self.output["stdout"])
         return [np.load(stream) for _ in range(count)]
 
@@ -200,14 +241,40 @@ def unwrap_uv(mesh: Mesh, *, resolution: int = 0, padding: int = 2, max_iteratio
 class BackgroundUnwrap:
     """unwrap_uv(mesh, ...) computed in a child process (mesh_worker.py), so that it overlaps other work: xatlas keeps the GIL while it
     runs, which would stall the kernel launches of a thread. result() returns the same Mesh as unwrap_uv; close() stops the process
-    (call it on cancellation)."""
+    (call it on cancellation). max_faces bounds spatial regions instead of using a fixed grid; this path reports progress and uses
+    get_default_workers() for its CPU budget. result(progress=True) displays completed regions plus the final atlas packing."""
 
-    def __init__(self, mesh: Mesh, *, resolution: int = 0, padding: int = 2, max_iterations: int = 1, parts: int = 1):
+    def __init__(self, mesh: Mesh, *, resolution: int = 0, padding: int = 2, max_iterations: int = 1, parts: int = 1,
+                 max_faces: int | None = None):
         self.mesh = mesh
-        self.worker = _Worker("unwrap", (resolution, padding, max_iterations, parts), _xatlas_arrays(mesh))
+        if max_faces is None:
+            self.worker = _Worker("unwrap", (resolution, padding, max_iterations, parts), _xatlas_arrays(mesh))
+        else:
+            from shared.utils.utils import get_default_workers
+            self.worker = _Worker("unwrap_bounded", (resolution, padding, max_iterations, max_faces, max(1, int(get_default_workers()))), _xatlas_arrays(mesh))
 
-    def result(self) -> Mesh:
-        return _atlas_mesh(self.mesh, *self.worker.result(3))
+    def result(self, *, check_abort=None, progress=False) -> Mesh:
+        """Wait for the atlas, polling the caller's cancellation check when supplied. Close in a finally block to reap the worker."""
+        from contextlib import ExitStack
+        from tqdm import tqdm
+        from shared.utils.phase_progress import PhaseProgress
+
+        with ExitStack() as stack:
+            bar = phase = None
+
+            def update(completed, total, packing):
+                nonlocal bar, phase
+                title = "Packing UV Atlas" if packing else "Unwrapping UVs"
+                if bar is None:
+                    bar = stack.enter_context(tqdm(total=total, desc=title, unit="steps", mininterval=1 / 3))
+                    phase = stack.enter_context(PhaseProgress(total, title, "steps"))
+                if phase.title != title:
+                    bar.set_description(title)
+                    phase.title = title
+                bar.update(completed - bar.n)
+                phase.advance(completed - phase.completed)
+
+            return _atlas_mesh(self.mesh, *self.worker.result(3, check_abort=check_abort, progress=update if progress else None))
 
     def close(self):
         self.worker.close()

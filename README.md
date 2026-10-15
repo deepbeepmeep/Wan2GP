@@ -64,6 +64,21 @@ WanGP is a one-stop super app for the best open source generative models across 
 
 ## 🔥 Latest Updates : 
 
+## 15th of October 2026: WanGP v18.10 - More Drama per Gigabyte
+
+- **Flux 3 Klein 5.6B**: text-to-image generation and editing with up to **10 reference images**. Choose the distilled model for **16-step generation**, or Base for **50 steps with guidance**. Both come in BF16, INT8 ConvRot and NVFP4. The new **Prompt Helper** lets you draw layout boxes, place elements from reference images, and mark objects for removal. Boxes guide the composition; they do not act as exact pixel masks.
+
+- **Fish Audio Drama 3**: give your dialogue a cast and a performance. Write speaker lines with emotions, whispers, laughs and pauses, and clone up to **three voices** from recordings. Missing reference transcripts can be filled in automatically. Long scripts can be generated in parts while keeping recent speech as context. The **INT4 Experts** variant roughly halves the experts' memory requirements and speeds up their CPU execution, with a possible small change in delivery. Select **vLLM** for the fastest supported engine.
+
+- **New WanGP Kernels**: **WGPKernels** bring higher-precision INT8 math, with performance close to Comfy Kitchen and faster in some workloads. Results depend on the model, GPU and precision setting. Install the matching package from the [installation guide](docs/INSTALLATION.md#wgpkernels-installation), then select **WGPKernels** under *Config → Performance → INT8 Math Kernels*.
+
+- **H3 LightVAE**: a lighter **12-layer video decoder**, available in **BF16** and **INT8 ConvRot** through the **Video VAE** selector for FL2VA and Ref2VA. It keeps the original H3 encoder for start/end frames and references. Decoded detail can differ from the full VAE; selecting H3's x2 VAE upsampler uses the dedicated x2 decoder instead.
+
+- **New TaoMate H3 FL2VA Profile**: the **15 October 2026** release gets its own dated **3-step** accelerator profile, alongside the original TaoMate profile. This new LoRA is specific to **FL2VA** and downloads automatically when selected.
+
+- **Deepy Prime Got More Efficient, and a Bit Artsy**: give it a one-minute brief (an ad, a short film, a music video, a podcast clip) and it plans the shots, keeps the cast consistent from shot to shot, paces the cuts to the genre and puts music or narration under the whole film. Before handing the result over, it measures and fixes what used to slip through: black frames, unwanted cuts inside a generated shot, silent stretches and typos in on-screen text. Titles, lower thirds, labels and app screens can now be drawn over the footage with exact lettering, while subtitles stay a separate track you can switch off. 
+
+
 ## 11th of October 2026: WanGP v18.00 - Distortion of Space and Time
 
 - **LTX 2.x VAE x3 faster**: the LTX 2 VAE was rewritten in WanGP: 20s of 480p (24fps) video now takes about 28s to generate on an RTX 5090 using Profile 4. Realtime, we can see you from here...

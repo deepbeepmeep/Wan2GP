@@ -1,5 +1,6 @@
-"""Optional Kitchen VAE fusions, enabled only with the fast (approximate) kernel precision.
-fp16_conv3d accumulates in FP16; all other kernels keep the convolution math unchanged."""
+"""Optional Kitchen VAE fusions. The Q/K RMSNorm + RoPE (bit-identical to WanGP's Triton kernel, used when Triton is unavailable) is
+more precise than the PyTorch path: both kernel precisions. Fast precision only: group_norm_silu_pad3d (more precise per layer, not
+in the encoded latents) and fp16_conv3d (FP16 accumulation)."""
 import torch
 from shared.kernels import kernel_policy
 
@@ -39,8 +40,7 @@ class RotaryEmbedding(tuple):
 
 
 def prepare_rotary(cos, sin):
-    if (kernel_policy.allow_approximate() and not torch.compiler.is_compiling()
-            and _rms_rope is not None and cos.is_cuda
+    if (not torch.compiler.is_compiling() and _rms_rope is not None and cos.is_cuda
             and torch.cuda.get_device_capability(cos.device) == (12, 0)
             and torch.is_inference_mode_enabled()):
         pair = RotaryEmbedding((cos, sin))
@@ -52,8 +52,7 @@ def prepare_rotary(cos, sin):
 
 
 def can_fuse_rms_rope(x, rotary):
-    return (kernel_policy.allow_approximate() and _rms_rope is not None
-            and x.dtype in (torch.bfloat16, torch.float16) and hasattr(rotary, 'kitchen_table'))
+    return _rms_rope is not None and x.dtype in (torch.bfloat16, torch.float16) and hasattr(rotary, 'kitchen_table')
 
 
 def rms_rope(q, k, rotary, eps):

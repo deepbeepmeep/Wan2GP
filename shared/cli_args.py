@@ -30,7 +30,7 @@ def parse_wgp_args(config_filename: str, argv: Sequence[str] | None = None):
     add("--save-quantized", action="store_true", help="Save a quantized version of the current model")
     add("--convrot", action="store_true", help="Save INT8 ConvRot instead of Quanto INT8 (requires --save-quantized)")
     add("--test", action="store_true", help="Load the model and exit generation immediately")
-    add("--preload", type=str, default="0", help="Megabytes of each model to preload in VRAM with memory profiles 2, 4 and 5 (overrides the Configuration preload of every kind of output)")
+    add("--preload", type=str, default="0", help="Megabytes of each model to preload in VRAM (initial budget for dynamic profiles 1/3; overrides the Configuration preload of every kind of output)")
     add("--multiple-images", action="store_true", help="Allow inputting multiple images with image to video")
     add("--loras", type=str, default="", help="Root folder for LoRAs (default: loras)")
     add("--lora-config", type=load_lora_config, default={}, metavar="FILE", help="JSON mapping LoRA subfolder names to directory paths")

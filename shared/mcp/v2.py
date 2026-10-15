@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from .paging import PAGE_SIZE, ResultPages, strip_schema_titles
 from .resources import RESOURCE_ALIASES, RESOURCE_DESCRIPTION, WORKFLOWS_URI, guide_index, guide_sections, query_resources, resource_record
 from .state import RecoveredJob
+from shared.deepy.tool_aliases import canonical_arguments
 
 
 PAGING = {
@@ -38,6 +39,8 @@ DEEPY_USAGES = {
     "gen_speech_from_description": "Generate speech using a text-described voice",
     "gen_speech_from_sample": "Generate speech using a voice sample",
 }
+ARGUMENT_ALIASES = {"media": ("media_id", "video_id", "audio_ids"), "media_id": ("video_id", "audio_ids"), "video": ("video_id",), "audio": ("audio_ids", "audio_id"), "audio_id": ("audio_ids",), "image": ("media_id",), "mode": ("transitions",)}  # argument names agents mix up
+ACTION_SYNONYMS = {"status": ("get_job", "wait_jobs"), "job_status": ("get_job",), "jobs": ("wait_jobs",), "list_jobs": ("wait_jobs",), "search_files": ("rg",), "search": ("rg",), "grep": ("rg",), "find": ("rg", "list"), "list_files": ("list",), "trim_media": ("extract_video", "extract_audio"), "trim_video": ("extract_video",), "trim_audio": ("extract_audio",), "cut_video": ("extract_video",), "concat_videos": ("merge_videos",), "contact_sheet": ("view_media", "inspect_video"), "edit_text": ("edit",), "replace_text": ("edit",)}  # unknown action names agents try
 PER_FILE_MIX_OPTIONS = ("gains_db", "trim_start_s", "trim_duration_s", "offsets_s", "fade_in_s", "fade_out_s")  # remux_media lists aligned with audio_ids
 NAMED_OUTPUT_ACTIONS = {"create_color_frame", "create_mask", "image_channels", "extract_audio", "extract_image", "extract_video", "merge_videos", "mute_video",
                         "remove_vocals", "render_3d_views", "resize_crop", "side_by_side", "remux_media"}
@@ -46,15 +49,15 @@ MEDIA_DISCOVERY_DESCRIPTIONS = {
     "create_color_frame": "Create a solid-color Gallery image, optionally with boxes (box masks).",
     "create_mask": "Mask named objects in an image or video (Magic Mask) for image_mask/video_mask.",
     "image_channels": "Convert RGB/RGBA images, extract color channels, or combine grayscale channel images.",
-    "extract_audio": "Extract audio: media_id, optionally start_time with end_time or duration (seconds).",
-    "extract_video": "Extract a video segment: media_id with start_time, end_time or duration (seconds), or frame numbers.",
+    "extract_audio": "Extract audio: media_id, optionally start_s with end_s or duration_s.",
+    "extract_video": "Extract a video segment: media_id with start_s, end_s or duration_s, or frame numbers.",
     "inspect_media": "Answer a required question about images or 3D assets via media_id/media_ids, or exact video frames / 3D views and animation frames via media_inputs, with optional crops; no frame extraction needed.",
-    "inspect_video": "Answer question about a video from automatically sampled frames: media_id, question, optional start_time_seconds / end_time_seconds (default: the whole video).",
+    "inspect_video": "Answer question about a video from automatically sampled frames: media_id, question, optional start_s / end_s (default: the whole video).",
     "view_media": "Return images or chosen video frames, optionally cropped, sized or tiled into a contact sheet, for your own visual inspection.",
     "inspect_audio": "Measure audio/video on CPU: peak/RMS, clipping indicators, loudness and silence; optionally return a playable excerpt.",
-    "merge_videos": "Join up to 32 videos end to end (video_ids), with optional transitions between them.",
+    "merge_videos": "Join up to 32 videos end to end (media_ids), with optional transitions between them.",
     "render_3d_views": "Render views of a 3D asset at one shared scale (named views or angles, animation frame, zoom, focus) as Gallery images, or a 360-degree turntable video with turntable_s.",
-    "draw_svg": "Draw a Gallery image from SVG markup (shapes, text, gradients, filters; Gallery images or authorized files embedded).",
+    "draw_svg": "Draw a Gallery image or animated clip from SVG markup (shapes, text, gradients, filters; Gallery images or authorized files embedded), or exact on-screen text and graphics burned over a video (video_id; never subtitles).",
     "remux_media": "Copy video, combine audio, and add selectable subtitle tracks.",
     "transcribe_media": "Transcribe speech with timestamps: media_id (timestamp_type word for word timings); subtitles_path writes an SRT timed to that media.",
 }
@@ -201,7 +204,8 @@ def invocation(actions, action, arguments, *, signatures=False):
                     "usage": "Execute: action + arguments={...} following the call (* = required). Read the contract (arguments=null) for rules, defaults and examples."}
         return {"status": "discovery", "actions": compact, "usage": "Describe: action + arguments=null. Execute: action + arguments={...}."}
     if action not in actions:
-        close = sorted(difflib.get_close_matches(action, actions, n=3, cutoff=0.6) or [name for name in actions if action in name or name in action.split("_")][:3])
+        close = ([name for name in ACTION_SYNONYMS.get(action, ()) if name in actions]
+                 or sorted(difflib.get_close_matches(action, actions, n=3, cutoff=0.6) or [name for name in actions if action in name or name in action.split("_")][:3]))
         raise ValueError(f"Unknown or unavailable action: {action}. " + (f"Did you mean {' or '.join(close)}? Omit action to discover available actions." if close else f"Available actions: {', '.join(actions)}."))
     definition = actions[action]
     if arguments is None:
@@ -217,23 +221,32 @@ def invocation(actions, action, arguments, *, signatures=False):
         if action == "inspect_media" and error.validator == "oneOf":
             raise ValueError("inspect_media requires exactly one of media_id (one visual), media_ids (a list), or media_inputs (selected frames), inside arguments alongside question.")
         if action == "inspect_media" and "media_inputs" in error.path and error.validator == "type":
-            raise ValueError(f"{path}: {error.message}. media_inputs items are objects such as {{\"media_id\": \"visual:VIDEO\", \"time_seconds\": 2.5}} (or frame_no, or view for 3D, with an optional bbox); for a list of media use media_ids.")
+            raise ValueError(f"{path}: {error.message}. media_inputs items are objects such as {{\"media_id\": \"visual:VIDEO\", \"time_s\": 2.5}} (or frame_no, or view for 3D, with an optional bbox); for a list of media use media_ids.")
+        if action == "remux_media" and list(error.absolute_path) == ["ducking"] and error.validator == "type" and not isinstance(error.instance, str):
+            raise ValueError('ducking is an object, not a flag: {"tracks": [indexes in audio_ids of what dips, e.g. the music], "under": [indexes of the voices it dips under]} (0 = the first file; "video" = the soundtrack of the video), optional "depth_db". Nothing was executed.')
         if action == "remux_media" and list(error.absolute_path)[:1] == ["ducking"] and list(error.absolute_path)[1:2] in (["tracks"], ["under"]):
-            raise ValueError(f"{path}: ducking tracks and under are indexes into audio_ids (0 = the first file), not media ids, e.g. {{\"tracks\": [1], \"under\": [0]}}; \"video\" in tracks is the video's own soundtrack (with include_video_audio).")
+            raise ValueError(f"{path}: ducking tracks and under are indexes into audio_ids (0 = the first file), not media ids, e.g. {{\"tracks\": [1], \"under\": [0]}}; \"video\" in tracks or under is the video's own soundtrack (with include_video_audio), e.g. under: [\"video\"] for the speech of lip-synced shots.")
+        if action == "write_text" and list(error.absolute_path) == ["mode"] and str(error.instance).startswith("append"):
+            raise ValueError("write_text creates or overwrites a file; to add to the end of one, call the append_text action with the same path and text.")
         if action == "inspect_audio" and error.validator == "additionalProperties" and "question" in error.instance:
             raise ValueError("inspect_audio measures audio (levels, loudness, clipping, silence intervals) and answers no question: omit question. For spoken words use transcribe_media.")
-        if action == "inspect_media" and path in ("time_seconds", "frame_no") and isinstance(error.instance, list):
+        if action == "inspect_media" and path in ("time_s", "frame_no") and isinstance(error.instance, list):
             raise ValueError(f"{path} takes one value. For several frames, pass media_inputs=[{{\"media_id\": \"visual:VIDEO\", \"{path}\": value}}, ...] (one item per frame), or use inspect_video for a time range.")
         if action == "inspect_media" and "bbox" in error.path:
             raise ValueError(f"{path}: {error.message}. bbox=[x_min,y_min,x_max,y_max], integers 0..1000 relative to the full image; x_max>x_min and y_max>y_min.")
+        if error.validator == "maxItems":
+            raise ValueError(f"{path} has {len(error.instance)} items; this action takes at most {error.validator_value}: split them across calls (they may follow one another in one response). Nothing was executed.")
         if error.validator == "type" and (problem := json_string_problem(path, error.instance)):
             raise ValueError(problem)
         required = ", ".join(definition["parameters"].get("required", [])) or "none"
         expected = f"Allowed arguments: {', '.join(definition['parameters']['properties'])}." if error.validator == "additionalProperties" else f"Required arguments: {required}."
         if error.validator == "additionalProperties" and isinstance(error.instance, dict) and not error.absolute_path:
             properties = list(definition["parameters"]["properties"])
-            close = [f"{match[0]} for {name}" for name in error.instance if name not in properties and (match := difflib.get_close_matches(name, properties, n=1, cutoff=0.6))]
+            close = [f"{match[0]} for {name}" for name in error.instance if name not in properties and (match := difflib.get_close_matches(name, properties, n=1, cutoff=0.6)
+                                                                                                     or [alias for alias in ARGUMENT_ALIASES.get(name, ()) if alias in properties][:1])]
             expected += f" Did you mean {', '.join(close)}?" if close else ""
+            measured = [name for name in error.instance if name not in properties and name.removesuffix("_seconds") in ("black_ranges", "cut_times", "quiet_ranges", "sound_ends")]
+            expected += f" {', '.join(measured)}: measured and returned in the result whenever present, not requested: drop {'them' if len(measured) > 1 else 'it'}." if measured else ""
         if "example" in definition:
             raise ValueError(f"{path}: {error.message}. {expected} Call structure: {json.dumps(definition['example'], ensure_ascii=False)}")
         raise ValueError(f"{path}: {error.message}. {expected} To read the contract, repeat this call with action={action!r} and arguments=null (the entire object, not a nested value).")
@@ -291,7 +304,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
 
     model_filters = {name: {"type": "string"} for name in ("family", "base_model_type", "finetune", "model_type", "main_output", "inputs", "name")}
     model_filters["inputs"]["description"] = "Accepted media kind. For broad image-conditioned video discovery combine inputs='image' with main_output='video'; check media_inputs for the supported image roles."
-    model_filters["resolution"] = {"type": "string", "pattern": "^[1-9][0-9]*x[1-9][0-9]*$", "description": "Exact target canvas WIDTHxHEIGHT, e.g. 2048x2048. Require a recommended pixel budget in an available phase mode; unknown budgets are counted separately. Results include any phase setting to apply and block-aligned dimensions. This quality recommendation does not guarantee final dimensions after input fitting/upscaling. Use the same resolution string for generation; preset membership is unnecessary."}
+    model_filters["resolution"] = {"type": "string", "pattern": "^[1-9][0-9]*x[1-9][0-9]*$", "description": "Exact target canvas WIDTHxHEIGHT, e.g. 2048x2048. Require a recommended pixel budget in an available phase mode and respect max_width/max_height hard limits; unknown budgets are counted separately. Results include any phase setting to apply and block-aligned dimensions. This quality recommendation does not guarantee final dimensions after input fitting/upscaling. Use the same resolution string for generation; preset membership is unnecessary."}
     model_filters["capabilities"] = {"type": "array", "items": {"type": "string"}, "description": "Require every named capability. image_to_video means opening-frame support; reference_images means image reference conditioning; reference_videos means video reference conditioning, distinct from continuation or spatial control. Other examples: audio_output, video_continuation. Never relaxed by speciality matching."}
     filter_schema = {"type": "object", "properties": model_filters, "additionalProperties": False}
     search_def = paginated(action_def("Find models by name, strict capabilities or specialities, ranked by speed/size preferences. query is a literal case-insensitive substring of name, ID, family or description; filters stay strict. specialities matches all named strengths or aliases, ignoring plural forms; only when no exact matches exist, returns partial matches with missing, word-match or substring evidence. Results sort by speciality relevance, then models dedicated to the filtered main_output, then matching speed/size preferences (both, one, neither). Without query or specialities, results are compact rows; read details with wangp_model. Prime inherits its live preferences; standalone MCP is neutral. Override preferences for this request only, using 'any' for no preference. accelerated='native' uses defaults; 'profiles' offers accelerator profiles; 'none' has none. size='lighter'/'large' is relative, not GB or a quality score. templates names the ready-made recipes built on a model ('task: template', readable with the templates tool).", {"query": {"type": "string", "default": ""}, "filters": filter_schema, "specialities": {"type": "array", "items": {"type": "string", "minLength": 1}}, "preferences": {"type": "object", "properties": {"speed": {"type": "string", "enum": ["fast", "standard", "any"]}, "size": {"type": "string", "enum": ["smaller", "larger", "any"]}}, "additionalProperties": False}}))
@@ -352,7 +365,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 records = [{**core._compact_deepy_model_metadata(item), **({"specialities": [entry["name"] for entry in item["specialities"]]} if item.get("specialities") else {}),
                             **({"templates": templates[item["model_type"]]} if item["model_type"] in templates else {}), **({"missing_capabilities": missing[item["model_type"]]} if fewest else {})} for item in records]
                 if not filters["query"] and not specialities:  # browsing: identify models compactly
-                    records = [{key: item[key] for key in ("model_type", "name", "accelerated", "size", "specialities", "templates", "missing_capabilities", "resolution_budget", "resolution_budget_tiled", "resolution_min", "lock_resolutions", "allowed_resolutions", "vae_block_size", "resolution_assessment") if key in item} for item in records]
+                    records = [{key: item[key] for key in ("model_type", "name", "accelerated", "size", "specialities", "templates", "missing_capabilities", "resolution_budget", "resolution_budget_tiled", "resolution_min", "max_width", "max_height", "lock_resolutions", "allowed_resolutions", "vae_block_size", "resolution_assessment") if key in item} for item in records]
             if filters.get("resolution"):
                 metadata = {**(metadata or {}), "resolution_unknown_count": unknown_count}
         result = collection(["models", action, filters, required, specialities, arguments.get("preferences", {})], records, arguments, "specialities" if action == "specialities" else "models", metadata=metadata)
@@ -476,7 +489,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 del settings["custom_settings"]
         metadata = core._compact_deepy_model_metadata(session.get_model_metadata(result["settings"]["model_type"]))
         # model information, kept apart so that it is not copied into settings
-        result["model"] = {key: metadata[key] for key in ("accelerated", "media_inputs", "resolution_budget", "resolution_budget_tiled", "resolution_min", "lock_resolutions", "allowed_resolutions", "vae_block_size") if key in metadata}
+        result["model"] = {key: metadata[key] for key in ("accelerated", "media_inputs", "resolution_budget", "resolution_budget_tiled", "resolution_min", "max_width", "max_height", "lock_resolutions", "allowed_resolutions", "vae_block_size") if key in metadata}
         return result
 
     def wangp_deepy_templates(tool_id: str | None = None, template: str = "default", cursor: str | None = None, action: str | None = None, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -630,6 +643,8 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 aliases["source"] = "path"
             if action == "rg":
                 aliases["arguments"] = "command"
+            if action == "edit":
+                aliases.update(old_text="old_string", new_text="new_string")
             for alias, name in aliases.items():
                 if alias in arguments:
                     value = arguments.pop(alias)
@@ -689,7 +704,8 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 result["download"] = operations["wangp_create_file_download"](result["output_file"])
             return result
 
-    media_settings_def = function_def(operations["wangp_get_media_settings"], "Read the settings that generated a media file. Supply exactly one of media_id or an authorized path.")
+    media_settings_def = function_def(operations["wangp_get_media_settings"], "Read the settings that generated a media file. Supply exactly one of media_id, media_ids (several Gallery files at once) or an authorized path.")
+    media_settings_def["parameters"]["properties"]["media_ids"] = {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 16, "description": "Several Gallery media IDs, read in one call."}
     view_media_def = action_def(
         "Return images for your own visual inspection: Gallery images, and frames of videos at chosen times_s or frame_nos, or count frames spread evenly over range_s (default: the whole video). "
         "Times and frame numbers apply to every listed video. bbox crops each image (integers 0..1000 relative to the full image) before resizing to max_edge. "
@@ -723,14 +739,14 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                     "mode": {"type": "string", "enum": ["copy", "replace", "mix", "multitrack"], "description": "Omit to copy video/audio when only editing subtitles, replace a video soundtrack with one audio input, or mix multiple audio inputs. Mixing options (trims, offsets, fades, gains, ducking, normalize_lufs) make mix the default; mode='mix' with one audio file masters it."},
                     "output_extension": {"type": "string", "enum": ["wav", "mp3", "flac", "m4a", "mp4", "mov", "mkv"], "description": "Optional output extension when the user requests one. Audio-only mix: wav, mp3, flac, or m4a; default follows the configured standalone codec. Audio-only multitrack: m4a. Video replace/mix: mp4, mov, or mkv; default follows the configured video container. Multitrack video: mkv."},
                     "include_video_audio": {"type": "boolean", "default": False, "description": "Include the video's existing soundtrack in the mix or as the first separate track. Otherwise it is left out: no need to mute clips first."},
-                    "subtitle_tracks": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "properties": {"path": {"type": "string", "minLength": 1, "description": "Authorized subtitle file path, such as @documents/captions.srt (SRT, VTT, ASS, or SSA)."}, "language": {"type": "string", "minLength": 2, "maxLength": 3, "pattern": "^[A-Za-z]{2,3}$"}, "title": {"type": "string", "maxLength": 100}, "default": {"type": "boolean"}}, "required": ["path"], "additionalProperties": False}, "description": "New selectable subtitle tracks, in order. Use ISO 639 language codes such as eng or fra."},
+                    "subtitle_tracks": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "properties": {"path": {"type": "string", "minLength": 1, "description": "Authorized subtitle file path, such as @documents/captions.srt (SRT, VTT, ASS, or SSA)."}, "language": {"type": "string", "minLength": 2, "maxLength": 3, "pattern": "^[A-Za-z]{2,3}$"}, "title": {"type": "string", "maxLength": 100}, "default": {"type": "boolean"}}, "required": ["path"], "additionalProperties": False}, "description": "New selectable subtitle tracks, in order. Use ISO 639 language codes such as eng or fra. They are soft subtitles, shown by players that display them: WanGP does not burn text into a video, so report them as selectable subtitles."},
                     "audio_languages": {"type": "array", "items": {"type": "string", "minLength": 2, "maxLength": 3, "pattern": "^[A-Za-z]{2,3}$"}, "minItems": 1, "maxItems": 16, "description": "Optional multitrack language codes aligned with audio_ids (ISO 639, such as eng, fra, spa), so players offer each track by language."},
                     "include_video_subtitles": {"type": "boolean", "default": True, "description": "Keep existing subtitle tracks from the source video; set false when asked to remove them."},
                     "gains_db": {"type": "array", "items": {"type": ["number", "null"], "minimum": -60, "maximum": 24}, "minItems": 1, "maxItems": 16, "description": "Optional per-file gains for mix mode, aligned with audio_ids (one number applies to every file). Files add at their own level plus this gain, nothing is averaged, and a true-peak limiter keeps the encoded result below -1 dBTP. Use normalize_lufs for a loudness target."},
                     "gain_points": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": ["array", "null"], "minItems": 1, "maxItems": 200, "items": {"type": "array", "prefixItems": [{"type": "number", "minimum": 0, "maximum": 3600}, {"type": "number", "minimum": -60, "maximum": 24}], "minItems": 2, "maxItems": 2}},
                                     "description": "Optional volume automation for mix mode, aligned with audio_ids: per file a list of [time_s, gain_db] points on the mix timeline (null for none), added to gains_db. The gain moves linearly between points and holds before the first and after the last, e.g. [[10, 0], [12, 6]] swells a score by 6 dB from 10 s to 12 s."},
                     "ducking": {"type": "object", "properties": {"tracks": {"type": "array", "minItems": 1, "items": {"anyOf": [{"type": "integer", "minimum": 0}, {"const": "video"}]}, "description": "Indexes in audio_ids of the files to lower (music, ambience); \"video\" for the video's own soundtrack with include_video_audio."},
-                                                                 "under": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 0}, "description": "Indexes in audio_ids of the voice files (narration, dialogue) whose speech lowers the tracks."},
+                                                                 "under": {"type": "array", "minItems": 1, "items": {"anyOf": [{"type": "integer", "minimum": 0}, {"const": "video"}]}, "description": "Indexes in audio_ids of the voice files (narration, dialogue) whose speech lowers the tracks, or \"video\" for the speech already in the video's soundtrack (lip-synced shots, with include_video_audio)."},
                                                                  "depth_db": {"type": "number", "minimum": 1, "maximum": 40, "default": 10}, "attack_s": {"type": "number", "minimum": 0.01, "maximum": 5, "default": 0.2}, "release_s": {"type": "number", "minimum": 0.01, "maximum": 5, "default": 0.6}},
                                 "required": ["tracks", "under"], "additionalProperties": False,
                                 "description": "Optional mix-mode ducking: the tracks dip by depth_db while the voices speak, found from the voice files themselves, ramping down over attack_s before speech and back up over release_s after it. Pauses shorter than attack_s + release_s keep the tracks down."},
@@ -768,14 +784,14 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
             actions["inspect_media"]["parameters"]["oneOf"] = [{"required": [name]} for name in ("media_id", "media_ids", "media_inputs")]
             properties["media_inputs"]["items"]["properties"]["bbox"] = {key: value for key, value in properties["bbox"].items() if key != "description"}
             actions["inspect_media"]["description"] += (
-                " Choose exactly one input form: media_id for one visual, media_ids for a list, or media_inputs for per-video time_seconds/frame_no."
+                " Choose exactly one input form: media_id for one visual, media_ids for a list, or media_inputs for per-video time_s/frame_no."
                 " Inspect video frames directly; use extract_image only to save a frame."
                 " Each media_inputs item may specify bbox=[x_min,y_min,x_max,y_max] (integers 0..1000), overriding the shared bbox; omitted boxes use the shared bbox or the full visual. Cropping precedes resizing."
                 " Image results report the source color mode and transparency separately; visual analysis uses an RGB copy."
             )
             actions["inspect_media"]["example"] = {"action": "inspect_media", "arguments": {"media_id": "visual:IMAGE", "question": "Describe this image."}}
         if "extract_image" in actions:
-            actions["extract_image"]["description"] += " frame_no is zero-based (0 is the first frame); use frame_no or time_seconds, not both."
+            actions["extract_image"]["description"] += " frame_no is zero-based (0 is the first frame); use frame_no or time_s, not both."
         if "image_channels" in actions:
             actions["image_channels"]["example"] = {
                 "action": "image_channels",
@@ -798,6 +814,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
             if name in arguments and arguments[name] != media:
                 raise ValueError(f"{action}: media and {name} have different values. Supply one input.")
             arguments[name] = media
+        arguments = canonical_arguments(action, arguments)  # former argument names keep working
         if action and action not in actions:
             from postprocessing import catalog
             if action in {process["id"] for kind in ("image", "video", "audio") for process in catalog.query_processes(kind)}:
@@ -824,6 +841,10 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
 
     def run_toolbox(action, arguments):
         if action == "media_settings":
+            if "media_ids" in arguments:
+                if len(arguments) > 1:
+                    raise ValueError("media_ids replaces media_id and path: pass it alone. Nothing was executed.")
+                return {"status": "done", "items": [run_toolbox(action, {"media_id": media_id}) for media_id in arguments["media_ids"]]}
             result = operations["wangp_get_media_settings"](**arguments)
             hide_enhancer(result["settings"])
             return public_media_result(result, get_toolbox().session.media_registry)

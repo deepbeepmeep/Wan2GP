@@ -35,14 +35,16 @@ def transcribe_source_audio(audio_path, *, gen, report_status, duration_seconds=
         gr.Info('No source/reference audio is selected. Continuing with text-only refinement.')
         return None
 
-    from shared.deepy.transcription import _load_whisper_large_v3, transcribe_media
+    from shared.deepy.assets import whisper_model_name
+    from shared.deepy.transcription import load_whisper, transcribe_media
     from shared.utils.download_progress import DownloadCancelled
 
     try:
         report_status('Preparing audio transcription')
-        prepared = [_load_whisper_large_v3(torch.device('cpu'), check_cancelled=check_cancelled, gen=gen)]
+        model_name = whisper_model_name()
+        prepared = [load_whisper(model_name, torch.device('cpu'), check_cancelled=check_cancelled, gen=gen)]
         report_status('Transcribing source audio')
-        result = transcribe_media(audio_path, timestamp_type='none', model_name='large-v3', device='cuda', prepared_model=prepared, check_cancelled=check_cancelled, duration_seconds=duration_seconds)
+        result = transcribe_media(audio_path, timestamp_type='none', model_name=model_name, device='cuda', prepared_model=prepared, check_cancelled=check_cancelled, duration_seconds=duration_seconds)
     except (InterruptedError, DownloadCancelled):
         raise
     except Exception as error:

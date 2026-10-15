@@ -44,26 +44,52 @@ pip install -r requirements.txt
 
 In the configuration menu, **INT8 Math Kernels** selects the backend for INT8 quantized linear layers, including INT8 ConvRot checkpoints:
 
-- **Auto** (default): tries WGPKernels on NVIDIA, then Comfy Kitchen CUDA on NVIDIA or HIP on AMD ROCm, then Triton, then PyTorch when no other backend is available.
-- **WGPKernels**: selects WanGP's own INT8 kernels (`wgpkernels` package, NVIDIA GPUs with compute capability 8.0 or newer). They keep full precision activations for autoregressive decoding and short inputs, and use one activation scale per block of 128 values for longer inputs, so a few large activation values no longer erase the small ones. Each GPU measures its fastest precise path once per layer shape; the result is cached for later sessions.
+- **Auto** (default): tries WGPKernels, then Comfy Kitchen CUDA on NVIDIA or HIP on AMD ROCm, then Triton, then PyTorch when no other backend is available.
+- **WGPKernels**: selects WanGP's own INT8 kernels, with higher precision. See [WGPKernels Installation](#wgpkernels-installation) below.
 - **Triton**: selects WanGP's Triton INT8 kernels. See [Triton Installation](#triton-installation) below.
 - **Comfy Kitchen Kernels**: selects Kitchen's native CUDA or HIP kernels for the current PyTorch runtime.
 - **Disabled: PyTorch**: uses the standard PyTorch/Quanto path.
 
-WGPKernels fall back to Kitchen, Kitchen falls back to Triton, and Triton falls back to PyTorch when unavailable, including explicit selections. Startup reports the backend actually selected. Finish the current generation before changing the selection. Weights stay loaded; autoregressive CUDA graphs and KV caches rebuild on the next request when the resolved backend changes. Existing `enable_int8_kernels` configurations migrate automatically: enabled becomes `int8_kernels: "auto"`, disabled becomes `int8_kernels: "disabled"`.
+An unavailable selection behaves as Auto. Existing `enable_int8_kernels` configurations migrate automatically: enabled becomes `int8_kernels: "auto"`, disabled becomes `int8_kernels: "disabled"`.
 
 Comfy Kitchen is installed with `requirements.txt`; its prebuilt CUDA kernels require an NVIDIA R580+ driver. AMD INT8/ConvRot uses ROCm PyTorch and Kitchen's HIP extension on supported RDNA3/3.5/4 devices. RDNA2 and unavailable or failing HIP backends retain the Triton/PyTorch fallback. WanGP probes small plain and ConvRot linear operations before selecting Kitchen, and reports CUDA or HIP in the startup message. This option selects INT8 linear math; it does not change the attention backend or enable FP16 accumulation.
 
-ACE-Step 1.5's INT8 language models use residual correction with Kitchen: a second Kitchen INT8 multiplication recovers activation values lost to its per-token scale. This prevents corrupted captions and missing metadata on the 4B LM. Both products are combined in FP32 before the output cast, using bounded scratch memory and the existing INT8 weights. The correction adds computation while keeping Kitchen selected. WGPKernels need no correction: these layers keep full precision activations at every input length.
+### WGPKernels Installation
+
+WGPKernels are WanGP's own INT8 kernels, with higher precision than the other fast INT8 backends. Install the wheel matching the CUDA version of your PyTorch (NVIDIA RTX 30XX or newer):
+
+For **PyTorch 2.10 / CUDA 13** (NVIDIA R580+ driver):
+
+```bash
+# Windows
+pip install https://github.com/deepbeepmeep/kernels/releases/download/wgpkernels-v1.1.0/wgpkernels-1.1.0%2Bcu130-py3-none-win_amd64.whl
+# Linux (glibc 2.34+)
+pip install https://github.com/deepbeepmeep/kernels/releases/download/wgpkernels-v1.1.0/wgpkernels-1.1.0%2Bcu130-py3-none-linux_x86_64.whl
+```
+
+For **PyTorch 2.7.1 / CUDA 12.8** (NVIDIA R570+ driver):
+
+```bash
+# Windows
+pip install https://github.com/deepbeepmeep/kernels/releases/download/wgpkernels-v1.1.0/wgpkernels-1.1.0%2Bcu128-py3-none-win_amd64.whl
+# Linux (glibc 2.34+)
+pip install https://github.com/deepbeepmeep/kernels/releases/download/wgpkernels-v1.1.0/wgpkernels-1.1.0%2Bcu128-py3-none-linux_x86_64.whl
+```
+
+For **AMD RX 9070 with PyTorch 2.10.0+rocm7.14.0** (Windows, experimental):
+
+```powershell
+python -m pip install https://github.com/deepbeepmeep/kernels/releases/download/wgpkernels-v1.0.0/wgpkernels-1.0.0%2Brocm714-py3-none-win_amd64.whl
+```
 
 ### CUDA Kernels Optimized Ops Precision (When Available)
 
-The separate **CUDA Kernels Optimized Ops Precision (When Available)** dropdown controls additional H3 VAE optimizations. The default is **Allow Faster Approximate Kernels** (`kernel_precision: "fast"`), including migration from configs without this key. Explicitly saved choices are preserved:
+This dropdown controls optional CUDA kernel optimizations:
 
-- **Preserve Precision**: keeps the existing decoder rounding and uses the Triton encoder SiLU/layout/padding fusion when supported. This path preserves native PyTorch GroupNorm statistics.
-- **Allow Faster Approximate Kernels**: additionally enables Kitchen's fused encoder GroupNorm/SiLU/padding and a contiguous Triton decoder SwiGLU output. Kitchen also combines decoder Q/K RMSNorm and partial RoPE for BF16 activations (including BF16, FP8, and INT8 checkpoints). With Kitchen INT8 ConvRot decoding, it also fuses RMSNorm/SwiGLU into activation quantization and residual scaling/addition into linear outputs. These preserve checkpoint dtypes, but normalization rounding and the following matrix multiplication's layout can slightly change outputs. Kitchen's encoder fusion can lower VRAM even when it is slower than the strict Triton path.
+- **Preserve Precision**: uses kernels at least as accurate as standard PyTorch math; tiny output differences are still possible.
+- **Allow Faster Approximate Kernels** (default, `kernel_precision: "fast"`): allows small precision trade-offs for potential speed or VRAM savings.
 
-Kitchen falls back to the available Triton implementation, then PyTorch. These additional H3 fusions are enabled on validated RTX 50-series SM120 devices; other architectures keep their existing path. FP16 accumulation and attention settings are unchanged. The selection applies between generations without reloading weights, independently of **INT8 Math Kernels**.
+Changes apply between generations without reloading weights. Saved choices are preserved; missing values use the default. **INT8 Math Kernels** sets the preferred kernel family, with automatic fallback when unavailable. Additional H3 optimizations require validated RTX 50-series (SM120) GPUs. Checkpoint dtypes, FP16 accumulation and attention settings are unchanged.
 
 
 
@@ -196,7 +222,7 @@ pip install flash-attn==2.7.2.post1
 
 ## GGUF llama.cpp CUDA Kernels
 
-These kernels accelerate GGUF models with packed MMVQ/MMQ, direct FP16/BF16 activation quantization, CUDA-graph-safe workspaces and quantized KV-cache attention. Wheel **1.0.25** speeds up speculative decoding (MTP, DFlash2 and DSpark) for Q4_K models such as Qwen3.8 Q4 and for the Bonsai PTQ1_0 model: draft tokens are verified on INT8 tensor cores, with the same or better accuracy and no additional VRAM. On an RTX 5090, a Qwen3.8 Q4 decoding cycle is about 9% faster than with 1.0.23, and Bonsai decodes about 15% faster than with 1.0.24 (about 60% faster than with 1.0.23), with identical output. When a model loads, WanGP compares this path with the previous kernel on your own GPU (RTX 30xx or newer) and uses it only where it is faster; the first load of a model takes about one second longer, and later loads reuse the stored choice. Set the environment variable `LLAMACPP_GGUF_SHORT_BATCH=native` to keep the previous kernel, for example to compare speed. The wheel also keeps the precompiled RTX50xx (SM120) async-copy kernels for Q8 prefill and decode/verification, which WanGP's vLLM backend selects automatically on compatible GPUs without runtime Triton compilation. Other architectures retain the shared kernels.
+These kernels accelerate GGUF models with packed MMVQ/MMQ, direct FP16/BF16 activation quantization, CUDA-graph-safe workspaces and quantized KV-cache attention. 
 
 Install the wheel matching your Python, PyTorch and CUDA stack. `--no-deps` preserves the installed PyTorch environment.
 
@@ -243,26 +269,6 @@ The HIP wheel rejects a different PyTorch build at import. It replaces the earli
 `+hip` asset compiled against PyTorch 2.12. Compilation and DLL import checks do
 not establish AMD inference correctness: hardware validation remains pending.
 
-### Matmul selection and CUDA graphs
-
-The default keeps weights packed and selects MMVQ for decoding/short batches or MMQ for larger batches. To override it, set `WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE` before starting WanGP:
-
-- `fast` or `low_vram`: packed MMVQ/MMQ, with no full dense weight materialization.
-- `materialized` or `cublas`: materialize weights for cuBLAS.
-
-For example, in PowerShell:
-```powershell
-$env:WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE = "low_vram"
-python wgp.py
-```
-
-On Linux:
-```bash
-export WGP_GGUF_LLAMACPP_CUDA_MATMUL_MODE=low_vram
-python wgp.py
-```
-
-The wrapper reads the setting for eager calls. Existing CUDA graphs must be recreated to change their recorded operations. MMQ reuses a Stream-K workspace sized from the GPU's SM count and rounded to 16 MiB; WanGP reserves it before graph capture. This version has no `refresh_env()` API or Stream-K environment controls. To disable the GGUF CUDA package, set `WGP_GGUF_LLAMACPP_CUDA=0` before starting WanGP.
 
 ## INT4 / FP4 quantized support
 

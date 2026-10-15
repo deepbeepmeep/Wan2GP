@@ -743,35 +743,10 @@ class NunchakuSVDQWeightTensor(NunchakuBaseWeightTensor):
         if not ops:
             return self._linear_fallback(input, bias=bias)
 
-        x = input.reshape(-1, input.shape[-1])
-        qx, ascales, lora_act = ops.svdq_quantize_w4a4_act_fuse_lora_cuda(
-            x,
-            lora_down=self._proj_down,
-            smooth=self._smooth_factor,
-            fp4=True,
-            pad_size=256,
-        )
-        out = torch.empty(qx.shape[0], self.shape[0], dtype=self._proj_up.dtype, device=qx.device)
-        if bias is not None and bias.dtype != out.dtype:
-            bias = bias.to(out.dtype)
         alpha = self.__dict__.get("_alpha")
         if alpha is None:  # read once: a device sync on every call otherwise, which CUDA graphs cannot capture
             alpha = self._alpha = float(self._wtscale.item()) if torch.is_tensor(self._wtscale) else 1.0 if self._wtscale is None else float(self._wtscale)
-        ops.svdq_gemm_w4a4_cuda(
-            act=qx,
-            wgt=self._qweight,
-            out=out,
-            ascales=ascales,
-            wscales=self._wscales,
-            lora_act_in=lora_act,
-            lora_up=self._proj_up,
-            bias=bias,
-            fp4=True,
-            alpha=alpha,
-            wcscales=self._wcscales,
-            act_unsigned=False,
-        )
-        out = out[: x.shape[0]]
+        out = w4a4_linear(ops, input.reshape(-1, input.shape[-1]), self, bias, True, alpha, self._wcscales, False)
         return out.reshape(*input.shape[:-1], self.shape[0])
 
     @torch.compiler.disable()
@@ -1608,7 +1583,7 @@ def apply_pre_quantization(model, state_dict, quantization_map, default_dtype=No
 
 
 from mmgp import offload
-from .nunchaku_rows import NunchakuRowProjection
+from .nunchaku_rows import NunchakuRowProjection, w4a4_linear
 
 _ROW_PROJECTION = NunchakuRowProjection(sys.modules[__name__])
 offload.register_row_projection(_ROW_PROJECTION)

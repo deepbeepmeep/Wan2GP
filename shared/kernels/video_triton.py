@@ -73,12 +73,14 @@ def swiglu_(expanded):
     dim = expanded.shape[-1] // 2
     n = expanded.numel() // 2
     _swiglu[(triton.cdiv(n, 512),)](expanded, n, dim, 512, enable_fp_fusion=False)
+    torch.autograd.graph.increment_version(expanded)
     return expanded[..., :dim]
 
 
 def residual_(branch, scale, residual):
     n = branch.numel()
     _residual[(triton.cdiv(n, 512),)](branch, scale, residual, n, branch.shape[-1], 512, enable_fp_fusion=False)
+    torch.autograd.graph.increment_version(branch)
     return branch
 
 
@@ -174,7 +176,8 @@ def rms_rope_(q, k, rotary, eps):
     """In place on q and k (batch, tokens, heads, head_dim), any strides with contiguous channels (views of a fused projection): per head
     RMSNorm without weight, then the split-half RoPE of the first rotary channels with the angles of rotary (cos, sin), FP32 (batch,
     tokens, 1, rotary channels) whose two halves are equal. H3's 64-channel heads preserve Comfy Kitchen's reduction and rotation
-    rounding, including its FP32 fused multiply-add order. Still approximate relative to the PyTorch 16-bit rotation."""
+    rounding, including its FP32 fused multiply-add order. Not bit-identical to the PyTorch 16-bit rotation but more precise (one rounding
+    after the rotation instead of rounded cos / sin and products)."""
     cos, sin = rotary[0], rotary[1]
     batch, seq, heads, dim = q.shape
     rows = batch * seq * heads
@@ -224,7 +227,11 @@ def _silu_pad_frames(X, OUT, N, C: tl.constexpr, T,
     row = tl.where(row < 0, -row, tl.where(row >= H, 2 * H - 2 - row, row))
     offset = (((b * T + t) * C + c) * H + row) * W + col
     x = tl.load(X + offset, (i < N) & (t >= 0), 0).to(tl.float32)
-    tl.store(OUT + i, x / (1.0 + tl.exp(-x)), i < N)
+    if X.dtype.element_ty == tl.float16:
+        value = tl.div_rn(x, 1.0 + libdevice.exp(-x))
+    else:
+        value = x / (1.0 + tl.exp(-x))
+    tl.store(OUT + i, value, i < N)
 
 
 def silu_pad_frames(normalized, batch, frames, padding, front):

@@ -843,6 +843,28 @@ def _gguf_qtype_name(qtype_obj):
     return getattr(qtype_obj, "name", None) or str(qtype_obj)
 
 
+_LLAMACPP_SLICE_BYTES = 64 << 20  # scratch of the packed kernels for one slice of rows: q8_1 input and FP32 product
+
+
+def _llamacpp_cuda_linear(module, raw, qtype_name, shape, input_tensor, bias, target_dtype):
+    # The packed (MMQ) kernels read a q8_1 copy of their input and write an FP32 product converted afterwards: at the token counts of video
+    # models, several times the size of the output. Slices of rows (whole 128-row tiles) bound that scratch, each converted into the output:
+    # same values, and measured as fast or faster than a single call.
+    out_features, in_features = shape
+    rows = input_tensor.numel() // in_features
+    step = max(128, _LLAMACPP_SLICE_BYTES // (4 * out_features + in_features * 9 // 8) // 128 * 128)
+    if rows < 2 * step or module._linear_mode() != "mmq":
+        return module.linear(raw, qtype_name, shape, input_tensor, bias, target_dtype)
+    x = input_tensor.reshape(rows, in_features)
+    out = torch.empty((rows, out_features), dtype=target_dtype, device=x.device)
+    step = -(-rows // (-(-rows // step) * 128)) * 128  # slices of even size
+    for start in range(0, rows, step):
+        out[start:start + step].copy_(module.linear(raw, qtype_name, shape, x[start:start + step], None, torch.float32))
+    if bias is not None:
+        out.add_(bias.to(out.device, out.dtype))
+    return out.reshape(*input_tensor.shape[:-1], out_features)
+
+
 def _try_llamacpp_cuda_linear(weight_tensor, input_tensor, bias, target_dtype):
     if not _gguf_cuda_kernels_enabled():
         return None
@@ -852,17 +874,12 @@ def _try_llamacpp_cuda_linear(weight_tensor, input_tensor, bias, target_dtype):
     if not torch.is_tensor(raw) or raw.device.type != "cuda" or not raw.is_contiguous():
         return None
     qtype_name = _gguf_qtype_name(getattr(weight_tensor, "_tensor_type", None))
-    try:
-        gguf_llamacpp_cuda = _gguf_cuda_module()
-        if gguf_llamacpp_cuda is None or not gguf_llamacpp_cuda.may_support_linear_qtype_name(qtype_name):
-            return None
-        fast_out = gguf_llamacpp_cuda.linear(raw, qtype_name, tuple(getattr(weight_tensor, "_tensor_shape", weight_tensor.shape)), input_tensor, bias, target_dtype)
-        if fast_out is not None:
-            _gguf_log_once(f"llamacpp_cuda_linear_active_{qtype_name}", f"[GGUF][llama.cpp CUDA] linear fast path active for {qtype_name}.")
-        return fast_out
-    except Exception as exc:
-        _gguf_log_once(f"llamacpp_cuda_linear_{qtype_name}", f"[GGUF][llama.cpp CUDA] linear GGUF CUDA kernels failed for {qtype_name}, using fallback: {exc}")
+    gguf_llamacpp_cuda = _gguf_cuda_module()
+    if gguf_llamacpp_cuda is None or not gguf_llamacpp_cuda.may_support_linear_qtype_name(qtype_name):
         return None
+    fast_out = _llamacpp_cuda_linear(gguf_llamacpp_cuda, raw, qtype_name, tuple(getattr(weight_tensor, "_tensor_shape", weight_tensor.shape)), input_tensor, bias, target_dtype)
+    _gguf_log_once(f"llamacpp_cuda_linear_active_{qtype_name}", f"[GGUF][llama.cpp CUDA] linear fast path active for {qtype_name}.")
+    return fast_out
 
 
 def _try_llamacpp_cuda_embedding(weight_tensor, index_tensor, target_dtype):
@@ -874,17 +891,12 @@ def _try_llamacpp_cuda_embedding(weight_tensor, index_tensor, target_dtype):
     if not torch.is_tensor(raw) or raw.device.type != "cuda" or not raw.is_contiguous():
         return None
     qtype_name = _gguf_qtype_name(getattr(weight_tensor, "_tensor_type", None))
-    try:
-        gguf_llamacpp_cuda = _gguf_cuda_module()
-        if gguf_llamacpp_cuda is None or not gguf_llamacpp_cuda.may_support_embedding_qtype_name(qtype_name):
-            return None
-        fast_out = gguf_llamacpp_cuda.embedding(raw, qtype_name, tuple(getattr(weight_tensor, "_tensor_shape", weight_tensor.shape)), index_tensor, target_dtype)
-        if fast_out is not None:
-            _gguf_log_once(f"llamacpp_cuda_embedding_active_{qtype_name}", f"[GGUF][llama.cpp CUDA] embedding fast path active for {qtype_name}.")
-        return fast_out
-    except Exception as exc:
-        _gguf_log_once(f"llamacpp_cuda_embedding_{qtype_name}", f"[GGUF][llama.cpp CUDA] embedding GGUF CUDA kernels failed for {qtype_name}, using fallback: {exc}")
+    gguf_llamacpp_cuda = _gguf_cuda_module()
+    if gguf_llamacpp_cuda is None or not gguf_llamacpp_cuda.may_support_embedding_qtype_name(qtype_name):
         return None
+    fast_out = gguf_llamacpp_cuda.embedding(raw, qtype_name, tuple(getattr(weight_tensor, "_tensor_shape", weight_tensor.shape)), index_tensor, target_dtype)
+    _gguf_log_once(f"llamacpp_cuda_embedding_active_{qtype_name}", f"[GGUF][llama.cpp CUDA] embedding fast path active for {qtype_name}.")
+    return fast_out
 
 
 def _may_try_llamacpp_cuda_linear(weight_tensor, input_tensor):

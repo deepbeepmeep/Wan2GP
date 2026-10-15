@@ -2,6 +2,8 @@
 SageAttention 2 keeps in its triton package), launched without its device sync (the sizes of its scales read on the GPU) so that CUDA
 graphs can record them, and in stages for the attention kit: v, k and q quantized as soon as each is computed, the output written into
 q. Same values as sageattn_varlen for sequences of the same length (all batch items), head_dim 64 or 128, no mask."""
+from functools import lru_cache
+
 import torch
 
 try:  # SageAttention 2
@@ -15,6 +17,11 @@ except ImportError:  # SageAttention 1.0.6
 
 SETTINGS = {}  # the staged functions take the settings of the staged_* functions of shared.sage2_core, none here
 HEAD_DIMS = tuple(_SM_SCALE)
+
+
+@lru_cache(None)
+def _fp16_required(device):
+    return torch.cuda.get_device_capability(device)[0] < 8
 
 
 def _offsets(batch, length, device):
@@ -45,6 +52,8 @@ def staged_quantize_v(v_list, settings):
 
 def _quantize_k(k, in_place):
     """INT8 k minus its mean over the tokens of all batch items, with its scales."""
+    if k.dtype == torch.bfloat16 and _fp16_required(k.device):
+        k = k.to(torch.float16)  # match pay_attention: convert before smoothing on pre-Ampere GPUs
     rows = k.view(-1, *k.shape[2:])
     mean = rows.mean(dim=0, keepdim=True)
     return _quantize((rows.sub_(mean) if in_place else rows - mean).view(k.shape), 64, 1.0)
@@ -62,6 +71,8 @@ def staged_quantize_k(k_list, settings):
 def staged_quantize_q(q, settings):
     """INT8 q with its scales (the softmax scale, in base 2, goes into them); q is not released (staged_attention can write the output
     into it)."""
+    if q.dtype == torch.bfloat16 and _fp16_required(q.device):
+        q = q.to(torch.float16)
     return _quantize(q, 128, _SM_SCALE[q.shape[-1]] * 1.44269504)
 
 
@@ -74,11 +85,16 @@ def staged_attention(out, quantized_list, settings, attn_mask=None):
     quantized_list.clear()
     batch, tokens, heads, head_dim = out.shape
     rows, v = out.view(-1, heads, head_dim), v.view(-1, *v.shape[2:])
+    fp16_output = out.dtype == torch.bfloat16 and _fp16_required(out.device)
+    if fp16_output:  # Triton cannot write BF16 on pre-Ampere either; scratch covers only this head group
+        rows = torch.empty(rows.shape, dtype=torch.float16, device=out.device)
     _attn_fwd[((tokens + 127) // 128, heads, batch)](
         q_int8, k_int8, v, q_offsets, k_offsets, q_scale, k_scale, q_scale_offsets, k_scale_offsets, rows,
         q_int8.stride(1), q_int8.stride(0), k_int8.stride(1), k_int8.stride(0), v.stride(1), v.stride(0), rows.stride(1), rows.stride(0),
         heads, heads // k_int8.shape[1], BLOCK_M=128, BLOCK_N=64, HEAD_DIM=head_dim, STAGE=1, num_warps=4 if head_dim == 64 else 8,
         num_stages=3 if head_dim == 64 else 4)
+    if fp16_output:
+        out.copy_(rows.view(out.shape))
     return out
 
 

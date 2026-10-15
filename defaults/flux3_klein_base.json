@@ -1,0 +1,19 @@
+{
+    "model": {
+        "name": "Flux 3 Klein Base 5.6B",
+        "architecture": "flux3_klein_base",
+        "description": "FLUX 3 Image Klein 5.6B: text-to-image and editing with up to 10 ordered references. Base checkpoint, 50 steps with CFG.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Flux3/resolve/main/flux3_image_klein_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Flux3/resolve/main/flux3_image_klein_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "A red bicycle with a wicker basket leans against a white brick wall, side view, soft afternoon sunlight casting long shadows, detailed photographic textures.",
+    "resolution": "1024x1024",
+    "image_mode": 1,
+    "batch_size": 1,
+    "num_inference_steps": 50,
+    "guidance_scale": 3.5,
+    "prompt_enhancer": "",
+    "multi_prompts_gen_type": "FG"
+}

@@ -52,7 +52,7 @@ class HeartMuLaCudaGraphHooks:
             raise RuntimeError("HeartMuLa caches must be setup before CUDA graph preparation.")
         if max_backbone_tokens <= 0 or max_decoder_tokens <= 0:
             raise ValueError("CUDA graph token limits must be > 0.")
-        kit = AutoRegressiveCudaGraphKit("heartmula")
+        kit = AutoRegressiveCudaGraphKit("heartmula", owner=self.model)
         backbone_attn = self._collect_attention_modules(self.model.backbone)
         decoder_attn = self._collect_attention_modules(self.model.decoder[0])
         self._backbone_flash_graph = self._can_use_flash_graph(backbone_attn)

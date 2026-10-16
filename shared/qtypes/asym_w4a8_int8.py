@@ -264,11 +264,10 @@ def _note_fallback(device):
 
 
 def _portable_int_mm(a_int8, b_int8):
-    if hasattr(torch, "_int_mm") and a_int8.device.type in ("cpu", "cuda"):
-        try:
-            return torch._int_mm(a_int8, b_int8.t().contiguous())
-        except RuntimeError:
-            pass
+    # cuBLASLt INT8 GEMMs need more than 16 rows, rows of both operands aligned to 16 bytes and the weight read column-major
+    rows, k = a_int8.shape
+    if a_int8.device.type == "cpu" or (a_int8.device.type == "cuda" and rows > 16 and k % 16 == 0 and b_int8.shape[0] % 16 == 0):
+        return torch._int_mm(a_int8, b_int8.t())
     return torch.nn.functional.linear(a_int8.to(torch.float32), b_int8.to(torch.float32))
 
 

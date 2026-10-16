@@ -105,4 +105,4 @@ MAPANYTHING_DEEPY_INFOS = """Multi-view metric reconstruction: several `image_re
 
 DA3_DEEPY_INFOS = """Fast depth-based reconstruction (Depth Anything 3 LARGE-1.1, licence ambiguous: Apache-2.0 card vs CC BY-NC README): `image_refs` photos and/or a `video_guide` video (`video_prompt_type` "I" photos, "V" video, "IV" both) -> point cloud as Gaussian splats with cameras (`_cameras.json`) and `_points.ply`; relative scale. The prompt is only the asset name. Custom settings: `max_points` (1000000), `max_frames` (16), `confidence` 0/10/25/40/60 (40), `process_res` 504/756/1008 (504)."""
 
-DEEPY_PROMPT_INFOS = """The prompt is a short asset name such as `Living room scan`: it names the output files and does not change the reconstruction, which depends only on the photos and video."""
+DEEPY_PROMPT_INFOS = """The prompt is optional: a short asset name such as `Living room scan`: it names the output files and does not change the reconstruction, which depends only on the photos and video."""

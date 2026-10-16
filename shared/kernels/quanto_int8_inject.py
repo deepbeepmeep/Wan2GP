@@ -4,7 +4,6 @@ from __future__ import annotations
 import importlib
 import os
 import atexit
-import traceback
 from types import SimpleNamespace
 from typing import Optional, Tuple
 
@@ -20,7 +19,6 @@ except Exception:  # pragma: no cover
 # Env toggles
 _ENV_ENABLE = "WAN2GP_QUANTO_INT8_KERNEL"
 _ENV_DEBUG = "WAN2GP_QUANTO_INT8_DEBUG"
-_ENV_ALLOW_RUNTIME_FALLBACK = "WAN2GP_QUANTO_INT8_ALLOW_RUNTIME_FALLBACK"
 _ENV_NATIVE_FALLBACK_MAX_M = "WAN2GP_QUANTO_INT8_NATIVE_FALLBACK_MAX_M"
 _ENV_PROFILE_SHAPES = "WAN2GP_QUANTO_INT8_PROFILE_SHAPES"
 _ENV_PROFILE_TIME = "WAN2GP_QUANTO_INT8_PROFILE_TIME"
@@ -31,9 +29,6 @@ _CONVROT_MODULE = None
 _CONVROT_USED_PRINTED = False
 
 _STARTUP_PRINTED = False
-_RUNTIME_DISABLED = False
-_RUNTIME_DISABLE_REASON = ""
-_RUNTIME_DISABLE_PRINTED = False
 _TRITON_MODULE = None
 _TRITON_DIRECT_FUSED_READY = False
 _TRITON_DIRECT_SCALED_READY = False
@@ -104,148 +99,9 @@ def _debug(msg: str) -> None:
         _log(msg)
 
 
-def _format_exception_detail(exc: Exception) -> str:
-    try:
-        return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).strip()
-    except Exception:
-        return str(exc)
-
-
-def _summarize_kernel_error(exc_or_text: Exception | str, max_chars: int = 480) -> str:
-    text = str(exc_or_text)
-    lines = [ln.strip() for ln in text.replace("\r", "\n").split("\n") if ln.strip()]
-    if len(lines) == 0:
-        return "Unknown Triton kernel failure"
-    keywords = (
-        "CompilationError",
-        "shape mismatch",
-        "tl.dot",
-        "K >=",
-        "M >=",
-        "N >=",
-        "Triton",
-        "unsupported",
-        "invalid",
-        "at ",
-    )
-    picked = [ln for ln in lines if any(kw in ln for kw in keywords)]
-    if len(picked) == 0:
-        picked = [lines[-1]]
-    unique: list[str] = []
-    seen = set()
-    for ln in picked:
-        if ln in seen:
-            continue
-        seen.add(ln)
-        unique.append(ln)
-    summary = " | ".join(unique[-4:])
-    if len(summary) > max_chars:
-        summary = summary[: max_chars - 3] + "..."
-    return summary
-
-
-def _tensor_debug_summary(name: str, tensor: torch.Tensor) -> str:
-    try:
-        ptr = tensor.data_ptr() if tensor.device.type in ("cpu", "cuda") else 0
-        return (
-            f"{name}: shape={tuple(tensor.shape)}, dtype={tensor.dtype}, device={tensor.device}, "
-            f"stride={tuple(tensor.stride())}, contiguous={tensor.is_contiguous()}, "
-            f"storage_offset={tensor.storage_offset()}, data_ptr_mod128={ptr % 128}"
-        )
-    except Exception as exc:
-        return f"{name}: <debug summary failed: {exc}>"
-
-
-def _cuda_debug_summary(device: torch.device) -> str:
-    if device.type != "cuda" or not torch.cuda.is_available():
-        return "cuda: unavailable"
-    try:
-        index = device.index if device.index is not None else torch.cuda.current_device()
-        return (
-            f"cuda: index={index}, capturing={torch.cuda.is_current_stream_capturing()}, "
-            f"allocated={torch.cuda.memory_allocated(index)}, reserved={torch.cuda.memory_reserved(index)}"
-        )
-    except Exception as exc:
-        return f"cuda: <debug summary failed: {exc}>"
-
-
-def _debug_fused_recovery_trigger(
-    x2d: torch.Tensor,
-    qweight: torch.Tensor,
-    qweight_scale: torch.Tensor,
-    out: torch.Tensor,
-    selected_cfg: tuple[int, int, int, int, int],
-    grid: tuple[int, int],
-    exc: Exception,
-) -> None:
-    mod = _TRITON_MODULE
-    m, k = x2d.shape
-    n = qweight.shape[0]
-    slot = "unknown"
-    if mod is not None:
-        try:
-            slot, _ = mod._resolve_autotune_slot(int(m), int(k), int(n))
-        except Exception:
-            pass
-    _debug(
-        "Fused int8 recovery trigger\n"
-        f"  shape=({int(m)},{int(k)},{int(n)}), slot={slot}, selected_cfg={selected_cfg}, grid={grid}\n"
-        f"  {_tensor_debug_summary('x2d', x2d)}\n"
-        f"  {_tensor_debug_summary('qweight', qweight)}\n"
-        f"  {_tensor_debug_summary('qweight_scale', qweight_scale)}\n"
-        f"  {_tensor_debug_summary('out', out)}\n"
-        f"  {_cuda_debug_summary(x2d.device)}\n"
-        f"  error={_summarize_kernel_error(exc)}"
-    )
-
-
-def _debug_scaled_recovery_trigger(
-    a_int8: torch.Tensor,
-    b_int8: torch.Tensor,
-    a_scale: torch.Tensor,
-    b_scale: torch.Tensor,
-    out: torch.Tensor,
-    selected_cfg: tuple[int, int, int, int, int],
-    grid: tuple[int, int],
-    exc: Exception,
-) -> None:
-    mod = _TRITON_MODULE
-    m, k = a_int8.shape
-    n = b_int8.shape[0]
-    slot = "unknown"
-    if mod is not None:
-        try:
-            slot, _ = mod._resolve_autotune_slot(int(m), int(k), int(n))
-        except Exception:
-            pass
-    _debug(
-        "Scaled int8 recovery trigger\n"
-        f"  shape=({int(m)},{int(k)},{int(n)}), slot={slot}, selected_cfg={selected_cfg}, grid={grid}\n"
-        f"  {_tensor_debug_summary('a_int8', a_int8)}\n"
-        f"  {_tensor_debug_summary('b_int8', b_int8)}\n"
-        f"  {_tensor_debug_summary('a_scale', a_scale)}\n"
-        f"  {_tensor_debug_summary('b_scale', b_scale)}\n"
-        f"  {_tensor_debug_summary('out', out)}\n"
-        f"  {_cuda_debug_summary(a_int8.device)}\n"
-        f"  error={_summarize_kernel_error(exc)}"
-    )
-
-
-def _runtime_recovery_reason(selected_cfg: tuple[int, int, int, int, int], exc: Exception) -> str:
-    block_m, block_n, block_k, num_warps, num_stages = selected_cfg
-    return (
-        f"selected runtime config tile=({block_m},{block_n},{block_k}), "
-        f"warps={num_warps}, stages={num_stages} failed: {_summarize_kernel_error(exc)}"
-    )
-
-
 def set_kernel_debug(enabled: Optional[bool] = None) -> None:
     global _DEBUG_OVERRIDE
     _DEBUG_OVERRIDE = None if enabled is None else bool(enabled)
-
-
-def _allow_runtime_fallback() -> bool:
-    return _env_flag(_ENV_ALLOW_RUNTIME_FALLBACK, "1")
 
 
 def _startup_status(enabled: bool, detail: str) -> None:
@@ -259,29 +115,14 @@ def _startup_status(enabled: bool, detail: str) -> None:
         _log(f"Injected int8 kernels INACTIVE. {detail}")
 
 
-def _disable_runtime(reason: str) -> None:
-    global _RUNTIME_DISABLED, _RUNTIME_DISABLE_REASON, _RUNTIME_DISABLE_PRINTED
-    _RUNTIME_DISABLED = True
-    _RUNTIME_DISABLE_REASON = _summarize_kernel_error(reason)
-    if not _RUNTIME_DISABLE_PRINTED:
-        _RUNTIME_DISABLE_PRINTED = True
-        _log(
-            "Runtime fallback to non-injected Quanto path is now active. Reason: "
-            f"{_RUNTIME_DISABLE_REASON}"
-        )
-
-
 def _reset_runtime_state(reset_triton_module: bool = True) -> None:
-    global _STARTUP_PRINTED, _RUNTIME_DISABLED, _RUNTIME_DISABLE_REASON, _RUNTIME_DISABLE_PRINTED
+    global _STARTUP_PRINTED
     global _TRITON_MODULE, _TRITON_DIRECT_FUSED_READY, _TRITON_DIRECT_SCALED_READY, _KERNEL_USED_PRINTED
     global _FUSED_LAUNCH_CACHE, _FUSED_LAUNCH_CACHE_FIFO, _SCALED_LAUNCH_CACHE, _SCALED_LAUNCH_CACHE_FIFO
     global _SHAPE_COUNTS_FUSED, _SHAPE_COUNTS_SCALED, _TIME_PROFILE_EVENTS, _TIME_PROFILE_CPU_MS, _TIME_PROFILE_CALLS
     global _NATIVE_FALLBACK_MAX_M
 
     _STARTUP_PRINTED = False
-    _RUNTIME_DISABLED = False
-    _RUNTIME_DISABLE_REASON = ""
-    _RUNTIME_DISABLE_PRINTED = False
     if reset_triton_module:
         _TRITON_MODULE = None
     _TRITON_DIRECT_FUSED_READY = False
@@ -431,37 +272,6 @@ def _cache_launch_params(cache: dict, fifo: list, max_size: int, key: tuple, par
         stale_key = fifo.pop(0)
         cache.pop(stale_key, None)
     return params
-
-
-def _replace_launch_params(cache: dict, fifo: list, max_size: int, key: tuple[int, int, int, int], params: tuple[int, int, int, int, int, int, int]) -> None:
-    cache[key] = params
-    if key not in fifo:
-        fifo.append(key)
-    while len(fifo) > max_size:
-        stale_key = fifo.pop(0)
-        cache.pop(stale_key, None)
-
-
-def _cache_recovered_triton_config(kind: str, device_index: int, m: int, k: int, n: int, cfg: tuple[int, int, int, int, int]) -> None:
-    mod = _TRITON_MODULE
-    if mod is None:
-        return
-    try:
-        slot_id, _ = mod._resolve_autotune_slot(m, k, n)
-        mod._set_cached_config(device_index, kind, slot_id, cfg, overwrite=False)
-    except Exception:
-        pass
-
-
-def _compile_recovery_candidates(kind: str, preferred: tuple[int, int, int, int, int], m: int, k: int, n: int) -> list[tuple[int, int, int, int, int]]:
-    mod = _TRITON_MODULE
-    if mod is None:
-        return []
-    try:
-        baseline = mod._select_static_triton_int8_config(m, k, n)
-        return list(mod._compile_recovery_candidates(kind, baseline, preferred, m, k, n))
-    except Exception:
-        return []
 
 
 def _fused_launch_params(m: int, k: int, n: int, device: torch.device, kernel_kind: str = "fused") -> tuple[int, int, int, int, int, int, int]:
@@ -632,76 +442,27 @@ def _fused_quant_scaled_mm_direct_call(x2d: torch.Tensor, qweight: torch.Tensor,
         raise RuntimeError(f"Triton int8 GEMM shape mismatch: x={x2d.shape}, w={qweight.shape}")
 
     block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n = _fused_launch_params(m, k, n, x2d.device)
-    selected_cfg = (block_m, block_n, block_k, num_warps, num_stages)
     out = torch.empty((m, n), device=x2d.device, dtype=output_dtype)
-    try:
-        mod._fused_dynamic_int8_blockscale_gemm_kernel[(grid_m, grid_n)](
-            x2d,
-            qweight,
-            qweight_scale,
-            out,
-            m,
-            n,
-            k,
-            x2d.stride(0),
-            x2d.stride(1),
-            qweight.stride(0),
-            qweight.stride(1),
-            out.stride(0),
-            out.stride(1),
-            block_m=block_m,
-            block_n=block_n,
-            block_k=block_k,
-            num_warps=num_warps,
-            num_stages=num_stages,
-        )
-    except Exception as exc:
-        recovery_reason = _runtime_recovery_reason(selected_cfg, exc)
-        _debug_fused_recovery_trigger(x2d, qweight, qweight_scale, out, selected_cfg, (grid_m, grid_n), exc)
-        recovery_errors = []
-        device_index = int(x2d.device.index if x2d.device.type == "cuda" else -1)
-        for candidate in _compile_recovery_candidates("fused", selected_cfg, m, k, n):
-            if candidate == selected_cfg:
-                continue
-            block_m, block_n, block_k, num_warps, num_stages = candidate
-            grid_m = mod.triton.cdiv(m, block_m)
-            grid_n = mod.triton.cdiv(n, block_n)
-            recovered_out = torch.empty((m, n), device=x2d.device, dtype=output_dtype)
-            try:
-                mod._fused_dynamic_int8_blockscale_gemm_kernel[(grid_m, grid_n)](
-                    x2d,
-                    qweight,
-                    qweight_scale,
-                    recovered_out,
-                    m,
-                    n,
-                    k,
-                    x2d.stride(0),
-                    x2d.stride(1),
-                    qweight.stride(0),
-                    qweight.stride(1),
-                    recovered_out.stride(0),
-                    recovered_out.stride(1),
-                    block_m=block_m,
-                    block_n=block_n,
-                    block_k=block_k,
-                    num_warps=num_warps,
-                    num_stages=num_stages,
-                )
-                params = (block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n)
-                key = (device_index, m, k, n)
-                _replace_launch_params(_FUSED_LAUNCH_CACHE, _FUSED_LAUNCH_CACHE_FIFO, _FUSED_LAUNCH_CACHE_MAX, key, params)
-                _cache_recovered_triton_config("fused", device_index, m, k, n, candidate)
-                _debug(f"Recovered fused int8 kernel config for shape=({m},{k},{n}): {selected_cfg} -> {candidate}. Reason: {recovery_reason}")
-                return recovered_out
-            except Exception as recovery_exc:
-                recovery_errors.append(f"{candidate}: {_summarize_kernel_error(recovery_exc)}")
-        raise RuntimeError(
-            "Triton fused int8 kernel launch failed "
-            f"(shape m={m}, k={k}, n={n}; tile=({selected_cfg[0]},{selected_cfg[1]},{selected_cfg[2]}); "
-            f"warps={selected_cfg[3]}, stages={selected_cfg[4]}). {exc}"
-            + (f" Recovery candidates also failed: {' | '.join(recovery_errors[-4:])}" if recovery_errors else "")
-        ) from exc
+    mod._fused_dynamic_int8_blockscale_gemm_kernel[(grid_m, grid_n)](
+        x2d,
+        qweight,
+        qweight_scale,
+        out,
+        m,
+        n,
+        k,
+        x2d.stride(0),
+        x2d.stride(1),
+        qweight.stride(0),
+        qweight.stride(1),
+        out.stride(0),
+        out.stride(1),
+        block_m=block_m,
+        block_n=block_n,
+        block_k=block_k,
+        num_warps=num_warps,
+        num_stages=num_stages,
+    )
     return out
 
 
@@ -724,78 +485,28 @@ def _scaled_int8_mm_direct_call(
         raise RuntimeError(f"Triton int8 GEMM shape mismatch: a={a_int8.shape}, w={b_int8.shape}")
 
     block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n = _scaled_launch_params(m, k, n, a_int8.device)
-    selected_cfg = (block_m, block_n, block_k, num_warps, num_stages)
     out = torch.empty((m, n), device=a_int8.device, dtype=output_dtype)
-    try:
-        mod._scaled_int8_gemm_kernel[(grid_m, grid_n)](
-            a_int8,
-            b_int8,
-            a_scale,
-            b_scale,
-            out,
-            m,
-            n,
-            k,
-            a_int8.stride(0),
-            a_int8.stride(1),
-            b_int8.stride(0),
-            b_int8.stride(1),
-            out.stride(0),
-            out.stride(1),
-            block_m=block_m,
-            block_n=block_n,
-            block_k=block_k,
-            num_warps=num_warps,
-            num_stages=num_stages,
-        )
-    except Exception as exc:
-        recovery_reason = _runtime_recovery_reason(selected_cfg, exc)
-        _debug_scaled_recovery_trigger(a_int8, b_int8, a_scale, b_scale, out, selected_cfg, (grid_m, grid_n), exc)
-        recovery_errors = []
-        device_index = int(a_int8.device.index if a_int8.device.type == "cuda" else -1)
-        for candidate in _compile_recovery_candidates("scaled", selected_cfg, m, k, n):
-            if candidate == selected_cfg:
-                continue
-            block_m, block_n, block_k, num_warps, num_stages = candidate
-            grid_m = mod.triton.cdiv(m, block_m)
-            grid_n = mod.triton.cdiv(n, block_n)
-            recovered_out = torch.empty((m, n), device=a_int8.device, dtype=output_dtype)
-            try:
-                mod._scaled_int8_gemm_kernel[(grid_m, grid_n)](
-                    a_int8,
-                    b_int8,
-                    a_scale,
-                    b_scale,
-                    recovered_out,
-                    m,
-                    n,
-                    k,
-                    a_int8.stride(0),
-                    a_int8.stride(1),
-                    b_int8.stride(0),
-                    b_int8.stride(1),
-                    recovered_out.stride(0),
-                    recovered_out.stride(1),
-                    block_m=block_m,
-                    block_n=block_n,
-                    block_k=block_k,
-                    num_warps=num_warps,
-                    num_stages=num_stages,
-                )
-                params = (block_m, block_n, block_k, num_warps, num_stages, grid_m, grid_n)
-                key = (device_index, m, k, n)
-                _replace_launch_params(_SCALED_LAUNCH_CACHE, _SCALED_LAUNCH_CACHE_FIFO, _SCALED_LAUNCH_CACHE_MAX, key, params)
-                _cache_recovered_triton_config("scaled", device_index, m, k, n, candidate)
-                _debug(f"Recovered scaled int8 kernel config for shape=({m},{k},{n}): {selected_cfg} -> {candidate}. Reason: {recovery_reason}")
-                return recovered_out
-            except Exception as recovery_exc:
-                recovery_errors.append(f"{candidate}: {_summarize_kernel_error(recovery_exc)}")
-        raise RuntimeError(
-            "Triton scaled int8 kernel launch failed "
-            f"(shape m={m}, k={k}, n={n}; tile=({selected_cfg[0]},{selected_cfg[1]},{selected_cfg[2]}); "
-            f"warps={selected_cfg[3]}, stages={selected_cfg[4]}). {exc}"
-            + (f" Recovery candidates also failed: {' | '.join(recovery_errors[-4:])}" if recovery_errors else "")
-        ) from exc
+    mod._scaled_int8_gemm_kernel[(grid_m, grid_n)](
+        a_int8,
+        b_int8,
+        a_scale,
+        b_scale,
+        out,
+        m,
+        n,
+        k,
+        a_int8.stride(0),
+        a_int8.stride(1),
+        b_int8.stride(0),
+        b_int8.stride(1),
+        out.stride(0),
+        out.stride(1),
+        block_m=block_m,
+        block_n=block_n,
+        block_k=block_k,
+        num_warps=num_warps,
+        num_stages=num_stages,
+    )
     return out
 
 
@@ -848,8 +559,6 @@ def _scaled_int8_mm_call(
 
 
 def _use_int8_kernel(input: torch.Tensor, other: torch.Tensor) -> bool:
-    if _RUNTIME_DISABLED:
-        return False
     if _TRITON_MODULE is None:
         return False
     if not _is_weight_qbytes(other):
@@ -865,8 +574,6 @@ def _use_int8_kernel(input: torch.Tensor, other: torch.Tensor) -> bool:
 
 
 def _use_int8_embedding_kernel(module, input: torch.Tensor) -> bool:
-    if _RUNTIME_DISABLED:
-        return False
     if _TRITON_MODULE is None:
         return False
     if not torch.is_tensor(input):
@@ -885,25 +592,15 @@ def _use_int8_embedding_kernel(module, input: torch.Tensor) -> bool:
     scale = getattr(qweight, "_scale", None)
     if not torch.is_tensor(scale) or scale.device != input.device:
         return False
-    return True
+    rows = qweight._data.shape[0]
+    return scale.numel() == 1 or (scale.ndim == 1 and scale.shape[0] == rows) or (scale.ndim == 2 and scale.shape == (rows, 1))
 
 
 def _gather_embedding_scale(qweight, input: torch.Tensor) -> torch.Tensor:
     scale = qweight._scale
-    if scale.ndim == 0 or scale.numel() == 1:
+    if scale.numel() == 1:
         return scale
-    if scale.ndim == 1:
-        if scale.shape[0] != qweight._data.shape[0]:
-            raise RuntimeError("Quanto embedding scale length mismatch.")
-        scale = scale.unsqueeze(-1)
-    elif scale.ndim == 2:
-        if scale.shape[0] != qweight._data.shape[0]:
-            raise RuntimeError("Quanto embedding scale row count mismatch.")
-        if scale.shape[1] != 1:
-            raise RuntimeError("Quanto embedding fast path only supports per-row scales.")
-    else:
-        raise RuntimeError("Quanto embedding fast path only supports scalar or per-row scales.")
-    return torch.nn.functional.embedding(input, scale)
+    return torch.nn.functional.embedding(input, scale.reshape(-1, 1))
 
 
 def _int8_embedding_forward(module, input: torch.Tensor) -> torch.Tensor:
@@ -1085,8 +782,7 @@ def enable_quanto_int8_kernel(triton_mod=None) -> bool:
 
     def forward(ctx, input, other, bias=None):
         dense_hot_path = (
-            not _RUNTIME_DISABLED
-            and type(input) is torch.Tensor
+            type(input) is torch.Tensor
             and input.is_cuda
             and input.dtype in (torch.bfloat16, torch.float16, torch.float32)
             and _WEIGHT_QBYTES_CLS is not None
@@ -1097,60 +793,15 @@ def enable_quanto_int8_kernel(triton_mod=None) -> bool:
         if dense_hot_path:
             if _prefer_native_quanto_path(input):
                 return orig_forward(ctx, input, other, bias)
-            try:
-                return _int8_linear_forward_triton_dense_fast(ctx, input, other, bias)
-            except Exception as exc:
-                short_reason = _summarize_kernel_error(exc)
-                if _allow_runtime_fallback():
-                    _disable_runtime(short_reason)
-                    _debug(f"Full Triton failure detail:\n{_format_exception_detail(exc)}")
-                    return orig_forward(ctx, input, other, bias)
-                full_detail = _format_exception_detail(exc)
-                raise RuntimeError(
-                    "Injected Triton int8 kernel failed. "
-                    f"Set {_ENV_ALLOW_RUNTIME_FALLBACK}=1 to force fallback to non-injected Quanto path. "
-                    f"Reason: {short_reason}\n"
-                    f"Full Triton error details:\n{full_detail}"
-                ) from exc
-
-        if not _use_int8_kernel(input, other):
+            return _int8_linear_forward_triton_dense_fast(ctx, input, other, bias)
+        if not _use_int8_kernel(input, other) or _prefer_native_quanto_path(input):
             return orig_forward(ctx, input, other, bias)
-        if _prefer_native_quanto_path(input):
-            return orig_forward(ctx, input, other, bias)
-        try:
-            return _int8_linear_forward_triton(ctx, input, other, bias)
-        except Exception as exc:
-            short_reason = _summarize_kernel_error(exc)
-            if _allow_runtime_fallback():
-                _disable_runtime(short_reason)
-                _debug(f"Full Triton failure detail:\n{_format_exception_detail(exc)}")
-                return orig_forward(ctx, input, other, bias)
-            full_detail = _format_exception_detail(exc)
-            raise RuntimeError(
-                "Injected Triton int8 kernel failed. "
-                f"Set {_ENV_ALLOW_RUNTIME_FALLBACK}=1 to force fallback to non-injected Quanto path. "
-                f"Reason: {short_reason}\n"
-                f"Full Triton error details:\n{full_detail}"
-            ) from exc
+        return _int8_linear_forward_triton(ctx, input, other, bias)
 
     def embedding_forward(self, input):
         if not _use_int8_embedding_kernel(self, input):
             return orig_embedding_forward(self, input)
-        try:
-            return _int8_embedding_forward(self, input)
-        except Exception as exc:
-            short_reason = _summarize_kernel_error(exc)
-            if _allow_runtime_fallback():
-                _disable_runtime(short_reason)
-                _debug(f"Full embedding fast-path failure detail:\n{_format_exception_detail(exc)}")
-                return orig_embedding_forward(self, input)
-            full_detail = _format_exception_detail(exc)
-            raise RuntimeError(
-                "Injected Quanto int8 embedding fast path failed. "
-                f"Set {_ENV_ALLOW_RUNTIME_FALLBACK}=1 to force fallback to non-injected Quanto path. "
-                f"Reason: {short_reason}\n"
-                f"Full error details:\n{full_detail}"
-            ) from exc
+        return _int8_embedding_forward(self, input)
 
     _qbytes.WeightQBytesLinearFunction.forward = staticmethod(forward)
     _mmgp_offload.QEmbedding.forward = embedding_forward

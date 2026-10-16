@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextvars
 import copy
+import hashlib
 import itertools
 import json
 import math
@@ -57,6 +58,7 @@ from shared.deepy.debug_bootstrap import capture_external_logs
 from shared import extra_settings
 from shared.deepy import filesystem as deepy_filesystem, image_channels as deepy_image_channels, long_text as deepy_long_text, media_registry, session_store, tool_settings as deepy_tool_settings, transcription as deepy_transcription, ui_settings as deepy_ui_settings, video_tools as deepy_video_tools, vision as deepy_vision
 from shared.deepy.paged_files import list_directory_page
+from shared.deepy.tool_aliases import canonical_arguments
 from shared.mcp.paging import PAGE_SIZE, ResultPages
 from shared.utils.gallery_media import gallery_media_ids
 
@@ -118,6 +120,21 @@ _COMPACTION_NO_TOOLS_RETRY = (
     "The preceding compaction attempt incorrectly tried to call a tool. This is a corrected retry: return only the plain-text summary. "
     "Do not emit tool-call markup, a function name, arguments, XML, or commentary."
 )
+def _compaction_budget_note(max_new_tokens: int) -> list[str]:
+    """The summary's real room when it is below the usual 1,200 words (about two tokens per word with identifiers)."""
+    words = max(150, int(max_new_tokens) // 2)
+    return [f"This summary must fit within about {words} words: keep the request ledger and identifiers, and shorten the rest to fit."] if words < 1200 else []
+
+
+# summary cap, as a share of the context window (6.4K tokens at 32K): production summaries need 3.5-5K, while a runaway one (each
+# summary absorbing the previous, 8-10K by the end of a long session) is cut and retried shorter
+_COMPACTION_SUMMARY_WINDOW_SHARE = 0.2
+
+
+_COMPACTION_TOO_LONG_RETRY = (
+    "The preceding compaction attempt was cut off because the summary was too long. This is a corrected retry: write a much shorter summary, "
+    "at most about 600 words. Keep the request ledger, artifact and media identifiers, the decisions later steps need, and the next steps; drop everything else."
+)
 _COMPACTION_EMPTY_SUMMARY_RETRY = (
     "The preceding compaction attempt returned no summary. This is a corrected retry: write a non-empty plain-text summary of the conversation above. "
     "Preserve completed work, important facts and decisions, the active task, and its remaining next steps."
@@ -139,6 +156,10 @@ class _CompactionCapacityError(RuntimeError):
 
 class _CompactionToolCallError(RuntimeError):
     pass
+
+
+class _CompactionTooLongError(_CompactionCapacityError):
+    """The summary ran out of tokens: first retry asking for a shorter one, then reduce the source."""
 
 
 class _CompactionEmptySummaryError(RuntimeError):
@@ -2676,7 +2697,7 @@ class DeepyZeroTools:
         if not has_time_args and not has_frame_args:
             if allow_empty:
                 return {"mode": "time", "start_time": None, "end_time": None, "duration": None, "start_frame": None, "end_frame": None, "num_frames": None}, None
-            return None, {"status": "error", "error": "Provide at least one of start_time, end_time, duration, start_frame, end_frame, or num_frames."}
+            return None, {"status": "error", "error": "Provide at least one of start_s, end_s, duration_s, start_frame, end_frame, or num_frames."}
         if has_frame_args:
             if str(source_media.get("media_type", "") or "").strip() != "video":
                 return None, {"status": "error", "error": "Frame-based extraction is only supported when media_id references a video."}
@@ -2733,17 +2754,17 @@ class DeepyZeroTools:
                 "end_frame": resolved_end_frame,
                 "num_frames": resolved_num_frames,
             }, None
-        start_time, error_result = self._parse_time_value(start_time, "start_time")
+        start_time, error_result = self._parse_time_value(start_time, "start_s")
         if error_result is not None:
             return None, error_result
-        end_time, error_result = self._parse_time_value(end_time, "end_time")
+        end_time, error_result = self._parse_time_value(end_time, "end_s")
         if error_result is not None:
             return None, error_result
-        duration, error_result = self._parse_time_value(duration, "duration")
+        duration, error_result = self._parse_time_value(duration, "duration_s")
         if error_result is not None:
             return None, error_result
         if end_time is not None and duration is not None:
-            return None, {"status": "error", "error": "Specify either end_time or duration, not both."}
+            return None, {"status": "error", "error": "Specify either end_s or duration_s, not both."}
         if start_time is None:
             start_time = 0.0
         return {"mode": "time", "start_time": start_time, "end_time": end_time, "duration": duration, "start_frame": None, "end_frame": None, "num_frames": None}, None
@@ -2847,9 +2868,7 @@ class DeepyZeroTools:
                     }
                     self._update_tool_progress("error", "Error", result)
                     return result
-                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(self._workspace_gallery())
-                media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
-                media_settings_list = (audio_file_settings_list or []) if gallery_media_type == "audio" else (file_settings_list or [])
+                media_file_list, media_settings_list = self.get_processed_queue(self._workspace_gallery())[source_for_kind(gallery_media_type).id]
                 file_path, file_settings = media_registry.find_last_gallery_media_by_client(media_file_list, media_settings_list, client_id, media_type=gallery_media_type)
                 if file_path is not None and isinstance(file_settings, dict):
                     self._log(f"{activity_label.capitalize()} already completed before queue admission wait observed for {client_id}; skipping browser-style queue admission wait.")
@@ -2888,9 +2907,7 @@ class DeepyZeroTools:
                     }
                     self._update_tool_progress("error", "Error", result)
                     return result
-                file_list, file_settings_list, audio_file_list, audio_file_settings_list = self.get_processed_queue(self._workspace_gallery())
-                media_file_list = list(audio_file_list or []) if gallery_media_type == "audio" else list(file_list or [])
-                media_settings_list = (audio_file_settings_list or []) if gallery_media_type == "audio" else (file_settings_list or [])
+                media_file_list, media_settings_list = self.get_processed_queue(self._workspace_gallery())[source_for_kind(gallery_media_type).id]
                 queue = list(gen.get("queue", []) or [])
                 client_id_still_in_queue = self._queue_contains_client_id(queue, client_id)
                 if client_id_still_in_queue:
@@ -4266,7 +4283,7 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Render 3D Views",
-        description="Render views of a 3D asset (mesh or Gaussian splats) as images added to the image gallery, all at the same scale: named views and/or custom angles, an optional animation frame, zoom and focus point. Use them for character sheets, turnarounds, close-ups or as image references.",
+        description="Render views of a 3D asset (mesh or Gaussian splats) as images added to the image gallery, all at the same scale: named views and/or custom angles, an optional animation frame, zoom and focus point. Use them for character sheets, turnarounds, close-ups or as image references. With turntable_s it renders a turntable video instead: one smooth full turn.",
         parameters={
             "media_id": {"type": "string", "description": "3D media id."},
             "views": {"type": "array", "items": {"type": "string", "enum": list(_MESH_VIEWS)}, "description": "Optional named views in output order (default front). left and right are the object's own sides as it faces the front view.", "required": False},
@@ -4279,12 +4296,15 @@ class DeepyZeroTools:
             "width": {"type": "integer", "minimum": 64, "maximum": 2048, "description": "Optional width of each view in pixels (default 768).", "required": False},
             "height": {"type": "integer", "minimum": 64, "maximum": 2048, "description": "Optional height of each view in pixels (default 768).", "required": False},
             "background": {"type": "string", "description": "Optional background: transparent (default for shaded / albedo) or a color name / hex value.", "required": False},
+            "turntable_s": {"type": "number", "minimum": 1, "maximum": 60, "description": "Optional: make a silent video of one full turn lasting this many seconds instead of images (a 360-degree turntable), starting at the front or at a single angles entry whose elevation it keeps; leave views out. Background white unless given.", "required": False},
+            "fps": {"type": "number", "minimum": 1, "maximum": 60, "description": "Frame rate of the turntable; default 24.", "required": False},
             "front_azimuth": {"type": "number", "minimum": -180, "maximum": 180, "description": "Optional azimuth in degrees where the object actually faces, when a generated asset does not face the front view (e.g. 90 if its face shows in the left view): named views turn with it; custom angles do not.", "required": False},
         },
         pause_runtime=False,
     )
     def render_3d_views(self, media_id: str, views: list[str] | None = None, angles: list[list[float]] | None = None, frame_no: int | None = None, zoom: float = 1.0, focus: list[float] | None = None,
-                        projection: str = "orthographic", mode: str = "shaded", width: int = 768, height: int = 768, background: str | None = None, front_azimuth: float = 0.0) -> dict[str, Any]:
+                        projection: str = "orthographic", mode: str = "shaded", width: int = 768, height: int = 768, background: str | None = None, front_azimuth: float = 0.0,
+                        turntable_s: float | None = None, fps: float | None = None) -> dict[str, Any]:
         from shared.mesh3d.render import VIEWS
         from shared.utils.mesh_outputs import render_asset_views
 
@@ -4301,17 +4321,21 @@ class DeepyZeroTools:
         try:
             custom = [(float(azimuth), float(elevation)) for azimuth, elevation in (angles or [])]
             color = None if background is None or str(background).strip().lower() in {"", "transparent", "none"} else [value / 255 for value in ImageColor.getrgb(str(background))[:3]]
-            if not 1 <= len(names) + len(custom) <= 16:
-                raise ValueError("Request between 1 and 16 views.")
             if focus is not None and len(focus) != 3 or float(zoom) <= 0:
                 raise ValueError("focus must be [x, y, z] fractions and zoom a positive number.")
+            options = {"frame_no": None if frame_no is None else int(frame_no), "mode": mode, "projection": projection, "zoom": float(zoom), "focus": tuple(focus or (0.5, 0.5, 0.5)), "background": color}
+            if turntable_s is not None:
+                return self._render_3d_turntable(source, views, custom, float(turntable_s), float(fps or 24), (int(height), int(width)), float(front_azimuth), options)
+            if fps is not None:
+                raise ValueError("fps applies to turntables: set turntable_s.")
+            if not 1 <= len(names) + len(custom) <= 16:
+                raise ValueError("Request between 1 and 16 views.")
             labels = names + [f"az{azimuth:g}_el{elevation:g}" for azimuth, elevation in custom]
             descriptions = [f"A {name.replace('_', ' ')} view of a 3D asset." for name in names] + [f"A view of a 3D asset at azimuth {azimuth:g}°, elevation {elevation:g}°." for azimuth, elevation in custom]
             self._set_status(f"Rendering {len(labels)} 3D view{'s' if len(labels) > 1 else ''}...", kind="tool")
             self._update_tool_progress("running", "Rendering", {"status": "running", "media_id": source["media_id"], "views": labels, "frame_no": frame_no})
             named = [(VIEWS[name][0] + float(front_azimuth), VIEWS[name][1]) for name in names]  # turned toward where the asset faces
-            images = render_asset_views(source["path"], named + custom, (int(height), int(width)), frame_no=None if frame_no is None else int(frame_no), mode=mode,
-                                        projection=projection, zoom=float(zoom), focus=tuple(focus or (0.5, 0.5, 0.5)), background=color)
+            images = render_asset_views(source["path"], named + custom, (int(height), int(width)), **options)
         except ValueError as exc:
             result = error(str(exc))
             self._update_tool_progress("error", "Error", result)
@@ -4330,22 +4354,52 @@ class DeepyZeroTools:
         self._set_status("3D views rendered.", kind="tool")
         return result
 
+    def _render_3d_turntable(self, source, views, custom, duration_s, fps, resolution, front_azimuth, options) -> dict[str, Any]:
+        """One full turn of a 3D asset as a silent video, its frames streamed from the renderer to the encoder."""
+        from shared.utils.mesh_outputs import iter_asset_views
+
+        if views or len(custom) > 1 or options["mode"] == "depth":
+            raise ValueError("A turntable takes no views, at most one [azimuth, elevation] start angle, and no depth mode.")
+        start, elevation = custom[0] if custom else (0.0, 0.0)
+        count = max(2, round(duration_s * fps))
+        angles = [(start + front_azimuth + 360.0 * index / count, elevation) for index in range(count)]
+        if options["background"] is None and options["mode"] in ("shaded", "albedo"):
+            options = {**options, "background": [1.0, 1.0, 1.0]}  # videos have no alpha
+        self._set_status(f"Rendering a {count}-frame turntable...", kind="tool")
+        self._update_tool_progress("running", "Rendering", {"status": "running", "media_id": source["media_id"], "frames": count, "frame_no": options["frame_no"]})
+        video_codec, video_container = self._get_video_output_settings()
+        stem = OUTPUT_NAME.get() or f"{Path(source['path']).stem}_turntable"
+        output_path = self._resolve_direct_output_path(f"{stem}{deepy_video_tools.get_video_container_extension(video_container)}", False, False)
+        deepy_video_tools.encode_frames(iter_asset_views(source["path"], angles, resolution, chunk=8, **options), output_path, fps, video_codec=video_codec, video_container=video_container)
+        frame_text = "" if options["frame_no"] is None else f" at animation frame {options['frame_no']}"
+        settings = self._build_deepy_settings("A turntable of a 3D asset.", f'Turntable of "{Path(source["path"]).name}"{frame_text}: one turn in {duration_s:g} s at {fps:g} fps from azimuth {start:g}, elevation {elevation:g} ({options["projection"]}, {options["mode"]})')
+        self._update_video_metadata_fields(output_path, settings)
+        record = self._record_direct_media(output_path, settings, is_image=False, audio_only=False, label="Turntable")
+        result = {"status": "done", "source_media_id": source["media_id"], "media_id": "" if record is None else record.get("media_id", ""), "frames": count, "fps": fps,
+                  "duration_seconds": settings.get("duration_seconds"), "output_file": output_path, "error": ""}
+        self._update_tool_progress("done", "Done", result)
+        self._set_status("Turntable rendered.", kind="tool")
+        return result
+
     @assistant_tool(
         display_name="Draw SVG",
-        description="Draw an image from SVG markup and add it to the image gallery: shapes, paths, gradients, text, clip paths, masks, filters (blur, shadows) and transforms, for character sheets, posters, storyboards, diagrams, layout guides or masks. <image href> may name gallery images (a 3D asset gives its preview) or authorized image files: they are embedded. url() may only point to #ids of the drawing. Inspect the result and redraw to refine it; the PNG keeps the SVG source in its settings. With duration_s it makes a silent video clip instead, animated by SVG animation elements: <animate attributeName=\"opacity\" from=\"0\" to=\"1\" begin=\"0.5s\" dur=\"1s\" fill=\"freeze\"/> fades a title in, <animateTransform attributeName=\"transform\" type=\"scale\" from=\"1\" to=\"1.1\" dur=\"4s\" fill=\"freeze\"/> slowly zooms a group holding a gallery image, and an <image> with no animation gives a still clip (title card, end card). Supported: animate (numbers, lists of numbers, colours), animateTransform (translate, scale, rotate, skewX, skewY; additive=\"sum\" adds to the existing transform), set; with begin, dur, from/to or values with keyTimes, calcMode linear, discrete or spline with keySplines, fill=\"freeze\" and repeatCount. CSS animations and scripts are not run.",
+        description="Draw an image from SVG markup and add it to the image gallery: shapes, paths, gradients, text, clip paths, masks, filters (blur, shadows) and transforms, for character sheets, posters, storyboards, diagrams, layout guides or masks. <image href> may name gallery images (a 3D asset gives its preview) or authorized image files: they are embedded. url() may only point to #ids of the drawing. Inspect the result and redraw to refine it; the result keeps its SVG source, which media_settings returns for a redraw. With duration_s it makes a silent video clip instead, animated by SVG animation elements: <animate attributeName=\"opacity\" from=\"0\" to=\"1\" begin=\"0.5s\" dur=\"1s\" fill=\"freeze\"/> fades a title in, <animateTransform attributeName=\"transform\" type=\"scale\" from=\"1\" to=\"1.1\" dur=\"4s\" fill=\"freeze\"/> slowly zooms a group holding a gallery image, and an <image> with no animation gives a still clip (title card, end card). Text content cannot be animated: for a countdown or counter, put one <text opacity=\"0\"> per value, each shown in turn with <set attributeName=\"opacity\" to=\"1\" begin=\"2s\" dur=\"1s\"/>, and a progress ring whose stroke-dashoffset animates from 0 to its circumference. Supported: animate (numbers, lists of numbers, colours), animateTransform (translate, scale, rotate, skewX, skewY; additive=\"sum\" adds to the existing transform), set; with begin, dur, from/to or values with keyTimes, calcMode linear, discrete or spline with keySplines, fill=\"freeze\" and repeatCount. CSS animations and scripts are not run. With video_id it draws over an existing video instead: designed on-screen text and graphics burned into the picture, never subtitles.",
         parameters={
-            "svg": {"type": "string", "description": "Complete SVG document: <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"W\" height=\"H\" viewBox=\"0 0 W H\">...</svg>. Up to 2,000,000 characters of markup; embedded images may total 48 MB."},
+            "svg": {"type": "string", "description": "Complete SVG document: <svg xmlns=\"http://www.w3.org/2000/svg\" width=\"W\" height=\"H\" viewBox=\"0 0 W H\">...</svg>. Up to 2,000,000 characters of markup; embedded images may total 48 MB. A long drawing can be written to a file (write_text, append_text) and passed as the exact reference @file(\"@documents/drawing.svg\"): calls stay small, and edit changes the file in place for a redraw."},
             "width": {"type": "integer", "minimum": 1, "maximum": 4096, "description": "Optional output width in pixels; the SVG's own size by default. Given alone, width or height keeps the aspect ratio.", "required": False},
             "height": {"type": "integer", "minimum": 1, "maximum": 4096, "description": "Optional output height in pixels.", "required": False},
             "background": {"type": "string", "description": "Optional background color name or hex value; transparent by default.", "required": False},
             "name": {"type": "string", "description": "Optional short file name, e.g. character_sheet.", "required": False},
-            "duration_s": {"type": "number", "minimum": 0.1, "maximum": 60, "description": "Optional: make a silent video clip of this length, animated by the SVG animation elements (background black by default).", "required": False},
+            "duration_s": {"type": "number", "minimum": 0.1, "maximum": 60, "description": "Optional: make a silent video clip of this length, animated by the SVG animation elements (background black by default). Leave it out for an image (a sheet, a poster, an infographic).", "required": False},
             "fps": {"type": "number", "minimum": 1, "maximum": 60, "description": "Frame rate of the clip; default 24, or like_video_id's.", "required": False},
             "like_video_id": {"type": "string", "description": "Optional video whose size and frame rate the clip takes, so it merges with it directly; draw the SVG in that video's aspect ratio.", "required": False},
+            "video_id": {"type": "string", "description": "Optional video to draw over: the drawing is burned into its picture from start_s to end_s, the video showing through its transparent parts, and the result is a new video with the same sound and subtitle tracks (the original stays in the Gallery). For designed on-screen text and graphics: titles, lower thirds, labels, signs, UI screens, timers, scores, exact to the character. Never for subtitles or captions of spoken words: burned in, they cannot be removed; add those as a subtitle track (remux_media subtitle_tracks). Draw the SVG at the video's size (its width, height and viewBox); its animations start at start_s.", "required": False},
+            "start_s": {"type": "number", "minimum": 0, "description": "With video_id: when the drawing appears, in seconds of the video; 0 by default.", "required": False},
+            "end_s": {"type": "number", "minimum": 0, "description": "With video_id: when it disappears; the end of the video by default.", "required": False},
         },
         pause_runtime=False,
     )
-    def draw_svg(self, svg: str, width: int | None = None, height: int | None = None, background: str | None = None, name: str | None = None, duration_s: float | None = None, fps: float | None = None, like_video_id: str | None = None) -> dict[str, Any]:
+    def draw_svg(self, svg: str, width: int | None = None, height: int | None = None, background: str | None = None, name: str | None = None, duration_s: float | None = None, fps: float | None = None, like_video_id: str | None = None, video_id: str | None = None, start_s: float | None = None, end_s: float | None = None) -> dict[str, Any]:
         from shared.deepy import svg_drawing
         from shared.utils.mesh_outputs import ensure_preview, preview_path
 
@@ -4353,6 +4407,7 @@ class DeepyZeroTools:
         self._set_status("Drawing SVG...", kind="tool")
         self._update_tool_progress("running", "Drawing", {"status": "running"})
         try:
+            svg = deepy_long_text.resolve_prompt_file(svg, self._file_access_policy(), read_only=True)  # @file("...") reads markup kept in an authorized file
             embedded = {}
             for reference in svg_drawing.references(svg):
                 record = self._resolve_media_record_input(reference)
@@ -4365,7 +4420,26 @@ class DeepyZeroTools:
                     embedded[reference] = svg_drawing.data_uri(record["path"])
                 else:
                     raise ValueError(f"href {reference} is a {record.get('media_type')}; extract an image from it first.")
-            if duration_s is None:
+            if video_id is not None:
+                if any(value is not None for value in (duration_s, fps, like_video_id, width, height)):
+                    raise ValueError("video_id draws over that video at its size and frame rate: leave duration_s, fps, like_video_id, width and height out; start_s and end_s set when the drawing shows.")
+                source, error_result = self._resolve_video_media(video_id, "video_id")
+                if error_result is not None:
+                    return error_result
+                fps, width, height, frame_count = get_video_info(source["path"])
+                length = frame_count / fps
+                start_s, end_s = float(start_s or 0), length if end_s is None else float(end_s)
+                if not 0 <= start_s < end_s <= length + 0.5 / fps:
+                    raise ValueError(f"start_s and end_s must lie within the video's {length:g} s, start_s before end_s.")
+                end_s = min(end_s, length)
+                video_codec, video_container = self._get_video_output_settings()
+                stem = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name or f"{Path(source['path']).stem}_drawn")).strip("_") or "drawing"
+                output_path = self._resolve_direct_output_path(f"{stem}{deepy_video_tools.get_video_container_extension(video_container)}", False, False)
+                frames = svg_drawing.render_frames(svg_drawing.rewrite(svg, embedded), end_s - start_s, fps, width, height, background or None, mode="RGBA")
+                deepy_video_tools.overlay_frames(frames, source["path"], output_path, fps, start_s, video_codec=video_codec, video_container=video_container, audio_codec=self._get_video_audio_output_codec())
+            elif start_s is not None or end_s is not None:
+                raise ValueError("start_s and end_s apply to drawing over a video: set video_id.")
+            elif duration_s is None:
                 if like_video_id is not None or fps is not None:
                     raise ValueError("fps and like_video_id apply to clips: set duration_s.")
                 image = svg_drawing.rasterize(svg_drawing.rewrite(svg, embedded), None if width is None else int(width), None if height is None else int(height), background or None)
@@ -4388,7 +4462,11 @@ class DeepyZeroTools:
             self._set_status(f"SVG drawing failed: {exc}", kind="error")
             return result
         embedded_text = f"{len(embedded)} embedded image{'s' if len(embedded) != 1 else ''}"
-        if duration_s is None:
+        if video_id is not None:
+            settings = self._build_direct_media_settings(source, f'Drawn from SVG over "{Path(source["path"]).name}" from {start_s:g} to {end_s:g} s ({embedded_text})', svg=svg)
+            self._update_video_metadata_fields(output_path, settings)
+            size = (width, height)
+        elif duration_s is None:
             stem = re.sub(r"[^A-Za-z0-9_-]+", "_", str(name or "drawing")).strip("_") or "drawing"
             output_path = self._resolve_direct_output_path(f"{stem}.png", True, False)
             image.save(output_path)
@@ -4398,8 +4476,10 @@ class DeepyZeroTools:
             settings = self._build_deepy_settings("An animated SVG drawing.", f"Drawn from SVG as a {float(duration_s):g} s clip at {fps:g} fps ({embedded_text})", svg=svg)
             self._update_video_metadata_fields(output_path, settings)
             size = tuple(map(int, settings["resolution"].split("x")))
-        record = self._record_direct_media(output_path, settings, is_image=duration_s is None, audio_only=False, label="SVG drawing" if duration_s is None else "SVG clip")
-        result = {"status": "done", "media_id": "" if record is None else record.get("media_id", ""), "width": size[0], "height": size[1], **({} if duration_s is None else {"duration_seconds": settings.get("duration_seconds"), "fps": fps}), "embedded_media": list(embedded), "output_file": output_path, "error": ""}
+        is_image = duration_s is None and video_id is None
+        record = self._record_direct_media(output_path, settings, is_image=is_image, audio_only=False, label="SVG overlay" if video_id is not None else "SVG drawing" if is_image else "SVG clip")
+        result = {"status": "done", "media_id": "" if record is None else record.get("media_id", ""), **({} if video_id is None else {"source_media_id": source["media_id"], "start_s": round(start_s, 3), "end_s": round(end_s, 3)}),
+                  "width": size[0], "height": size[1], **({} if is_image else {"duration_seconds": settings.get("duration_seconds"), "fps": fps}), "embedded_media": list(embedded), "output_file": output_path, "error": ""}
         self._update_tool_progress("done", "Done", result)
         self._set_status("SVG drawing created.", kind="tool")
         return result
@@ -4417,7 +4497,7 @@ class DeepyZeroTools:
                 "description": "Optional frame number to extract from the source video.",
                 "required": False,
             },
-            "time_seconds": {
+            "time_s": {
                 "type": "number",
                 "description": "Optional exact playback time in seconds. Prefer this for the currently selected video frame because it matches the player position more accurately.",
                 "required": False,
@@ -4425,7 +4505,7 @@ class DeepyZeroTools:
         },
         pause_runtime=False,
     )
-    def extract_image(self, media_id: str, frame_no: int | None = None, time_seconds: float | None = None) -> dict[str, Any]:
+    def extract_image(self, media_id: str, frame_no: int | None = None, time_s: float | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         source_media, error_result = self._resolve_video_media(media_id, "media_id")
         if error_result is not None:
@@ -4434,18 +4514,18 @@ class DeepyZeroTools:
             frame_no = None if frame_no is None or str(frame_no).strip() == "" else int(frame_no)
         except Exception:
             return {"status": "error", "media_id": str(media_id or "").strip(), "frame_no": frame_no, "output_file": "", "error": "frame_no must be an integer."}
-        time_seconds, error_result = self._parse_time_value(time_seconds, "time_seconds", required=False)
+        time_seconds, error_result = self._parse_time_value(time_s, "time_s", required=False)
         if error_result is not None:
-            return {"status": "error", "media_id": str(media_id or "").strip(), "frame_no": frame_no, "time_seconds": time_seconds, "output_file": "", "error": error_result["error"]}
+            return {"status": "error", "media_id": str(media_id or "").strip(), "frame_no": frame_no, "time_s": time_seconds, "output_file": "", "error": error_result["error"]}
         if frame_no is None and time_seconds is None:
-            return {"status": "error", "media_id": str(media_id or "").strip(), "frame_no": None, "time_seconds": None, "output_file": "", "error": "frame_no or time_seconds is required."}
+            return {"status": "error", "media_id": str(media_id or "").strip(), "frame_no": None, "time_s": None, "output_file": "", "error": "frame_no or time_s is required."}
         self._set_status("Extracting image...", kind="tool")
-        self._update_tool_progress("running", "Extracting", {"status": "running", "media_id": source_media.get("media_id", ""), "frame_no": frame_no, "time_seconds": time_seconds})
+        self._update_tool_progress("running", "Extracting", {"status": "running", "media_id": source_media.get("media_id", ""), "frame_no": frame_no, "time_s": time_seconds})
         source_path = str(source_media.get("path", "")).strip()
         try:
             resolved_frame_no = deepy_video_tools.resolve_video_frame_no(source_path, frame_no=frame_no, time_seconds=time_seconds)
         except Exception as exc:
-            return {"status": "error", "media_id": source_media.get("media_id", ""), "frame_no": frame_no, "time_seconds": time_seconds, "output_file": "", "error": str(exc)}
+            return {"status": "error", "media_id": source_media.get("media_id", ""), "frame_no": frame_no, "time_s": time_seconds, "output_file": "", "error": str(exc)}
         source_name = os.path.splitext(os.path.basename(source_path))[0]
         output_suffix = f"frame{resolved_frame_no}" if time_seconds is None else f"frame{resolved_frame_no}_t{int(round(float(time_seconds or 0.0) * 1000.0))}ms"
         output_name = f"{source_name}_{output_suffix}.png"
@@ -4457,7 +4537,7 @@ class DeepyZeroTools:
                 "status": "error",
                 "media_id": source_media.get("media_id", ""),
                 "frame_no": resolved_frame_no,
-                "time_seconds": time_seconds,
+                "time_s": time_seconds,
                 "output_file": "",
                 "error": str(exc),
             }
@@ -4473,7 +4553,7 @@ class DeepyZeroTools:
             "media_id": "" if media_record is None else media_record.get("media_id", ""),
             "source_media_id": source_media.get("media_id", ""),
             "frame_no": resolved_frame_no,
-            "time_seconds": time_seconds,
+            "time_s": time_seconds,
             "output_file": output_path,
             "error": "",
         }
@@ -4483,23 +4563,23 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Extract Video",
-        description="Extract a video segment from a previously resolved video using either time-based arguments (start_time, end_time, duration) or frame-based arguments (start_frame, end_frame, num_frames).",
+        description="Extract a video segment from a previously resolved video using either time-based arguments (start_s, end_s, duration_s) or frame-based arguments (start_frame, end_frame, num_frames).",
         parameters={
             "media_id": {
                 "type": "string",
                 "description": "The media id for the source video returned by Resolve Media.",
             },
-            "start_time": {
+            "start_s": {
                 "type": "number",
-                "description": "Optional start time in seconds. Defaults to the beginning when only end_time or duration is provided.",
+                "description": "Optional start time in seconds. Defaults to the beginning when only end_s or duration_s is provided.",
                 "required": False,
             },
-            "end_time": {
+            "end_s": {
                 "type": "number",
                 "description": "Optional end time in seconds.",
                 "required": False,
             },
-            "duration": {
+            "duration_s": {
                 "type": "number",
                 "description": "Optional segment duration in seconds.",
                 "required": False,
@@ -4525,9 +4605,9 @@ class DeepyZeroTools:
     def extract_video(
         self,
         media_id: str,
-        start_time: float | None = None,
-        end_time: float | None = None,
-        duration: float | None = None,
+        start_s: float | None = None,
+        end_s: float | None = None,
+        duration_s: float | None = None,
         start_frame: int | None = None,
         end_frame: int | None = None,
         num_frames: int | None = None,
@@ -4538,9 +4618,9 @@ class DeepyZeroTools:
             return error_result
         segment_args, error_result = self._resolve_segment_args(
             source_media,
-            start_time=start_time,
-            end_time=end_time,
-            duration=duration,
+            start_time=start_s,
+            end_time=end_s,
+            duration=duration_s,
             start_frame=start_frame,
             end_frame=end_frame,
             num_frames=num_frames,
@@ -4553,9 +4633,9 @@ class DeepyZeroTools:
             "status": "running",
             "media_id": source_media.get("media_id", ""),
             "mode": segment_args["mode"],
-            "start_time": segment_args["start_time"],
-            "end_time": segment_args["end_time"],
-            "duration": segment_args["duration"],
+            "start_s": segment_args["start_time"],
+            "end_s": segment_args["end_time"],
+            "duration_s": segment_args["duration"],
         }
         if segment_args["mode"] == "frame":
             progress_payload.update({"start_frame": segment_args["start_frame"], "end_frame": segment_args["end_frame"], "num_frames": segment_args["num_frames"]})
@@ -4594,7 +4674,7 @@ class DeepyZeroTools:
                 comments += " through the end of the video"
         else:
             comments = f'Extracted video segment from "{os.path.basename(source_path)}" starting at {segment_args["start_time"]:.3f}s'
-            if start_time is None and (end_time is not None or duration is not None):
+            if start_s is None and (end_s is not None or duration_s is not None):
                 comments = f'Extracted video segment from "{os.path.basename(source_path)}" starting at the beginning'
             if segment_args["end_time"] is not None:
                 comments += f" ending at {segment_args['end_time']:.3f}s"
@@ -4616,9 +4696,9 @@ class DeepyZeroTools:
             "media_id": "" if media_record is None else media_record.get("media_id", ""),
             "source_media_id": source_media.get("media_id", ""),
             "mode": segment_args["mode"],
-            "start_time": segment_args["start_time"],
-            "end_time": segment_args["end_time"],
-            "duration": segment_args["duration"],
+            "start_s": segment_args["start_time"],
+            "end_s": segment_args["end_time"],
+            "duration_s": segment_args["duration"],
             "output_file": output_path,
             "error": "",
         }
@@ -4633,18 +4713,19 @@ class DeepyZeroTools:
         parameters={
             "media_id": {"type": "string", "description": "Audio or video media ID or authorized file.", "required": True},
             "audio_track_no": {"type": "integer", "description": "1-based audio stream; default 1.", "required": False},
-            "start_time": {"type": "number", "description": "Start in seconds; default 0.", "required": False},
-            "duration": {"type": "number", "description": "Seconds to analyze; omitted analyzes through the end.", "required": False},
+            "start_s": {"type": "number", "description": "Start in seconds; default 0.", "required": False},
+            "duration_s": {"type": "number", "description": "Seconds to analyze; omitted analyzes through the end.", "required": False},
             "silence_db": {"type": "number", "description": "Silence RMS threshold in dBFS (-120..0); default -50.", "required": False},
-            "min_silence": {"type": "number", "description": "Minimum silence interval in seconds; default 0.2.", "required": False},
+            "min_silence_s": {"type": "number", "description": "Minimum silence interval in seconds; default 0.2.", "required": False},
             "preview": {"type": "boolean", "description": "Create a playable Gallery excerpt; default false.", "required": False},
-            "preview_seconds": {"type": "number", "description": "Excerpt length, at most 30 seconds; default 10. Starts at start_time.", "required": False},
-            "window_s": {"type": "number", "description": "Optional envelope window in seconds (0.1..600, at most 600 windows): adds RMS, peak and loudest momentary loudness per window, for finding climaxes, gaps and balance in one call.", "required": False},
+            "pitch": {"type": "boolean", "description": "Optional, for an isolated voice (a vocal stem or speech, not a full mix): voice_pitch_hz, its median pitch; female voices mostly sit above about 165 Hz, male ones below.", "required": False},
+            "preview_s": {"type": "number", "description": "Excerpt length, at most 30 seconds; default 10. Starts at start_s.", "required": False},
+            "window_s": {"type": "number", "description": "Optional envelope window in seconds (0.1..600, at most 600 windows): adds lists of RMS, peak and loudest momentary loudness per window (window i starts at start_s + i * window_s), for finding climaxes, gaps and balance in one call.", "required": False},
         },
         pause_runtime=False,
     )
-    def inspect_audio(self, media_id: str, audio_track_no: int = 1, start_time: float = 0.0, duration: float | None = None, silence_db: float = -50.0, min_silence: float = 0.2, preview: bool = False, preview_seconds: float = 10.0, window_s: float | None = None) -> dict[str, Any]:
-        from shared.deepy.audio_inspection import inspect_audio
+    def inspect_audio(self, media_id: str, audio_track_no: int = 1, start_s: float = 0.0, duration_s: float | None = None, silence_db: float = -50.0, min_silence_s: float = 0.2, preview: bool = False, preview_s: float = 10.0, pitch: bool = False, window_s: float | None = None) -> dict[str, Any]:
+        from shared.deepy.audio_inspection import inspect_audio, voice_pitch
 
         self._sync_recent_media()
         source = self._resolve_media_record_input(media_id)
@@ -4652,8 +4733,10 @@ class DeepyZeroTools:
             raise ValueError("media_id must reference audio or video.")
         self._set_status("Inspecting Audio", kind="tool")
         output = self._resolve_direct_output_path(f"{Path(source['path']).stem}_preview.wav", False, True) if preview else None
-        result = inspect_audio(source["path"], audio_track_no=audio_track_no, start_time=start_time, duration=duration, silence_db=silence_db, min_silence=min_silence, preview_path=output, preview_seconds=preview_seconds, window_s=window_s)
+        result = inspect_audio(source["path"], audio_track_no=audio_track_no, start_time=start_s, duration=duration_s, silence_db=silence_db, min_silence=min_silence_s, preview_path=output, preview_seconds=preview_s, window_s=window_s)
         result["source_media_id"] = source["media_id"]
+        if pitch:
+            result["voice_pitch_hz"] = voice_pitch(source["path"], start_time=start_s, duration=duration_s)
         if output:
             settings = self._build_direct_media_settings(source, "Audio inspection preview")
             record = self._record_direct_media(output, settings, is_image=False, audio_only=True, label="Audio Preview")
@@ -4663,23 +4746,23 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Extract Audio",
-        description="Extract audio from a previously resolved video or audio file using either time-based arguments (start_time, end_time, duration) or, for video sources, frame-based arguments (start_frame, end_frame, num_frames).",
+        description="Extract audio from a previously resolved video or audio file using either time-based arguments (start_s, end_s, duration_s) or, for video sources, frame-based arguments (start_frame, end_frame, num_frames).",
         parameters={
             "media_id": {
                 "type": "string",
                 "description": "The media id for the source video or audio returned by Resolve Media.",
             },
-            "start_time": {
+            "start_s": {
                 "type": "number",
                 "description": "Optional start time in seconds. Defaults to the beginning.",
                 "required": False,
             },
-            "end_time": {
+            "end_s": {
                 "type": "number",
                 "description": "Optional end time in seconds.",
                 "required": False,
             },
-            "duration": {
+            "duration_s": {
                 "type": "number",
                 "description": "Optional segment duration in seconds.",
                 "required": False,
@@ -4710,9 +4793,9 @@ class DeepyZeroTools:
     def extract_audio(
         self,
         media_id: str,
-        start_time: float | None = None,
-        end_time: float | None = None,
-        duration: float | None = None,
+        start_s: float | None = None,
+        end_s: float | None = None,
+        duration_s: float | None = None,
         start_frame: int | None = None,
         end_frame: int | None = None,
         num_frames: int | None = None,
@@ -4729,9 +4812,9 @@ class DeepyZeroTools:
             return {"status": "error", "media_id": source_media.get("media_id", ""), "actual_media_type": actual_media_type, "media_type": actual_media_type, "output_file": "", "error": f"media_id must reference audio or video, not a {actual_media_type}."}
         segment_args, error_result = self._resolve_segment_args(
             source_media,
-            start_time=start_time,
-            end_time=end_time,
-            duration=duration,
+            start_time=start_s,
+            end_time=end_s,
+            duration=duration_s,
             start_frame=start_frame,
             end_frame=end_frame,
             num_frames=num_frames,
@@ -4751,9 +4834,9 @@ class DeepyZeroTools:
             "status": "running",
             "media_id": source_media.get("media_id", ""),
             "mode": segment_args["mode"],
-            "start_time": segment_args["start_time"],
-            "end_time": segment_args["end_time"],
-            "duration": segment_args["duration"],
+            "start_s": segment_args["start_time"],
+            "end_s": segment_args["end_time"],
+            "duration_s": segment_args["duration"],
             "audio_track_no": audio_track_no,
         }
         if segment_args["mode"] == "frame":
@@ -4797,7 +4880,7 @@ class DeepyZeroTools:
         else:
             if segment_args["start_time"] is not None:
                 comments += f" starting at {segment_args['start_time']:.3f}s"
-                if start_time is None and (end_time is not None or duration is not None):
+                if start_s is None and (end_s is not None or duration_s is not None):
                     comments = comments.replace(f" starting at {segment_args['start_time']:.3f}s", " starting at the beginning")
             if segment_args["end_time"] is not None:
                 comments += f" ending at {segment_args['end_time']:.3f}s"
@@ -4811,9 +4894,9 @@ class DeepyZeroTools:
             "media_id": "" if media_record is None else media_record.get("media_id", ""),
             "source_media_id": source_media.get("media_id", ""),
             "mode": segment_args["mode"],
-            "start_time": segment_args["start_time"],
-            "end_time": segment_args["end_time"],
-            "duration": segment_args["duration"],
+            "start_s": segment_args["start_time"],
+            "end_s": segment_args["end_time"],
+            "duration_s": segment_args["duration"],
             "audio_track_no": 1 if audio_track_no is None else audio_track_no,
             "output_file": output_path,
             "error": "",
@@ -4826,7 +4909,7 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Transcribe Media",
-        description="Transcribe the spoken content of a previously resolved audio or video media item with Whisper medium, returning segment timestamps by default and optionally using word timestamps instead. Timestamps are tightened to the detected speech, so a pause before a word is not counted in it, and speech_intervals lists where speech is heard. For speech over music, transcribe the clean voice file, or isolate the voice first (remove_background audio treatment).",
+        description="Transcribe the spoken content of a previously resolved audio or video media item with Whisper, returning segment timestamps by default and optionally using word timestamps instead. Timestamps are tightened to the detected speech, so a pause before a word is not counted in it, and speech_intervals lists where speech is heard. For speech over music, transcribe the clean voice file, or isolate the voice first (remove_background audio treatment).",
         parameters={
             "media_id": {
                 "type": "string",
@@ -4842,9 +4925,14 @@ class DeepyZeroTools:
                 "description": "Optional 1-based audio track number when the source media contains multiple audio tracks.",
                 "required": False,
             },
+            "subtitles_path": {
+                "type": "string",
+                "description": "Optional authorized path of an SRT file written from the segments, such as @documents/film_fr.srt: transcribing the finished cut (or one of its language tracks) gives subtitles timed to it, never estimated.",
+                "required": False,
+            },
         },
     )
-    def transcribe_media(self, media_id: str, timestamp_type: str | None = None, audio_track_no: int | None = None) -> dict[str, Any]:
+    def transcribe_media(self, media_id: str, timestamp_type: str | None = None, audio_track_no: int | None = None, subtitles_path: str | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         source_media, error_result = self._resolve_audio_or_video_media(media_id, "media_id")
         if error_result is not None:
@@ -4876,6 +4964,8 @@ class DeepyZeroTools:
                 "audio_track_no": audio_track_no,
                 "error": "audio_track_no must be >= 1.",
             }
+        if subtitles_path and normalized_timestamp_type is None:
+            return {"status": "error", "media_id": source_media.get("media_id", ""), "timestamp_type": "none", "error": "subtitles_path needs timestamps: leave timestamp_type out or use segment."}
         self._set_status("Transcribing media...", kind="tool")
         progress_payload = {
             "status": "running",
@@ -4917,8 +5007,12 @@ class DeepyZeroTools:
         }
         if audio_track_no is not None:
             result["audio_track_no"] = audio_track_no
+        if subtitles_path:
+            written = deepy_filesystem.write_text(self._file_access_policy(), subtitles_path, deepy_transcription.segments_to_srt(payload["segments"]), mode="overwrite")
+            result["subtitles_path"] = self._file_access_policy().virtualize_path(written["path"]).replace("\\", "/")
         self._update_tool_progress("done", "Done", result)
         self._set_status("Transcription finished.", kind="tool")
+        result.pop("label")  # the media label is its generation prompt (lyrics, script), easily mistaken for the transcript
         return result
 
     @assistant_tool(
@@ -4979,12 +5073,12 @@ class DeepyZeroTools:
         },
         pause_runtime=False,
     )
-    def replace_audio(self, video_id: str = "", audio_id: str = "", *, audio_ids: list[str] | None = None, mode: str = "replace", include_video_audio: bool = False, gains_db: list[float] | None = None, output_extension: str | None = None, subtitle_tracks: list[dict] | None = None, include_video_subtitles: bool = True, offsets_s: list[float] | None = None, fade_in_s: list[float] | None = None, fade_out_s: list[float] | None = None, video_audio_gain_db: float | None = None, normalize_lufs: float | None = None, trim_start_s: list[float] | None = None, trim_duration_s: list[float] | None = None, gain_points: list | None = None, ducking: dict | None = None) -> dict[str, Any]:
+    def replace_audio(self, video_id: str = "", audio_id: str = "", *, audio_ids: list[str] | None = None, mode: str = "replace", include_video_audio: bool = False, gains_db: list[float] | None = None, output_extension: str | None = None, subtitle_tracks: list[dict] | None = None, include_video_subtitles: bool = True, offsets_s: list[float] | None = None, fade_in_s: list[float] | None = None, fade_out_s: list[float] | None = None, video_audio_gain_db: float | None = None, normalize_lufs: float | None = None, trim_start_s: list[float] | None = None, trim_duration_s: list[float] | None = None, gain_points: list | None = None, ducking: dict | None = None, audio_languages: list[str] | None = None) -> dict[str, Any]:
         if audio_ids is not None or subtitle_tracks is not None:
             self._sync_recent_media()
             if audio_ids is None:
                 audio_ids = []
-            if not isinstance(audio_ids, list) or (not audio_ids and mode != "copy"):
+            if not isinstance(audio_ids, list) or (not audio_ids and mode != "copy" and not (mode == "mix" and video_id and include_video_audio)):
                 return {"status": "error", "error": "audio_ids must contain audio files for this mode."}
             if mode == "copy" and not video_id:
                 return {"status": "error", "error": "copy requires a video_id."}
@@ -5033,7 +5127,7 @@ class DeepyZeroTools:
             self._set_status("Remuxing Media...", kind="tool")
             self._update_tool_progress("running", "Remuxing", {"status": "running", "mode": mode, "video_id": video_id, "audio_ids": audio_ids})
             try:
-                output_path = deepy_video_tools.remux_media(audio_paths, output_path, mode=mode, video_path=video_path, include_video_audio=include_video_audio, gains_db=gains_db, audio_codec=self._get_video_audio_output_codec(), standalone_audio_codec=standalone_audio_codec, subtitle_tracks=subtitle_tracks, include_video_subtitles=include_video_subtitles, offsets_s=offsets_s, fade_in_s=fade_in_s, fade_out_s=fade_out_s, video_audio_gain_db=video_audio_gain_db, normalize_lufs=normalize_lufs, trim_start_s=trim_start_s, trim_duration_s=trim_duration_s, gain_points=gain_points, ducking=ducking)
+                output_path = deepy_video_tools.remux_media(audio_paths, output_path, mode=mode, video_path=video_path, include_video_audio=include_video_audio, gains_db=gains_db, audio_codec=self._get_video_audio_output_codec(), standalone_audio_codec=standalone_audio_codec, subtitle_tracks=subtitle_tracks, include_video_subtitles=include_video_subtitles, offsets_s=offsets_s, fade_in_s=fade_in_s, fade_out_s=fade_out_s, video_audio_gain_db=video_audio_gain_db, normalize_lufs=normalize_lufs, trim_start_s=trim_start_s, trim_duration_s=trim_duration_s, gain_points=gain_points, ducking=ducking, audio_languages=audio_languages)
                 source_media = video_media or audio_media[0]
                 comment = f"{mode.title()} media"
                 if audio_paths:
@@ -5067,6 +5161,22 @@ class DeepyZeroTools:
                 "subtitle_track_count": (sum(stream.get("codec_type") == "subtitle" for stream in ffmpeg.probe(video_path).get("streams", [])) if video_path and include_video_subtitles else 0) + len(subtitle_tracks or []),
                 "output_file": output_path, "error": "",
             }
+            if mode in ("mix", "replace") and (quiet := deepy_video_tools.quiet_ranges(output_path)):  # measured on the result: a soundtrack shorter than the cut, silent cards, gaps
+                result["quiet_ranges_seconds"] = quiet
+                duration = deepy_video_tools.get_media_duration(output_path)
+                if not video_media and quiet[-1][1] >= duration - 0.1:  # an audio master ending in silence: dead air, not a fade (a fade is audible)
+                    result["warning"] = (f"The last {duration - quiet[-1][0]:.1f} s of this audio are silence after the sound ends: remix with trim_duration_s={quiet[-1][0] + 0.5:.2f} "
+                                         "so the file (and any duration quoted from it) ends with the music.")
+                elif quiet[-1][1] >= duration - 0.1 and duration - quiet[-1][0] >= 1:  # a film ending in dead air: the music stopped before the picture
+                    result["warning"] = (f"The picture runs on in silence for its last {duration - quiet[-1][0]:.1f} s (from {quiet[-1][0]:g} s): a finished film ends with its sound. "
+                                         "Use music at least as long as the cut, faded out at the very end (fade_out_s), or end the cut where the sound ends.")
+                else:
+                    result["warning"] = f"The mix is nearly silent (below -45 dBFS) at {', '.join(f'{start:g}-{end:g} s' for start, end in quiet)}: unless intended, extend or add music or sound there."
+            if mode == "mix" and video_media and not include_video_audio and deepy_video_tools._has_audio_stream(video_path):
+                own = deepy_video_tools.quiet_ranges(video_path)  # a video whose soundtrack is all silence loses nothing
+                if not own or own[0][0] > 0.1 or own[0][1] < deepy_video_tools.get_media_duration(video_path) - 0.1:
+                    result["note"] = ("The video's own soundtrack was left out (include_video_audio false). Lip-synced shots carry their speech in it, aligned with the lips: "
+                                      "keep it (include_video_audio true) and add only music and other sounds, rather than placing the speech files again.")
             self._update_tool_progress("done", "Done", result)
             self._set_status("Media Remux Complete.", kind="tool")
             return result
@@ -5255,25 +5365,25 @@ class DeepyZeroTools:
 
     @assistant_tool(
         display_name="Merge Videos",
-        description="Join videos end to end in the given order, with a cut, a crossfade or a fade through black or white at each join; the soundtracks follow the picture. Clips are fitted to the first video's size and frame rate, and a clip without sound gets silence.",
+        description="Join videos end to end in the given order, with a cut, a crossfade or a fade through black or white at each join; the soundtracks follow the picture. Clips are fitted to the first video's size and frame rate (a clip of another aspect ratio gets black bars: make title and end cards at each format's size), and a clip without sound gets silence. Soundtracks keep their levels (no limiter): master a final cut with remux_media (mode mix, normalize_lufs).",
         parameters={
-            "video_ids": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 32, "description": "Media ids of the videos, in playing order."},
-            "transitions": {"type": "array", "items": {"type": "string", "enum": list(deepy_video_tools.MERGE_TRANSITIONS)}, "minItems": 1, "maxItems": 31, "description": "Optional transition at each join, one per join or a single one for all: cut (default), crossfade, fade_black or fade_white.", "required": False},
+            "media_ids": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 32, "description": "Media ids of the videos, in playing order."},
+            "transitions": {"type": ["string", "array"], "anyOf": [{"type": "string", "enum": list(deepy_video_tools.MERGE_TRANSITIONS)}, {"type": "array", "items": {"type": "string", "enum": list(deepy_video_tools.MERGE_TRANSITIONS)}, "minItems": 1, "maxItems": 31}], "description": "Optional transition for all joins (such as \"crossfade\"), or a list with one per join; each is cut (default), crossfade, fade_black or fade_white.", "required": False},
             "transition_s": {"type": "number", "minimum": 0.05, "maximum": 10, "description": "Optional length of each crossfade or fade in seconds (default 1). The two clips overlap by this time, so the result is shorter than their sum.", "required": False},
         },
         pause_runtime=False,
     )
-    def merge_videos(self, video_ids: list[str], transitions: list[str] | None = None, transition_s: float = 1.0) -> dict[str, Any]:
+    def merge_videos(self, media_ids: list[str], transitions: str | list[str] | None = None, transition_s: float = 1.0) -> dict[str, Any]:
         self._sync_recent_media()
         sources = []
-        for index, video_id in enumerate(video_ids):
-            media, error_result = self._resolve_video_media(video_id, f"video_ids[{index}]")
+        for index, video_id in enumerate(media_ids):
+            media, error_result = self._resolve_video_media(video_id, f"media_ids[{index}]")
             if error_result is not None:
                 return error_result
             sources.append(media)
         media_ids = [media.get("media_id", "") for media in sources]
         self._set_status("Merging videos...", kind="tool")
-        self._update_tool_progress("running", "Merging", {"status": "running", "video_ids": media_ids})
+        self._update_tool_progress("running", "Merging", {"status": "running", "media_ids": media_ids})
         video_codec, video_container = self._get_video_output_settings()
         names = [os.path.basename(str(media.get("path", "")).strip()) for media in sources]
         output_path = self._resolve_direct_output_path(f"merged_{len(sources)}_videos{deepy_video_tools.get_video_container_extension(video_container)}", False, False)
@@ -5284,11 +5394,17 @@ class DeepyZeroTools:
             self._update_tool_progress("error", "Error", result)
             self._set_status(f"Video merge failed: {exc}", kind="error")
             return result
-        joins = sorted(set(transitions or ["cut"]))
+        joins = sorted(set([transitions] if isinstance(transitions, str) else transitions or ["cut"]))  # one name for every join, or one per join
         merged_settings = self._build_direct_media_settings(sources[-1], f"Merged {len(sources)} videos ({', '.join(joins)}): " + ", ".join(names))
         self._update_video_metadata_fields(output_path, merged_settings)
         media_record = self._record_direct_media(output_path, merged_settings, is_image=False, audio_only=False, label="Merged video")
         result = {"status": "done", "output_file": output_path, "media_id": "" if media_record is None else media_record.get("media_id", ""), "video_ids": media_ids, "duration_seconds": merged_settings.get("duration_seconds"), "error": ""}
+        # silent inserts (drawn cards, animations, mute shots) leave dead air in the cut: measured, so the mix covers it before delivery
+        silent = deepy_video_tools.quiet_ranges(output_path, min_seconds=2.0) if deepy_video_tools._has_audio_stream(output_path) else [[0.0, deepy_video_tools.get_media_duration(output_path)]]
+        if silent:
+            result["quiet_ranges_seconds"] = silent
+            result["warning"] = (f"This cut is silent for {sum(end - start for start, end in silent):.1f} s ({', '.join(f'{start:g}-{end:g} s' for start, end in silent)}): "
+                                 "cover those stretches with narration or music in the mix (remux_media mode mix) before delivering, unless silence is intended there.")
         self._update_tool_progress("done", "Done", result)
         self._set_status("Video merge finished.", kind="tool")
         return result
@@ -5779,14 +5895,14 @@ class DeepyZeroTools:
                     "properties": {
                         "media_id": {"type": "string", "description": "A media id returned by Resolve Media."},
                         "frame_no": {"type": "integer", "minimum": 0, "description": "Optional video frame number. If omitted for a video, frame 0 is used."},
-                        "time_seconds": {"type": "number", "minimum": 0, "description": "Optional exact video time in seconds. Do not combine it with frame_no."},
-                        "view": {"type": "string", "enum": list(_MESH_VIEWS), "description": "Optional view of a 3D asset (left / right: the object's own sides); frame_no / time_seconds select its animation frame."},
+                        "time_s": {"type": "number", "minimum": 0, "description": "Optional exact video time in seconds. Do not combine it with frame_no."},
+                        "view": {"type": "string", "enum": list(_MESH_VIEWS), "description": "Optional view of a 3D asset (left / right: the object's own sides); frame_no / time_s select its animation frame."},
                     },
                     "required": ["media_id"],
                 },
                 "minItems": 1,
                 "maxItems": 5,
-                "description": "Ordered visual inputs. Repeat the same video media_id with different frame_no or time_seconds values to inspect multiple frames jointly. Images omit both selectors. Use exactly one of media_id, media_ids, or media_inputs.",
+                "description": "Ordered visual inputs. Repeat the same video media_id with different frame_no or time_s values to inspect multiple frames jointly. Images omit both selectors. Use exactly one of media_id, media_ids, or media_inputs.",
                 "required": False,
             },
             "question": {
@@ -5798,12 +5914,13 @@ class DeepyZeroTools:
                 "description": "Optional frame number to inspect for every video or animated 3D asset supplied through media_id or media_ids. If omitted, video frame 0 and the 3D rest pose are used. Do not use it with media_inputs.",
                 "required": False,
             },
+            "time_s": {"type": "number", "minimum": 0, "description": "Optional time in seconds of the frame to inspect for every video supplied through media_id or media_ids, instead of frame_no. Do not use it with media_inputs.", "required": False},
             "bbox": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 1000}, "minItems": 4, "maxItems": 4, "description": "Optional normalized [x_min,y_min,x_max,y_max] crop, applied before resize.", "required": False},
         },
         pause_runtime=True,
         pause_reason="vision",
     )
-    def inspect_media(self, media_id: str | None = None, question: str = "", frame_no: int | None = None, media_ids: list[str] | None = None, media_inputs: list[dict[str, Any]] | None = None, bbox: list[int] | None = None) -> dict[str, Any]:
+    def inspect_media(self, media_id: str | None = None, question: str = "", frame_no: int | None = None, media_ids: list[str] | None = None, media_inputs: list[dict[str, Any]] | None = None, bbox: list[int] | None = None, time_s: float | None = None) -> dict[str, Any]:
         self._sync_recent_media()
         single_media_id = str(media_id or "").strip()
         question = str(question or "").strip()
@@ -5824,23 +5941,24 @@ class DeepyZeroTools:
             bbox = deepy_vision.normalize_inspection_bbox(bbox)
         except ValueError as exc:
             return {"status": "error", "media_id": single_media_id, "media_ids": list(media_ids or []), "media_inputs": list(media_inputs or []), "question": question, "answer": "", "error": str(exc)}
-        if media_inputs is not None and frame_no is not None:
-            return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": media_inputs, "question": question, "answer": "", "error": "Do not combine frame_no with media_inputs; put frame_no inside each video input."}
-        raw_inputs = list(media_inputs or []) if media_inputs is not None else [{"media_id": value, "frame_no": frame_no} for value in ([single_media_id] if single_media_id else list(media_ids or []))]
+        if media_inputs is not None and (frame_no is not None or time_s is not None):
+            return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": media_inputs, "question": question, "answer": "", "error": "Do not combine frame_no or time_s with media_inputs; put them inside each video input."}
+        selector = {"frame_no": frame_no, **({"time_s": time_s} if time_s is not None else {})}
+        raw_inputs = list(media_inputs or []) if media_inputs is not None else [{"media_id": value, **selector} for value in ([single_media_id] if single_media_id else list(media_ids or []))]
         if not 1 <= len(raw_inputs) <= self._vision_max_images:
             return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"Provide between 1 and {self._vision_max_images} visual inputs."}
         requested_inputs = []
         for index, raw_input in enumerate(raw_inputs):
             if not isinstance(raw_input, dict):
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}] must be an object."}
-            unknown_keys = set(raw_input) - {"media_id", "frame_no", "time_seconds", "bbox", "view"}
+            unknown_keys = set(raw_input) - {"media_id", "frame_no", "time_s", "bbox", "view"}
             if unknown_keys:
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"Unsupported media_inputs[{index}] field: {sorted(unknown_keys)[0]}."}
             requested_media_id = raw_input.get("media_id", "")
             if not isinstance(requested_media_id, str) or len(requested_media_id.strip()) == 0:
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].media_id must be a non-empty string."}
             input_frame_no = raw_input.get("frame_no", None)
-            input_time_seconds = raw_input.get("time_seconds", None)
+            input_time_seconds = raw_input.get("time_s", None)
             try:
                 input_frame_no = None if input_frame_no is None or str(input_frame_no).strip() == "" else int(input_frame_no)
             except Exception:
@@ -5848,13 +5966,13 @@ class DeepyZeroTools:
             try:
                 input_time_seconds = None if input_time_seconds is None or str(input_time_seconds).strip() == "" else float(input_time_seconds)
             except Exception:
-                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].time_seconds must be a number."}
+                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].time_snds must be a number."}
             if input_frame_no is not None and input_time_seconds is not None:
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}] cannot combine frame_no and time_seconds."}
             if input_frame_no is not None and input_frame_no < 0:
                 return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].frame_no must be non-negative."}
             if input_time_seconds is not None and (not math.isfinite(input_time_seconds) or input_time_seconds < 0):
-                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].time_seconds must be a finite non-negative number."}
+                return {"status": "error", "media_id": single_media_id, "media_ids": [], "media_inputs": raw_inputs, "question": question, "answer": "", "error": f"media_inputs[{index}].time_snds must be a finite non-negative number."}
             try:
                 input_bbox = deepy_vision.normalize_inspection_bbox(raw_input.get("bbox"))
             except ValueError as exc:
@@ -5922,15 +6040,17 @@ class DeepyZeroTools:
                 "type": "string",
                 "description": "One video media id returned by Resolve Media.",
             },
-            "start_time_seconds": {
+            "start_s": {
                 "type": "number",
                 "minimum": 0,
-                "description": "Start of the inspected time range in seconds.",
+                "description": "Optional start of the inspected time range in seconds (default 0).",
+                "required": False,
             },
-            "end_time_seconds": {
+            "end_s": {
                 "type": "number",
                 "exclusiveMinimum": 0,
-                "description": "End of the inspected time range in seconds. It must be after start_time_seconds.",
+                "description": "Optional end of the inspected time range in seconds, after start_s (default: the end of the video).",
+                "required": False,
             },
             "question": {
                 "type": "string",
@@ -5941,23 +6061,24 @@ class DeepyZeroTools:
                 "description": "Optional mid-resolution mode that uses one-quarter as many frames with a 512²-pixel budget instead of a 256²-pixel budget.",
                 "required": False,
             },
-            "min_frames_between_samples": {
+            "min_gap_frames": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "Optional minimum number of source-video frames between samples. It can only reduce the sample count and never exceeds the tool maximum. Do not combine with min_seconds_between_samples.",
+                "description": "Optional minimum number of source-video frames between samples. It can only reduce the sample count and never exceeds the tool maximum. Do not combine with min_gap_s.",
                 "required": False,
             },
-            "min_seconds_between_samples": {
+            "min_gap_s": {
                 "type": "number",
                 "exclusiveMinimum": 0,
-                "description": "Optional minimum seconds between samples. It can only reduce the sample count and never exceeds the tool maximum. Do not combine with min_frames_between_samples.",
+                "description": "Optional minimum seconds between samples. It can only reduce the sample count and never exceeds the tool maximum. Do not combine with min_gap_frames.",
                 "required": False,
             },
         },
         pause_runtime=True,
         pause_reason="vision",
     )
-    def inspect_video(self, media_id: str, start_time_seconds: float, end_time_seconds: float, question: str, mid_res_sampling: bool = False, min_frames_between_samples: int | None = None, min_seconds_between_samples: float | None = None) -> dict[str, Any]:
+    def inspect_video(self, media_id: str, start_s: float = 0.0, end_s: float | None = None, question: str = "", mid_res_sampling: bool = False, min_gap_frames: int | None = None, min_gap_s: float | None = None) -> dict[str, Any]:
+        start_time_seconds, end_time_seconds, min_frames_between_samples, min_seconds_between_samples = start_s, end_s, min_gap_frames, min_gap_s
         self._sync_recent_media()
         requested_media_id = str(media_id or "").strip()
         question = str(question or "").strip()
@@ -5968,7 +6089,7 @@ class DeepyZeroTools:
         if not isinstance(mid_res_sampling, bool):
             return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "mid_res_sampling must be a boolean."}
         if min_frames_between_samples is not None and min_seconds_between_samples is not None:
-            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "Use either min_frames_between_samples or min_seconds_between_samples, not both."}
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "Use either min_gap_frames or min_gap_s, not both."}
         if min_frames_between_samples is not None:
             try:
                 parsed_min_frames = int(min_frames_between_samples)
@@ -5976,30 +6097,30 @@ class DeepyZeroTools:
                     raise ValueError
                 min_frames_between_samples = parsed_min_frames
             except Exception:
-                return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "min_frames_between_samples must be an integer greater than zero."}
+                return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "min_gap_frames must be an integer greater than zero."}
         if min_seconds_between_samples is not None:
             try:
                 min_seconds_between_samples = float(min_seconds_between_samples)
             except Exception:
                 min_seconds_between_samples = float("nan")
             if not math.isfinite(min_seconds_between_samples) or min_seconds_between_samples <= 0:
-                return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "min_seconds_between_samples must be a finite number greater than zero."}
+                return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "min_gap_s must be a finite number greater than zero."}
         try:
             start_time_seconds = float(start_time_seconds)
-            end_time_seconds = float(end_time_seconds)
+            end_time_seconds = math.inf if end_time_seconds is None else float(end_time_seconds)  # omitted: the end of the video
         except Exception:
-            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "start_time_seconds and end_time_seconds must be numbers."}
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "start_s and end_s must be numbers."}
         if not math.isfinite(start_time_seconds) or start_time_seconds < 0:
-            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "start_time_seconds must be a finite non-negative number."}
-        if not math.isfinite(end_time_seconds) or end_time_seconds <= start_time_seconds:
-            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "end_time_seconds must be finite and greater than start_time_seconds."}
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "start_s must be a finite non-negative number."}
+        if math.isnan(end_time_seconds) or end_time_seconds <= start_time_seconds:
+            return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "end_s must be greater than start_s."}
         if self.session is None:
             return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": "Assistant session is not available."}
         media_record = self._resolve_media_record_input(requested_media_id)
         if media_record is None:
             return {"status": "error", "media_id": requested_media_id, "question": question, "answer": "", "error": f"Unknown media id: {requested_media_id}."}
         if media_record.get("media_type") != "video":
-            return {"status": "error", "media_id": media_record.get("media_id", ""), "media_type": media_record.get("media_type", ""), "question": question, "answer": "", "error": "Inspect Video requires a video."}
+            return {"status": "error", "media_id": media_record.get("media_id", ""), "media_type": media_record.get("media_type", ""), "question": question, "answer": "", "error": f"Inspect Video requires a video; this media is {media_record.get('media_type', 'not a video')}: ask inspect_media with the same media_id and question."}
         if self._vision_query_callback is None:
             return {"status": "error", "media_id": media_record.get("media_id", ""), "question": question, "answer": "", "error": "Deepy vision inspection is not available."}
         media_path = str(media_record.get("path", "") or "").strip()
@@ -6010,7 +6131,7 @@ class DeepyZeroTools:
             return {"status": "error", "media_id": media_record.get("media_id", ""), "question": question, "answer": "", "error": "Could not determine the video frame rate or frame count."}
         duration_seconds = int(frame_count) / effective_fps
         if start_time_seconds >= duration_seconds:
-            return {"status": "error", "media_id": media_record.get("media_id", ""), "question": question, "answer": "", "error": f"start_time_seconds must be before the video duration ({duration_seconds:.3f} seconds)."}
+            return {"status": "error", "media_id": media_record.get("media_id", ""), "question": question, "answer": "", "error": f"start_s must be before the video duration ({duration_seconds:.3f} seconds)."}
         sampled_end_seconds = min(end_time_seconds, duration_seconds)
         start_frame = deepy_video_tools.resolve_video_frame_no(media_path, time_seconds=start_time_seconds)
         end_frame = deepy_video_tools.resolve_video_frame_no(media_path, time_seconds=sampled_end_seconds)
@@ -6031,9 +6152,9 @@ class DeepyZeroTools:
             inspection_records.append(inspection_record)
         progress = {
             "status": "running", "media_id": media_record.get("media_id", ""), "question": question,
-            "start_time_seconds": start_time_seconds, "end_time_seconds": sampled_end_seconds, "sample_count": sample_count,
+            "start_s": start_time_seconds, "end_s": sampled_end_seconds, "sample_count": sample_count,
             "max_pixels_per_image": max_image_edge * max_image_edge, "mid_res_sampling": mid_res_sampling,
-            "min_frames_between_samples": min_frames_between_samples, "min_seconds_between_samples": min_seconds_between_samples,
+            "min_gap_frames": min_frames_between_samples, "min_gap_s": min_seconds_between_samples,
         }
         self._update_tool_progress("running", f"Inspecting {sample_count} video frames", progress)
         result = self._vision_query_callback(inspection_records, question, None, max_image_edge)
@@ -6042,11 +6163,20 @@ class DeepyZeroTools:
             result.pop("media_ids", None)
             result.update({
                 "media_id": media_record.get("media_id", ""), "start_frame_no": start_frame, "end_frame_no": end_frame,
-                "start_time_seconds": start_time_seconds, "end_time_seconds": sampled_end_seconds,
-                "requested_end_time_seconds": end_time_seconds, "sample_count": sample_count,
+                "start_s": start_time_seconds, "end_s": sampled_end_seconds,
+                "requested_end_s": end_time_seconds, "sample_count": sample_count,
                 "max_pixels_per_image": max_image_edge * max_image_edge, "mid_res_sampling": mid_res_sampling,
-                "min_frames_between_samples": min_frames_between_samples, "min_seconds_between_samples": min_seconds_between_samples,
+                "min_gap_frames": min_frames_between_samples, "min_gap_s": min_seconds_between_samples,
             })
+            checks = deepy_video_tools.picture_checks(media_path, start_time_seconds, sampled_end_seconds)  # measured, whatever the sampled frames suggested
+            result.update(checks)
+            warnings = []
+            if black := checks.get("black_ranges_seconds"):
+                warnings.append(f"The picture is black for {sum(end - begin for begin, end in black):.1f} s of this range ({', '.join(f'{begin:g}-{end:g} s' for begin, end in black)}): unless that is an intended fade, regenerate or cut it.")
+            if cuts := checks.get("cut_times_seconds"):
+                warnings.append(f"The picture cuts at {', '.join(f'{time:g}' for time in cuts)} s. In an edited sequence these are its shot changes; inside one generated shot, the model cut away to another shot: keep the part before the cut, or regenerate the shot shorter.")
+            if warnings:
+                result["warning"] = " ".join(warnings)
         return result
 
     def get_tool_schemas(self) -> list[dict[str, Any]]:
@@ -6116,7 +6246,7 @@ class DeepyZeroTools:
 
     def validate_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         lookup_name = str(tool_name or "").strip()
-        call_args = dict(arguments or {})
+        call_args = canonical_arguments(lookup_name, dict(arguments or {}))
         for _method, metadata in self._iter_tools():
             if metadata["name"] != lookup_name:
                 continue
@@ -6190,7 +6320,7 @@ class DeepyZeroTools:
         for method, metadata in self._iter_tools():
             if metadata["name"] != tool_name:
                 continue
-            return method(**dict(arguments or {}))
+            return method(**canonical_arguments(tool_name, dict(arguments or {})))
         raise KeyError(f"Unknown assistant tool: {tool_name}")
 
 
@@ -6887,7 +7017,7 @@ class AssistantEngine:
             boundary = self.runtime.snapshot_rewind_state(context_snapshot=self.session.runtime_snapshot)
             boundary["messages_len"] = len(messages)
             boundaries.append(boundary)
-        latest_start = step_ranges[-_ACTIVE_TURN_COMPACTION_KEEP_STEPS][0] if len(step_ranges) >= _ACTIVE_TURN_COMPACTION_KEEP_STEPS else user_index + 1
+        latest_start = self._kept_groups_start(step_ranges, len(seq.token_ids), {item["messages_len"]: len(item["token_ids"]) for item in boundaries}) if len(step_ranges) >= _ACTIVE_TURN_COMPACTION_KEEP_STEPS else user_index + 1
         token_limit = len(seq.token_ids) - assistant_action_budget_tokens(self._get_context_window_tokens())
         preserve_start = next((item["messages_len"] for item in reversed(boundaries) if item["messages_len"] <= latest_start and len(item["token_ids"]) <= token_limit), user_index + 1)
         # Keep the selected checkpoint and only the newer candidates needed as the window advances.
@@ -7624,7 +7754,7 @@ class AssistantEngine:
     def _get_compaction_type(self) -> str:
         return normalize_deepy_compaction_type(get_deepy_config_value(DEEPY_COMPACTION_TYPE_KEY, ""))
 
-    def _prepare_memory_compaction_context(self, prior_messages: list[dict[str, Any]], checkpoint: dict[str, Any], context_window_tokens: int, max_new_tokens: int, *, corrective_no_tools: bool = False, corrective_empty_summary: bool = False) -> tuple[dict[str, Any], int, int]:
+    def _prepare_memory_compaction_context(self, prior_messages: list[dict[str, Any]], checkpoint: dict[str, Any], context_window_tokens: int, max_new_tokens: int, *, corrective_no_tools: bool = False, corrective_empty_summary: bool = False, corrective_too_long: bool = False) -> tuple[dict[str, Any], int, int]:
         if self.runtime is None:
             raise RuntimeError("Assistant runtime is not available for context summarization.")
         if int(checkpoint.get("messages_len", -1)) != len(prior_messages):
@@ -7662,7 +7792,9 @@ class AssistantEngine:
         corrective_prompts = [_COMPACTION_NO_TOOLS_RETRY] if corrective_no_tools else []
         if corrective_empty_summary:
             corrective_prompts.append(_COMPACTION_EMPTY_SUMMARY_RETRY)
-        compaction_prompt = "\n\n".join([ASSISTANT_COMPACTION_PROMPT, *corrective_prompts])
+        if corrective_too_long:
+            corrective_prompts.append(_COMPACTION_TOO_LONG_RETRY)
+        compaction_prompt = "\n\n".join([ASSISTANT_COMPACTION_PROMPT, *corrective_prompts, *_compaction_budget_note(max_new_tokens)])
         self._compaction_thinking_enabled = normalize_deepy_compaction_thinking(get_deepy_config_value(DEEPY_COMPACTION_THINKING_KEY, DEEPY_COMPACTION_THINKING_DEFAULT))
         try:
             instruction_suffix = render_text_user_turn_suffix(self.runtime.tokenizer, compaction_prompt, thinking_enabled=self._compaction_thinking_enabled)
@@ -7689,7 +7821,7 @@ class AssistantEngine:
         self._log(f"Compaction reused {len(source_tokens):,} cached tokens, appended {len(appended_tokens):,} instruction tokens, and reserved up to {resolved_max_new_tokens:,} summary tokens.")
         return rollback_snapshot, compaction_context_tokens, resolved_max_new_tokens
 
-    def _prepare_live_compaction_context(self, source_messages: list[dict[str, Any]], context_window_tokens: int, max_new_tokens: int, *, boundary_snapshot: dict[str, Any] | None = None, corrective_no_tools: bool = False, corrective_empty_summary: bool = False) -> tuple[dict[str, Any], int, int]:
+    def _prepare_live_compaction_context(self, source_messages: list[dict[str, Any]], context_window_tokens: int, max_new_tokens: int, *, boundary_snapshot: dict[str, Any] | None = None, corrective_no_tools: bool = False, corrective_empty_summary: bool = False, corrective_too_long: bool = False) -> tuple[dict[str, Any], int, int]:
         if self.runtime is None:
             raise RuntimeError("Assistant runtime is not available for active-turn summarization.")
         rollback_snapshot = self.runtime.snapshot_context()
@@ -7705,6 +7837,9 @@ class AssistantEngine:
             active_prompt = f"{active_prompt}\n\n{_COMPACTION_NO_TOOLS_RETRY}"
         if corrective_empty_summary:
             active_prompt = f"{active_prompt}\n\n{_COMPACTION_EMPTY_SUMMARY_RETRY}"
+        if corrective_too_long:
+            active_prompt = f"{active_prompt}\n\n{_COMPACTION_TOO_LONG_RETRY}"
+        active_prompt = "\n\n".join([active_prompt, *_compaction_budget_note(max_new_tokens)])
         self._compaction_thinking_enabled = normalize_deepy_compaction_thinking(get_deepy_config_value(DEEPY_COMPACTION_THINKING_KEY, DEEPY_COMPACTION_THINKING_DEFAULT))
         try:
             source_tokens = (
@@ -7823,13 +7958,21 @@ class AssistantEngine:
             step_start = step_end
         return ranges
 
+    def _kept_groups_start(self, step_ranges: list[tuple[int, int]], before_tokens: int, boundary_tokens: dict[int, int]) -> int:
+        """Start of the action groups that compaction keeps verbatim: the last two, or only the last when two long groups (a plan, a batch
+        of reads) would refill a quarter of the window. Boundary capture already dropped the earlier start when it kept only the last group."""
+        latest_start, last_start = step_ranges[-_ACTIVE_TURN_COMPACTION_KEEP_STEPS][0], step_ranges[-1][0]
+        if latest_start not in boundary_tokens:
+            return last_start if last_start in boundary_tokens else latest_start
+        return last_start if before_tokens - boundary_tokens[latest_start] > self._get_context_window_tokens() // 4 else latest_start
+
     def _active_compaction_preserve_start(self, step_ranges: list[tuple[int, int]], before_tokens: int) -> int:
-        if len(step_ranges) <= _ACTIVE_TURN_COMPACTION_KEEP_STEPS:
+        if len(step_ranges) < _ACTIVE_TURN_COMPACTION_KEEP_STEPS:
             return step_ranges[0][0] if step_ranges else len(self.session.messages)
-        latest_start = step_ranges[-_ACTIVE_TURN_COMPACTION_KEEP_STEPS][0]
         token_limit = before_tokens - assistant_action_budget_tokens(self._get_context_window_tokens())
         seq = self.runtime._get_active_sequence()
         boundaries = {item["messages_len"]: len(item["token_ids"]) for item in self.session.current_turn["semantic_boundaries"] if seq is not None and item["context_id"] == seq._assistant_context_id}
+        latest_start = self._kept_groups_start(step_ranges, before_tokens, boundaries)
         for start, token_count in reversed(boundaries.items()):
             if start <= latest_start and token_count <= token_limit:
                 return start
@@ -7888,7 +8031,7 @@ class AssistantEngine:
     def _compaction_output_budget(self, prior_messages: list[dict[str, Any]], current_messages: list[dict[str, Any]], before_tokens: int, context_window_tokens: int, generation_reserve_tokens: int) -> int:
         fixed_tokens = self._rewritten_history_token_count(prior_messages, current_messages)
         target_tokens = min(int(before_tokens) - 1, int(context_window_tokens) - self._resolved_compaction_reserve_tokens(generation_reserve_tokens, context_window_tokens))
-        return max(0, target_tokens - fixed_tokens)
+        return max(0, min(target_tokens - fixed_tokens, int(context_window_tokens * _COMPACTION_SUMMARY_WINDOW_SHARE)))
 
     def _validate_compaction_reduction(self, prior_messages: list[dict[str, Any]], current_messages: list[dict[str, Any]], before_tokens: int, context_window_tokens: int, generation_reserve_tokens: int) -> int:
         candidate_tokens = self._rewritten_history_token_count(prior_messages, current_messages)
@@ -8119,6 +8262,7 @@ class AssistantEngine:
         reduction_events: list[str] = []
         corrective_no_tools = False
         corrective_empty_summary = False
+        corrective_too_long = False
         summary = ""
         while working_prior_messages:
             rollback_snapshot = None
@@ -8128,9 +8272,9 @@ class AssistantEngine:
                 if requested_summary_tokens <= 0:
                     raise _CompactionCapacityError("Compaction cannot produce a summary while preserving a net reduction and the next-action reserve.")
                 if working_prior_messages == prior_messages:
-                    rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_memory_compaction_context(working_prior_messages, checkpoint, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary)
+                    rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_memory_compaction_context(working_prior_messages, checkpoint, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary, corrective_too_long=corrective_too_long)
                 else:
-                    rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_prior_messages, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary)
+                    rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_prior_messages, context_window_tokens, requested_summary_tokens, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary, corrective_too_long=corrective_too_long)
                 result = self._generate_compaction_segment(max_new_tokens)
                 log_llm_io("IN", "local-deepy", "history-compaction", {
                     "text": result.raw_text,
@@ -8145,8 +8289,10 @@ class AssistantEngine:
                     self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
                     print("[Deepy] Context compaction interrupted; original context restored.")
                     return True
-                if result.stop_reason in {"context_limit", "max_tokens"}:
-                    raise _CompactionCapacityError(f"Compaction generation ended with {result.stop_reason}; the summary was not complete.")
+                if result.stop_reason == "max_tokens":
+                    raise _CompactionTooLongError("Compaction generation ended with max_tokens; the summary was not complete.")
+                if result.stop_reason == "context_limit":
+                    raise _CompactionCapacityError("Compaction generation ended with context_limit; the summary was not complete.")
                 if result.stop_reason == "tool_call":
                     raise _CompactionToolCallError("Compaction generation attempted to call a tool instead of returning a summary.")
                 summary = self._clean_compaction_summary(result.raw_text, thinking_enabled=self._compaction_thinking_enabled)
@@ -8177,6 +8323,11 @@ class AssistantEngine:
                         self._set_status("Retrying empty context summary...", kind="loading")
                         continue
                     exc = _CompactionCapacityError("Compaction repeatedly returned an empty summary; reducing the oldest completed source before retrying.")
+                if isinstance(exc, _CompactionTooLongError) and not corrective_too_long:
+                    corrective_too_long = True
+                    self._log("Retrying the identical compaction source with a shorter-summary instruction.")
+                    self._set_status("Retrying a shorter context summary...", kind="loading")
+                    continue
                 if not isinstance(exc, _CompactionCapacityError):
                     raise RuntimeError("Deepy context compaction failed; original context was restored without deleting history.") from exc
                 reduction_reason = self._degrade_compaction_source(
@@ -8214,6 +8365,11 @@ class AssistantEngine:
         self._mark_history_summarized_trace(summary)
         return True
 
+    def _active_summary_state(self) -> str:
+        """Identifies the history an active-turn compaction ran on: a message count alone can return after a discard plus new steps."""
+        last = json.dumps(self.session.messages[-1], sort_keys=True, default=str) if self.session.messages else ""
+        return f"{len(self.session.messages)}:{hashlib.sha1(last.encode('utf-8')).hexdigest()[:16]}"
+
     @_defer_steering_during_compaction
     def _maybe_summarize_active_turn(self, generation_reserve_tokens: int, force: bool = False, target_token_count: int | None = None) -> bool:
         if self.session.interrupt_requested:
@@ -8231,7 +8387,7 @@ class AssistantEngine:
         trigger_tokens = _summary_compaction_trigger_tokens(context_window_tokens)
         if not force and before_tokens <= trigger_tokens:
             return False
-        if int(checkpoint.get("active_summary_attempted_messages_len", -1)) == len(self.session.messages):
+        if checkpoint.get("active_summary_attempted_state") == self._active_summary_state():
             return False
         user_indexes = [idx for idx, message in enumerate(self.session.messages) if str(message.get("role", "")).strip().lower() == "user"]
         if not user_indexes:
@@ -8252,7 +8408,7 @@ class AssistantEngine:
             "rendered_context_window_tokens": int(self.session.rendered_context_window_tokens or 0),
             "pending_replay_reason": self.session.pending_replay_reason,
         }
-        checkpoint["active_summary_attempted_messages_len"] = len(self.session.messages)
+        checkpoint["active_summary_attempted_state"] = self._active_summary_state()
         seq = self.runtime._get_active_sequence()
         boundary_snapshot = next((item for item in checkpoint["semantic_boundaries"] if item["messages_len"] == preserve_start and seq is not None and item["context_id"] == seq._assistant_context_id), None)
         self._set_status("Compacting context...", kind="loading")
@@ -8261,6 +8417,7 @@ class AssistantEngine:
         reduction_events: list[str] = []
         corrective_no_tools = False
         corrective_empty_summary = False
+        corrective_too_long = False
         summary = ""
         while working_summary_source:
             rollback_snapshot = None
@@ -8271,7 +8428,7 @@ class AssistantEngine:
                 if requested_summary_tokens <= 0:
                     raise _CompactionCapacityError("Active-turn compaction cannot produce a summary while preserving a net reduction and the next-action reserve.")
                 use_boundary_snapshot = boundary_snapshot if working_summary_source == summary_source_messages else None
-                rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_summary_source, context_window_tokens, requested_summary_tokens, boundary_snapshot=use_boundary_snapshot, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary)
+                rollback_snapshot, _compaction_context_tokens, max_new_tokens = self._prepare_live_compaction_context(working_summary_source, context_window_tokens, requested_summary_tokens, boundary_snapshot=use_boundary_snapshot, corrective_no_tools=corrective_no_tools, corrective_empty_summary=corrective_empty_summary, corrective_too_long=corrective_too_long)
                 result = self._generate_compaction_segment(max_new_tokens)
                 log_llm_io("IN", "local-deepy", "active-turn-compaction", {
                     "text": result.raw_text,
@@ -8286,8 +8443,10 @@ class AssistantEngine:
                     self._restore_compaction_transaction(rollback_snapshot, original_messages, original_render_state)
                     print("[Deepy] Active-turn context compaction interrupted; original context restored.")
                     return True
-                if result.stop_reason in {"context_limit", "max_tokens"}:
-                    raise _CompactionCapacityError(f"Active-turn compaction generation ended with {result.stop_reason}; the summary was not complete.")
+                if result.stop_reason == "max_tokens":
+                    raise _CompactionTooLongError("Active-turn compaction generation ended with max_tokens; the summary was not complete.")
+                if result.stop_reason == "context_limit":
+                    raise _CompactionCapacityError("Active-turn compaction generation ended with context_limit; the summary was not complete.")
                 if result.stop_reason == "tool_call":
                     raise _CompactionToolCallError("Active-turn compaction generation attempted to call a tool instead of returning a summary.")
                 summary = self._clean_compaction_summary(result.raw_text, thinking_enabled=self._compaction_thinking_enabled)
@@ -8319,6 +8478,11 @@ class AssistantEngine:
                         self._set_status("Retrying empty context summary...", kind="loading")
                         continue
                     exc = _CompactionCapacityError("Active-turn compaction repeatedly returned an empty summary; reducing the oldest completed source before retrying.")
+                if isinstance(exc, _CompactionTooLongError) and not corrective_too_long:
+                    corrective_too_long = True
+                    self._log("Retrying the identical active-turn compaction source with a shorter-summary instruction.")
+                    self._set_status("Retrying a shorter context summary...", kind="loading")
+                    continue
                 if not isinstance(exc, _CompactionCapacityError):
                     raise RuntimeError("Deepy active-turn compaction failed; original context was restored without deleting history.") from exc
                 reduction_reason = self._degrade_compaction_source(
@@ -8344,12 +8508,12 @@ class AssistantEngine:
                 return False
             self._print_compaction_report("active-turn summary capacity retries exhausted; reduced-source fallback", before_tokens, len(self.session.rendered_token_ids), "; ".join(reduction_events))
             self._mark_history_trimmed_trace()
-            checkpoint["active_summary_attempted_messages_len"] = len(self.session.messages)
+            checkpoint["active_summary_attempted_state"] = self._active_summary_state()
             self._set_status("Thinking...", kind="thinking")
             return True
 
         checkpoint["summary_compaction_attempted"] = True
-        checkpoint["active_summary_attempted_messages_len"] = len(self.session.messages)
+        checkpoint["active_summary_attempted_state"] = self._active_summary_state()
         detail = f"prefix through {summarized_step_count} older active-turn action group{'s' if summarized_step_count != 1 else ''} summarized at the chronological checkpoint"
         if reduction_events:
             detail += f" after capacity reduction ({'; '.join(reduction_events)})"
@@ -8450,7 +8614,8 @@ class AssistantEngine:
                 if len(suffix_tokens) > 0:
                     prefix_tokens = self._active_sequence_token_count()
                     prefix_tokens = len(self.session.rendered_token_ids) if prefix_tokens is None else prefix_tokens
-                    required_reserve = 0 if self._get_compaction_type() == DEEPY_COMPACTION_TYPE_SUMMARIZE else generation_reserve_tokens
+                    # Summarize mode compacts after the append, unless that already ran on this history: then trim to the window now.
+                    required_reserve = 0 if self._get_compaction_type() == DEEPY_COMPACTION_TYPE_SUMMARIZE and self.session.current_turn.get("active_summary_attempted_state") != self._active_summary_state() else generation_reserve_tokens
                     if prefix_tokens + len(suffix_tokens) > max(1, self._get_context_window_tokens() - required_reserve):
                         self._log("Live tool suffix append skipped because history must be trimmed before continuing.")
                     else:
@@ -9266,6 +9431,12 @@ class AssistantEngine:
         self.session.messages.append(message)
         return message.get("tool_calls", [])
 
+    def _room_for_another_tool_call(self) -> bool:
+        """Another call in the same response must end below the compaction trigger, which keeps an action's room after it: a response of
+        many calls can be the only step compaction keeps, and the next action must still fit once its results are prefilled."""
+        seq = self.runtime._get_active_sequence()
+        return seq is not None and len(seq.token_ids) + self._action_generation_reserve_tokens("tool") <= _summary_compaction_trigger_tokens(self._get_context_window_tokens())
+
     def _append_tool_message(self, payload: dict[str, Any], tool_call_id: str | None = None) -> None:
         message = {"role": "tool", "content": _json_dumps(payload)}
         if tool_call_id:
@@ -9540,6 +9711,15 @@ class AssistantEngine:
                     continue
                 if result.stop_reason == "context_limit":
                     raise RuntimeError(f"Deepy reached the context limit during an active {action_phase} action; the active response was preserved and not trimmed.")
+                if result.stop_reason == "tool_call" and self._room_for_another_tool_call() and self.runtime.tool_call_follows(
+                        seed=current_seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=self.thinking_enabled,
+                        stop_requested=lambda: bool(self.session.interrupt_requested) or assistant_steering_interrupt_due(self.session),
+                        apply_repetition_penalty=normalize_deepy_repetition_penalty(get_deepy_config_value(DEEPY_REPETITION_PENALTY_KEY, DEEPY_REPETITION_PENALTY_DEFAULT))):
+                    self._log("Another tool call follows in the same response.")  # parallel calls run in order, their results return together
+                    action_phase = "tool"
+                    continuing_response = True
+                    self._skip_generation_context_sync_once = True
+                    continue
                 tool_structure_error = validate_tool_call_structure(raw_text)
                 if tool_structure_error:
                     loop_action, loop_message = self._record_tool_generation_error_step(recent_steps, "malformed_tool_call")

@@ -81,7 +81,7 @@ import functools
 import types
 import inspect
 
-from mmgp import safetensors2
+from mmgp import safetensors2, runtime
 from .read_ahead import ReadAhead, BATCH as READ_AHEAD_BATCH, WINDOW as READ_AHEAD_WINDOW, MAX_RANGES as READ_AHEAD_MAX_RANGES
 from mmgp import profile_type
 from .quant_router import (
@@ -3355,6 +3355,8 @@ class offload:
         self.auto_preload = None # with autoPreload, the plans of the models whose preload follows the VRAM left by their workloads
         self.auto_preload_requested = False
         self.cuda_graphs = {} # model id -> the CUDA graphs of the blocks of its towers (cudaGraphs)
+        self.expert_residency = {}
+        self.expert_hooks = []
 
         global last_offload_obj
         last_offload_obj = self
@@ -4030,6 +4032,9 @@ class offload:
             self.read_jobs.clear()
             self.read_plans.clear()
         torch.cuda.synchronize() # blocks may still be read or written by queued work
+        for model_id, residency in self.expert_residency.items():
+            if model_id not in keep:
+                residency.unload()
         if self.ring is not None:
             self.ring.reset()
         for model_id in self.active_models_ids:
@@ -4692,6 +4697,12 @@ def {fname}(module, *args, **kwargs):
             return
 
         self.unload_all()
+        for handle in self.expert_hooks:
+            handle.remove()
+        self.expert_hooks.clear()
+        for residency in self.expert_residency.values():
+            residency.close()
+        self.expert_residency.clear()
         if self.cuda_graphs:
             from .cuda_graphs import release
             release(self.cuda_graphs.values())
@@ -4732,6 +4743,7 @@ def {fname}(module, *args, **kwargs):
             model = None
 
         self.models = None            
+        runtime._unregister(self)
 
         if last_offload_obj == self:
             last_offload_obj = None
@@ -4790,7 +4802,7 @@ class LoadingCallback:
         self.check_abort()
 
 
-def all(pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, partialPinning = False, loras = None, quantizeTransformer = True,  extraModelsToQuantize = None, quantizationType = qint8, budgets= 0, workingVRAM = None, asyncTransfers = True, compile = False, convertWeightsFloatTo = torch.bfloat16, perc_reserved_mem_max = 0, coTenantsMap = None, vram_safety_coefficient = 0.8, compile_mode ="default", verboseLevel = -1, loading_callback=None, prefetchWindow = None, smartPinning = None, readAhead = False, autoPreload = False, cudaGraphs = False):
+def all(pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, partialPinning = False, loras = None, quantizeTransformer = True,  extraModelsToQuantize = None, quantizationType = qint8, budgets= 0, workingVRAM = None, asyncTransfers = True, compile = False, convertWeightsFloatTo = torch.bfloat16, perc_reserved_mem_max = 0, coTenantsMap = None, vram_safety_coefficient = 0.8, compile_mode ="default", verboseLevel = -1, loading_callback=None, prefetchWindow = None, smartPinning = None, readAhead = False, autoPreload = False, cudaGraphs = False, preloadExperts = True):
     """Configure offloading, optionally reporting phases and accepting cancellation."""
     global total_pinned_bytes, max_pinnable_bytes, last_offload_obj
     kwargs = locals().copy()
@@ -4811,7 +4823,7 @@ def all(pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, p
         raise error from None
 
 
-def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, partialPinning = False, loras = None, quantizeTransformer = True,  extraModelsToQuantize = None, quantizationType = qint8, budgets= 0, workingVRAM = None, asyncTransfers = True, compile = False, convertWeightsFloatTo = torch.bfloat16, perc_reserved_mem_max = 0, coTenantsMap = None, vram_safety_coefficient = 0.8, compile_mode ="default", verboseLevel = -1, loading_callback=None, prefetchWindow = None, smartPinning = None, readAhead = False, autoPreload = False, cudaGraphs = False):
+def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLora = False, partialPinning = False, loras = None, quantizeTransformer = True,  extraModelsToQuantize = None, quantizationType = qint8, budgets= 0, workingVRAM = None, asyncTransfers = True, compile = False, convertWeightsFloatTo = torch.bfloat16, perc_reserved_mem_max = 0, coTenantsMap = None, vram_safety_coefficient = 0.8, compile_mode ="default", verboseLevel = -1, loading_callback=None, prefetchWindow = None, smartPinning = None, readAhead = False, autoPreload = False, cudaGraphs = False, preloadExperts = True):
     """Hook to a pipeline or a group of modules in order to reduce their VRAM requirements:
     pipe_or_dict_of_modules : the pipeline object or a dictionary of modules of the model
     quantizeTransformer: set True by default will quantize on the fly the video / image model
@@ -4819,6 +4831,10 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
     extraModelsToQuantize: a list of models to be also quantized on the fly (e.g the text_encoder), useful to reduce bith RAM and VRAM consumption
     convertWeightsFloatTo: default dtype for remaining FP32 parameters. A model-level _convertWeightsFloatTo overrides it; None preserves FP32.
     budgets: 0 by default (unlimited). If non 0, it corresponds to the maximum size in MB that every model will occupy at any moment
+    preloadExperts: with an explicit budget, use its remaining space for individual GPU experts after ordinary blocks. Dynamic
+        preload applies the same priority independently. False keeps experts on CPU for fixed-budget execution. With pinnedMemory=True,
+        the reserved RAM the models leave also holds pinned copies of the experts that can go to the GPU, most used first, so that
+        placing them is a plain transfer; the experts that stay on the CPU are never pinned.
         (in fact the real usage is twice this number). It is very efficient to reduce VRAM consumption but this feature may be very slow
         if pinnedMemory is not enabled
     vram_safety_coefficient: float between 0 and 1 (exclusive), default 0.8. Sets the maximum portion of VRAM that can be used for models.
@@ -4958,6 +4974,10 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
         if loading_callback is not None: loading_callback.report(phase, phase_no, phase_total, model_id)
         phase_no += 1
 
+    from . import experts
+    expert_banks = {model_id: experts.banks(model) for model_id, model in models.items()}
+    expert_exclusions = {model_id: experts.excluded_names(model) for model_id, model in models.items() if expert_banks[model_id]}
+    expert_budgets = {}
     listed = {model_id: pinAllModels or model_id in modelsToPin for model_id in models} # the models to pin, as far as the reserved RAM allows
     if not asyncTransfers:
         smartPinning = None # the staging ring needs asynchronous transfers
@@ -5010,6 +5030,9 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
             # do not convert 32 bits float to 16 bits since buffers are few (and potential gain low) and usually they are needed for precision calculation (for instance Rope)
             current_model_size +=  torch.numel(b.data) * b.data.element_size()
 
+        # Optional GPU expert copies have their own, lower-priority residency budget.
+        current_model_size -= builtins.sum(bank.num_experts * bank.expert_nbytes for bank in expert_banks[model_id].values())
+
         model_budget = model_budgets[model_id] if model_id in model_budgets else budget
         if workingVRAM != None:
             model_minimumVRAM = -1
@@ -5025,6 +5048,7 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
                 new_budget = self.device_mem_capacity -  model_minimumVRAM
                 new_budget = 1 if new_budget  < 0 else new_budget
                 model_budget =  new_budget if model_budget == 0 or new_budget < model_budget else model_budget
+        expert_budgets[model_id] = model_budget if preloadExperts else 0
         if  model_budget > 0 and model_budget > current_model_size:
             model_budget = 0
         coef =vram_safety_coefficient
@@ -5039,6 +5063,8 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
                 
         
         model_budgets[model_id] = model_budget
+
+    runtime._register(self, models)
 
     #  Hook forward methods of modules 
     for model_id in models: 
@@ -5069,6 +5095,8 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
         # modules that the model loads only while they run (e.g. an LLM's token embedding and output head, used for a prompt but not to denoise)
         separate_blocks = tuple(getattr(current_model, "_offload_separate_blocks", ())) if current_budget > 0 else ()
         for submodule_name, submodule in current_model.named_modules():
+            if submodule_name in expert_exclusions.get(model_id, ()):
+                continue
             # create a fake 'accelerate' parameter so that the _execution_device property returns always "cuda" 
             # (it is queried in many pipelines even if offloading is not properly implemented)  
             if not hasattr(submodule, "_hf_hook"):
@@ -5109,7 +5137,7 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
                     submodule_method = self.hook_lora(submodule, current_model, model_id, loras_model_data, loras_model_shortcuts, submodule_name)                
                 else:
                     submodule_method = getattr(submodule, submodule_method_name)
-                if graphs is not None and submodule_method_name == "forward" and submodule in towers_set:
+                if graphs is not None and submodule_method_name == "forward" and submodule in towers_set and not getattr(submodule, "_cuda_graph_segments", False):
                     submodule_method = graphs.wrap(submodule, submodule_method)
                 if callable(submodule_method):
                     if top_submodule and blocks_name is None and any_lora and len(submodule._parameters):
@@ -5177,7 +5205,22 @@ def _configure(self, pipe_or_dict_of_modules, pinnedMemory = False, pinnedPEFTLo
     if auto_models: # before pinning, which pins first the blocks that are not preloaded
         from .auto_preload import AutoPreload
         self.auto_preload = AutoPreload(self, auto_models, verboseLevel, auto_measures)
+    for model_id, banks in expert_banks.items():
+        if not banks:
+            continue
+        residency = experts.Residency(self, model_id, banks, expert_budgets[model_id], autoPreload)
+        self.expert_residency[model_id] = residency
+        def prepare_experts(module, args, model_id=model_id, residency=residency):
+            self.ensure_model_loaded(model_id)
+            # Dynamic block plans coordinate experts after their ordinary blocks.
+            if self.auto_preload is None or model_id not in self.auto_preload.plans:
+                residency.prepare()
+        self.expert_hooks.append(self.models[model_id].register_forward_pre_hook(prepare_experts))
     self._pin_models(listed, smartPinning, partialPinning, pinnedPEFTLora, perc_reserved_mem_max, max_reservable_memory, verboseLevel, loading_callback)
+    if pinAllModels: # after the models' own pinning, which has priority for the reserved RAM
+        for model_id, residency in self.expert_residency.items():
+            residency.pin(lambda module, name: _pin_to_memory(module, name, perc_reserved_mem_max=perc_reserved_mem_max, verboseLevel=verboseLevel,
+                                                              loading_callback=loading_callback, readAhead=self.read_ahead_enabled))
     if self.auto_preload is not None:
         self.auto_preload.after_pinning() # the blocks left unpinned are the first to keep in VRAM
     self.read_ahead = ReadAhead.create(readAhead)
@@ -5204,12 +5247,12 @@ def profile(pipe_or_dict_of_modules, profile_no: profile_type =  profile_type.Ve
     """Apply a configuration profile that depends on your hardware:
     pipe_or_dict_of_modules : the pipeline object or a dictionary of modules of the model
     profile_name : num of the profile:
-        HighRAM_HighVRAM (=1): each model loaded whole in VRAM, all models kept in reserved RAM. The fastest generations and model
-            switches, needs the most RAM and VRAM
+        HighRAM_HighVRAM (=1): profile 2 with automatic VRAM preload. All models kept in reserved RAM; keep as many blocks as fit
+            beside the measured workload in VRAM, streaming the rest
         HighRAM_LowVRAM (=2): all models kept in reserved RAM, sent to the GPU part by part. Runs models larger than the VRAM, leaves VRAM
             for long videos or large images and switches models fast, needs a lot of RAM
-        LowRAM_HighVRAM (=3): each model loaded whole in VRAM, only the main model ('transformer') kept in reserved RAM. Fast
-            generations with less RAM, needs enough VRAM for the whole model
+        LowRAM_HighVRAM (=3): profile 4 with automatic VRAM preload. Only the main model ('transformer') kept in reserved RAM;
+            keep as many blocks as fit beside the measured workload in VRAM, streaming the rest
         LowRAM_LowVRAM (=4): only the main model ('transformer') kept in reserved RAM, sent to the GPU part by part. The most versatile:
             runs models larger than the VRAM and leaves VRAM for long videos or large images
         VerylowRAM_LowVRAM (=5): no reserved RAM (only a small staging ring with smartPinning), all models sent to the GPU part by
@@ -5261,7 +5304,7 @@ def profile(pipe_or_dict_of_modules, profile_no: profile_type =  profile_type.Ve
 
     if profile_no == profile_type.HighRAM_HighVRAM:
         pinnedMemory= True
-        budgets = None
+        budgets["*"] = 3000
         # info = "You have chosen a profile that may require 48 GB of RAM and up to 24 GB of VRAM on some applications."
     elif profile_no == profile_type.HighRAM_LowVRAM:
         pinnedMemory= True
@@ -5270,7 +5313,7 @@ def profile(pipe_or_dict_of_modules, profile_no: profile_type =  profile_type.Ve
     elif profile_no == profile_type.LowRAM_HighVRAM:
         pinnedMemory= "transformer"
         extraModelsToQuantize = default_extraModelsToQuantize
-        budgets = None
+        budgets["*"] = 3000
         # info = "You have chosen a Medium speed profile that may require 32 GB of RAM and up to 24 GB of VRAM on some applications."
     elif profile_no == profile_type.LowRAM_LowVRAM:
         pinnedMemory= "transformer"
@@ -5294,6 +5337,9 @@ def profile(pipe_or_dict_of_modules, profile_no: profile_type =  profile_type.Ve
 
     CrLf = '\r\n'
     kwargs = { "pinnedMemory": pinnedMemory,  "extraModelsToQuantize" : extraModelsToQuantize, "budgets": budgets, "asyncTransfers" : asyncTransfers, "quantizeTransformer": quantizeTransformer, "prefetchWindow": prefetchWindow }
+    kwargs["preloadExperts"] = "budgets" in overrideKwargs
+    if profile_no in (profile_type.HighRAM_HighVRAM, profile_type.LowRAM_HighVRAM):
+        kwargs["autoPreload"] = True
 
     if verboseLevel>=2:
         info = info  + f"Profile '{profile_type.tostr(profile_no)}' sets the following options:" #CrLf 

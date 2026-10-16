@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from .paging import PAGE_SIZE, ResultPages, strip_schema_titles
 from .resources import RESOURCE_ALIASES, RESOURCE_DESCRIPTION, WORKFLOWS_URI, guide_index, guide_sections, query_resources, resource_record
 from .state import RecoveredJob
+from shared.deepy.tool_aliases import canonical_arguments
 
 
 PAGING = {
@@ -38,6 +39,9 @@ DEEPY_USAGES = {
     "gen_speech_from_description": "Generate speech using a text-described voice",
     "gen_speech_from_sample": "Generate speech using a voice sample",
 }
+ARGUMENT_ALIASES = {"media": ("media_id", "video_id", "audio_ids"), "media_id": ("video_id", "audio_ids"), "video": ("video_id",), "audio": ("audio_ids", "audio_id"), "audio_id": ("audio_ids",), "image": ("media_id",), "mode": ("transitions",)}  # argument names agents mix up
+ACTION_SYNONYMS = {"status": ("get_job", "wait_jobs"), "job_status": ("get_job",), "jobs": ("wait_jobs",), "list_jobs": ("wait_jobs",), "search_files": ("rg",), "search": ("rg",), "grep": ("rg",), "find": ("rg", "list"), "list_files": ("list",), "trim_media": ("extract_video", "extract_audio"), "trim_video": ("extract_video",), "trim_audio": ("extract_audio",), "cut_video": ("extract_video",), "concat_videos": ("merge_videos",), "contact_sheet": ("view_media", "inspect_video"), "edit_text": ("edit",), "replace_text": ("edit",)}  # unknown action names agents try
+PER_FILE_MIX_OPTIONS = ("gains_db", "trim_start_s", "trim_duration_s", "offsets_s", "fade_in_s", "fade_out_s")  # remux_media lists aligned with audio_ids
 NAMED_OUTPUT_ACTIONS = {"create_color_frame", "create_mask", "image_channels", "extract_audio", "extract_image", "extract_video", "merge_videos", "mute_video",
                         "remove_vocals", "render_3d_views", "resize_crop", "side_by_side", "remux_media"}
 OUTPUT_NAME_PARAMETER = {"type": "string", "pattern": "^[^\\\\/:*?\"<>|]{1,80}$", "description": "Optional output file name without extension or folder; WanGP numbers it when the name exists."}
@@ -45,17 +49,17 @@ MEDIA_DISCOVERY_DESCRIPTIONS = {
     "create_color_frame": "Create a solid-color Gallery image, optionally with boxes (box masks).",
     "create_mask": "Mask named objects in an image or video (Magic Mask) for image_mask/video_mask.",
     "image_channels": "Convert RGB/RGBA images, extract color channels, or combine grayscale channel images.",
-    "extract_audio": "Extract audio, optionally a time range.",
-    "extract_video": "Extract a video segment.",
+    "extract_audio": "Extract audio: media_id, optionally start_s with end_s or duration_s.",
+    "extract_video": "Extract a video segment: media_id with start_s, end_s or duration_s, or frame numbers.",
     "inspect_media": "Answer a required question about images or 3D assets via media_id/media_ids, or exact video frames / 3D views and animation frames via media_inputs, with optional crops; no frame extraction needed.",
-    "inspect_video": "Inspect a video time range via media_id using automatically sampled frames.",
+    "inspect_video": "Answer question about a video from automatically sampled frames: media_id, question, optional start_s / end_s (default: the whole video).",
     "view_media": "Return images or chosen video frames, optionally cropped, sized or tiled into a contact sheet, for your own visual inspection.",
     "inspect_audio": "Measure audio/video on CPU: peak/RMS, clipping indicators, loudness and silence; optionally return a playable excerpt.",
-    "merge_videos": "Join two videos end to end.",
-    "render_3d_views": "Render views of a 3D asset at one shared scale (named views or angles, animation frame, zoom, focus) as Gallery images.",
-    "draw_svg": "Draw a Gallery image from SVG markup (shapes, text, gradients, filters; Gallery images or authorized files embedded).",
+    "merge_videos": "Join up to 32 videos end to end (media_ids), with optional transitions between them.",
+    "render_3d_views": "Render views of a 3D asset at one shared scale (named views or angles, animation frame, zoom, focus) as Gallery images, or a 360-degree turntable video with turntable_s.",
+    "draw_svg": "Draw a Gallery image or animated clip from SVG markup (shapes, text, gradients, filters; Gallery images or authorized files embedded), or exact on-screen text and graphics burned over a video (video_id; never subtitles).",
     "remux_media": "Copy video, combine audio, and add selectable subtitle tracks.",
-    "transcribe_media": "Transcribe speech with timestamps.",
+    "transcribe_media": "Transcribe speech with timestamps: media_id (timestamp_type word for word timings); subtitles_path writes an SRT timed to that media.",
 }
 
 
@@ -200,23 +204,49 @@ def invocation(actions, action, arguments, *, signatures=False):
                     "usage": "Execute: action + arguments={...} following the call (* = required). Read the contract (arguments=null) for rules, defaults and examples."}
         return {"status": "discovery", "actions": compact, "usage": "Describe: action + arguments=null. Execute: action + arguments={...}."}
     if action not in actions:
-        close = sorted(difflib.get_close_matches(action, actions, n=3, cutoff=0.6) or [name for name in actions if action in name][:3])
+        close = ([name for name in ACTION_SYNONYMS.get(action, ()) if name in actions]
+                 or sorted(difflib.get_close_matches(action, actions, n=3, cutoff=0.6) or [name for name in actions if action in name or name in action.split("_")][:3]))
         raise ValueError(f"Unknown or unavailable action: {action}. " + (f"Did you mean {' or '.join(close)}? Omit action to discover available actions." if close else f"Available actions: {', '.join(actions)}."))
     definition = actions[action]
     if arguments is None:
         return {"status": "schema", "action": {"name": action, **action_contract(definition)}}
     errors = sorted(Draft202012Validator(definition["parameters"]).iter_errors(arguments), key=lambda error: str(list(error.path)))
     if errors:
+        if isinstance(arguments, dict) and list(arguments) == ["arguments"] and "arguments" not in definition["parameters"]["properties"]:
+            raise ValueError(f"arguments is nested twice: pass the inner object itself, {{\"action\": \"{action}\", \"arguments\": {{...}}}}. Nothing was executed.")
         error = errors[0]
-        path = ".".join(map(str, error.path)) or "arguments"
+        if error.validator == "anyOf":  # report the branch the value's type matched, such as a value outside its enum
+            error = max((item for item in error.context if item.validator != "type"), key=lambda item: len(item.absolute_path), default=error)
+        path = ".".join(map(str, error.absolute_path)) or "arguments"
         if action == "inspect_media" and error.validator == "oneOf":
             raise ValueError("inspect_media requires exactly one of media_id (one visual), media_ids (a list), or media_inputs (selected frames), inside arguments alongside question.")
+        if action == "inspect_media" and "media_inputs" in error.path and error.validator == "type":
+            raise ValueError(f"{path}: {error.message}. media_inputs items are objects such as {{\"media_id\": \"visual:VIDEO\", \"time_s\": 2.5}} (or frame_no, or view for 3D, with an optional bbox); for a list of media use media_ids.")
+        if action == "remux_media" and list(error.absolute_path) == ["ducking"] and error.validator == "type" and not isinstance(error.instance, str):
+            raise ValueError('ducking is an object, not a flag: {"tracks": [indexes in audio_ids of what dips, e.g. the music], "under": [indexes of the voices it dips under]} (0 = the first file; "video" = the soundtrack of the video), optional "depth_db". Nothing was executed.')
+        if action == "remux_media" and list(error.absolute_path)[:1] == ["ducking"] and list(error.absolute_path)[1:2] in (["tracks"], ["under"]):
+            raise ValueError(f"{path}: ducking tracks and under are indexes into audio_ids (0 = the first file), not media ids, e.g. {{\"tracks\": [1], \"under\": [0]}}; \"video\" in tracks or under is the video's own soundtrack (with include_video_audio), e.g. under: [\"video\"] for the speech of lip-synced shots.")
+        if action == "write_text" and list(error.absolute_path) == ["mode"] and str(error.instance).startswith("append"):
+            raise ValueError("write_text creates or overwrites a file; to add to the end of one, call the append_text action with the same path and text.")
+        if action == "inspect_audio" and error.validator == "additionalProperties" and "question" in error.instance:
+            raise ValueError("inspect_audio measures audio (levels, loudness, clipping, silence intervals) and answers no question: omit question. For spoken words use transcribe_media.")
+        if action == "inspect_media" and path in ("time_s", "frame_no") and isinstance(error.instance, list):
+            raise ValueError(f"{path} takes one value. For several frames, pass media_inputs=[{{\"media_id\": \"visual:VIDEO\", \"{path}\": value}}, ...] (one item per frame), or use inspect_video for a time range.")
         if action == "inspect_media" and "bbox" in error.path:
             raise ValueError(f"{path}: {error.message}. bbox=[x_min,y_min,x_max,y_max], integers 0..1000 relative to the full image; x_max>x_min and y_max>y_min.")
+        if error.validator == "maxItems":
+            raise ValueError(f"{path} has {len(error.instance)} items; this action takes at most {error.validator_value}: split them across calls (they may follow one another in one response). Nothing was executed.")
         if error.validator == "type" and (problem := json_string_problem(path, error.instance)):
             raise ValueError(problem)
         required = ", ".join(definition["parameters"].get("required", [])) or "none"
         expected = f"Allowed arguments: {', '.join(definition['parameters']['properties'])}." if error.validator == "additionalProperties" else f"Required arguments: {required}."
+        if error.validator == "additionalProperties" and isinstance(error.instance, dict) and not error.absolute_path:
+            properties = list(definition["parameters"]["properties"])
+            close = [f"{match[0]} for {name}" for name in error.instance if name not in properties and (match := difflib.get_close_matches(name, properties, n=1, cutoff=0.6)
+                                                                                                     or [alias for alias in ARGUMENT_ALIASES.get(name, ()) if alias in properties][:1])]
+            expected += f" Did you mean {', '.join(close)}?" if close else ""
+            measured = [name for name in error.instance if name not in properties and name.removesuffix("_seconds") in ("black_ranges", "cut_times", "quiet_ranges", "sound_ends")]
+            expected += f" {', '.join(measured)}: measured and returned in the result whenever present, not requested: drop {'them' if len(measured) > 1 else 'it'}." if measured else ""
         if "example" in definition:
             raise ValueError(f"{path}: {error.message}. {expected} Call structure: {json.dumps(definition['example'], ensure_ascii=False)}")
         raise ValueError(f"{path}: {error.message}. {expected} To read the contract, repeat this call with action={action!r} and arguments=null (the entire object, not a nested value).")
@@ -226,6 +256,8 @@ def invocation(actions, action, arguments, *, signatures=False):
 def action_contract(definition):
     result = {key: value for key, value in definition.items() if key not in {"_continuation_only", "_summary"}}
     result["parameters"] = strip_schema_titles(definition["parameters"])
+    if not result["parameters"]["properties"]:
+        result["usage"] = "No parameters: execute it with arguments={}."
     if definition.get("_continuation_only"):
         for key in PAGING:
             result["parameters"]["properties"].pop(key, None)
@@ -272,7 +304,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
 
     model_filters = {name: {"type": "string"} for name in ("family", "base_model_type", "finetune", "model_type", "main_output", "inputs", "name")}
     model_filters["inputs"]["description"] = "Accepted media kind. For broad image-conditioned video discovery combine inputs='image' with main_output='video'; check media_inputs for the supported image roles."
-    model_filters["resolution"] = {"type": "string", "pattern": "^[1-9][0-9]*x[1-9][0-9]*$", "description": "Exact target canvas WIDTHxHEIGHT, e.g. 2048x2048. Require a recommended pixel budget in an available phase mode; unknown budgets are counted separately. Results include any phase setting to apply and block-aligned dimensions. This quality recommendation does not guarantee final dimensions after input fitting/upscaling. Use the same resolution string for generation; preset membership is unnecessary."}
+    model_filters["resolution"] = {"type": "string", "pattern": "^[1-9][0-9]*x[1-9][0-9]*$", "description": "Exact target canvas WIDTHxHEIGHT, e.g. 2048x2048. Require a recommended pixel budget in an available phase mode and respect max_width/max_height hard limits; unknown budgets are counted separately. Results include any phase setting to apply and block-aligned dimensions. This quality recommendation does not guarantee final dimensions after input fitting/upscaling. Use the same resolution string for generation; preset membership is unnecessary."}
     model_filters["capabilities"] = {"type": "array", "items": {"type": "string"}, "description": "Require every named capability. image_to_video means opening-frame support; reference_images means image reference conditioning; reference_videos means video reference conditioning, distinct from continuation or spatial control. Other examples: audio_output, video_continuation. Never relaxed by speciality matching."}
     filter_schema = {"type": "object", "properties": model_filters, "additionalProperties": False}
     search_def = paginated(action_def("Find models by name, strict capabilities or specialities, ranked by speed/size preferences. query is a literal case-insensitive substring of name, ID, family or description; filters stay strict. specialities matches all named strengths or aliases, ignoring plural forms; only when no exact matches exist, returns partial matches with missing, word-match or substring evidence. Results sort by speciality relevance, then models dedicated to the filtered main_output, then matching speed/size preferences (both, one, neither). Without query or specialities, results are compact rows; read details with wangp_model. Prime inherits its live preferences; standalone MCP is neutral. Override preferences for this request only, using 'any' for no preference. accelerated='native' uses defaults; 'profiles' offers accelerator profiles; 'none' has none. size='lighter'/'large' is relative, not GB or a quality score. templates names the ready-made recipes built on a model ('task: template', readable with the templates tool).", {"query": {"type": "string", "default": ""}, "filters": filter_schema, "specialities": {"type": "array", "items": {"type": "string", "minLength": 1}}, "preferences": {"type": "object", "properties": {"speed": {"type": "string", "enum": ["fast", "standard", "any"]}, "size": {"type": "string", "enum": ["smaller", "larger", "any"]}}, "additionalProperties": False}}))
@@ -333,7 +365,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 records = [{**core._compact_deepy_model_metadata(item), **({"specialities": [entry["name"] for entry in item["specialities"]]} if item.get("specialities") else {}),
                             **({"templates": templates[item["model_type"]]} if item["model_type"] in templates else {}), **({"missing_capabilities": missing[item["model_type"]]} if fewest else {})} for item in records]
                 if not filters["query"] and not specialities:  # browsing: identify models compactly
-                    records = [{key: item[key] for key in ("model_type", "name", "accelerated", "size", "specialities", "templates", "missing_capabilities", "resolution_budget", "resolution_budget_tiled", "resolution_min", "lock_resolutions", "allowed_resolutions", "vae_block_size", "resolution_assessment") if key in item} for item in records]
+                    records = [{key: item[key] for key in ("model_type", "name", "accelerated", "size", "specialities", "templates", "missing_capabilities", "resolution_budget", "resolution_budget_tiled", "resolution_min", "max_width", "max_height", "lock_resolutions", "allowed_resolutions", "vae_block_size", "resolution_assessment") if key in item} for item in records]
             if filters.get("resolution"):
                 metadata = {**(metadata or {}), "resolution_unknown_count": unknown_count}
         result = collection(["models", action, filters, required, specialities, arguments.get("preferences", {})], records, arguments, "specialities" if action == "specialities" else "models", metadata=metadata)
@@ -390,8 +422,9 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                     if arguments.get("property") in {"defaults", "capabilities"}:
                         action = arguments["property"]
                     else:
-                        call = {"model_type": model_type, "action": "definition", "arguments": {}}
-                        raise ValueError(f"{error.args[0]} for {model_type}. Read available properties: call wangp_model with {json.dumps(call, ensure_ascii=False)}. Shared setting meanings: wangp://docs/settings.") from error
+                        available = list(core._mcp_model_definition(session.get_model_def(model_type), string_limit=256, help_detail="agent" if agent_help else None))
+                        close = difflib.get_close_matches(str(arguments.get("property")), available, n=1, cutoff=0.5)
+                        raise ValueError(f"{error.args[0]} for {model_type}." + (f" Did you mean {close[0]}?" if close else "") + f" Available properties: {', '.join(available)}. Shared setting meanings: wangp://docs/settings.") from error
             result = operations["wangp_model"](model_type, view="schema" if action == "capabilities" else action)
             if action == "capabilities":
                 result["metadata"].update(session.get_model_selection_metadata(model_type))
@@ -423,7 +456,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         return collection(["model", model_type, action, name], records, arguments, key)
 
     template_help = (
-        "Read a Deepy recipe for image, video, voice or music: the template's generation settings, the model's supported media_inputs and the template names available for that tool_id. "
+        "Read a Deepy recipe for image, video, voice or music: the template's generation settings, model information (supported media_inputs, resolution budget and grid; not settings) and the template names available for that tool_id. "
         "Omit template for the configured default; pass a returned name only to choose an alternative. Returned settings already include active general_properties; apply explicit user overrides last."
         + ("" if deepy_help else " media_inputs describes supported model roles, not populated settings or a settings field: image start/end anchor frames, reference conditions appearance, injected_frames inserts frames at specified positions; video reference guides appearance or motion rather than continuing a clip. Use model help for mode-specific input combinations. Query capabilities only for missing limits."))
     template_parameters = {"type": "object", "properties": {
@@ -455,7 +488,8 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
             if not settings["custom_settings"]:
                 del settings["custom_settings"]
         metadata = core._compact_deepy_model_metadata(session.get_model_metadata(result["settings"]["model_type"]))
-        result.update({key: metadata[key] for key in ("accelerated", "media_inputs", "resolution_budget", "resolution_budget_tiled", "resolution_min", "lock_resolutions", "allowed_resolutions", "vae_block_size") if key in metadata})
+        # model information, kept apart so that it is not copied into settings
+        result["model"] = {key: metadata[key] for key in ("accelerated", "media_inputs", "resolution_budget", "resolution_budget_tiled", "resolution_min", "max_width", "max_height", "lock_resolutions", "allowed_resolutions", "vae_block_size") if key in metadata}
         return result
 
     def wangp_deepy_templates(tool_id: str | None = None, template: str = "default", cursor: str | None = None, action: str | None = None, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -580,7 +614,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 schema["properties"]["path"] = schema["properties"].pop("file_path")
                 schema["required"] = ["path" if key == "file_path" else key for key in schema["required"]]
             actions["write_text"]["parameters"]["properties"]["mode"]["enum"] = ["create", "overwrite"]
-            actions["write_text"]["description"] = "Write complete text using exclusive creation or explicit overwrite. Use append_text to append; existing parent folders are required."
+            actions["write_text"]["description"] = "Write complete text using exclusive creation or explicit overwrite. Use append_text to append; missing parent folders are created."
             actions["zip"]["parameters"]["properties"]["sources"] = {"type": "array", "items": {"type": "string"}, "minItems": 1}
         for definition in actions.values():
             definition["parameters"]["additionalProperties"] = False
@@ -609,6 +643,8 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 aliases["source"] = "path"
             if action == "rg":
                 aliases["arguments"] = "command"
+            if action == "edit":
+                aliases.update(old_text="old_string", new_text="new_string")
             for alias, name in aliases.items():
                 if alias in arguments:
                     value = arguments.pop(alias)
@@ -623,7 +659,12 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 if isinstance(policy, PrimeFileAccessPolicy):
                     response["file_rules"] = "Prefer the documents folder (@documents) for experiments and edits. Outputs allow new files only with write access; existing output files cannot be changed, deleted or moved. Other folders follow configured R/RW access."
             return response
-        args = dict(arguments)
+        result = run_io(action, dict(arguments))
+        if deepy_help and isinstance(result, dict):
+            result.pop("sha256", None)  # Prime cannot use a checksum, and copying one into a compaction summary can loop until the token limit
+        return result
+
+    def run_io(action, args):
         if action == "save_skill":
             return mcp.skills.save(**args)
         if action == "download" and extended and not deepy_help:
@@ -663,7 +704,8 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 result["download"] = operations["wangp_create_file_download"](result["output_file"])
             return result
 
-    media_settings_def = function_def(operations["wangp_get_media_settings"], "Read the settings that generated a media file. Supply exactly one of media_id or an authorized path.")
+    media_settings_def = function_def(operations["wangp_get_media_settings"], "Read the settings that generated a media file. Supply exactly one of media_id, media_ids (several Gallery files at once) or an authorized path.")
+    media_settings_def["parameters"]["properties"]["media_ids"] = {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 16, "description": "Several Gallery media IDs, read in one call."}
     view_media_def = action_def(
         "Return images for your own visual inspection: Gallery images, and frames of videos at chosen times_s or frame_nos, or count frames spread evenly over range_s (default: the whole video). "
         "Times and frame numbers apply to every listed video. bbox crops each image (integers 0..1000 relative to the full image) before resizing to max_edge. "
@@ -690,28 +732,29 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         if (deepy_help or extended) and "replace_audio" in actions:
             actions.pop("replace_audio")
             actions["remux_media"] = action_def(
-                "Copy a video while adding selectable subtitle tracks, replace its soundtrack, mix audio into one stream, or retain separate selectable audio tracks. Provide video_id and subtitle_tracks without audio_ids for a subtitle-only remux. The source video stream is copied and existing subtitles are retained by default; set include_video_subtitles=false to omit existing subtitles. MP4/MOV subtitles use mov_text; MKV copies compatible subtitle streams. Compatible replacement audio is stream-copied; mixing re-encodes. With two or more audio streams, mix by default; mode='multitrack' retains separate streams. Audio-only mix follows the configured standalone WAV/MP3 format; multitrack uses M4A, copying AAC/ALAC and converting other audio to lossless ALAC. Multitrack video uses MKV and copies audio. Set include_video_audio=true to include the original soundtrack. Each mix gain applies to the matching audio_ids item in dB.",
+                "Copy a video while adding selectable subtitle tracks, replace its soundtrack, mix audio into one stream, or retain separate selectable audio tracks. Provide video_id and subtitle_tracks without audio_ids for a subtitle-only remux. The source video stream is copied and existing subtitles are retained by default; set include_video_subtitles=false to omit existing subtitles. MP4/MOV subtitles use mov_text; MKV copies compatible subtitle streams. Compatible replacement audio is stream-copied; mixing re-encodes. With two or more audio streams, mix by default; mode='multitrack' retains separate streams. Audio-only mix follows the configured standalone WAV/MP3 format; multitrack uses M4A, copying AAC/ALAC and converting other audio to lossless ALAC. Multitrack video uses MKV and copies audio. Set include_video_audio=true to include the original soundtrack; with no audio_ids it masters the video's own soundtrack (mix mode: loudness, limiter). Each mix gain applies to the matching audio_ids item in dB.",
                 {
                     "audio_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 16, "description": "Audio Gallery IDs or authorized audio file paths, in output track order. The first audio stream of each file is used."},
                     "video_id": {"type": "string", "minLength": 1, "description": "Optional source video Gallery ID or authorized path."},
-                    "mode": {"type": "string", "enum": ["copy", "replace", "mix", "multitrack"], "description": "Omit to copy video/audio when only editing subtitles, replace a video soundtrack with one audio input, or mix multiple audio inputs."},
+                    "mode": {"type": "string", "enum": ["copy", "replace", "mix", "multitrack"], "description": "Omit to copy video/audio when only editing subtitles, replace a video soundtrack with one audio input, or mix multiple audio inputs. Mixing options (trims, offsets, fades, gains, ducking, normalize_lufs) make mix the default; mode='mix' with one audio file masters it."},
                     "output_extension": {"type": "string", "enum": ["wav", "mp3", "flac", "m4a", "mp4", "mov", "mkv"], "description": "Optional output extension when the user requests one. Audio-only mix: wav, mp3, flac, or m4a; default follows the configured standalone codec. Audio-only multitrack: m4a. Video replace/mix: mp4, mov, or mkv; default follows the configured video container. Multitrack video: mkv."},
-                    "include_video_audio": {"type": "boolean", "default": False, "description": "Include the video's existing soundtrack in the mix or as the first separate track."},
-                    "subtitle_tracks": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "properties": {"path": {"type": "string", "minLength": 1, "description": "Authorized subtitle file path, such as @documents/captions.srt (SRT, VTT, ASS, or SSA)."}, "language": {"type": "string", "minLength": 2, "maxLength": 3, "pattern": "^[A-Za-z]{2,3}$"}, "title": {"type": "string", "maxLength": 100}, "default": {"type": "boolean"}}, "required": ["path"], "additionalProperties": False}, "description": "New selectable subtitle tracks, in order. Use ISO 639 language codes such as eng or fra."},
+                    "include_video_audio": {"type": "boolean", "default": False, "description": "Include the video's existing soundtrack in the mix or as the first separate track. Otherwise it is left out: no need to mute clips first."},
+                    "subtitle_tracks": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "properties": {"path": {"type": "string", "minLength": 1, "description": "Authorized subtitle file path, such as @documents/captions.srt (SRT, VTT, ASS, or SSA)."}, "language": {"type": "string", "minLength": 2, "maxLength": 3, "pattern": "^[A-Za-z]{2,3}$"}, "title": {"type": "string", "maxLength": 100}, "default": {"type": "boolean"}}, "required": ["path"], "additionalProperties": False}, "description": "New selectable subtitle tracks, in order. Use ISO 639 language codes such as eng or fra. They are soft subtitles, shown by players that display them: WanGP does not burn text into a video, so report them as selectable subtitles."},
+                    "audio_languages": {"type": "array", "items": {"type": "string", "minLength": 2, "maxLength": 3, "pattern": "^[A-Za-z]{2,3}$"}, "minItems": 1, "maxItems": 16, "description": "Optional multitrack language codes aligned with audio_ids (ISO 639, such as eng, fra, spa), so players offer each track by language."},
                     "include_video_subtitles": {"type": "boolean", "default": True, "description": "Keep existing subtitle tracks from the source video; set false when asked to remove them."},
-                    "gains_db": {"type": "array", "items": {"type": "number", "minimum": -60, "maximum": 24}, "minItems": 1, "maxItems": 16, "description": "Optional per-file gains for mix mode, aligned with audio_ids. Files add at their own level plus this gain, nothing is averaged, and a -2 dBTP true-peak limiter prevents clipping. Use normalize_lufs for a loudness target."},
+                    "gains_db": {"type": "array", "items": {"type": ["number", "null"], "minimum": -60, "maximum": 24}, "minItems": 1, "maxItems": 16, "description": "Optional per-file gains for mix mode, aligned with audio_ids (one number applies to every file). Files add at their own level plus this gain, nothing is averaged, and a true-peak limiter keeps the encoded result below -1 dBTP. Use normalize_lufs for a loudness target."},
                     "gain_points": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": ["array", "null"], "minItems": 1, "maxItems": 200, "items": {"type": "array", "prefixItems": [{"type": "number", "minimum": 0, "maximum": 3600}, {"type": "number", "minimum": -60, "maximum": 24}], "minItems": 2, "maxItems": 2}},
                                     "description": "Optional volume automation for mix mode, aligned with audio_ids: per file a list of [time_s, gain_db] points on the mix timeline (null for none), added to gains_db. The gain moves linearly between points and holds before the first and after the last, e.g. [[10, 0], [12, 6]] swells a score by 6 dB from 10 s to 12 s."},
                     "ducking": {"type": "object", "properties": {"tracks": {"type": "array", "minItems": 1, "items": {"anyOf": [{"type": "integer", "minimum": 0}, {"const": "video"}]}, "description": "Indexes in audio_ids of the files to lower (music, ambience); \"video\" for the video's own soundtrack with include_video_audio."},
-                                                                 "under": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 0}, "description": "Indexes in audio_ids of the voice files (narration, dialogue) whose speech lowers the tracks."},
+                                                                 "under": {"type": "array", "minItems": 1, "items": {"anyOf": [{"type": "integer", "minimum": 0}, {"const": "video"}]}, "description": "Indexes in audio_ids of the voice files (narration, dialogue) whose speech lowers the tracks, or \"video\" for the speech already in the video's soundtrack (lip-synced shots, with include_video_audio)."},
                                                                  "depth_db": {"type": "number", "minimum": 1, "maximum": 40, "default": 10}, "attack_s": {"type": "number", "minimum": 0.01, "maximum": 5, "default": 0.2}, "release_s": {"type": "number", "minimum": 0.01, "maximum": 5, "default": 0.6}},
                                 "required": ["tracks", "under"], "additionalProperties": False,
                                 "description": "Optional mix-mode ducking: the tracks dip by depth_db while the voices speak, found from the voice files themselves, ramping down over attack_s before speech and back up over release_s after it. Pauses shorter than attack_s + release_s keep the tracks down."},
-                    "trim_start_s": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 3600}, "minItems": 1, "maxItems": 16, "description": "Optional start of the excerpt used from each file in seconds, aligned with audio_ids; 0 for the beginning."},
-                    "trim_duration_s": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 3600}, "minItems": 1, "maxItems": 16, "description": "Optional length of the excerpt used from each file in seconds, aligned with audio_ids; 0 for the rest of the file. Fades and offsets apply to the excerpt."},
-                    "offsets_s": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 3600}, "minItems": 1, "maxItems": 16, "description": "Optional mix start time of each file in seconds, aligned with audio_ids; place clips back to back to concatenate them."},
-                    "fade_in_s": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 600}, "minItems": 1, "maxItems": 16, "description": "Optional fade-in length of each file in seconds, aligned with audio_ids; 0 for none."},
-                    "fade_out_s": {"type": "array", "items": {"type": "number", "minimum": 0, "maximum": 600}, "minItems": 1, "maxItems": 16, "description": "Optional fade-out length at the end of each file in seconds, aligned with audio_ids; 0 for none."},
+                    "trim_start_s": {"type": "array", "items": {"type": ["number", "null"], "minimum": 0, "maximum": 3600}, "minItems": 1, "maxItems": 16, "description": "Optional start of the excerpt used from each file in seconds, aligned with audio_ids (one number applies to every file); 0 for the beginning."},
+                    "trim_duration_s": {"type": "array", "items": {"type": ["number", "null"], "minimum": 0, "maximum": 3600}, "minItems": 1, "maxItems": 16, "description": "Optional length of the excerpt used from each file in seconds, aligned with audio_ids (one number applies to every file); 0 for the rest of the file. Fades and offsets apply to the excerpt."},
+                    "offsets_s": {"type": "array", "items": {"type": ["number", "null"], "minimum": 0, "maximum": 3600}, "minItems": 1, "maxItems": 16, "description": "Optional mix start time of each file in seconds, aligned with audio_ids (one number applies to every file); place clips back to back to concatenate them."},
+                    "fade_in_s": {"type": "array", "items": {"type": ["number", "null"], "minimum": 0, "maximum": 600}, "minItems": 1, "maxItems": 16, "description": "Optional fade-in length of each file in seconds, aligned with audio_ids (one number applies to every file); 0 for none."},
+                    "fade_out_s": {"type": "array", "items": {"type": ["number", "null"], "minimum": 0, "maximum": 600}, "minItems": 1, "maxItems": 16, "description": "Optional fade-out length at the end of each file in seconds, aligned with audio_ids (one number applies to every file); 0 for none."},
                     "video_audio_gain_db": {"type": "number", "minimum": -60, "maximum": 24, "description": "Optional gain of the video's own soundtrack in a mix with include_video_audio=true."},
                     "normalize_lufs": {"type": "number", "minimum": -40, "maximum": -5, "description": "Optional integrated loudness target of the mix, such as -16 for online video: the measured mix gets one gain before the true-peak limiter. Very loud targets may then measure slightly lower."},
                 },
@@ -741,28 +784,41 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
             actions["inspect_media"]["parameters"]["oneOf"] = [{"required": [name]} for name in ("media_id", "media_ids", "media_inputs")]
             properties["media_inputs"]["items"]["properties"]["bbox"] = {key: value for key, value in properties["bbox"].items() if key != "description"}
             actions["inspect_media"]["description"] += (
-                " Choose exactly one input form: media_id for one visual, media_ids for a list, or media_inputs for per-video time_seconds/frame_no."
+                " Choose exactly one input form: media_id for one visual, media_ids for a list, or media_inputs for per-video time_s/frame_no."
                 " Inspect video frames directly; use extract_image only to save a frame."
                 " Each media_inputs item may specify bbox=[x_min,y_min,x_max,y_max] (integers 0..1000), overriding the shared bbox; omitted boxes use the shared bbox or the full visual. Cropping precedes resizing."
                 " Image results report the source color mode and transparency separately; visual analysis uses an RGB copy."
             )
             actions["inspect_media"]["example"] = {"action": "inspect_media", "arguments": {"media_id": "visual:IMAGE", "question": "Describe this image."}}
         if "extract_image" in actions:
-            actions["extract_image"]["description"] += " frame_no is zero-based (0 is the first frame); use frame_no or time_seconds, not both."
+            actions["extract_image"]["description"] += " frame_no is zero-based (0 is the first frame); use frame_no or time_s, not both."
         if "image_channels" in actions:
             actions["image_channels"]["example"] = {
                 "action": "image_channels",
                 "arguments": {"operation": "combine", "media_id": "visual:RGB_IMAGE", "channel_sources": {"A": "visual:GRAYSCALE_MASK"}},
             }
-        if action == "inspect_media" and isinstance(arguments, dict) and "media" in arguments:
+        properties = actions[action]["parameters"]["properties"] if action in actions else {}
+        if action == "remux_media" and isinstance(arguments, dict) and isinstance(arguments.get("audio_ids"), list):
+            # one number for a per-file option applies to every file of audio_ids
+            single = {key: value for key in PER_FILE_MIX_OPTIONS if isinstance(value := arguments.get(key), (int, float)) and not isinstance(value, bool)}
+            arguments = {**arguments, **{key: [value] * len(arguments["audio_ids"]) for key, value in single.items()}}
+        if isinstance(arguments, dict) and "media" in arguments and "media" not in properties and {"media_id", "media_ids"} & properties.keys():
+            # media is the word wangp_postprocess uses: accepted for media_id (a string) or media_ids (a list)
             arguments = dict(arguments)
             media = arguments.pop("media")
             if not isinstance(media, (str, list)):
-                raise ValueError("inspect_media: media must be one reference string or a list of reference strings inside arguments.")
+                raise ValueError(f"{action}: media must be one reference string or a list of reference strings inside arguments.")
             name = "media_ids" if isinstance(media, list) else "media_id"
+            if name not in properties:
+                raise ValueError(f"{action}: pass one reference as media_id, not a list.")
             if name in arguments and arguments[name] != media:
-                raise ValueError(f"inspect_media: media and {name} have different values. Supply one input.")
+                raise ValueError(f"{action}: media and {name} have different values. Supply one input.")
             arguments[name] = media
+        arguments = canonical_arguments(action, arguments)  # former argument names keep working
+        if action and action not in actions:
+            from postprocessing import catalog
+            if action in {process["id"] for kind in ("image", "video", "audio") for process in catalog.query_processes(kind)}:
+                raise ValueError(f'{action} is a wangp_postprocess treatment, not a toolbox action: call wangp_postprocess with the media, "action": "{action}" and its arguments.')
         response = invocation(actions, action, arguments, signatures=signatures)
         if response is not None:
             return response
@@ -785,6 +841,10 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
 
     def run_toolbox(action, arguments):
         if action == "media_settings":
+            if "media_ids" in arguments:
+                if len(arguments) > 1:
+                    raise ValueError("media_ids replaces media_id and path: pass it alone. Nothing was executed.")
+                return {"status": "done", "items": [run_toolbox(action, {"media_id": media_id}) for media_id in arguments["media_ids"]]}
             result = operations["wangp_get_media_settings"](**arguments)
             hide_enhancer(result["settings"])
             return public_media_result(result, get_toolbox().session.media_registry)
@@ -798,12 +858,13 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 raise ValueError("remux_media requires audio_ids or video_id.")
             if resolved.get("subtitle_tracks") and not video_id:
                 raise ValueError("subtitle_tracks require video_id.")
-            if not audio_ids and not resolved.get("subtitle_tracks") and resolved.get("include_video_subtitles", True):
+            if not audio_ids and not resolved.get("subtitle_tracks") and resolved.get("include_video_subtitles", True) and not include_video_audio:
                 raise ValueError("Provide audio_ids or subtitle_tracks, or set include_video_subtitles=false to remove existing subtitle tracks.")
             subtitle_tracks = [{**track, "path": str(policy.require_read(track["path"], file=True))} for track in resolved.get("subtitle_tracks", [])]
-            mode = resolved.get("mode") or ("copy" if not audio_ids else "replace" if video_id and len(audio_ids) == 1 and not include_video_audio else "mix")
+            mixing = any(key in resolved for key in ("gains_db", "gain_points", "ducking", "trim_start_s", "trim_duration_s", "offsets_s", "fade_in_s", "fade_out_s", "normalize_lufs", "video_audio_gain_db"))
+            mode = resolved.get("mode") or ("mix" if not audio_ids and include_video_audio else "copy" if not audio_ids else "replace" if video_id and len(audio_ids) == 1 and not include_video_audio and not mixing else "mix")
             result = toolbox.replace_audio(video_id=video_id, audio_ids=audio_ids, mode=mode, include_video_audio=include_video_audio, gains_db=resolved.get("gains_db"), output_extension=resolved.get("output_extension"), subtitle_tracks=subtitle_tracks, include_video_subtitles=resolved.get("include_video_subtitles", True),
-                                           **{key: resolved[key] for key in ("offsets_s", "fade_in_s", "fade_out_s", "video_audio_gain_db", "normalize_lufs", "trim_start_s", "trim_duration_s", "gain_points", "ducking") if key in resolved})
+                                           **{key: resolved[key] for key in ("offsets_s", "fade_in_s", "fade_out_s", "video_audio_gain_db", "normalize_lufs", "trim_start_s", "trim_duration_s", "gain_points", "ducking", "audio_languages") if key in resolved})
             return public_media_result(core._register_toolbox_result_media(session, result), toolbox.session.media_registry, compact=True, virtualize=virtualize)
         if action == "view_media":
             from shared.deepy import media_registry
@@ -829,7 +890,7 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
     }
     wait_help = "wait=true waits for completion; timeout_s bounds waiting without cancelling the job. " + ("wait=false returns a job for asynchronous tracking." if allow_async else "Asynchronous execution is disabled; wait=false is rejected before submission.")
     if defer_wait and not allow_async:
-        wait_properties = {"event_limit": wait_properties["event_limit"]}
+        wait_properties = {}  # the caller waits for the job itself: no wait, timeout or progress-event options
         wait_help = "WanGP manages waiting and returns the completed result."
 
     def present_job(snapshot):
@@ -855,13 +916,14 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         "Template and media settings can be copied and edited. edit_* post-processing tasks need no model or prompt. "
         + ("" if deepy_help else "A prompt may be @file(\"@documents/prompt.txt\"): WanGP reads and snapshots that authorized UTF-8 file, preserving blank lines. ") +
         "Omitted resolution, video_length or duration_seconds, and seed use Deepy's standing defaults before model factory settings; supplied values are preserved. " + wait_help)
-    generation_settings = {"type": "object", "properties": {"model_type": {"type": "string", "description": "WanGP model type."}, "prompt": {"type": "string", "description": "Complete prompt text or @file reference."}},
-                           "required": ["model_type", "prompt"], "additionalProperties": True}
+    generation_settings = {"type": "object", "properties": {"template": {"type": "string", "description": 'Optional template to start from: "<task>" (such as "gen_video") for its configured default, or "<task>/<template name>". WanGP fills in its settings except its example prompt and alt_prompt; give only the keys you change.'},
+                                                            "model_type": {"type": "string", "description": "WanGP model type (from the template when one is named)."}, "prompt": {"type": "string", "description": "Complete prompt text or @file reference."}},
+                           "required": ["prompt"], "additionalProperties": True}
     request_properties = {"request_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 200, "description": "Optional retry key: the same key and payload returns the original job, even after a restart; a different payload is rejected."}} if extended else {}
     if extended:
-        @mcp.tool(description="CPU-only preflight without submitting, downloading or loading models. Supply settings (one generation or batch), OR media + process + parameters for a processor. Summary returns requested size/duration, grid-adjusted canvas and initial dimensions for simple inputs, adjustments, inputs, diagnostics, availability and queue counts. Initial dimensions precede optional upscaling; complex input sizing is marked unresolved. Requested values are not predictions of final output geometry or cumulative duration. detail='full' adds all effective settings and origins. valid does not guarantee runtime memory or model-specific inference checks.")
+        @mcp.tool(description="CPU-only preflight without submitting, downloading or loading models. Supply settings (one generation or batch), OR media + process + parameters for a processor. Summary returns requested size/duration, grid-adjusted canvas and initial dimensions for simple inputs, the window_plan of sliding-window videos (each window's generated_seconds), adjustments, inputs, diagnostics, availability and queue counts. Initial dimensions precede optional upscaling; complex input sizing is marked unresolved. Requested values are not predictions of final output geometry or cumulative duration. detail='full' only adds every effective setting and its origin (about 10 KB per task). valid does not guarantee runtime memory or model-specific inference checks.")
         def wangp_validate(settings: dict[str, Any] | list[dict[str, Any]] | None = None, media: str | None = None, process: str | None = None, parameters: dict[str, Any] | None = None, detail: Literal["summary", "full"] = "summary") -> dict[str, Any]:
-            return public_media_result(operations["wangp_validate"](settings, media, process, parameters, detail), virtualize=virtualize)
+            return public_media_result(operations["wangp_validate"](expand_templates(settings), media, process, parameters, detail), virtualize=virtualize)
 
     generate_parameters = {"type": "object", "properties": {"settings": {"anyOf": [generation_settings, {"type": "array", "items": {"type": "object"}, "minItems": 1}]}, **wait_properties, **request_properties},
                            "required": ["settings"], "additionalProperties": False}
@@ -880,12 +942,30 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
         if not wait and not allow_async:
             raise ValueError("wait=false is unavailable: asynchronous execution is disabled. Nothing was submitted.")
         options = {"wait": wait, "timeout_s": timeout_s, "event_limit": event_limit}
+        settings = expand_templates(settings)
         response = finish(jobs.once(request_id, {"operation": "generate", "settings": settings}, lambda: operations["wangp_generate"](settings, wait=False, event_limit=event_limit)), options)
         if extended:  # the model's alignment can change the requested size: overlays and anchors should match the generated one
             changes = [canvas_change(item) for item in (settings if isinstance(settings, list) else [settings])]
             if any(changes):
                 response = {**response, "canvas": changes if isinstance(settings, list) else changes[0]}
         return response
+
+    def expand_templates(settings):
+        """Settings objects naming a "template" start from its settings; their own keys override them, and custom_settings merge."""
+        def expand(item):
+            if not isinstance(item, dict) or "template" not in item:
+                return item
+            task, _, name = str(item["template"]).partition("/")
+            if task not in DEEPY_USAGES:
+                raise ValueError(f'template must be "<task>" or "<task>/<template name>", with a task among {", ".join(DEEPY_USAGES)}. Nothing was submitted.')
+            if "prompt" not in item:
+                raise ValueError(f'A settings object naming template {item["template"]!r} needs its own prompt. Nothing was submitted.')
+            base = {key: value for key, value in template_settings(task, name.strip() or "default")["settings"].items() if key not in ("prompt", "alt_prompt")}  # the template's example texts are not used
+            expanded = {**base, **{key: value for key, value in item.items() if key != "template"}}
+            if isinstance(base.get("custom_settings"), dict) and isinstance(item.get("custom_settings"), dict):
+                expanded["custom_settings"] = {**base["custom_settings"], **item["custom_settings"]}
+            return expanded
+        return [expand(item) for item in settings] if isinstance(settings, list) else expand(settings)
 
     def canvas_change(supplied):
         from shared import resolutions
@@ -922,6 +1002,8 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
             if existing is not None:
                 return finish(existing, controls)
 
+        if str(media).strip().lower() in {"3d", "mesh"}:
+            raise ValueError('No post-processing treatment applies to 3D assets: wangp_toolbox action "render_3d_views" renders them as images or a turntable video. Nothing was executed.')
         concrete = media not in {"image", "video", "audio"}
         source = core._resolve_mcp_media_reference(session, media, "media", policy.read_enabled, policy) if concrete else None
         kind = core._mcp_media_type(source) if concrete else media
@@ -953,6 +1035,8 @@ def register_v2(mcp, session, operations, jobs, policy, get_toolbox, *, download
                 actions[process["id"]]["limitations"] += " The source soundtracks and text subtitle tracks are copied to the output."
         if isinstance(arguments, dict) and {"media", "media_id", "path"} & arguments.keys():
             raise ValueError(f'Pass the media ID or path as the top-level media, not inside arguments: {{"media": "<media_id>", "action": "{action}", "arguments": {{...}}}}. Nothing was executed.')
+        if action and action not in actions and action in {item["name"] for item in core._toolbox_discovery(get_toolbox(), policy.read_enabled)} | {"remux_media", "media_settings", "draw_svg"}:
+            raise ValueError(f'{action} is a wangp_toolbox action, not a post-processing treatment: call wangp_toolbox with {{"action": "{action}", "arguments": {{...}}}}.')
         response = invocation(actions, action, arguments, signatures=signatures)
         if response is not None:
             response["media_type"] = kind

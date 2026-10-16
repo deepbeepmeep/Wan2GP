@@ -55,7 +55,8 @@ Turns one picture of an object into a 3D asset with PBR textures (GLB: base colo
   15 steps.
 - **Mesh Resolution**: 256 standard, 384-512 finer, 196 fast.
 - **Max Faces**: 40000 (upstream). Textured meshes are always reduced, 0 meaning 40000; higher values keep more detail but unwrap and
-  bake more slowly.
+  bake more slowly. Large meshes are unwrapped in smaller regions with progress and cancellation, then packed into one texture atlas.
+  This preserves the face geometry but can add UV seams between regions.
 - **Texture Views**: 6 views at 512 px are the fastest and lightest; 8 views at 768 px (upstream default) cover the object better and
   give sharper textures; 9 views add one more angle when needed.
 - **Texture Size**: 2048 (upstream); 1024 for small files; 4096 is sharper, baked at full size.
@@ -88,10 +89,11 @@ TEXTURE_DEEPY_INFOS = ("Image to PBR-textured 3D mesh (GLB). Needs one reference
                        "`model_mode`: `shape_texture` (default), `shape` (geometry only), `texture` (paints `custom_guide`, a .glb/.obj/.ply/.stl "
                        "mesh, to match the image). `prompt` = asset name only. Steps 30 and guidance 5 drive the shape; `alt_guidance_scale` "
                        "3.0 = texture guidance. custom_settings: `octree_resolution` 196/256/384/512, `max_faces` (40000, textured meshes are "
-                       "always reduced), `texture_views` 6_512/8_768/9_768, `texture_size` 1024/2048/4096. "
+                       "always reduced; large meshes unwrap in regions with progress/cancellation, preserving geometry but adding UV seams), "
+                       "`texture_views` 6_512/8_768/9_768, `texture_size` 1024/2048/4096. "
                        "Tencent license: not for EU/UK/South Korea; outputs may not train other AI models.")
 
-DEEPY_PROMPT_INFOS = ("`prompt`: a short asset name such as `red toy robot`; nothing else is read. The reference image decides the result: "
+DEEPY_PROMPT_INFOS = ("`prompt` (optional): a short asset name such as `red toy robot` for the file name; nothing else is read. The reference image decides the result: "
                       "one centred, uncropped object, plain background, front or three-quarter view, even light.")
 
 ASSET_NAME_INSTRUCTIONS = """You name 3D assets. Look at the image and name the single main object it shows in 2 to 6 words, for example:

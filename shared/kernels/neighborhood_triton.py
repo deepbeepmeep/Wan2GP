@@ -19,7 +19,8 @@ import triton.language as tl
 _NEG_INF = tl.constexpr(-3.0e38)
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['t_size', 'h_size', 'w_size', 'num_heads', 's_b', 's_t', 's_h', 's_w', 's_n'],
+            do_not_specialize_on_alignment=['t_size', 'h_size', 'w_size', 'num_heads', 's_b', 's_t', 's_h', 's_w', 's_n'])
 def _na3d_kernel(
     q_ptr,
     k_ptr,
@@ -155,7 +156,8 @@ def _fold_w_run(m_i, l_i, acc, q_blk, k_ptr, v_ptr, row_base, row_ok, w_lo, w_hi
     return m_i, l_i, acc
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['own_t_size', 'h_size', 'w_size', 'num_heads', 'bn_count', 'own_s_b', 'other_s_b', 's_t', 's_h', 's_w', 's_n'],
+            do_not_specialize_on_alignment=['own_t_size', 'h_size', 'w_size', 'num_heads', 'bn_count', 'own_s_b', 'other_s_b', 's_t', 's_h', 's_w', 's_n'])
 def _joint_kernel(
     q_ptr,
     own_k_ptr,
@@ -257,6 +259,8 @@ def joint_na3d(qkv_list: list[torch.Tensor], video_slots: torch.Tensor, keyframe
     keyframe_slots = keyframe_slots.to(device=q.device, dtype=torch.int32).contiguous()
     _joint_kernel[(triton.cdiv(width, 16), height, time * bn_count)](q, k, v, keyframe_k, keyframe_v, video_slots, video_out, time, height, width, num_heads, bn_count, q.stride(0), keyframe_q.stride(0), *strides, kt=kt, kh=kh, kw=kw, num_slots=video_slots.shape[1], **common)
     _joint_kernel[(triton.cdiv(width, 16), height, planes * bn_count)](keyframe_q, keyframe_k, keyframe_v, k, v, keyframe_slots, keyframe_out, planes, height, width, num_heads, bn_count, keyframe_q.stride(0), q.stride(0), *strides, kt=1, kh=kh, kw=kw, num_slots=keyframe_slots.shape[1], **common)
+    torch.autograd.graph.increment_version(video_out)
+    torch.autograd.graph.increment_version(keyframe_out)
     return video_out, keyframe_out
 
 
@@ -300,6 +304,7 @@ def na3d(qkv_list: list[torch.Tensor], kernel_size: tuple[int, int, int], scale:
         is_fp32=q.dtype == torch.float32,
         num_warps=4,
     )
+    torch.autograd.graph.increment_version(out)
     return out
 
 

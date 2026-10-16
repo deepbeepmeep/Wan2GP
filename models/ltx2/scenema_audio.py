@@ -1051,6 +1051,7 @@ class ScenemaAudioPipeline(LTXAudioTTSPipelineBase):
         custom_settings=None,
         duration_seconds: Optional[float] = None,
         set_progress_status=None,
+        offloadobj=None,
         **kwargs,
     ) -> Optional[dict]:
         self._interrupt = False
@@ -1143,7 +1144,8 @@ class ScenemaAudioPipeline(LTXAudioTTSPipelineBase):
                 if chunk_index < len(chunks) - 1 and chunk.speaker not in anchored_ref_speakers:
                     speaker_active_latents[chunk.speaker] = self._encode_tail_reference(audio, output_audio_sampling_rate)
         finally:
-            self._unload_managed_model(self.alignment_whisper)
+            if offloadobj is not None:
+                offloadobj.unload_all()  # as before: the generation models and the alignment Whisper leave the VRAM before voice conversion
 
         if not generated_chunks:
             return None

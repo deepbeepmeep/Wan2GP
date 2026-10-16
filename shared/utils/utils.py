@@ -667,7 +667,7 @@ def expand_colored_mask_cthw(mask, object_colors, expand_scale, background_color
         out = out.div_(127.5).sub_(1.0)
     return out.to(device=device, dtype=dtype).contiguous()
 
-def calculate_new_dimensions(canvas_height, canvas_width, image_height, image_width, fit_into_canvas,  block_size = 16):
+def calculate_new_dimensions(canvas_height, canvas_width, image_height, image_width, fit_into_canvas, block_size=16, *, max_width=None, max_height=None):
     if fit_into_canvas == None or fit_into_canvas == 2:
         # return image_height, image_width
         return canvas_height, canvas_width
@@ -678,8 +678,13 @@ def calculate_new_dimensions(canvas_height, canvas_width, image_height, image_wi
     else: #0 or #2 (crop)
         scale = (canvas_height * canvas_width / (image_height * image_width))**(1/2)
 
+    for limit, dimension in ((max_width, image_width), (max_height, image_height)):
+        if limit is not None:
+            scale = min(scale, (limit // block_size * block_size) / dimension)
     new_height = round( image_height * scale / block_size) * block_size
     new_width = round( image_width * scale / block_size) * block_size
+    if max_width is not None or max_height is not None:
+        new_height, new_width = max(block_size, new_height), max(block_size, new_width)
     return new_height, new_width
 
 def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fit_into_canvas, fit_crop, block_size = 16):
@@ -692,7 +697,9 @@ def calculate_dimensions_and_resize_image(image, canvas_height, canvas_width, fi
         image = image.resize((new_width, new_height), resample=Image.Resampling.LANCZOS) 
     return image, new_height, new_width
 
-def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255], outpainting_quantize_margins = 0, keep_alpha = False):
+def resize_and_remove_background(img_list, budget_width, budget_height, rm_background, any_background_ref, fit_into_canvas = 0, block_size= 16, outpainting_dims = None, outpainting_ratio = "", background_ref_outpainted = True, inpaint_color = 127.5, return_tensor = False, ignore_last_refs = 0, background_removal_color =  [255, 255, 255], outpainting_quantize_margins = 0, keep_alpha = False, *, max_width=None, max_height=None):
+    if max_width is not None or max_height is not None:
+        budget_height, budget_width = calculate_new_dimensions(budget_height, budget_width, budget_height, budget_width, 0, block_size=block_size, max_width=max_width, max_height=max_height)
     if rm_background:
         session = new_rembg_session() 
 
@@ -722,9 +729,7 @@ def resize_and_remove_background(img_list, budget_width, budget_height, rm_backg
             canvas[top:top + new_height, left:left + new_width] = np.array(resized_image)
             resized_image = Image.fromarray(canvas)
         else:
-            scale = (budget_height * budget_width / (height * width))**(1/2)
-            new_height = int( round(height * scale / block_size) * block_size)
-            new_width = int( round(width * scale / block_size) * block_size)
+            new_height, new_width = calculate_new_dimensions(budget_height, budget_width, height, width, 0, block_size=block_size, max_width=max_width, max_height=max_height)
             resized_image= img.resize((new_width,new_height), resample=Image.Resampling.LANCZOS) 
         if rm_background  and not (any_background_ref and i==0 or any_background_ref == 2) :
             # resized_image = remove(resized_image, session=session, alpha_matting_erode_size = 1,alpha_matting_background_threshold = 70, alpha_foreground_background_threshold = 100, alpha_matting = True, bgcolor=[255, 255, 255, 0]).convert('RGB')

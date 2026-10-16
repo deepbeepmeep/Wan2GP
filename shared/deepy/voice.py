@@ -55,12 +55,13 @@ async def save_upload(upload: UploadFile, directory: Path, *, limit: int, extens
 
 def transcribe_recording(path, *, service, language=None, prepared_model=None, check_cancelled=lambda: None, report_status=lambda value: None):
     import torch
+    from shared.deepy.assets import whisper_model_name
     from shared.deepy.transcription import transcribe_media
     from shared.utils.process_locks import try_acquire_GPU_ressources, release_GPU_ressources
 
     with _voice_lock:
         check_cancelled()
-        mode = voice_mode(service._deps.get_server_config())
+        mode, model_name = voice_mode(service._deps.get_server_config()), whisper_model_name(service._deps.get_server_config())
         if mode == "disabled":
             raise HTTPException(403, "Microphone transcription is disabled in Configuration.")
         cuda_available = torch.cuda.is_available()
@@ -85,10 +86,10 @@ def transcribe_recording(path, *, service, language=None, prepared_model=None, c
                 time.sleep(.1)
         try:
             report_status("transcribing")
-            print(f"[Voice] Whisper large-v3: {device.upper()}; mode={mode}; language={language or 'Auto'}; GPU wait={time.perf_counter() - waiting:.2f}s.", flush=True)
+            print(f"[Voice] Whisper {model_name}: {device.upper()}; mode={mode}; language={language or 'Auto'}; GPU wait={time.perf_counter() - waiting:.2f}s.", flush=True)
             prepared = {} if prepared_model is None else {"prepared_model": prepared_model, "check_cancelled": check_cancelled}
             check_cancelled()
-            return transcribe_media(str(path), timestamp_type="none", device=device, model_name="large-v3", language=language, **prepared)["text"]
+            return transcribe_media(str(path), timestamp_type="none", device=device, model_name=model_name, language=language, **prepared)["text"]
         finally:
             if device == "cuda":
                 release_GPU_ressources(service._state, "deepy_voice")
@@ -121,14 +122,15 @@ class RecordingPreparation:
             raise InterruptedError("Voice recording cancelled.")
 
     def run(self):
-        from shared.deepy.transcription import _load_whisper_large_v3
+        from shared.deepy.assets import whisper_model_name
+        from shared.deepy.transcription import load_whisper
         import torch
         try:
             while not _voice_lock.acquire(timeout=.1):
                 self.check_cancelled()
             try:
                 self.check_cancelled()
-                self.model.append(_load_whisper_large_v3(torch.device("cpu"), check_cancelled=self.check_cancelled))
+                self.model.append(load_whisper(whisper_model_name(), torch.device("cpu"), check_cancelled=self.check_cancelled))
                 self.status = "ready"
                 self.ready.set()
             finally:
@@ -166,11 +168,12 @@ def mount_voice_routes(app, *, get_service, dependencies=None, language=None):
     @app.get("/deepy_api/voice", dependencies=dependencies or [])
     def voice_status():
         from shared.deepy.transcription import _whisper_medium_files_present
-        from shared.deepy.assets import WHISPER_LARGE_V3_FOLDER
+        from shared.deepy.assets import whisper_download_def, whisper_model_name
         from shared.utils import files_locator
 
-        directory = files_locator.locate_folder(WHISPER_LARGE_V3_FOLDER, error_if_none=False)
-        return {"download_required": not _whisper_medium_files_present(Path(directory) if directory else None), "model": "large-v3", "language": recording_language(), "mode": voice_mode(get_service()._deps.get_server_config())}
+        model = whisper_model_name(get_service()._deps.get_server_config())
+        directory = files_locator.locate_folder(whisper_download_def(model)["sourceFolderList"][0], error_if_none=False)
+        return {"download_required": not _whisper_medium_files_present(Path(directory) if directory else None), "model": model, "language": recording_language(), "mode": voice_mode(get_service()._deps.get_server_config())}
 
     @app.post("/deepy_api/voice/{recording_id}/prepare", dependencies=dependencies or [])
     async def prepare(recording_id: uuid.UUID, request: Request):

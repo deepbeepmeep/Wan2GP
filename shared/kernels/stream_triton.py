@@ -15,7 +15,8 @@ _TUNE_ELEMENTS = 1 << 24  # calls writing at least this many elements tune the c
 _CL = torch.channels_last_3d
 
 
-@triton.jit(do_not_specialize=["TOTAL", "T", "H", "W", "SB", "SC", "ST", "SH", "SW"])
+@triton.jit(do_not_specialize=["TOTAL", "T", "H", "W", "SB", "SC", "ST", "SH", "SW"],
+            do_not_specialize_on_alignment=["TOTAL", "T", "H", "W", "SB", "SC", "ST", "SH", "SW"])
 def _norm_silu_kernel(X, OUT, TOTAL, T, H, W, SB, SC, ST, SH, SW, EPS, INV_C, C: tl.constexpr, BLOCK_C: tl.constexpr, BLOCK_P: tl.constexpr):
     """BLOCK_P pixels (all channels) of the channels-last output (batch, T, H, W, C): silu(x / sqrt(mean(x ** 2) + EPS)), x read with the
     strides SB..SW."""

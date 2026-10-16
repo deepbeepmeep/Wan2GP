@@ -28,6 +28,7 @@ from transformers import Qwen3Config
 from mmgp import cuda_graphs
 from shared import attention_kit
 from shared.attention import pay_attention
+from shared.kernels import ops
 
 from .transformers_compat import causal_mask_kwargs, model_input_compat, tied_weights_keys
 
@@ -122,12 +123,11 @@ class Qwen3RMSNorm(nn.Module):
         self.variance_epsilon = eps
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        input_dtype = hidden_states.dtype
-        hidden_states = F.rms_norm(hidden_states.float(), (hidden_states.shape[-1],), eps=self.variance_epsilon)
-        return hidden_states.to(input_dtype).mul_(self.weight)
+        hidden_states_list, hidden_states = [hidden_states], None
+        return self.forward_list(hidden_states_list)
 
     def forward_list(self, hidden_states_list) -> torch.Tensor:
-        return self.forward(_take_tensor(hidden_states_list))
+        return ops.rms_norm_rounded(hidden_states_list, self.variance_epsilon).mul_(self.weight)
 
     def extra_repr(self):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
@@ -148,52 +148,40 @@ class Qwen3MLP(nn.Module):
         x = _take_tensor(x_list)
         seq_len = x.shape[-2]
         if seq_len <= 512:
-            hidden_states = self.act_fn(self.gate_proj(x))
-            hidden_states.mul_(self.up_proj(x))
-            del x
-            hidden_states_list = [hidden_states]
-            del hidden_states
-            return _linear_disposable(self.down_proj, hidden_states_list)
+            x_list, x = [x], None
+            return ops.gated_mlp(x_list, self.gate_proj, self.up_proj, self.down_proj, self.act_fn)
         chunk_size = max(128, min(seq_len, seq_len * self.hidden_size // self.intermediate_size))
         output = x.new_empty(*x.shape[:-1], self.hidden_size)
         for start in range(0, seq_len, chunk_size):
             chunk = x.narrow(-2, start, min(chunk_size, seq_len - start))
-            chunk_hidden_states = self.act_fn(self.gate_proj(chunk))
-            chunk_hidden_states.mul_(self.up_proj(chunk))
-            chunk_hidden_states_list = [chunk_hidden_states]
-            del chunk_hidden_states
-            chunk_output = _linear_disposable(self.down_proj, chunk_hidden_states_list)
+            chunk_list, chunk = [chunk], None
+            chunk_output = ops.gated_mlp(chunk_list, self.gate_proj, self.up_proj, self.down_proj, self.act_fn)
             output.narrow(-2, start, chunk_output.shape[-2]).copy_(chunk_output)
             del chunk_output
         return output
 
 
 def _apply_rotary_inplace(x, cos, sin, scratch, unsqueeze_dim):
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
-    half = x.shape[-1] // 2
-    x1 = x[..., :half]
-    x2 = x[..., half:]
-    scratch = scratch[tuple(slice(0, size) for size in x1.shape)]
-    scratch.copy_(x1)
-    x1.mul_(cos).addcmul_(x2, sin, value=-1)
-    x2.mul_(cos).addcmul_(scratch, sin)
-    return x
+    return ops.paired_rope_(x, cos.unsqueeze(unsqueeze_dim), sin.unsqueeze(unsqueeze_dim), scratch)
 
 
 def _cached_prefix(past_key_values, layer_idx):
-    """The cached prompt/reference keys and values of a layer, (batch, tokens, kv heads, head_dim) views, or None."""
+    """The cached prompt/reference keys and values of a layer, (batch, tokens, kv heads, head_dim) views, or None. A prompt cache expanded
+    to the batch gives its single row: _forward_gen_kit expands it inside the layer, as CUDA graph buffers cannot hold expanded views."""
     layer = None if past_key_values is None else past_key_values.layers[layer_idx]
-    return None if layer is None or layer.keys is None else (layer.keys.transpose(1, 2), layer.values.transpose(1, 2))
+    if layer is None or layer.keys is None:
+        return None
+    keys, values = (layer.keys[:1], layer.values[:1]) if layer.keys.stride(0) == 0 else (layer.keys, layer.values)
+    return keys.transpose(1, 2), values.transpose(1, 2)
 
 
 def _norm_rope_rows(x, norm_t, norm_hw, cos, sin, partner):
     """forward_gen's norms of the t and hw halves of the head dimension, then RoPE of its t, h and w parts, of rows x (batch, tokens,
     heads, head_dim), in one pass each: the same arithmetic as the Qwen3RMSNorm calls and the three rotate-half passes."""
-    normed = F.rms_norm(x.unflatten(-1, (2, -1)).float(), (x.shape[-1] // 2,), eps=norm_t.variance_epsilon)
-    normed = normed.to(x.dtype).mul_(torch.stack((norm_t.weight, norm_hw.weight))).flatten(-2)
-    rotated = normed[..., partner]
-    return normed.mul_(cos).addcmul_(rotated, sin)
+    normed = ops.rms_norm_rounded([x.unflatten(-1, (2, -1))], norm_t.variance_epsilon)
+    normed = normed.mul_(torch.stack((norm_t.weight, norm_hw.weight))).flatten(-2)
+    normed_list, normed = [normed], None
+    return ops.indexed_rope(normed_list, cos, sin, partner)
 
 
 def apply_rotary_pos_emb(qk_list, cos, sin, scratch, position_ids=None, unsqueeze_dim=1):
@@ -580,6 +568,9 @@ class Qwen3Attention(nn.Module):
         rope: the step's gen_rope_tables, computed here when not given."""
         if rope is None:
             rope = self.gen_rope_tables(hidden_states_list[0], indexes)
+        batch = hidden_states_list[0].shape[0]
+        if kv_prefix is not None and kv_prefix[0].shape[0] != batch:  # one prompt for the whole batch
+            kv_prefix = tuple(tensor.expand(batch, *tensor.shape[1:]) for tensor in kv_prefix)
         attn_output = attention_kit.qkv_attention(hidden_states_list, self.q_proj_mot_gen, self.k_proj_mot_gen, self.v_proj_mot_gen,
                                                   self.config.num_attention_heads, self.head_dim, lambda query, key, group: self._norm_rope_gen_(query, key, rope),
                                                   kv_heads=self.config.num_key_value_heads, kv_prefix=kv_prefix)

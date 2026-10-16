@@ -101,6 +101,17 @@ def view_images(records, *, times_s=None, frame_nos=None, range_s=None, count=8,
             images[index] = image
     shown = [{"media_id": record["media_id"], **({"frame_no": frame, "time_s": time} if frame is not None else {})} for record, frame, time in selections]
     result = {"status": "done", "max_edge": edge}
+    videos = {record["media_id"]: record["path"] for record in records if record["media_type"] == "video"}
+    checks = {media_id: video_tools.picture_checks(path, *(range_s or (0.0, None))) for media_id, path in videos.items()}  # measured, whatever the frames show
+    warnings = []
+    if black := {media_id: check["black_ranges_seconds"] for media_id, check in checks.items() if "black_ranges_seconds" in check}:
+        result["black_ranges_seconds"] = black
+        warnings.append("Measured black stretches (seconds, per media_id): unless an intended fade, regenerate or cut them.")
+    if cuts := {media_id: check["cut_times_seconds"] for media_id, check in checks.items() if "cut_times_seconds" in check}:
+        result["cut_times_seconds"] = cuts
+        warnings.append("Measured hard cuts (seconds, per media_id): shot changes in an edited sequence; inside one generated shot, the model cut away to another shot.")
+    if warnings:
+        result["warning"] = " ".join(warnings)
     if contact_sheet:
         sheet, columns, rows = tile_sheet(images, [f"{time:.2f}s" if time is not None else record["media_id"] for record, _frame, time in selections])
         images = [sheet]

@@ -70,7 +70,6 @@ class family_handler:
             ],
             "no_negative_prompt": False,
             "no_background_removal": True,
-            "resolutions_categories": ["<=2048sq"],
             "resolution_budget": "2048x2048",
             "vae_block_size": 16,
             "vae_upsampler": [1],

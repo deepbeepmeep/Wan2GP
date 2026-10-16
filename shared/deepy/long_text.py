@@ -384,6 +384,7 @@ def append_text(policy, file_path: str, text: str, *, include_structure: bool = 
         created = not target.exists()
         if created:
             original, encoding = "", "utf-8"
+            target.parent.mkdir(parents=True, exist_ok=True)  # inside the authorized write area, like the file itself
         else:
             target = policy.require_read(target, file=True)
             original, encoding = _decode_text(target.read_bytes(), policy.virtualize_path(target))

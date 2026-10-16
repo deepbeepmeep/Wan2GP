@@ -17,6 +17,7 @@ _SAFETENSORS_DTYPES = {
     torch.bfloat16: "BF16", torch.float16: "F16", torch.float32: "F32", torch.float64: "F64",
     torch.int8: "I8", torch.int16: "I16", torch.int32: "I32", torch.int64: "I64",
     torch.uint8: "U8", torch.uint16: "U16", torch.uint32: "U32", torch.uint64: "U64", torch.bool: "BOOL",
+    torch.float8_e4m3fn: "F8_E4M3", torch.float8_e5m2: "F8_E5M2",
 }
 
 
@@ -37,8 +38,8 @@ def _normalized_module_name(name):
 
 def _tensor_bytes(tensor):
     tensor = tensor.detach().contiguous().cpu()
-    if tensor.dtype == torch.bfloat16:
-        tensor = tensor.view(torch.uint16)
+    if tensor.dtype in (torch.bfloat16, torch.float8_e4m3fn, torch.float8_e5m2):
+        tensor = tensor.view(torch.uint8)
     return tensor.numpy().tobytes()
 
 
@@ -51,9 +52,9 @@ def quantize_weight(weight, group_size, device):
     return qweight.cpu(), scale.cpu()
 
 
-def save_convrot_model(model, source_file, output_file, layout=None, verboseLevel=1):
+def save_convrot_model(model, source_file, output_file, layout=None, verboseLevel=1, prefixes=None):
     """Stream a ConvRot checkpoint, optionally applying model-specific tensor layout transforms."""
-    tower_prefixes = tuple(f"{name}." for name, module in model.named_modules() if isinstance(module, torch.nn.ModuleList) and len(module) >= 5)
+    tower_prefixes = tuple(prefixes) if prefixes is not None else tuple(f"{name}." for name, module in model.named_modules() if isinstance(module, torch.nn.ModuleList) and len(module) >= 5)
     if not tower_prefixes:
         raise RuntimeError("ConvRot save requires a model with a repeated block tower")
     # Embedding lookups do not apply the inverse activation rotation used by

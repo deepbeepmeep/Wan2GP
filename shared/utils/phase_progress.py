@@ -121,8 +121,9 @@ class PhaseProgress:
                 # Fast final blocks can finish before the next throttled update.
                 # Report completion before replacing this phase's status.
                 remaining = self.state.next_update - monotonic()
-                if remaining > 0:
+                while remaining > 0:
                     sleep(remaining + 0.001)
+                    remaining = self.state.next_update - monotonic()
             self._report()
             # A final-layer/tile abort must not start the next (possibly expensive) phase.
             if self.state is not None and self.state.pipeline._interrupt:

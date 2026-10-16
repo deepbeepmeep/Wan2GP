@@ -1,0 +1,28 @@
+{
+    "model": {
+        "name": "TTS Fish Audio Drama 3",
+        "architecture": "fish_drama3",
+        "description": "Expressive speech and dialogue, with an optional voice reference and exact transcript. Individual MoE experts can execute on the CPU while GPU memory is allocated to ordinary layers first.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/Fish_Drama3_backbone_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/Fish_Drama3_backbone_int8_convrot.safetensors"
+        ],
+        "preload_URLs": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/Fish_Drama3_experts_fp8.safetensors"
+        ],
+        "URLs2": [
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/Fish_Drama3_codebooks_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/TTS/resolve/main/Fish_Drama3_codebooks_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "Speaker 1: [confident, almost playful] Look, it’s simple. You just have to stop trusting the cameras.\nSpeaker 2: [skeptical, raising an eyebrow] Cameras? I’ve seen satellites, Mark.\nSpeaker 1: [waving a hand dismissively, then leaning in] Manufactured images. Have you ever felt the curve?\nSpeaker 2: [frustrated, sighing] I’ve flown in planes. I’ve crossed oceans.\nSpeaker 1: [insistent, then dropping to a whisper] That’s exactly what they want you to think. The horizon is perfectly straight, isn’t it?\nSpeaker 2: [exhausted, rubbing her temples] It looks straight because we’re on top of a sphere, not because it’s flat.\nSpeaker 1: [smiling mysteriously, slowly] And who told you that... The same people selling you the round rock.",
+    "alt_prompt": "",
+    "audio_prompt_type": "",
+    "duration_seconds": 60,
+    "temperature": 0.8,
+    "top_k": 30,
+    "top_p": 0.95,
+    "guidance_scale": 1.0,
+    "num_inference_steps": 1,
+    "prompt_enhancer": ""
+}

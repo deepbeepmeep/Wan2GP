@@ -177,17 +177,44 @@ def _get_activation_kernel():
     return _activation_kernel
 
 
-def _quantize_activation(x, fp8_dtype):
+def _activation_quantizer(x, fp8_dtype):
+    """(quantization of x's rows to FP8, whole or by slices, with one scale from the absmax of all of x: the values of one quantization,
+    bytes it allocates per element)."""
     minv, maxv = _FP8_RANGE[fp8_dtype]
     kernel = _get_activation_kernel()
     if kernel and kernel.supports(x, fp8_dtype):
-        return kernel.quantize_activation(x, fp8_dtype, minv, maxv)
-    absmax = x.abs().max().float()
+        partials, scale = kernel.absmax_partials(x), torch.empty((), device=x.device, dtype=torch.float32)
+        return (lambda rows: (kernel.quantize(rows, partials, scale, fp8_dtype, minv, maxv), scale)), 1
+    absmax = torch.linalg.vector_norm(x, float("inf")).float()
     scale = absmax / maxv
     scale = torch.where(absmax > 0, scale, torch.ones_like(scale))
-    scale_f16 = scale.to(dtype=x.dtype)
-    q = (x / scale_f16).clamp(minv, maxv).to(fp8_dtype)
-    return q, scale.reshape(()).to(torch.float32)
+    scale_x, scale = scale.to(dtype=x.dtype), scale.reshape(()).to(torch.float32)
+    return (lambda rows: ((rows / scale_x).clamp_(minv, maxv).to(fp8_dtype), scale)), 1 + x.element_size()
+
+
+def _quantize_activation(x, fp8_dtype):
+    return _activation_quantizer(x, fp8_dtype)[0](x)
+
+
+_ROW_SLICE_BYTES = 64 << 20  # quantization scratch of the activation rows multiplied at a time
+_ROW_SLICE_MIN = 16384  # rows per FP8 GEMM: fewer lower the tensor core throughput of tall-K GEMMs on large GPUs
+
+
+def _scaled_mm_rows(x, weight_t, scale_b, bias, out_dtype):
+    """torch._scaled_mm of x (M, K) quantized to FP8 with one scale and weight_t (K, N), by slices of rows when x spans two or more:
+    the FP8 copy of x never exceeds one slice, with the values of the whole-tensor quantization."""
+    quantize, scratch = _activation_quantizer(x, weight_t.dtype)
+    step = max(_ROW_SLICE_MIN, _ROW_SLICE_BYTES // (x.shape[1] * scratch) // 16 * 16)
+    if x.shape[0] < 2 * step:
+        x8, scale_a = quantize(x)
+        return torch._scaled_mm(x8, weight_t, scale_a, scale_b, bias=bias, out_dtype=out_dtype)
+    step = -(-x.shape[0] // (x.shape[0] // step * 16)) * 16  # slices of even size, none below the minimum
+    out = torch.empty((x.shape[0], weight_t.shape[1]), dtype=out_dtype, device=x.device)
+    for start in range(0, x.shape[0], step):
+        x8, scale_a = quantize(x[start:start + step])
+        torch._scaled_mm(x8, weight_t, scale_a, scale_b, bias=bias, out_dtype=out_dtype, out=out[start:start + step])
+        del x8
+    return out
 
 
 def _scaled_mm_static_ok(weight, scale):
@@ -355,29 +382,17 @@ class ScaledFP8WeightTensor(QTensor):
         if x2d.shape[1] % 16 != 0 or self._data.shape[0] % 16 != 0:
             return torch.nn.functional.linear(input, self.dequantize(dtype=input.dtype, device=input.device), bias)
 
-        fp8_dtype = self._data.dtype
-        x_fp8, scale_a = _quantize_activation(x2d, fp8_dtype)
-        scale_a = _normalize_scaled_mm_scale(scale_a)
-        if scale_a is None:
-            return torch.nn.functional.linear(input, self.dequantize(dtype=input.dtype, device=input.device), bias)
-        scale_b = scale_b.to(device=x_fp8.device, dtype=torch.float32)
+        scale_b = scale_b.to(device=x2d.device, dtype=torch.float32)
 
         bias_arg = bias
         if bias_arg is not None:
-            if bias_arg.device != x_fp8.device:
-                bias_arg = bias_arg.to(x_fp8.device)
+            if bias_arg.device != x2d.device:
+                bias_arg = bias_arg.to(x2d.device)
             if bias_arg.dtype != input.dtype:
                 bias_arg = bias_arg.to(dtype=input.dtype)
         fused_bias = bias_arg if output_scale is None and input.dtype != torch.float32 else None
 
-        out = torch._scaled_mm(
-            x_fp8,
-            self._data.t(),
-            scale_a,
-            scale_b,
-            bias=fused_bias,
-            out_dtype=input.dtype,
-        )
+        out = _scaled_mm_rows(x2d, self._data.t(), scale_b, fused_bias, input.dtype)
         if output_scale is not None:
             out *= output_scale.to(device=out.device, dtype=out.dtype).view(1, -1)
         if bias_arg is not None and fused_bias is None:
@@ -735,8 +750,10 @@ def _collect_linear_param_keys(model):
 def _cast_non_linear_float8_params(model, target_dtype):
     if model is None:
         return
-    for module in model.modules():
-        if isinstance(module, torch.nn.Linear) or isinstance(module, QModuleMixin):
+    from mmgp.experts import excluded_names
+    expert_modules = excluded_names(model)
+    for name, module in model.named_modules():
+        if name in expert_modules or isinstance(module, torch.nn.Linear) or isinstance(module, QModuleMixin):
             continue
         for name, param in list(module.named_parameters(recurse=False)):
             if torch.is_tensor(param) and _is_float8_dtype(param.dtype):
@@ -764,6 +781,8 @@ def apply_pre_quantization(model, state_dict, quantization_map, default_dtype=No
 
     target_dtype = _resolve_default_dtype(model, default_dtype)
     linear_param_keys = _collect_linear_param_keys(model)
+    from mmgp.experts import excluded_names
+    expert_modules = excluded_names(model)
 
     to_cast = []
     for key, tensor in state_dict.items():
@@ -775,7 +794,7 @@ def apply_pre_quantization(model, state_dict, quantization_map, default_dtype=No
             module_name = key.rsplit(".", 1)[0]
         else:
             continue
-        if key in linear_param_keys:
+        if key in linear_param_keys or module_name in expert_modules:
             continue
         to_cast.append((key, module_name, tensor))
 
@@ -799,3 +818,26 @@ def apply_pre_quantization(model, state_dict, quantization_map, default_dtype=No
 
 
 _init_scaled_mm_support()
+
+
+from shared.kernels.cpu_experts import FP8_BLOCK, NativeExpertFormat
+
+
+class Fp8BlockExperts(NativeExpertFormat):
+    """Routed experts stored in FP8 E4M3FN with float32 scales per 128 x 128 block (w13 = gate then up rows)."""
+    name, native, block = "fp8_block", FP8_BLOCK, 128
+
+    def tensors(self, experts, hidden, intermediate):
+        b, fp8 = self.block, torch.float8_e4m3fn
+        return {"w13_weight": ((experts, 2 * intermediate, hidden), fp8), "w2_weight": ((experts, hidden, intermediate), fp8),
+                "w13_scale_inv": ((experts, 2 * intermediate // b, hidden // b), torch.float32), "w2_scale_inv": ((experts, hidden // b, intermediate // b), torch.float32)}
+
+    def matches(self, tensors):
+        return tensors["w13_weight"].dtype == torch.float8_e4m3fn and tensors["w13_scale_inv"].dtype == torch.float32
+
+    def dequantize_matrix(self, weight, scale):
+        rows, cols, b = *weight.shape, self.block
+        return (weight.float().view(rows // b, b, cols // b, b) * scale[:, None, :, None]).reshape(rows, cols)
+
+
+EXPERT_FORMATS = (Fp8BlockExperts(),)

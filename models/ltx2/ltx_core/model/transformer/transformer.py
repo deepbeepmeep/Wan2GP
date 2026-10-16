@@ -12,7 +12,7 @@ from .feed_forward import FeedForward
 from .rope import LTXRopeType
 from .transformer_args import TransformerArgs
 from ...utils import rms_norm
-from ....denoiser_kernels import scale_shift
+from shared.kernels import ops as kernels
 
 
 def _reshape_hidden_states(hidden_states: torch.Tensor, frames: int) -> torch.Tensor:
@@ -24,20 +24,8 @@ def _restore_hidden_states_shape(hidden_states: torch.Tensor) -> torch.Tensor:
 
 
 def _apply_scale_shift(hidden_states: torch.Tensor, scale: torch.Tensor, shift: torch.Tensor, in_place: bool = True) -> torch.Tensor:
-    fused = scale_shift(hidden_states, scale, shift, in_place)
-    if fused is not None:
-        return fused
-    if scale.shape[1] == hidden_states.shape[1]:
-        if in_place:
-            hidden_states.mul_(1 + scale).add_(shift)
-            return hidden_states
-        return hidden_states * (1 + scale) + shift
-
-    hidden_states_reshaped = _reshape_hidden_states(hidden_states, scale.shape[1])
-    if in_place:
-        hidden_states_reshaped.mul_(1 + scale.unsqueeze(2)).add_(shift.unsqueeze(2))
-        return _restore_hidden_states_shape(hidden_states_reshaped)
-    return _restore_hidden_states_shape(hidden_states_reshaped * (1 + scale.unsqueeze(2)) + shift.unsqueeze(2))
+    x_list, hidden_states = [hidden_states], None
+    return kernels.scale_shift(x_list, scale, shift, in_place=in_place, frames=True)
 
 
 def _apply_gate(hidden_states: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:

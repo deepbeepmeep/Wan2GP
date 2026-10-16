@@ -56,10 +56,7 @@ from shared.attention import pay_attention
 
 from ..interrupt import GenerationInterrupted
 
-try:
-    from .audio_activation_triton import snake_beta_aa
-except ImportError:  # without Triton the activations run unfused
-    snake_beta_aa = None
+from shared.kernels import vae_ops
 
 
 class MiniMaxH3AudioDiagonalGaussianDistribution:
@@ -230,13 +227,8 @@ class MiniMaxH3AudioActivation1d(nn.Module):
         self.fusable = isinstance(activation, MiniMaxH3AudioSnakeBeta) and ratio == 2 and kernel_size == 12
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        if self.fusable and snake_beta_aa is not None and hidden_states.is_cuda:
-            # one Triton kernel, fp32 math summed in another order: on H3 audio about -90 dBFS from the unfused path (below the TF32
-            # convolutions' own error)
-            return snake_beta_aa(hidden_states, self.act.alpha, self.act.beta, self.upsample.filter, self.downsample.lowpass.filter)
-        hidden_states = self.upsample(hidden_states)
-        hidden_states = self.act(hidden_states)
-        return self.downsample(hidden_states)
+        x_list, hidden_states = [hidden_states], None
+        return vae_ops.snake_beta_aa(x_list, self.act, self.upsample, self.downsample, fusable=self.fusable)
 
 
 class MiniMaxH3AudioResidualUnit(nn.Module):

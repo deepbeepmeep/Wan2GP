@@ -35,14 +35,20 @@ SETTING_HINTS = {
     "cfg": "guidance_scale", "cfg_scale": "guidance_scale", "guidance": "guidance_scale",
     "sampler": "sample_solver", "scheduler": "sample_solver", "solver": "sample_solver",
     "frames": "video_length", "num_frames": "video_length", "duration": "duration_seconds", "negative": "negative_prompt",
-    "lora": "activated_loras", "loras": "activated_loras",
+    "lora": "activated_loras", "loras": "activated_loras", **dict.fromkeys(("name", "filename", "output_name"), "output_filename"),
     **dict.fromkeys(("accelerator", "accelerator_profile", "profile"), "an accelerator profile's settings"),
 }
+# Model information returned beside template settings and in model metadata: never a setting.
+MODEL_INFO_KEYS = frozenset({"accelerated", "media_inputs", "resolution_budget", "resolution_budget_tiled", "resolution_min", "max_width", "max_height", "lock_resolutions", "allowed_resolutions", "vae_block_size"})
 
 
 @cache
 def catalog_setting_names() -> frozenset:
     return frozenset(json.loads(SETTINGS_CATALOG.read_text(encoding="utf-8")))
+
+
+# String settings that agents easily send as a list or a number, which the generation code cannot parse.
+STRING_FORMATS = {"frames_positions": 'frame numbers separated by spaces, such as "181" or "1 97 181"', "resolution": '"WIDTHxHEIGHT"'}
 
 
 def accepted_setting_names() -> frozenset:
@@ -60,12 +66,19 @@ def split_settings(settings) -> tuple:
     return {name: value for name, value in settings.items() if name in accepted}, {name: value for name, value in settings.items() if name not in accepted}
 
 
-def unknown_settings_error(settings) -> str:
+def settings_error(settings) -> str:
+    """Unknown setting names, or a string setting given another type, as one message; empty when the settings are acceptable."""
+    wrong = [name for name in STRING_FORMATS if settings.get(name) is not None and not isinstance(settings[name], str)]
+    if wrong:
+        return " ".join(f"{name} must be a string{': ' + STRING_FORMATS[name] if name in STRING_FORMATS else ''}, not {type(settings[name]).__name__} {settings[name]!r}." for name in wrong)
     unknown = unknown_setting_names(settings)
     if not unknown:
         return ""
     described = []
     for name in unknown:
+        if name in MODEL_INFO_KEYS:
+            described.append(f"{name} (model information, not a setting: omit it)")
+            continue
         hint = SETTING_HINTS.get(name.lower()) or next(iter(difflib.get_close_matches(name, catalog_setting_names(), n=1, cutoff=0.75)), "")
         described.append(f"{name} (use {hint})" if hint else name)
     return f"Unknown setting{'s' if len(unknown) > 1 else ''}: {', '.join(described)}. Model-specific options belong in custom_settings."

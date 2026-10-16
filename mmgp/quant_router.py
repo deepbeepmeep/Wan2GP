@@ -267,6 +267,11 @@ def _load_handlers():
 def _handler_name(handler):
     return getattr(handler, "HANDLER_NAME", handler.__name__.split(".")[-1])
 
+
+def expert_formats():
+    """Routed-expert storage formats (mmgp.expert_compute.ExpertFormat) of the registered handlers: their optional EXPERT_FORMATS."""
+    return [format for handler in _load_handlers() for format in getattr(handler, "EXPERT_FORMATS", ())]
+
 _FILE_EXTENSION_HANDLERS = {}
 
 

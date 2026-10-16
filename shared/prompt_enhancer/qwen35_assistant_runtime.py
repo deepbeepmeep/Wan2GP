@@ -1093,6 +1093,8 @@ class Qwen35AssistantRuntime:
 
     def _chunk_prefill_suffix(self, seq: Sequence, token_ids: list[int], chunk_tokens: int = _ASSISTANT_PREFILL_CHUNK_TOKENS, processed_tokens: int | None = None) -> Sequence:
         suffix = [int(token_id) for token_id in list(token_ids or [])]
+        if suffix and seq.token_ids and suffix[0] == int(seq.token_ids[-1]) == self._single_token_id("<|im_end|>"):
+            suffix = suffix[1:]  # a response that sampled its own end of turn (after parallel tool calls) keeps it once, as the chat format writes it
         if len(suffix) == 0:
             return seq
         llm = self._get_live_llm()
@@ -1373,7 +1375,7 @@ class Qwen35AssistantRuntime:
         seq.logits_processor = logits_processor
         seq.logits_processor_update_state = update_state
 
-    def start_generation_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continuing_response: bool = False, apply_repetition_penalty: bool = True, remaining_action_tokens: int | None = None, resume_action: bool = False) -> tuple[Sequence, AssistantActionState]:
+    def start_generation_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, continuing_response: bool = False, apply_repetition_penalty: bool = True, remaining_action_tokens: int | None = None, resume_action: bool = False, allowed_token_ids: tuple[int, ...] | None = None) -> tuple[Sequence, AssistantActionState]:
         phase = str(phase or "").strip().lower()
         phase_limit = self.action_budget(phase)
         generation_limit = phase_limit if remaining_action_tokens is None else min(phase_limit, max(0, int(remaining_action_tokens)))
@@ -1399,7 +1401,7 @@ class Qwen35AssistantRuntime:
         seq.predictive_penalty = qwen35_text._resolve_predictive_penalty_enabled(self.model)
         if not resume_action:
             seq.repetition_penalty_start = seq.num_tokens
-        seq.logits_bias = qwen35_text._build_suppressed_token_logits_bias(self.model, thinking_enabled=thinking_enabled)
+        seq.logits_bias = qwen35_text._build_suppressed_token_logits_bias(self.model, thinking_enabled=thinking_enabled) if allowed_token_ids is None else self._allowed_tokens_bias(tuple(allowed_token_ids))
         self._install_action_processors(seq, phase, generation_limit, continuing_response=continuing_response)
         if not continuing_response:
             llm.model_runner.call("set_sampling_seed", None if seed is None else int(seed))
@@ -1412,11 +1414,43 @@ class Qwen35AssistantRuntime:
         if token_ids:
             self.append_completion_suffix([int(token_id) for token_id in token_ids])
 
+    def tool_call_follows(self, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, apply_repetition_penalty: bool = True) -> bool:
+        """After a complete tool call, whether the model opens another one in the same response (the chat format of parallel calls).
+        One or two decode steps restricted to the format's choices - a newline then <tool_call>, or the end of the turn - so nothing
+        is rewound and no state is snapshotted. A sampled end of turn stays where the format writes it; the tool results' suffix
+        does not repeat it (_chunk_prefill_suffix)."""
+        tool_open, turn_end, newline = (self._single_token_id(text) for text in ("<tool_call>", "<|im_end|>", "\n"))
+        for allowed in ((newline, tool_open, turn_end), (tool_open, turn_end)):
+            result = self.generate_action(phase="statement", seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled,
+                                          stop_requested=stop_requested, continuing_response=True, apply_repetition_penalty=apply_repetition_penalty, remaining_action_tokens=1, allowed_token_ids=allowed)
+            if result.stop_reason != "statement_budget_exhausted":  # a newline uses up the one-token step: the second step decides
+                return result.stop_reason == "tool_start"
+        return False
+
+    def _single_token_id(self, text: str) -> int:
+        cache = self.__dict__.setdefault("_single_token_ids", {})
+        if text not in cache:
+            token_ids = self.tokenizer.encode(text, add_special_tokens=False)
+            token_ids = token_ids.tolist() if torch.is_tensor(token_ids) else list(token_ids)
+            if len(token_ids) != 1:
+                raise RuntimeError(f"{text!r} is not a single token for this tokenizer.")
+            cache[text] = int(token_ids[0])
+        return cache[text]
+
+    def _allowed_tokens_bias(self, token_ids: tuple[int, ...]):
+        """A full-vocabulary bias that leaves only token_ids possible; cached, so that its device copy is made once."""
+        cache = self.__dict__.setdefault("_allowed_tokens_biases", {})
+        if token_ids not in cache:
+            bias = torch.full((int(self.model.config.vocab_size),), float(qwen35_text.QWEN35_PROMPT_SUPPRESS_LOGITS_BIAS), dtype=torch.float32)
+            bias[list(token_ids)] = 0
+            cache[token_ids] = bias
+        return cache[token_ids]
+
     def _close_exhausted_thought(self, budget_tokens: int) -> None:
         self._append_action_suffix(f"\n{assistant_thought_budget_update(budget_tokens)}\n</think>")
 
-    def generate_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continuing_response: bool = False, apply_repetition_penalty: bool = True, remaining_action_tokens: int | None = None, resume_action: bool = False, pause_requested=None) -> AssistantDecodeResult:
-        seq, action = self.start_generation_action(phase=phase, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continuing_response=continuing_response, apply_repetition_penalty=apply_repetition_penalty, remaining_action_tokens=remaining_action_tokens, resume_action=resume_action)
+    def generate_action(self, phase: str, seed: int | None, do_sample: bool, temperature: float | None, top_p: float | None, top_k: int | None, thinking_enabled: bool, stop_requested=None, stream_callback=None, stream_interval_seconds: float = 1.0, continuing_response: bool = False, apply_repetition_penalty: bool = True, remaining_action_tokens: int | None = None, resume_action: bool = False, pause_requested=None, allowed_token_ids: tuple[int, ...] | None = None) -> AssistantDecodeResult:
+        seq, action = self.start_generation_action(phase=phase, seed=seed, do_sample=do_sample, temperature=temperature, top_p=top_p, top_k=top_k, thinking_enabled=thinking_enabled, continuing_response=continuing_response, apply_repetition_penalty=apply_repetition_penalty, remaining_action_tokens=remaining_action_tokens, resume_action=resume_action, allowed_token_ids=allowed_token_ids)
         stop_token_ids = {int(token_id) for token_id in getattr(self.model, "_prompt_enhancer_stop_token_ids", []) or [] if int(token_id) >= 0}
         speculative = bool(getattr(self.model, "_prompt_enhancer_speculative_decoding", False))
         boundary_markers = ["</think>"] if action.phase == "thought" else ["<tool_call>", *(["<think>"] if thinking_enabled else [])] if action.phase == "statement" else ["</tool_call>"]

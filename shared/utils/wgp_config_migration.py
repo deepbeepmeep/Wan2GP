@@ -10,7 +10,7 @@ from shared.deepy.config import DEEPY_ENABLED_KEY, DEEPY_TEMPLATE_CONFIG_MIGRATI
 
 LEGACY_EXTENSIONS_DEFAULTS_MIGRATED_KEY = "_extensions_defaults_migrated"
 EXTENSIONS_DEFAULTS_VERSION_KEY = "extensions_defaults_version"
-EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.28")
+EXTENSIONS_DEFAULTS_TARGET_VERSION = Decimal("1.29")
 EXTENSIONS_DEFAULTS_TARGET_VERSION_TEXT = str(EXTENSIONS_DEFAULTS_TARGET_VERSION)
 INSTALLED_REMOTE_PLUGINS_KEY = "installed_remote_plugins"
 
@@ -298,7 +298,9 @@ def migrate_extension_defaults(server_config, server_config_filename="", *, work
             server_config[f"{output_type}_preload_mode"] = "manual" if value > 0 else "default"
         changed = True
 
-    if version < Decimal("1.26") and server_config.get("compile", "") == "":
+    if version < Decimal("1.29") and server_config.get("compile", "") == "":
+        # Compilation off is "disabled" (1.26); 1.29 also corrects the configs that got an empty value again after 1.26, which
+        # the Configuration tab could not save.
         server_config["compile"] = "disabled"
         changed = True
 

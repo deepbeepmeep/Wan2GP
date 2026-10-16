@@ -81,8 +81,6 @@ async def query_resources(pages, resources, read_resource, arguments, *, servers
         records = ({key: resource[key] for key in ("server", "uri", "description")} for resource in records)
         page = pages.page(["resources", server, query], records, key="resources", limit=arguments.get("limit", 20), cursor=arguments.get("cursor"), metadata={"unavailable_servers": dict(unavailable_servers or {})})
     else:
-        if query and section:
-            raise ValueError("query and section are mutually exclusive")
         matches = [resource for resource in resources if resource["uri"] == uri and (not server or resource["server"] == server)]
         if not matches and (not server or server == "wangp") and (section_record := indexed_section_record(uri)) is not None:
             matches = [section_record]
@@ -110,13 +108,14 @@ async def query_resources(pages, resources, read_resource, arguments, *, servers
                 for content in contents:
                     if "text" not in content:
                         raise ValueError("Markdown resource search is only available for text resources.")
+                    text = _select_markdown_sections(content["text"], section)[0] if section else content["text"]  # a section narrows the search
                     if query == "*":
-                        records.extend(item["section"] for item in _extract_markdown_sections(content["text"]))
+                        records.extend(item["section"] for item in _extract_markdown_sections(text))
                     else:
-                        records.extend(_search_markdown_sections(content["text"], query, title=matches[0]["title"] or matches[0]["name"]))
+                        records.extend(_search_markdown_sections(text, query, title=matches[0]["title"] or matches[0]["name"]))
                 if query != "*":
                     records.sort(key=lambda item: (-int(item["score"]), len(str(item["section"]))))
-                metadata["query"] = query
+                metadata.update(query=query, **({"section": section} if section else {}))
             else:
                 selected, matched_sections = [], []
                 for content in contents:

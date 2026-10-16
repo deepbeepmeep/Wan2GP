@@ -39,6 +39,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchaudio
 from tqdm import tqdm
+from mmgp import runtime
 
 from transformers import (
     PretrainedConfig,
@@ -558,7 +559,7 @@ class OmniVoice(PreTrainedModel):
         clip_size = int(ref_wav.shape[-1] % chunk_size)
         ref_wav = ref_wav[:, :-clip_size] if clip_size > 0 else ref_wav
         # numpy â†’ torch at tokenizer boundary
-        tokenizer_device = _module_execution_device(self.audio_tokenizer)
+        tokenizer_device = runtime.execution_device(self.audio_tokenizer)
         tokenizer_dtype = _module_floating_dtype(self.audio_tokenizer)
         ref_wav_tensor = torch.from_numpy(ref_wav).to(device=tokenizer_device, dtype=tokenizer_dtype)
         ref_audio_tokens = self.audio_tokenizer.encode(
@@ -591,7 +592,7 @@ class OmniVoice(PreTrainedModel):
         Returns:
             Decoded and post-processed audio array of shape (T,).
         """
-        tokenizer_device = _module_execution_device(self.audio_tokenizer)
+        tokenizer_device = runtime.execution_device(self.audio_tokenizer)
         if isinstance(tokens, list):
             chunk_audios = [
                 self.audio_tokenizer.decode(t.to(tokenizer_device).unsqueeze(0))
@@ -958,7 +959,7 @@ class OmniVoice(PreTrainedModel):
             denoise: Whether to include the <|denoise|> token.
         """
 
-        device = _module_execution_device(self)
+        device = runtime.execution_device(self)
 
         # Build style tokens: <|denoise|> + <|lang_start|>...<|lang_end|>
         #                      + <|instruct_start|>...<|instruct_end|>
@@ -1031,7 +1032,7 @@ class OmniVoice(PreTrainedModel):
         """
 
         B = task.batch_size
-        device = _module_execution_device(self)
+        device = runtime.execution_device(self)
 
         for i in range(B):
             logger.debug(
@@ -1173,19 +1174,6 @@ class OmniVoice(PreTrainedModel):
 # ---------------------------------------------------------------------------
 # Standalone helpers
 # ---------------------------------------------------------------------------
-
-
-def _module_execution_device(module: nn.Module) -> torch.device:
-    forced = getattr(module, "_force_device", None)
-    if forced is not None:
-        return torch.device(forced)
-    if torch.cuda.is_available():
-        mmgp_attrs = ("_mm_id", "_mm_model_id")
-        module_is_hooked = any(hasattr(module, attr) for attr in mmgp_attrs)
-        child_is_hooked = any(any(hasattr(child, attr) for attr in mmgp_attrs) for child in module.modules())
-        if module_is_hooked or child_is_hooked:
-            return torch.device("cuda")
-    return module.device
 
 
 def _module_floating_dtype(module: nn.Module) -> torch.dtype:

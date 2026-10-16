@@ -5,10 +5,11 @@ import math
 from functools import lru_cache
 
 from torch.utils.checkpoint import checkpoint
+from shared.kernels import ops
+
 def modulate(x, shift, scale=None):
-    if shift is None:
-        return x * (1 + scale)
-    return x * (1 + scale) + shift
+    x_list, x = [x], None
+    return ops.scale_shift(x_list, scale, shift, in_place=False)
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-5):
@@ -75,7 +76,7 @@ class ResBlock(nn.Module):
 
     def forward(self, x, y):
         shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(y).chunk(3, dim=-1)
-        h = modulate(self.in_ln(x), shift_mlp, scale_mlp)
+        h = ops.norm_scale_shift([x], self.in_ln, scale_mlp, shift_mlp, in_place=False)
         h = self.mlp(h)
         return x + gate_mlp * h
 

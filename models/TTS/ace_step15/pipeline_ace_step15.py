@@ -346,6 +346,8 @@ class ACEStep15Pipeline:
             writable_tensors=False,
             ignore_unused_weights=True,
         )
+        from shared.kernels.int8_backend import require_int8_residual
+        require_int8_residual(self.lm_model, "ACE-Step LM Activation Outliers")
         if unlimited_budget: self.lm_model._budget = 0
         self.lm_model.eval()
 

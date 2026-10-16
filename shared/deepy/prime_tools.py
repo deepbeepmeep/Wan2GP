@@ -534,17 +534,16 @@ class DeepyPrimeTools:
             "Deepy Settings / General Properties determine whether dimensions, frame count or audio duration, and seed come from templates or from standing defaults.",
             f"Use properties defined in template settings files: {bool(settings['use_template_properties'])}.",
         ]
-        if settings["use_template_properties"]:
-            lines.append("When using a Deepy template, retain its width, height, frame count, audio duration, and seed unless the user asks for an override.")
+        if settings["use_template_properties"]:  # named as settings: "width" and "height" are not setting names
+            lines.append("When using a Deepy template, retain its resolution, video_length, duration_seconds and seed unless the user asks for an override.")
         else:
             lines.extend([
-                f"Default width: {int(settings['width'])}.",
-                f"Default height: {int(settings['height'])}.",
-                f"Default video frame count: {int(settings['num_frames'])}.",
-                f"Default audio duration: {int(settings['audio_duration'])} seconds.",
+                f"Default resolution: \"{int(settings['width'])}x{int(settings['height'])}\".",
+                f"Default video_length: {int(settings['num_frames'])} frames.",
+                f"Default audio duration_seconds: {int(settings['audio_duration'])}.",
                 f"Default seed: {int(settings['seed'])}.",
             ])
-            lines.append("Override compatible template/model defaults with the width, height, frame count, audio duration, and seed above when the user does not specify them.")
+            lines.append("Override compatible template/model defaults with the resolution, video_length, duration_seconds and seed above when the user does not specify them.")
         lines.append("The generate tool fills omitted dimensions, duration, and seed from Deepy's standing defaults before model factory defaults; pass the template values explicitly to preserve them.")
         return "\n".join(lines)
 
@@ -600,11 +599,22 @@ class DeepyPrimeTools:
         metadata = self._api_session.get_model_metadata(model_type) or {}
         return str(metadata.get("name", "") or model_type.replace("_", " ").replace("-", " ").title()).strip(), metadata
 
+    def _template_label_settings(self, template: Any) -> dict[str, Any]:
+        from shared.mcp.server import _deepy_template_settings
+
+        task, _, name = str(template).partition("/")
+        try:
+            return _deepy_template_settings(self._api_session, task, name.strip() or "default")["settings"]
+        except (KeyError, ValueError):  # an unknown task or template: the call itself reports it, the label stays generic
+            return {}
+
     def _generation_label_context(self, source: Any) -> tuple[str, str]:
         tasks = self._generation_settings(source)
         model_names = []
         media_kinds = []
         for settings in tasks:
+            if settings.get("template") and not settings.get("model_type"):  # a template reference: name the model the template runs
+                settings = {**self._template_label_settings(settings["template"]), **settings}
             model_name, metadata = self._model_label_metadata(settings.get("model_type", ""))
             if model_name and model_name not in model_names:
                 model_names.append(model_name)
@@ -684,7 +694,7 @@ class DeepyPrimeTools:
             settings = arguments.get("settings")
             if settings is None and isinstance(arguments.get("arguments"), dict):
                 settings = arguments["arguments"].get("source")
-            if settings is None and arguments.get("model_type"):
+            if settings is None and (arguments.get("model_type") or arguments.get("template")):
                 settings = arguments  # members already streamed from an incomplete settings object
             if settings is None:
                 return self.get_tool_display_name(tool_name)
@@ -770,7 +780,7 @@ class DeepyPrimeTools:
         toolbox = "action" in properties and "arguments" in properties
         unknown = set(arguments) - set(properties)
         if not PRIME_ASYNC_ENABLED and tool_name in {"wangp_generate", "wangp_postprocess"}:
-            unknown -= {"wait", "timeout_s"}
+            unknown -= {"wait", "timeout_s", "event_limit"}
         unknown = sorted(unknown)
         if unknown and (toolbox or parameters.get("additionalProperties") is False):
             hint = ' Put action at the top level and action parameters inside arguments: {"action":"<action>","arguments":{...}}.' if toolbox else " Pass the declared parameters directly, without action or arguments." if {"action", "arguments"} & set(unknown) else " Use only the declared parameters."
@@ -845,7 +855,7 @@ class DeepyPrimeTools:
                 arguments["arguments"] = dict(arguments["arguments"])
             for values in (arguments, arguments.get("arguments")):
                 if isinstance(values, dict):
-                    for name in ("wait", "timeout_s"):
+                    for name in ("wait", "timeout_s", "event_limit"):
                         if name in values:
                             values.pop(name)
                             if name not in ignored:

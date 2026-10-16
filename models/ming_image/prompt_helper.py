@@ -66,43 +66,13 @@ def render_prompt_helper(model_type, model_def, prompt_id, popup_id, prompt_elem
 
 
 def get_prompt_helper_css():
-    return """
-.ming-prompt-helper-popup .wangp-model-info-content { padding: 12px; }
-.ming-helper-content { display: flex; flex-direction: column; gap: 10px; min-height: 0; height: 100%; overflow: auto; box-sizing: border-box; }
-.ming-helper-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.ming-helper-toolbar button { border: 1px solid var(--border-color-primary, #9cabb5); border-radius: 6px; padding: 6px 10px; background: var(--button-secondary-background-fill, #f5f8fa); color: var(--body-text-color, #173b50); cursor: pointer; }
-.ming-helper-toolbar button:disabled { opacity: .45; cursor: default; }
-.ming-helper-toolbar button[data-ming-action="save"] { margin-left: auto; background: var(--button-primary-background-fill, #176b92); color: var(--button-primary-text-color, white); }
-.ming-helper-resolution { color: var(--body-text-color-subdued, #607785); font-size: .86rem; }
-.ming-helper-raw { display: flex; flex-direction: column; gap: 7px; min-height: 0; flex: 1; }
-.ming-helper-raw[hidden], .ming-helper-grid[hidden] { display: none; }
-.ming-helper-raw label { font-size: .9rem; }
-.ming-helper-raw textarea { flex: 1; min-height: 180px; width: 100%; box-sizing: border-box; resize: vertical; padding: 8px; border: 1px solid var(--border-color-primary, #b6c5ce); border-radius: 5px; background: var(--input-background-fill, white); color: var(--body-text-color, #173b50); font: .85rem/1.4 monospace; }
-.ming-helper-raw button { align-self: flex-start; border: 1px solid var(--border-color-primary, #9cabb5); border-radius: 6px; padding: 6px 10px; background: var(--button-primary-background-fill, #176b92); color: var(--button-primary-text-color, white); cursor: pointer; }
-.ming-helper-grid { display: grid; grid-template-columns: minmax(290px, 1.2fr) minmax(270px, 1fr); gap: 12px; min-height: 0; flex: 1; }
-.ming-helper-visual, .ming-helper-fields { min-height: 0; overflow: auto; }
-.ming-helper-visual { display: flex; flex-direction: column; gap: 8px; }
-.ming-helper-canvas-wrap { display: flex; align-items: center; justify-content: center; min-height: 270px; height: min(52vh, 580px); overflow: hidden; border: 1px solid var(--border-color-primary, #b6c5ce); border-radius: 7px; background: #e9eef1; }
-.ming-helper-canvas-wrap canvas { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; touch-action: none; cursor: crosshair; background: #fff; }
-.ming-helper-hint { font-size: .82rem; color: var(--body-text-color-subdued, #607785); }
-.ming-helper-list { display: flex; flex-direction: column; gap: 4px; overflow: auto; min-height: 60px; }
-.ming-helper-list button { display: block; width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 7px 9px; border: 1px solid var(--border-color-primary, #b6c5ce); border-radius: 5px; background: var(--background-fill-secondary, #f3f7f9); color: var(--body-text-color, #173b50); cursor: pointer; }
-.ming-helper-list button[aria-selected="true"] { border-color: var(--button-primary-background-fill, #176b92); background: rgba(23, 107, 146, .13); }
-.ming-helper-fields { display: flex; flex-direction: column; gap: 7px; }
-.ming-helper-fields h3 { margin: 8px 0 0; font-size: .94rem; }
-.ming-helper-fields label { display: flex; flex-direction: column; gap: 3px; font-size: .86rem; }
-.ming-helper-fields input, .ming-helper-fields textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--border-color-primary, #b6c5ce); border-radius: 5px; padding: 6px 8px; background: var(--input-background-fill, white); color: var(--body-text-color, #173b50); font: inherit; }
-.ming-helper-fields textarea { min-height: 56px; resize: vertical; }
-.ming-helper-fields textarea[data-ming-field="description"] { min-height: 105px; }
-.ming-helper-fields input[readonly] { opacity: .7; }
-.ming-helper-status { min-height: 1.3em; font-size: .85rem; }
-.ming-helper-status.error { color: var(--error-text-color, #a41e2b); }
-@media (max-width: 800px) { .ming-helper-grid { grid-template-columns: 1fr; } .ming-helper-canvas-wrap { height: 42vh; } }
-"""
+    from shared.gradio.prompt_layout import get_css
+    return get_css('ming')
 
 
 def get_prompt_helper_javascript():
-    return r"""
+    from shared.gradio.prompt_layout import get_javascript
+    return get_javascript() + r"""
 (() => {
     const helper = window.wangpMingPromptHelper = window.wangpMingPromptHelper || {};
     if (helper.bound) return;
@@ -114,33 +84,7 @@ def get_prompt_helper_javascript():
     const COMMENT_LINE = /^\s*\\?#/;
     // Center and size are each rounded to 0.001, so an edge can drift by 0.00075.
     const COORD_EPS = 0.001;
-    helper.stripCommentLines = (value) => String(value || "")
-        .split(/\r?\n/).filter((line) => !COMMENT_LINE.test(line)).join("\n");
-    helper.collectComments = (value) => {
-        const comments = [];
-        let contentLines = 0;
-        for (const line of String(value || "").split(/\r?\n/)) {
-            if (COMMENT_LINE.test(line)) comments.push({ line, before: contentLines });
-            else if (line.trim()) contentLines++;
-        }
-        return { comments, contentLines };
-    };
-    helper.restoreComments = (json, layout) => {
-        if (!layout?.comments?.length) return json;
-        const lines = json.split("\n");
-        const buckets = Array.from({ length: lines.length + 1 }, () => []);
-        for (const comment of layout.comments) {
-            const at = comment.before > 0 && comment.before >= layout.contentLines
-                ? lines.length : clamp(comment.before, 0, lines.length);
-            buckets[at].push(comment.line.replace(/^(\s*)\\(?=#)/, "$1"));
-        }
-        const output = [];
-        for (let index = 0; index <= lines.length; index++) {
-            output.push(...buckets[index]);
-            if (index < lines.length) output.push(lines[index]);
-        }
-        return output.join("\n");
-    };
+    Object.assign(helper, window.wangpPromptLayout);
 
     helper.parseCoordinates = (value) => {
         const match = String(value || "").match(COORDS);
@@ -233,34 +177,7 @@ def get_prompt_helper_javascript():
         throw originalError;
     };
     function gcd(a, b) { while (b) [a, b] = [b, a % b]; return a || 1; }
-    function parseResolution(value) {
-        const match = String(value || "").match(/(\d{2,5})\s*[x×]\s*(\d{2,5})/i);
-        return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
-    }
-    function readResolution(targetId) {
-        const target = document.getElementById(targetId || "");
-        const component = (window.gradio_config?.components || []).find((item) => item.props?.elem_id === targetId);
-        const choices = component?.props?.choices || [];
-        const candidates = [];
-        if (target) {
-            target.querySelectorAll("input, select, textarea, button").forEach((node) => candidates.push(node.value || node.textContent || ""));
-            candidates.push(target.getAttribute("data-value") || "", target.textContent || "");
-        }
-        candidates.push(component?.props?.value || "");
-        for (const candidate of candidates) {
-            const direct = parseResolution(candidate);
-            if (direct) return direct;
-            for (const choice of choices) {
-                const label = Array.isArray(choice) ? choice[0] : choice;
-                const value = Array.isArray(choice) ? choice[1] : choice;
-                if (String(candidate).trim() === String(label).trim() || String(candidate).trim() === String(value).trim()) {
-                    const found = parseResolution(value) || parseResolution(label);
-                    if (found) return found;
-                }
-            }
-        }
-        return { width: 2048, height: 2048 };
-    }
+    const readResolution = helper.readResolution;
     function aspectText(resolution) {
         const divisor = gcd(resolution.width, resolution.height);
         return `${resolution.width / divisor}:${resolution.height / divisor}, ${resolution.width} × ${resolution.height} px`;

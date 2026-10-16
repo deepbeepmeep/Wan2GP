@@ -122,7 +122,7 @@ class family_handler:
             "text_prompt_enhancer_max_tokens1": 1536,
             "image_prompt_enhancer_max_tokens1": 1536,
             "profiles_dir": [_PROFILE_FOLDER],
-            "resolutions_categories": ["<=4096sq"],
+            "resolution_budget": "4096x4096",
             "skip_prompt_template": True,
             "vae_block_size": 32,
         }

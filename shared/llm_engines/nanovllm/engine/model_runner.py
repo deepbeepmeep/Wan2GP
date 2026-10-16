@@ -148,6 +148,11 @@ class ModelRunner:
                 self.loop()
 
     def ensure_runtime_ready(self):
+        if not self.enforce_eager:
+            from mmgp import runtime
+            if runtime.requires_layer_offload(self.model):
+                self.enforce_eager = True
+                self._note_guard("layer_offload", "Whole-model CUDA graphs disabled while MMGP can move layers; decoder kernels are unchanged")
         if self._runtime_ready:
             # In eager mode MMGP may move parameter storage between CPU/GPU after prefill.
             # That changes data_ptr() without invalidating the live KV cache or sequence state.

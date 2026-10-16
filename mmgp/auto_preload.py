@@ -4,18 +4,16 @@ each such model keeps in VRAM as many of its blocks as the VRAM left by its curr
 MMGP Optimized VRAM Allocator (mmgp.allocator)."""
 import dataclasses
 import threading
-import weakref
 
 import torch
 
-from . import allocator
+from . import allocator, cuda_graphs, memory_pressure
 
 ONE_MB = 1 << 20
 MARGIN = 512 * ONE_MB  # left free beyond the measured peak: the allocator's headroom (256 MB) and its fragmentation
 MARGIN_SHARE = 0.05  # and this share of the peak, for variations between the cycles of a workload
 GROW_MIN = 512 * ONE_MB  # a plan grows by at least this much (or 2 blocks), not to change for small variations of the free VRAM
 _process_measures = {}  # with autoPreload=True: (model class, model id, structure, workload) -> peak of the activations measured
-_live = weakref.WeakSet()  # the instances that the allocator's callback serves
 
 
 def _van_der_corput(n):
@@ -82,13 +80,6 @@ def workload(args, kwargs):
     return largest
 
 
-def _on_pressure(size, device):
-    freed = 0
-    for instance in list(_live):
-        freed += instance.on_pressure(size - freed)
-    return freed
-
-
 class _Plan:
     """The blocks of a model and what it keeps in VRAM."""
     def __init__(self, model_id, model_class, towers, base):
@@ -128,16 +119,12 @@ class AutoPreload:
                 plan.floor = len(manager.preloaded_blocks_per_model.get(model_id, {}))
                 self._set(plan, plan.ranking[:plan.floor])
         if self.plans:
-            if not _live:
-                allocator.set_pressure_callback(_on_pressure)
-            _live.add(self)
+            memory_pressure.register(self)
             if self.verbose >= 1:
                 print(f"Automatic VRAM preload of {', '.join(repr(model_id) for model_id in self.plans)}: the blocks kept in VRAM follow the VRAM left by each workload")
 
     def close(self):
-        _live.discard(self)
-        if not _live:
-            allocator.set_pressure_callback(None)
+        memory_pressure.unregister(self)
 
     def after_pinning(self):
         """The RAM is pinned: the blocks that are not pinned are the first to keep in VRAM. Nothing is in VRAM yet."""
@@ -162,7 +149,8 @@ class AutoPreload:
     def _weights(self, plan, preloaded):
         """VRAM of the model's weights with these blocks preloaded: its base, the blocks and the slots of the blocks streamed."""
         streamed = len(preloaded) < len(plan.sizes)
-        return plan.base + sum(plan.sizes[name] for name in preloaded) + ((self.window + 1) * plan.largest if streamed else 0)
+        experts = sum(residency.nbytes for residency in self.manager.expert_residency.values())
+        return plan.base + sum(plan.sizes[name] for name in preloaded) + ((self.window + 1) * plan.largest if streamed else 0) + experts
 
     def _fit(self, plan, peak):
         """The longest prefix of the ranking that fits beside a peak of activations, with the base and the slots of the streamed blocks."""
@@ -209,9 +197,10 @@ class AutoPreload:
         return True
 
     def on_block(self, model_id, block_name, args, kwargs):
-        """Called before each module of a block of the model runs: entering the first block starts a cycle."""
+        """Called before each module of a block of the model runs: entering the first block starts a cycle. Not while a graph stage
+        is prepared or captured: the weights stay where the stage found them (a stage may span several blocks)."""
         plan = self.plans.get(model_id)
-        if plan is None:
+        if plan is None or cuda_graphs.recording():
             return
         last, plan.last = plan.last, block_name
         if block_name != plan.first or last == block_name:
@@ -225,19 +214,25 @@ class AutoPreload:
         peak = self.measures.get((*plan.structure, work))
         wanted = plan.ranking[:plan.floor] if peak is None else self._fit(plan, peak)
         current = self.manager.preloaded_blocks_per_model[model_id]
+        experts = self.manager.expert_residency.get(model_id)
+        if len(current) < len(plan.sizes) or len(wanted) < len(plan.sizes):
+            for residency in self.manager.expert_residency.values():
+                residency.unload(reset=False)
         missing = [name for name in wanted if name not in current]
         dropped = [name for name in current if name not in wanted]
         if dropped or plan.relink:
             self._drop(plan, dropped)
         # small growths are skipped (variations of the free VRAM), not that of blocks not pinned (left out when the pressure callback stopped a
         # growth): each one streamed costs a copy through RAM at every step
-        if plan.pending or sum(plan.sizes[name] for name in missing) >= max(GROW_MIN, 2 * plan.largest) or not plan.slow.isdisjoint(missing):
+        if plan.pending or len(wanted) == len(plan.sizes) or sum(plan.sizes[name] for name in missing) >= max(GROW_MIN, 2 * plan.largest) or not plan.slow.isdisjoint(missing):
             plan.pending = set(missing)
         if self.verbose >= 1 and (dropped or plan.pending):
             measured = "the budget's preload until measured" if peak is None else f"{peak / ONE_MB:0.0f} MB of activations measured"
             print(f"Automatic VRAM preload of '{model_id}': {len(current) + len(plan.pending)} of its {len(plan.sizes)} blocks to keep in VRAM ({measured})")
         if len(current) + len(plan.pending) == len(plan.sizes):
             self._free_slots(plan)
+        if experts is not None:
+            experts.prepare()
         plan.workload, plan.grew, plan.measuring = work, False, peak is None and plan.floor < len(plan.sizes)
         plan.min_weights = self._weights(plan, current)
         plan.recoveries = allocator.stats()["recoveries"] if current or plan.pending else None
@@ -252,13 +247,21 @@ class AutoPreload:
                 plan.last, plan.pending = None, set()
                 self._set(plan, plan.ranking[:plan.floor])
 
+    def on_expert_change(self):
+        # The allocator peak is shared by co-tenants. A cycle spanning a change
+        # in expert residency cannot measure activation memory independently.
+        for model_id, plan in self.plans.items():
+            if plan.workload is not None:
+                plan.grew = True
+                plan.min_weights = self._weights(plan, self.manager.preloaded_blocks_per_model[model_id])
+
     def on_pressure(self, need):
         """The allocator found the VRAM short (without its lock): the plans stop growing, and the preloaded blocks of the models loaded leave
         the VRAM, the lowest ranked first, except the block running. They are streamed again when they run (chained again at the next
         cycle), and the measured peak of the workload grows by what was released: its next plans leave that memory free instead of growing
         back into the same shortage at every step."""
         m, freed = self.manager, 0
-        if self.dropping or need <= 0 or threading.get_ident() != self.thread:
+        if self.dropping or need <= 0 or threading.get_ident() != self.thread or cuda_graphs.recording():
             return 0
         need += MARGIN
         for model_id in reversed(m.active_models_ids):

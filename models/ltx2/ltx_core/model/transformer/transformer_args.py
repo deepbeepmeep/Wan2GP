@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 import torch
 import torch.nn.functional as F
+from mmgp import cuda_graphs
 
 from .adaln import AdaLayerNormSingle
 from .modality import Modality, PreparedConditioning
@@ -28,7 +29,8 @@ def apply_keyframes_absolute_embedding(hidden_states: torch.Tensor, keyframes_ma
     if embedding is None:
         return hidden_states
     mask = (keyframes_mask > 0).to(device=hidden_states.device, dtype=hidden_states.dtype)
-    return hidden_states + mask * embedding.to(device=hidden_states.device, dtype=hidden_states.dtype)
+    # in place, without two temporaries of the hidden state's size: the mask is 0 or 1, so the values are those of hidden + mask * embedding
+    return hidden_states.addcmul_(mask, embedding.to(device=hidden_states.device, dtype=hidden_states.dtype))
 
 
 @dataclass(frozen=True, eq=False)
@@ -458,6 +460,9 @@ class TransformerArgsPreprocessor:
         projected_context = self.caption_projection(modality.context) if self.caption_projection is not None else None
         return PreparedConditioning(context=modality.context, projected_context=projected_context)
 
+    def _hidden_states(self, latent: torch.Tensor, keyframes_mask: torch.Tensor | None) -> torch.Tensor:
+        return apply_keyframes_absolute_embedding(self.patchify_proj(latent), keyframes_mask, self.keyframes_embedding_provider)
+
     def prepare(
         self,
         modality: Modality,
@@ -471,8 +476,8 @@ class TransformerArgsPreprocessor:
         ):
             self._gguf_latent_logged = True
             print(f"[GGUF][patchify_proj] latent={latent_dtype} weight={getattr(getattr(self.patchify_proj, 'weight', None), 'dtype', None)}")
-        x = self.patchify_proj(latent)
-        x = apply_keyframes_absolute_embedding(x, modality.keyframes_mask, self.keyframes_embedding_provider)
+        # with CUDA graphs, built in the graph pool's idle memory: the hidden state then moves into the blocks' static buffer
+        x = cuda_graphs.pooled(self.patchify_proj, self._hidden_states, latent, modality.keyframes_mask)
         base_timestep, prompt_base_timestep = self._get_runtime_timestep_bases(modality)
         prepared = self._get_prepared_conditioning(modality.context)
         timestep, embedded_timestep = self._prepare_timestep_from_base(

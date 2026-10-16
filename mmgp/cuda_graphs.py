@@ -11,11 +11,15 @@ and go with a block, e.g. its LoRA copies) and outputs go through static buffers
 place are copied back when needed, and an output that is an argument is that argument. A block keeps its `MAX_KEYS` most recently used graphs (a new
 resolution replaces them); all the graphs go with the model or `invalidate()`. With MMGP's VMM allocator, eager preparation and capture
 share a pool. Suitable live arguments and first-call outputs supply the static storage; retained caller outputs are protected before
-another call can overwrite them. Graph warmup is scoped to its manager's pool. A consumed single-tensor list can transfer its input's
-execution lifetime: after its last execution view dies, later temporaries may use its physical pages while every graph address stays
-fixed. Caller references, storage aliases and recorded stream consumers prevent this transfer. Large outputs can reuse their warmup
-storage at the corresponding captured allocation; a changed allocation trace is recaptured without that output plan. These plans add
-no replay-time mapping or synchronization, and do not participate in ordinary, non-graph allocation.
+another call can overwrite them. A large argument that only its caller holds (a tower's hidden state, new at each step) moves into its
+static buffer instead of being copied there: the caller's tensor takes the buffer's storage and frees its own, so the graphs keep no
+second copy of it and the next blocks copy nothing; while the caller holds it, other calls use another buffer. Eager stages beside the
+blocks (input preparation, output head) can run on the pool's idle memory with `pooled()`. Graph warmup is scoped to its manager's pool.
+A consumed single-tensor list can transfer its input's execution lifetime: after its last execution view dies, later temporaries may use
+its physical pages while every graph address stays fixed. Caller references, storage aliases and recorded stream consumers prevent this
+transfer. Large outputs can reuse their warmup storage at the corresponding captured allocation; a changed allocation trace is recaptured
+without that output plan. These plans add no replay-time mapping or synchronization, and do not participate in ordinary, non-graph
+allocation.
 
 Contract of a block call in a scope: the block reads only its weights, its tensor arguments (in lists, tuples, dicts and dataclasses)
 and tensors it creates; its effects are its outputs and in-place updates of its tensor arguments (Python side effects are not replayed,
@@ -32,8 +36,10 @@ import weakref
 import torch
 from torch.utils import _pytree as pytree
 from torch.utils._python_dispatch import TorchDispatchMode
+from . import runtime
 
 MAX_KEYS = 8  # graphs kept per block, the least recently used dropped first: weight locations, CFG branches of other lengths, resolutions
+MOVE_BYTES = 32 << 20  # arguments from this size move into their static buffer when only their caller holds them
 _SCALARS = (bool, int, float, str, type(None), torch.dtype, torch.device)
 _depth = 0
 _recording = 0
@@ -49,6 +55,7 @@ _registered = set()
 _managers = []
 _capturing = False  # a block's capture is running (its forward is recorded, nothing runs on the GPU)
 _autotune_guarded = False
+_static_storages = weakref.WeakValueDictionary()  # storage address -> a static buffer of some graph manager (`_mm_graphs`)
 
 
 def _guard_triton_autotune():
@@ -93,6 +100,58 @@ def recording():
     """True while a block of a graphed model runs to be captured (its first, eager call and its capture): a kernel launched outside
     PyTorch's current stream (e.g. on the legacy default stream) would be missing from its graph, so code with such kernels uses others."""
     return _recording > 0
+
+
+def _graphs(module):
+    owner = runtime._owner(module)
+    if owner is None:
+        return None
+    manager, model_id = owner
+    return manager.cuda_graphs.get(model_id)
+
+
+def is_enabled(module):
+    """Whether a managed module can use graphs in the current scope.
+
+    Includes mode selection, registered gates and weight-residency readiness.
+    Use only to skip preparation specific to a graph stage; run() also enforces
+    these conditions. Unmanaged/released modules return False.
+    """
+    graphs = _graphs(module) if _depth else None
+    return graphs is not None and _blocked is None and graphs.disabled is None and graphs.ready()
+
+
+def run(module, *args, owner=None, method="forward", enabled=True, **kwargs):
+    """Execute an extra stage using its owner's existing graph cache and lifetime.
+
+    Call inside scope(). An unregistered stage may supply a managed owner whose
+    weights it uses; its parameters need not be registered a second time. The
+    selected method must satisfy the same graph contract as a tower block.
+    Outside a scope, with enabled=False, or without an active graph manager,
+    execute the method normally. Gates/readiness and cache invalidation/release
+    remain MMGP-owned. PyTorch compilation does not enable these CUDA graphs.
+    A stage may span several blocks of its owner (e.g. a whole decoding step) only while
+    runtime.weights_resident(owner): graphed blocks it calls are then captured inline.
+    """
+    forward = getattr(module, method)
+    graphs = _graphs(module if owner is None else owner) if enabled and _depth else None
+    return forward(*args, **kwargs) if graphs is None else graphs.call(module, forward, args, kwargs)
+
+
+def pooled(owner, fn, *args, **kwargs):
+    """Run an eager stage beside the graphed blocks of `owner`'s model (its input preparation, its output head) on the idle memory of the
+    model's graph pool, where its temporaries would otherwise add to the pool's memory.
+
+    Call inside scope(); fn runs normally while the model's graphs are off. The stage keeps nothing but its
+    outputs (no cache filled, no tensor stored elsewhere: checked). Its tensor outputs leave the pool before any graph replays: a
+    large one (a hidden state) moves into the free static buffer of its signature, which the next block then reads without a copy,
+    the others move to ordinary memory.
+    """
+    from . import allocator
+    graphs = _graphs(owner) if _depth and not _recording and allocator.active == "vmm" else None
+    if graphs is None or _blocked is not None or graphs.disabled is not None or not graphs.ready():
+        return fn(*args, **kwargs)
+    return graphs.pooled(fn, args, kwargs)
 
 
 def register_key(provider):
@@ -170,6 +229,26 @@ def _register_dataclass(cls):
     _registered.add(cls)
 
 
+class _OverlappingArgument(Exception):
+    def __init__(self, index):
+        self.index = index
+
+
+def _argument_path(tree, target, path):
+    """Where `target` sits in a block call's arguments (lists, tuples, dicts, dataclasses), for error messages."""
+    if tree is target:
+        return path
+    if dataclasses.is_dataclass(tree) and not isinstance(tree, type):
+        items = [(f".{field.name}", getattr(tree, field.name)) for field in dataclasses.fields(tree)]
+    elif isinstance(tree, dict):
+        items = [(f"[{key!r}]", value) for key, value in tree.items()]
+    elif isinstance(tree, (list, tuple)):
+        items = [(f"[{index}]", value) for index, value in enumerate(tree)]
+    else:
+        return None
+    return next((found for suffix, value in items if (found := _argument_path(value, target, path + suffix)) is not None), None)
+
+
 def _flatten(tree):
     while True:
         leaves, spec = pytree.tree_flatten(tree)
@@ -208,11 +287,22 @@ def _unshared(tensor):
     return torch._C._storage_Use_Count(storage._cdata) == 2 and sys.getrefcount(storage) == 3
 
 
-def _adoptable(tensor):
+def _adoptable(tensor, owner):
+    # Another manager's static buffer (an output it returned) is never adopted: sharing its storage would keep that output retained,
+    # and its graphs would be evicted and captured again at each of their calls.
     from . import allocator
+    static = _static_storages.get(_storage(tensor)) if tensor.is_cuda else None
     return (type(tensor) is torch.Tensor and tensor.is_cuda and not tensor.requires_grad and tensor.storage_offset() == 0 and
             torch._debug_has_internal_overlap(tensor) == 0 and tensor.untyped_storage().nbytes() == tensor.numel() * tensor.element_size() and
-            allocator.owns_tensor(tensor))
+            allocator.owns_tensor(tensor) and (static is None or static._mm_graphs() is owner))
+
+
+def _movable(leaf, static):
+    # The caller's tensor alone holds its storage (no view, no other holder), and the static buffer is an allocation of the VMM allocator,
+    # which orders its reuse after the streams that used it.
+    from . import allocator
+    return (allocator.active == "vmm" and type(leaf) is torch.Tensor and not leaf.requires_grad and leaf.numel() * leaf.element_size() >= MOVE_BYTES
+            and (torch.is_inference_mode_enabled() or not leaf.is_inference()) and _unshared(leaf) and allocator.owns_tensor(static))
 
 
 def _buffer_alias(tensor):
@@ -318,7 +408,7 @@ class BlockGraphs:
         self.name, self.weights_key, self.weight_tensors, self.extra_inputs, self.ready = name, weights_key, weight_tensors, extra_inputs, ready
         self.disabled = None  # the reason why this model's blocks run eagerly (e.g. weights whose kernels cannot be captured), or None
         self.reported = False
-        self.checked = set()  # (block, signature) whose capture checked the reads
+        self.checked = set()  # (block, method, signature) whose capture checked the reads
         self.clear()
         _managers.append(self)
 
@@ -339,7 +429,8 @@ class BlockGraphs:
 
     def call(self, module, forward, args, kwargs):
         global _recording
-        if _blocked is not None or self.disabled is not None or not self.ready():
+        # A block called by a stage being prepared or captured (a stage spanning several blocks) runs inside that stage's graph.
+        if _recording or _blocked is not None or self.disabled is not None or not self.ready():
             return forward(*args, **kwargs)
         leaves, spec = _flatten((args, kwargs))
         signature = _signature(leaves)
@@ -347,8 +438,16 @@ class BlockGraphs:
         extra_signature = _signature([holder[index] for holder, index in extras])
         positions = [index for index, leaf in enumerate(leaves) if isinstance(leaf, torch.Tensor)]
         input_signatures = [signature[index] for index in positions] + list(extra_signature)
-        static_key, buffers = self._buffers(input_signatures, [leaves[index] for index in positions] + [None] * len(extras))
-        key = (id(module), spec, signature, extra_signature, self.weights_key(module), tuple(provider() for provider in _key_providers), tuple(static_key))
+        try:
+            static_key, buffers = self._buffers(input_signatures, [leaves[index] for index in positions] + [None] * len(extras), arguments=True)
+        except _OverlappingArgument as overlap:
+            leaf = leaves[positions[overlap.index]]
+            name = _argument_path(args, leaf, "args") or _argument_path(kwargs, leaf, "kwargs")
+            raise ValueError(f"CUDA graph block call of '{self.name}' ({type(module).__name__}): argument {name} is a view whose elements share memory "
+                             f"(shape {tuple(leaf.shape)}, stride {leaf.stride()}, e.g. from expand), which a graph's static buffer cannot hold. Pass the "
+                             f"unexpanded tensor and expand it inside the block's forward (no cost), or make it contiguous before the call.") from None
+        method = getattr(forward, "__func__", forward)
+        key = (id(module), spec, signature, extra_signature, self.weights_key(module), tuple(provider() for provider in _key_providers), tuple(static_key), method)
         keys = self.keys.setdefault(id(module), {})
         entry = self.entries.get(key, None)
         lifetimes = None
@@ -367,6 +466,9 @@ class BlockGraphs:
                 lifetimes = self._consumable(args, kwargs, leaves, positions, buffers)
             if len(keys) >= MAX_KEYS:
                 self._evict(next(iter(keys)), static_key)
+            for ordinal, index in enumerate(positions):  # before the warmup, which then runs on the moved arguments
+                if not _same_buffer(buffers[ordinal], leaves[index]) and _movable(leaves[index], buffers[ordinal]):
+                    self._move(static_key[ordinal], leaves[index])
             _recording += 1
             try:
                 from . import allocator
@@ -415,6 +517,56 @@ class BlockGraphs:
                 if container is not None:
                     container.clear()
         return result
+
+    def _move(self, key, leaf):
+        # The caller's tensor takes the storage of its static buffer, which then serves no other call while the caller holds it (borrowed).
+        static = self.static[key]
+        static.copy_(leaf)
+        leaf.record_stream(torch.cuda.current_stream())
+        leaf.set_(static.untyped_storage(), static.storage_offset(), static.shape, static.stride())
+        self.borrowed.add(key)
+
+    def _free_static(self, leaf):
+        # the static buffer that a block call would give this tensor (first of its signature), when no caller holds it
+        for key in self.static_by_base.get((_signature((leaf,))[0], 0), ()):
+            if (key not in self.borrowed or _unshared(self.static[key])) and _movable(leaf, self.static[key]):
+                return key
+        return None
+
+    def pooled(self, fn, args, kwargs):
+        from . import allocator
+        if self.pool is None:  # a stage before the first captures: its temporaries give the pool its first memory, which they would keep from it
+            self.pool = torch.cuda.graph_pool_handle()
+        live = allocator.pool_live(self.pool)
+        with allocator.graph_warmup(self.pool):
+            out = fn(*args, **kwargs)
+        holders = {}
+        for leaf in _flatten(out)[0]:
+            if isinstance(leaf, torch.Tensor) and leaf.is_cuda and allocator.in_pool(leaf, self.pool):
+                holders.setdefault(_storage(leaf), {})[id(leaf)] = leaf
+        for tensors in holders.values():
+            tensors = list(tensors.values())
+            leaf = tensors[0]
+            key = self._free_static(leaf) if len(tensors) == 1 else None
+            if key is not None:
+                if key in self.borrowed:
+                    allocator.prepare_reuse(self.static[key])
+                self._move(key, leaf)
+                continue
+            storage = leaf.untyped_storage()
+            if torch._C._storage_Use_Count(storage._cdata) != len(tensors) + 1:
+                raise RuntimeError(f"A pooled stage of '{self.name}' returned a tensor whose graph-pool storage is also held elsewhere (a view kept by the "
+                                   f"stage, a cache): the next graph replay would overwrite it.")
+            copy = torch.UntypedStorage(storage.nbytes(), device=leaf.device)
+            copy.copy_(storage)
+            for tensor in tensors:
+                tensor.set_(copy, tensor.storage_offset(), tensor.shape, tensor.stride())
+            del storage
+        left = allocator.pool_live(self.pool) - live
+        if left:
+            raise RuntimeError(f"A pooled stage of '{self.name}' kept {left} allocation(s) in the graph pool beyond its outputs (a cache filled or a tensor "
+                               f"stored elsewhere), which the next graph replay would overwrite: fill such caches outside the stage.")
+        return out
 
     def _consumable(self, args, kwargs, leaves, positions, buffers):
         from . import allocator
@@ -480,9 +632,10 @@ class BlockGraphs:
         self.static_by_buffer.setdefault((key[0], buffer.data_ptr()), []).append(key)
         self.static_by_base.setdefault(key[:2], []).append(key)
 
-    def _buffers(self, signatures, sources, counts=None):
+    def _buffers(self, signatures, sources, counts=None, arguments=False):
         # static buffers, shared by the graphs (they run one after the other) for each signature and occurrence in a call; not inference
-        # tensors, whose version counters show the in-place updates of the arguments
+        # tensors, whose version counters show the in-place updates of the arguments. An argument whose elements share memory (an expanded
+        # view) cannot be copied into a buffer of its layout: arguments=True reports it (checked only when a buffer is created).
         counts, keys, buffers = {} if counts is None else counts, [], []
         for signature, source in zip(signatures, sources):
             base = (signature, counts.setdefault(signature, 0))
@@ -502,12 +655,16 @@ class BlockGraphs:
             if key is None:
                 key = (*base, 1 + max((k[2] for k in candidates), default=-1))
                 shape, stride, dtype, device = signature
-                if source is not None and _adoptable(source):
+                if arguments and source is not None and torch._debug_has_internal_overlap(source) == 1:
+                    raise _OverlappingArgument(len(keys))
+                if source is not None and _adoptable(source, self):
                     self.static[key] = _buffer_alias(source)
                     self.borrowed.add(key)
                 else:
                     with torch.inference_mode(False):
                         self.static[key] = torch.empty_strided(shape, stride, dtype=dtype, device=device)
+                self.static[key]._mm_graphs = weakref.ref(self)
+                _static_storages[_storage(self.static[key])] = self.static[key]
                 self._index_buffer(key, self.static[key])
                 buffer_id = id(self.static[key])
                 self._tensor_refs[buffer_id] = self._tensor_refs.get(buffer_id, 0) + 1
@@ -529,7 +686,7 @@ class BlockGraphs:
         plan = self._capture_output_plan
         if plan is not None:
             for source, buffer in zip(out_sources, output_buffers):
-                if source is not None and _same_buffer(source, buffer) and _adoptable(source):
+                if source is not None and _same_buffer(source, buffer) and _adoptable(source, self):
                     plan.bind(buffer)
         entry.static_key = static_key + output_keys
         buffers = buffers + output_buffers
@@ -541,7 +698,8 @@ class BlockGraphs:
             static_leaves[index] = static
         args, kwargs = pytree.tree_unflatten(static_leaves, spec)
         versions = [static._version for static in entry.static]
-        if (id(module), signature) in self.checked:
+        checked_key = (id(module), getattr(forward, "__func__", forward), signature)
+        if checked_key in self.checked:
             check = contextlib.nullcontext()
         else:  # costly (each operation goes through Python): once per code path, which other weights capture again
             allowed = {_storage(t) for t in buffers} | {_storage(t) for t in _constants}
@@ -585,10 +743,10 @@ class BlockGraphs:
                     entry.out_leaves = [None if isinstance(leaf, torch.Tensor) else leaf for leaf in out_leaves]
                     del out_leaves
                     leaf = None
-            except Exception as error:
+            except BaseException:
                 with contextlib.suppress(Exception):  # the stream leaves the capture, which the error has invalidated
                     entry.graph.capture_end()
-                raise RuntimeError(f"{failed}: {error}") from error
+                raise
             finally:
                 if plan is not None:
                     plan_valid = plan.finish()
@@ -605,7 +763,7 @@ class BlockGraphs:
             if check.unknown:
                 raise RuntimeError(f"CUDA graph capture of a block of '{self.name}' ({type(module).__name__}): it reads tensors that are neither "
                                    f"its weights nor its arguments, whose addresses may change between replays:\n" + "\n".join(check.unknown))
-            self.checked.add((id(module), signature))
+            self.checked.add(checked_key)
         entry.mutated = [index for index, (static, version) in enumerate(zip(entry.static, versions)) if static._version != version]
         if not self.reported:
             print(f"[MMGP] CUDA graphs of the blocks of '{self.name}' are being captured.")
@@ -617,8 +775,12 @@ class BlockGraphs:
         for key in entry.static_key[len(entry.static) + len(entry.extra_static):]:
             if key in self.borrowed:
                 allocator.prepare_reuse(self.static[key])
-        for index, static in zip(entry.positions, entry.static):
-            if not _same_buffer(static, leaves[index]):
+        for ordinal, (index, static) in enumerate(zip(entry.positions, entry.static)):
+            if _same_buffer(static, leaves[index]):
+                continue
+            if _movable(leaves[index], static):
+                self._move(entry.static_key[ordinal], leaves[index])
+            else:
                 static.copy_(leaves[index])
         if extras:
             torch._foreach_copy_(entry.extra_static, [holder[index] for holder, index in extras])

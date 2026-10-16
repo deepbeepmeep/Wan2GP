@@ -1,0 +1,14 @@
+{
+    "settings_version": 2.73,
+    "model_type": "flux3_klein_base",
+    "type": "Flux 3 Klein Base",
+    "prompt_enhancer": "",
+    "prompt": "",
+    "image_mode": 1,
+    "resolution": "1024x1024",
+    "num_inference_steps": 50,
+    "guidance_scale": 3.5,
+    "batch_size": 1,
+    "video_prompt_type": "KI",
+    "remove_background_images_ref": 0
+}

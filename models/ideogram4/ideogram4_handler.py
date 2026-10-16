@@ -188,11 +188,11 @@ class family_handler:
             "no_negative_prompt": True,
             "no_background_removal": True,
             "skip_prompt_template": True,
-            "resolutions_categories": ["<=1440p"],
+            "resolution_budget": "2048x2048",
             "vae_block_size": 16,
             "prompt_enhancer_button_label": "Magic Prompt",
             "prompt_infos": IDEOGRAM4_PROMPT_INFOS,
-            "deepy_infos": "### Ideogram 4\n\nText-to-image for logos, posters, typography and graphic design. Trained on structured JSON captions: supply JSON, or optionally enable Magic Prompt to convert a plain-text brief. Direct plain text is not the upstream-supported workflow. Use the selected Quality/Default/Turbo preset; proofread text and layout. TurboTime has its own few-step settings.",
+            "deepy_infos": "### Ideogram 4\n\nText-to-image for logos, posters, typography and graphic design. Trained on structured JSON captions: supply JSON, or optionally enable Magic Prompt to convert a plain-text brief. Direct plain text is not the upstream-supported workflow. Use the selected Quality/Default/Turbo preset; proofread text and layout. TurboTime has its own few-step settings. Sizes: each side 256 to 2048 pixels in multiples of 16, aspect ratio up to 6:1; 2048x2048 is the largest.",
             "deepy_prompt_infos": '### Prompt Format\n\nSupply JSON, not a bare prose prompt. Top-level order: high_level_description (recommended), style_description (optional), compositional_deconstruction (required: background, then elements). Style order: aesthetics, lighting, photo, medium for photos; aesthetics, lighting, medium, art_style otherwise; optional color_palette comes last. Use photo OR art_style. Element order: type, optional bbox, text for text elements only, desc, optional color_palette. Bboxes are [y_min,x_min,y_max,x_max], normalized 0–1000 from top left. Example: {"high_level_description":"A simple market poster.","style_description":{"aesthetics":"bold and cheerful","lighting":"flat","medium":"graphic_design","art_style":"screen print","color_palette":["#FFF4D6","#174A8B"]},"compositional_deconstruction":{"background":"Cream paper","elements":[{"type":"text","bbox":[100,100,300,900],"text":"MARKET","desc":"Large blue sans-serif lettering"}]}}. Quote every intended visible string exactly, escape embedded quotes, and close all JSON delimiters. No Markdown fences in the actual prompt.',
             "prompt_helper_popup_dims": [78, 100],
             "prompt_enhancer_def": {

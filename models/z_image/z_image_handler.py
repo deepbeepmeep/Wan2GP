@@ -14,7 +14,7 @@ class family_handler:
             "image_outputs": True,
             "dtype": "bf16",  # in FP16 the activations overflow from the first refiner block: black or prompt-less images
             "device_explicit": base_model_type != "z_image_control",
-            "cuda_graphs": [] if base_model_type == "z_image_control" else ["transformer"],  # control blocks run control layers inside them
+            "cuda_graphs": [] if base_model_type in ("z_image_control", "z_image_control2", "z_image_control2_1") else ["transformer"],  # control blocks run control layers inside them
             "guidance_max_phases": guidance_max_phases,
             "fit_into_canvas_image_refs": 0,
             "profiles_dir": [],

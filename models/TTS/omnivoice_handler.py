@@ -6,13 +6,7 @@ import re
 
 import torch
 
-from shared.deepy.transcription import (
-    WHISPER_MEDIUM_CONFIG_FILENAME,
-    WHISPER_MEDIUM_FOLDER,
-    WHISPER_MEDIUM_REPO,
-    WHISPER_MEDIUM_WEIGHTS_FILENAME,
-    _load_whisper_medium,
-)
+from shared.deepy.assets import whisper_download_def
 from shared.mps import mps_device_or
 from shared.utils import files_locator as fl
 
@@ -48,10 +42,6 @@ OMNIVOICE_AUDIO_TOKENIZER_FILES = [
     "config.json",
     "preprocessor_config.json",
     OMNIVOICE_AUDIO_TOKENIZER_WEIGHTS,
-]
-OMNIVOICE_WHISPER_FILES = [
-    WHISPER_MEDIUM_CONFIG_FILENAME,
-    WHISPER_MEDIUM_WEIGHTS_FILENAME,
 ]
 OMNIVOICE_LANGUAGE_CHOICES = [
     ("Auto", "auto"),
@@ -198,21 +188,6 @@ Speaker 3: Exact words spoken in the third reference audio.
 """
 
 
-def _detach_whisper_alignment_heads(whisper_model):
-    alignment_heads = getattr(whisper_model, "alignment_heads", None)
-    if alignment_heads is not None and getattr(alignment_heads, "layout", None) == torch.sparse_coo:
-        whisper_model._buffers.pop("alignment_heads", None)
-        object.__setattr__(whisper_model, "alignment_heads", alignment_heads)
-
-
-def _load_omnivoice_whisper_medium():
-    whisper_model = _load_whisper_medium(torch.device("cpu"))
-    _detach_whisper_alignment_heads(whisper_model)
-    whisper_model.eval().requires_grad_(False)
-    whisper_model._model_dtype = torch.float32
-    return whisper_model
-
-
 def _get_omnivoice_model_def():
     return {
         "audio_only": True,
@@ -271,11 +246,7 @@ def _get_omnivoice_download_def():
             "sourceFolderList": [OMNIVOICE_ASSET_DIR, OMNIVOICE_AUDIO_TOKENIZER_DIR],
             "fileList": [OMNIVOICE_TOKENIZER_FILES, OMNIVOICE_AUDIO_TOKENIZER_FILES],
         },
-        {
-            "repoId": WHISPER_MEDIUM_REPO,
-            "sourceFolderList": [WHISPER_MEDIUM_FOLDER],
-            "fileList": [OMNIVOICE_WHISPER_FILES],
-        }
+        whisper_download_def(),
     ]
 
 
@@ -335,12 +306,9 @@ class family_handler:
             device=mps_device_or(torch.device("cpu")),
             dtype=dtype or torch.bfloat16,
         )
-        whisper_model = _load_omnivoice_whisper_medium()
-        pipeline.set_whisper_model(whisper_model)
         pipe = {
             "transformer": pipeline.model,
             "audio_tokenizer": pipeline.audio_tokenizer,
-            "whisper": whisper_model,
         }
 
         if save_quantized and weights_path:

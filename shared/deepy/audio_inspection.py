@@ -97,7 +97,7 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
     end_silence(frames / rate)
 
     def db(value):
-        return 20 * math.log10(value) if value > 0 else None
+        return round(20 * math.log10(value), 2) if value > 0 else None
 
     summary = diagnostics.rsplit("Summary:", 1)[-1]
     integrated = re.search(r"\bI:\s*([-+\w.]+)\s*LUFS", summary)
@@ -115,7 +115,9 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
               "loudness": {"method": "FFmpeg EBU R128", "integrated_lufs": measured(integrated), "true_peak_dbfs": measured(true_peak)},
               "silence": {"threshold_dbfs": silence_db, "window_seconds": window / rate, "minimum_seconds": min_silence,
                           "duration_seconds": silent_seconds, "interval_count": interval_count, "intervals": intervals, "truncated": interval_count > len(intervals)},
-              "notes": ["Coverage follows the selected audio stream's playable timeline when its duration is known, excluding decoder tail padding. Times are relative to the source file.", "Silence means all-channel RMS below the threshold in 20 ms windows, not necessarily zero samples or missing audio.", "Full-scale samples (absolute amplitude >= 1) indicate possible clipping, not proof of audible distortion. Null dBFS means zero amplitude; null loudness means unavailable. Measurements do not judge semantic content or musical quality."]}
+              "note": "Times are relative to the source file. Silence: all-channel RMS below the threshold in 20 ms windows. Full-scale samples suggest possible clipping. Null dBFS: zero amplitude."}
+    if (measured(true_peak) or -100) > -1 or any(clipped):
+        result["fix"] = "Peaks are above -1 dBTP: remux_media with mode \"mix\" and this one file (optionally normalize_lufs) masters it below the ceiling with its true-peak limiter, without regenerating."
     if preview_path:
         seconds = min(preview_seconds, frames / rate)
         # A compact stereo preview is deliberately bounded; measurements above retain all source channels.
@@ -136,7 +138,9 @@ def inspect_audio(path, *, audio_track_no=1, start_time=0.0, duration=None, sile
             if math.isfinite(loudness := float(value)) and loudness > -70:
                 index = min(int(max(float(time_text) - 0.05, 0) / window_s), max(envelope))
                 momentary[index] = max(momentary.get(index, -math.inf), loudness)
-        result["envelope"] = {"window_seconds": window_s, "windows": [{"start": round(start_time + index * window_s, 3), "rms_dbfs": db(math.sqrt(total / count)), "peak_dbfs": db(top), "momentary_max_lufs": momentary.get(index)} for index, (total, count, top) in sorted(envelope.items())]}
+        windows = [envelope[index] for index in range(max(envelope) + 1)]  # contiguous: every window of the range holds samples
+        result["envelope"] = {"window_s": window_s, "start_s": start_time, "rms_dbfs": [None if (value := db(math.sqrt(total / count))) is None else round(value, 1) for total, count, _ in windows],
+                              "peak_dbfs": [None if (value := db(top)) is None else round(value, 1) for _, _, top in windows], "momentary_max_lufs": [momentary.get(index) for index in range(len(windows))]}
     return result
 
 
@@ -176,3 +180,28 @@ def speech_intervals(path, *, start_time=0.0, duration=None, isolated=None, marg
         else:
             spans.append([start, end])
     return [(round(float(start), 3), round(float(end), 3)) for start, end in spans if end - start >= min_speech]
+
+
+def voice_pitch(path, *, start_time=0.0, duration=None):
+    """Median fundamental frequency (Hz) of an isolated voice (a vocal stem or speech), from the autocorrelation of its clearly
+    voiced 64 ms frames between 70 and 1000 Hz, or None without enough voiced frames: female voices mostly sit above about 165 Hz,
+    male ones below. Meaningless on a full mix, whose instruments dominate the autocorrelation."""
+    command = [_get_ffmpeg_path(), "-nostdin", "-hide_banner", "-loglevel", "error", "-ss", str(start_time), "-i", str(path), *(["-t", str(duration)] if duration else []),
+               "-vn", "-af", "lowpass=f=1200", "-ac", "1", "-ar", str(SPEECH_RATE), "-f", "f32le", "pipe:1"]
+    completed = subprocess.run(command, capture_output=True)
+    if completed.returncode:
+        raise ValueError(f"Audio decoding failed: {completed.stderr.decode(errors='replace')[-1500:]}")
+    size = 1024
+    samples = np.frombuffer(completed.stdout, dtype="<f4")
+    frames = samples[: len(samples) // size * size].reshape(-1, size).astype(np.float64)
+    loud = frames[10 * np.log10(np.square(frames).mean(axis=1) + 1e-12) > -40]
+    if len(loud) < 10:
+        return None
+    loud = loud - loud.mean(axis=1, keepdims=True)
+    spectrum = np.fft.rfft(loud, 2 * size)
+    correlation = np.fft.irfft(spectrum * np.conj(spectrum), 2 * size)[:, :size]
+    low, high = SPEECH_RATE // 1000, SPEECH_RATE // 70
+    lags = low + np.argmax(correlation[:, low:high], axis=1)
+    clarity = correlation[np.arange(len(lags)), lags] / (correlation[:, 0] + 1e-12)
+    voiced = lags[clarity > 0.6]
+    return None if len(voiced) < 10 else round(float(np.median(SPEECH_RATE / voiced)), 1)

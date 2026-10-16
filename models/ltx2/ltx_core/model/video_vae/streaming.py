@@ -13,50 +13,17 @@ from torch import nn
 from .ops import patchify, unpatchify
 from .resnet import ResnetBlock3D, UNetMidBlock3D
 from .sampling import DepthToSpaceUpsample, SpaceToDepthDownsample
-from shared.kernels import kernel_policy
+from shared.kernels import vae_ops
 
 from ..common.normalization import PixelNorm
 
-try:  # the Triton implicit-GEMM convolution, the PixelNorm + SiLU kernel
-    from shared.kernels import conv3d_triton as _kernels
-    from . import stream_kernels as _stream_kernels
-except ImportError:
-    _kernels = _stream_kernels = None
-_TRITON = True
-
-
 def _norm_act(norm, act, x):
-    """act(norm(x)): PixelNorm + SiLU in one Triton pass on validated GPUs in "fast" kernel precision (output channels last)."""
-    if (_TRITON and _stream_kernels is not None and x.is_cuda and x.dtype != torch.float32 and isinstance(norm, PixelNorm) and norm.dim == 1
-            and isinstance(act, nn.SiLU) and kernel_policy.allow_approximate() and _kernels.supported(x.device)):
-        return _stream_kernels.norm_silu(x, norm.eps)
-    return act(norm(x))
+    x_list, x = [x], None
+    return vae_ops.pixel_norm_silu(x_list, norm, act, channel_norm=isinstance(norm, PixelNorm) and norm.dim == 1)
 
 
 def _conv(conv, parts):
-    """conv (kernel 3, spatial padding 1) of the frames of parts (handed over) concatenated in time: on validated GPUs in "fast" kernel
-    precision the Triton implicit-GEMM convolution of a padded channels-last input written part by part (rounds in another order than
-    cuDNN; output channels last), else cuDNN on their concatenation."""
-    b, c, _, h, w = parts[0].shape
-    t, x = sum(part.shape[2] for part in parts), parts[0]
-    if not (_TRITON and _kernels is not None and x.is_cuda and x.dtype != torch.float32 and c % 32 == 0 and conv.out_channels % 32 == 0
-            and conv.stride == (1, 1, 1) and b * (t - 2) * h * w >= _kernels._CONV_MIN_PIXELS and kernel_policy.allow_approximate()
-            and _kernels.conv_supported(x.device)):
-        x = torch.cat(parts, dim=2) if len(parts) > 1 else parts[0]
-        parts.clear()
-        return conv(x)
-    padded, start = torch.empty((b, c, t, h + 2, w + 2), dtype=x.dtype, device=x.device, memory_format=torch.channels_last_3d), 0
-    for part in parts:
-        padded[:, :, start:start + part.shape[2], 1:-1, 1:-1] = part
-        start += part.shape[2]
-    parts.clear()
-    x = None
-    if conv.padding_mode == "reflect":
-        padded[..., 0, 1:-1], padded[..., -1, 1:-1] = padded[..., 2, 1:-1], padded[..., -3, 1:-1]
-        padded[..., 0], padded[..., -1] = padded[..., 2], padded[..., -3]
-    else:
-        padded[..., 0, :], padded[..., -1, :], padded[..., 0], padded[..., -1] = 0, 0, 0, 0
-    return _kernels.conv(padded, conv.weight, conv.bias)
+    return vae_ops.temporal_conv(conv, parts)
 
 
 def _last_frames(parts, count=2):

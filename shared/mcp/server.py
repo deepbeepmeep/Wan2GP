@@ -6,6 +6,7 @@ import contextlib
 import contextvars
 import copy
 import dataclasses
+import difflib
 import hashlib
 import io
 import json
@@ -22,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from shared.utils.gallery_sources import GALLERY_SOURCES, MESH_EXTENSIONS, source_for_kind
 from shared.utils.gallery_media import disambiguate_gallery_media_ids, gallery_media_ids
-from shared.utils.setting_names import split_settings, unknown_settings_error
+from shared.utils.setting_names import settings_error, split_settings
 from shared.mcp.config import DEFAULT_PORT, server_port
 
 if TYPE_CHECKING:
@@ -97,7 +98,7 @@ _TOOLBOX_MEDIA_PARAMETERS = {
     "resize_crop": ("media_id",),
     "side_by_side": ("media_ids",),
     "render_3d_views": ("media_id",),
-    "merge_videos": ("video_ids",),
+    "merge_videos": ("media_ids",),
     "get_media_details": ("media_id",),
     "image_channels": ("media_id",),
     "create_mask": ("media_id",),
@@ -202,8 +203,9 @@ def _artifact_to_dict(artifact: Any) -> dict[str, Any]:
 
 
 def _error_to_dict(error: Any) -> dict[str, Any]:
+    lora_hint = " Compare each URL with the template's activated_loras or wangp_model(action=\"loras\"): a mistyped name cannot be downloaded." if "Loras files could not be downloaded" in str(error.message) else ""
     return {
-        "message": error.message,
+        "message": error.message + lora_hint,
         "task_index": error.task_index,
         "task_id": error.task_id,
         "stage": error.stage,
@@ -465,9 +467,14 @@ def _compact_gallery_record(record: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _output_record(item):
-    """A produced output, without the Gallery's live selection and player position."""
-    return {key: value for key, value in item.items() if key not in ("selected", "in_gallery", "current_time_seconds")}
+def _output_record(item, path=None):
+    """A produced output, without the Gallery's live selection and player position, nor what its media_id and path already say (gallery, source,
+    and the filename once the path is given)."""
+    record = {key: value for key, value in item.items() if key not in ("selected", "in_gallery", "current_time_seconds", "gallery", "source")}
+    if path is not None:
+        record.pop("filename")
+        record["path"] = path
+    return record
 
 
 def _gallery_item(session, media_id: str) -> dict[str, Any]:
@@ -477,7 +484,10 @@ def _gallery_item(session, media_id: str) -> dict[str, Any]:
         record = next((record for record in _gallery_history(session).values() if lookup in record["settings"]["gallery_media_ids"]), None)
         if record is not None and _gallery_path_exists(session, record.get("path", "")):
             return copy.deepcopy(record)
-    raise KeyError(f"Unknown WanGP media_id: {media_id}")
+        known = [identifier for record in _gallery_history(session).values() for identifier in record["settings"]["gallery_media_ids"]]
+    known = [identifier for identifier in known if identifier != lookup]  # an id whose file is gone has no alternative
+    close = sorted({identifier for identifier in known if identifier.startswith(lookup)}) or difflib.get_close_matches(lookup, known, n=2, cutoff=0.9)  # a truncated or mistyped id
+    raise KeyError(f"Unknown WanGP media_id: {media_id}" + (f". Did you mean {' or '.join(close[:2])}?" if close and len(lookup) > 8 else ""))
 
 
 def resolve_gallery_media_path(session, media_id: str) -> str:
@@ -534,7 +544,7 @@ def _compact_model_metadata(records: list[dict[str, Any]]) -> list[dict[str, Any
 def _compact_deepy_model_metadata(record: dict[str, Any]) -> dict[str, Any]:
     compact = {key: copy.deepcopy(record[key]) for key in ("model_type", "name", "family", "family_label", "base_model_type", "finetune", "main_output", "outputs", "inputs") if record.get(key) not in (None, "", [], {})}
     compact["capabilities"] = [key for key, enabled in record.get("capabilities", {}).items() if enabled]
-    compact.update({key: copy.deepcopy(record[key]) for key in ("accelerated", "size", "specialities", "matched_specialities", "unmatched_specialities", "word_matches", "substring_matches", "resolution_budget", "resolution_budget_tiled", "resolution_min", "lock_resolutions", "allowed_resolutions", "vae_block_size", "resolution_assessment") if key in record})
+    compact.update({key: copy.deepcopy(record[key]) for key in ("accelerated", "size", "specialities", "matched_specialities", "unmatched_specialities", "word_matches", "substring_matches", "resolution_budget", "resolution_budget_tiled", "resolution_min", "max_width", "max_height", "lock_resolutions", "allowed_resolutions", "vae_block_size", "resolution_assessment") if key in record})
     if record.get("sliding_window") and "sliding_window" not in compact["capabilities"]:
         compact["capabilities"].append("sliding_window")
     compact["media_inputs"] = {kind: copy.deepcopy(values) if kind == "custom_file" else [key for key, enabled in values.items() if enabled] for kind, values in record.get("media_inputs", {}).items() if isinstance(values, dict) and any(values.values())}
@@ -1222,8 +1232,10 @@ def _resolve_toolbox_arguments(session, toolbox, action: str, arguments: dict[st
             resolved_inputs.append(resolved_input)
         resolved["media_inputs"] = resolved_inputs
     if action == "draw_svg" and isinstance(resolved.get("svg"), str):  # each href resolved under this server's media and file rules
-        from shared.deepy import svg_drawing
+        from shared.deepy import long_text as deepy_long_text, svg_drawing
 
+        resolved["svg"] = deepy_long_text.resolve_prompt_file(resolved["svg"], file_access_policy, read_only=True)  # @file("...") markup, read under this server's file rules
+        resolved.update({key: resolve_media_id(resolved[key], key) for key in ("video_id", "like_video_id") if resolved.get(key) is not None})  # descriptions kept: they carry the overlay rules
         resolved["svg"] = svg_drawing.rewrite(resolved["svg"], {reference: resolve_media_id(reference, f"svg href {reference}") for reference in svg_drawing.references(resolved["svg"])})
     if action == "image_channels" and resolved.get("channel_sources") is not None:
         raw_sources = resolved["channel_sources"]
@@ -1247,7 +1259,7 @@ def _register_toolbox_result_media(session, result: Any) -> Any:
     if isinstance(result.get("paths"), list):
         output_paths.extend(path for path in result["paths"] if isinstance(path, str) and path.strip())
     records = [_register_gallery_media(session, path) for path in output_paths if Path(path).is_file() and _mcp_media_type(path)]
-    gallery_items = [{**_output_record(_compact_gallery_record(record)), "path": record["path"]} for record in records]
+    gallery_items = [_output_record(_compact_gallery_record(record), record["path"]) for record in records]
     if gallery_items:
         result = dict(result)
         result["gallery_items"] = gallery_items
@@ -1341,10 +1353,12 @@ def _compact_job_snapshot(snapshot: dict[str, Any], *, keep_webui: bool = False,
     progress = compact.get("progress")
     if done:
         compact.pop("progress", None)
+        if isinstance(snapshot.get("created_at"), (int, float)) and isinstance(snapshot.get("updated_at"), (int, float)):
+            compact["elapsed_seconds"] = round(snapshot["updated_at"] - snapshot["created_at"], 1)  # queue wait included: the time the job took to deliver
         result = compact.get("result")
         if isinstance(result, dict):
             compact.setdefault("status", "done" if result.get("success") else "interrupted" if result.get("cancelled") else "error")
-            if not keep_paths and {Path(path).name for path in result.get("generated_files", [])} <= {item["filename"] for item in result.get("gallery_items", [])}:
+            if not keep_paths and {Path(path).name for path in result.get("generated_files", [])} <= {item["filename"] if "filename" in item else Path(item["path"]).name for item in result.get("gallery_items", [])}:
                 compact["result"] = {key: value for key, value in result.items() if key != "generated_files"}
     elif isinstance(progress, dict) and isinstance(progress.get("status"), str):
         compact["progress"] = {**progress, "status": _UI_PROMPT_COUNTER.sub("", progress["status"])}  # the counter numbers the whole UI queue, not this job's tasks
@@ -1404,9 +1418,19 @@ class _JobRecord:
         if generated_paths:
             for record in _gallery_records(self.session, limit=500):
                 if (self.session._root / record["path"]).resolve() in generated_paths:
-                    item = _output_record(_compact_gallery_record(record))
-                    if self.file_store is not None and self.file_store.policy is not None:
-                        item["path"] = self.file_store.policy.virtualize_path((self.session._root / record["path"]).resolve())
+                    path = None if self.file_store is None or self.file_store.policy is None else self.file_store.policy.virtualize_path((self.session._root / record["path"]).resolve())
+                    item = _output_record(_compact_gallery_record(record), path)
+                    if item["media_type"] == "audio":  # songs often stop well before their requested length: say where, once per job
+                        from shared.deepy.video_tools import quiet_ranges
+                        quiet = quiet_ranges(str((self.session._root / record["path"]).resolve()))
+                        if quiet and item.get("duration_seconds", 0) - quiet[-1][1] < 0.1 and quiet[-1][1] - quiet[-1][0] >= 1:
+                            item["sound_ends_seconds"] = quiet[-1][0]
+                    elif item["media_type"] == "video":  # a generated shot can cut away to another shot or go black: measured, not seen
+                        from shared.deepy.video_tools import picture_checks
+                        item.update(picture_checks(str((self.session._root / record["path"]).resolve())))
+                        if "cut_times_seconds" in item:
+                            item["note"] = ("The model cut to other shots at cut_times_seconds. Look at a frame just after each cut: if it no longer shows the requested "
+                                            "subject (a cutaway to objects, hands or other people), the shot failed there: use the part before the cut or regenerate it shorter.")
                     result["gallery_items"].append(item)
         if self.file_store is not None:
             policy = self.file_store.policy
@@ -1529,7 +1553,7 @@ class _JobStore:
                 saved = self.state.get_job(job_id)
                 if saved is not None:
                     return RecoveredJob(saved, self._session, self._owner)
-            raise KeyError(f"Unknown WanGP job_id: {job_id}")
+            raise KeyError(f"Unknown WanGP job_id: {job_id}. Jobs are not kept across a WanGP restart: the outputs of finished jobs are in the Gallery (wangp_list_gallery); submit unfinished ones again.")
         return record
 
     def once(self, request_id, payload, submit):
@@ -2123,11 +2147,14 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                 model_key = "base_model_type" if "model_type" not in settings and "base_model_type" in settings else "model_type"
                 model_type = settings.get(model_key)
                 if not isinstance(model_type, str) or not model_type.strip():
-                    raise ValueError(f"{path}.{model_key} must be a non-empty string for generation. Nothing was submitted.")
+                    template_hint = "" if api_version == "1" else ', or the settings must name a template ("template": "<task>")'
+                    raise ValueError(f"{path}.{model_key} must be a non-empty string for generation{template_hint}. Nothing was submitted.")
                 if session.get_model_metadata(model_type.strip()) is None:
                     template_call = 'wangp_templates(task="...", template="default")' if api_version == "2.1" else 'wangp_deepy_templates(tool_id="...")'
-                    raise ValueError(f'{path}.{model_key}: unknown model {model_type.strip()!r}. Use {template_call} for the configured default model, or wangp_models(query="...") to find one. Nothing was submitted.')
-                unknown_error = unknown_settings_error(settings)
+                    known = [str(item.get("model_type") or "") for item in session.list_model_defs()]
+                    close = [name for name in known if name.startswith(model_type.strip())][:3] or difflib.get_close_matches(model_type.strip(), known, n=3, cutoff=0.5)
+                    raise ValueError(f'{path}.{model_key}: unknown model {model_type.strip()!r}.' + (f" Closest model types: {', '.join(close)}." if close else "") + f' Use {template_call} for the configured default model, or wangp_models(query="...") to find one. Nothing was submitted.')
+                unknown_error = settings_error(settings)
                 if unknown_error:
                     if "accelerator profile" in unknown_error:
                         defaults_call = f' Profiles: wangp_model(model_type="{model_type.strip()}", action="saved_settings", arguments={{}}).'
@@ -2141,7 +2168,11 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                         allowed = ", ".join(declared[:5]) + (", ..." if len(declared) > 5 else "") if declared else "none"
                         raise ValueError(f"{path}.custom_settings.{unknown[0]} is not a custom setting of {model_type.strip()} (declared: {allowed}); prompt, resolution and other settings go directly in the settings. Nothing was submitted.")
                 if not str(settings.get("prompt") or "").strip():
-                    raise ValueError(f"{path}.prompt is empty; give the complete prompt, otherwise WanGP uses the model's default prompt. Nothing was submitted.")
+                    model_def = session.get_model_def(model_type.strip())
+                    if not model_def.get("prompt_optional"):
+                        meaning = model_def.get("prompt_description")
+                        raise ValueError(f"{path}.prompt is empty; give the complete prompt{f' (for this model: {meaning})' if meaning else ''}, otherwise WanGP uses the model's default prompt. Nothing was submitted.")
+                    settings["prompt"] = ""  # it names the files only: empty rather than the model's default prompt
                 properties = _deepy_general_properties(session)
                 outputs = (session.get_model_metadata(model_type.strip()) or {}).get("main_output", [])
                 defaults = {"seed": properties["seed"], "multi_prompts_gen_type": _deepy_prompt_mode(session, model_type.strip())}
@@ -2156,7 +2187,7 @@ def build_server_for_session(session, settings: dict[str, Any] | None = None, to
                         settings[key] = value
                 if api_version == "2.1":
                     from .preflight import validate_declared_settings
-                    validate_declared_settings(session, settings)
+                    validate_declared_settings(session, settings, lambda value, key: _resolve_mcp_media_value(session, value, key, allow_read_file_system, file_access_policy))
                 # Agents write final prompts: WanGP's automatic enhancer mode must not rewrite them through a template's or model default's enhancer
                 if compact_model_tools or api_version != "1" and "prompt_enhancer" not in settings and session.get_default_settings(model_type.strip()).get("prompt_enhancer"):
                     settings["prompt_enhancer"] = ""

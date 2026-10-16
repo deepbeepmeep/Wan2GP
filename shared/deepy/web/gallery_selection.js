@@ -5,7 +5,7 @@
     const value = document.querySelector('#wangp-gallery-view textarea')?.value;
     return value ? JSON.parse(value) : null;
   }
-  let sequence = 0, pendingView = null;
+  let sequence = 0, pendingView = null, acceptedView = null;
   function select(source, index = null) {
     const state = view();
     if (!state) return;
@@ -25,7 +25,14 @@
     select: (source, index) => {const state = view(); if (state) select(source, Number(index) - state[source + '_offset']);},
     acceptView(value) {
       const state = JSON.parse(value);
-      return state.session !== pendingView?.session || state.workspace !== pendingView?.workspace || state.gallery_sequence >= sequence;
+      const current = acceptedView || view();
+      // Network completion order is not publication order. Revision counters
+      // belong to a Gradio session and can restart with a new server.
+      if (state.session === current?.session && state.revision < current.revision) return false;
+      const accept = state.session !== pendingView?.session || state.workspace !== pendingView?.workspace || state.gallery_sequence >= sequence;
+      // Several responses may share one Gradio flush, before its DOM updates.
+      if (accept) acceptedView = state;
+      return accept;
     }
   };
   function indexOf(thumb) {

@@ -1,0 +1,31 @@
+.layout-prompt-helper-popup .wangp-model-info-content { padding: 12px; }
+.layout-helper-content { display: flex; flex-direction: column; gap: 10px; min-height: 0; height: 100%; overflow: auto; box-sizing: border-box; }
+.layout-helper-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.layout-helper-toolbar button { border: 1px solid var(--border-color-primary, #9cabb5); border-radius: 6px; padding: 6px 10px; background: var(--button-secondary-background-fill, #f5f8fa); color: var(--body-text-color, #173b50); cursor: pointer; }
+.layout-helper-toolbar button:disabled { opacity: .45; cursor: default; }
+.layout-helper-toolbar button[data-layout-action="save"] { margin-left: auto; background: var(--button-primary-background-fill, #176b92); color: var(--button-primary-text-color, white); }
+.layout-helper-resolution { color: var(--body-text-color-subdued, #607785); font-size: .86rem; }
+.layout-helper-raw { display: flex; flex-direction: column; gap: 7px; min-height: 0; flex: 1; }
+.layout-helper-raw[hidden], .layout-helper-grid[hidden] { display: none; }
+.layout-helper-raw label { font-size: .9rem; }
+.layout-helper-raw textarea { flex: 1; min-height: 180px; width: 100%; box-sizing: border-box; resize: vertical; padding: 8px; border: 1px solid var(--border-color-primary, #b6c5ce); border-radius: 5px; background: var(--input-background-fill, white); color: var(--body-text-color, #173b50); font: .85rem/1.4 monospace; }
+.layout-helper-raw button { align-self: flex-start; border: 1px solid var(--border-color-primary, #9cabb5); border-radius: 6px; padding: 6px 10px; background: var(--button-primary-background-fill, #176b92); color: var(--button-primary-text-color, white); cursor: pointer; }
+.layout-helper-grid { display: grid; grid-template-columns: minmax(290px, 1.2fr) minmax(270px, 1fr); gap: 12px; min-height: 0; flex: 1; }
+.layout-helper-visual, .layout-helper-fields { min-height: 0; overflow: auto; }
+.layout-helper-visual { display: flex; flex-direction: column; gap: 8px; }
+.layout-helper-canvas-wrap { display: flex; align-items: center; justify-content: center; min-height: 270px; height: min(52vh, 580px); overflow: hidden; border: 1px solid var(--border-color-primary, #b6c5ce); border-radius: 7px; background: #e9eef1; }
+.layout-helper-canvas-wrap canvas { display: block; max-width: 100%; max-height: 100%; width: auto; height: auto; touch-action: none; cursor: crosshair; background: #fff; }
+.layout-helper-hint { font-size: .82rem; color: var(--body-text-color-subdued, #607785); }
+.layout-helper-list { display: flex; flex-direction: column; gap: 4px; overflow: auto; min-height: 60px; }
+.layout-helper-list button { display: block; flex: 0 0 auto; min-height: 40px; box-sizing: border-box; width: 100%; line-height: 1.4; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 9px; border: 1px solid var(--border-color-primary, #b6c5ce); border-radius: 5px; background: var(--background-fill-secondary, #f3f7f9); color: var(--body-text-color, #173b50); cursor: pointer; }
+.layout-helper-list button[aria-selected="true"] { border-color: var(--button-primary-background-fill, #176b92); background: rgba(23, 107, 146, .13); }
+.layout-helper-fields { display: flex; flex-direction: column; gap: 7px; }
+.layout-helper-fields h3 { margin: 8px 0 0; font-size: .94rem; }
+.layout-helper-fields label { display: flex; flex-direction: column; gap: 3px; font-size: .86rem; }
+.layout-helper-fields input, .layout-helper-fields textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--border-color-primary, #b6c5ce); border-radius: 5px; padding: 6px 8px; background: var(--input-background-fill, white); color: var(--body-text-color, #173b50); font: inherit; }
+.layout-helper-fields textarea { min-height: 56px; resize: vertical; }
+.layout-helper-fields textarea[data-layout-field="description"] { min-height: 105px; }
+.layout-helper-fields input[readonly] { opacity: .7; }
+.layout-helper-status { min-height: 1.3em; font-size: .85rem; }
+.layout-helper-status.error { color: var(--error-text-color, #a41e2b); }
+@media (max-width: 800px) { .layout-helper-grid { grid-template-columns: 1fr; } .layout-helper-canvas-wrap { height: 42vh; } }

@@ -5,7 +5,7 @@ from typing import Callable, Tuple
 
 import numpy as np
 import torch
-from ....denoiser_kernels import split_rope
+from shared.kernels.ops import compact_rope_ as split_rope
 
 
 USE_FP32_ROPE_FREQS = False
@@ -351,7 +351,8 @@ def _apply_split_rope_layout_compile_safe(input_tensor: torch.Tensor, rope_cache
 def _build_layout_axis_token_indices(grid_sizes: tuple[int, ...], axis: int, device: torch.device) -> torch.Tensor:
     shape = [1] * len(grid_sizes)
     shape[axis] = grid_sizes[axis]
-    return torch.arange(grid_sizes[axis], dtype=torch.long, device=device).view(*shape).expand(*grid_sizes).reshape(-1)
+    # contiguous: with a single latent frame, reshape keeps the expanded view, whose shared elements CUDA graph buffers cannot hold
+    return torch.arange(grid_sizes[axis], dtype=torch.long, device=device).view(*shape).expand(*grid_sizes).reshape(-1).contiguous()
 
 
 def _apply_split_rope_layout_inplace(input_tensor: torch.Tensor, rope_cache: RopeCache, layout: RopeLayoutCache) -> None:

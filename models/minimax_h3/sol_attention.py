@@ -7,6 +7,7 @@ from __future__ import annotations
 from mmgp import cuda_graphs, offload
 
 from shared.attention import pay_attention
+from shared.kernels import ops as denoiser_kernels
 
 
 SOL_ATTN_THRESH_TYPE = "diag"
@@ -54,7 +55,7 @@ class MiniMaxH3SolAttention:
         rotated and prepared as INT8, then released), then q, which receives the output. With Attention Head Split, one group of
         heads at a time into one output."""
         from shared import attention_kit
-        from shared.sol_attn import prepare_kv, rms_norm_rope_, sol_attn_prepared
+        from shared.sol_attn import prepare_kv, sol_attn_prepared
         tokens = x_list[0].shape[0]
         groups = attention_kit.head_groups(heads, tokens)
         step = heads // groups
@@ -64,13 +65,13 @@ class MiniMaxH3SolAttention:
         for first in range(0, heads, step):
             project = lambda module: offload.linear_rows(module, linear_input, first * head_dim, (first + step) * head_dim).view(1, tokens, step, head_dim)
             value, key = project(v_proj), project(k_proj)
-            rms_norm_rope_(key, k_norm.weight, rope, eps)
+            denoiser_kernels.sol_rms_rope_(key, k_norm.weight, rope, eps)
             prepared = prepare_kv(key, value)
             key = None
             query = project(q_proj)
             if first + step == heads:
                 linear_input = project = None
-            rms_norm_rope_(query, q_norm.weight, rope, eps)
+            denoiser_kernels.sol_rms_rope_(query, q_norm.weight, rope, eps)
             query = sol_attn_prepared(query, value, prepared, tau=self.tau, sink_start=0, sink_tokens=self.sink_tokens, out=query)
             if groups == 1:
                 return query

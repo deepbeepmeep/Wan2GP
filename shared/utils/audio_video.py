@@ -408,7 +408,7 @@ def _run_ffmpeg_encode(input_path, output_path, codec, bitrate=None, sample_rate
     if sample_rate:
         cmd += ["-ar", str(int(sample_rate))]
     cmd.append(output_path)
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 def save_audio_file(path, audio_data, sample_rate, codec_key="wav"):
@@ -645,13 +645,15 @@ def combine_and_concatenate_video_with_audio_tracks(
     if verbose:
         print(f"ffmpeg command: {cmd}")
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except subprocess.CalledProcessError as e:
         raise Exception(f"FFmpeg error: {e.stderr}")
 
 
 def subtitle_stream_count(path):
-    return sum(stream['codec_type'] == 'subtitle' for stream in ffmpeg.probe(path, cmd=_ffprobe_binary())['streams'])
+    if get_virtual_media_entry(path) is not None:
+        return 0
+    return sum(stream['codec_type'] == 'subtitle' for stream in ffmpeg.probe(strip_virtual_media_suffix(path), cmd=_ffprobe_binary())['streams'])
 
 
 def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
@@ -670,7 +672,16 @@ def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
     for path in audio_tracks:
         cmd += ['-i', path]
     if subtitle_source is not None:
-        cmd += ['-i', subtitle_source]
+        source_path, time_args, _ = _resolve_virtual_audio_segment(subtitle_source)
+        for key, value in time_args.items():
+            cmd += [f'-{key}', str(value)]
+        cmd += ['-i', source_path]
+        if time_args:
+            # Seeking leaves subtitle packets before zero and across the chunk boundaries.
+            # Drop packets outside the chunk and clip overlapping cues before muxing.
+            subtitle_duration = min(float(dur), time_args['to'] - time_args['ss'])
+            cmd += ['-bsf:s', f"noise=amount=0:drop='lte(pts+duration,0)+gte(pts*tb,{subtitle_duration})',"
+                    f"setts=ts='max(TS,0)':duration='min(PTS+DURATION,{subtitle_duration}/TB)-max(PTS,0)'"]
 
     cmd += ['-map', '0:v']
     for i in range(len(audio_tracks)):
@@ -686,7 +697,7 @@ def combine_video_with_audio_tracks(target_video, audio_tracks, output_video,
     cmd += ['-c:v', 'copy', *get_video_audio_encode_args(audio_codec_key)]
     cmd += ['-t', str(dur), output_video]
 
-    result = subprocess.run(cmd, capture_output=not verbose, text=True)
+    result = subprocess.run(cmd, capture_output=not verbose, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise Exception(f"FFmpeg error:\n{result.stderr}")
     if verbose:

@@ -75,6 +75,79 @@ def unwrap_arrays(vertices, faces, resolution=0, padding=2, max_iterations=1, pa
     return np.concatenate(mappings).astype(np.uint32), out_faces, np.concatenate(uvs)
 
 
+def unwrap_bounded(vertices, faces, resolution=0, padding=2, max_iterations=1, max_faces=40000, workers=1):
+    """Unwrap spatial regions of at most max_faces, then repack their charts into one atlas. Reports completed regions and packing.
+    The child process uses the preprocessor CPU budget; xatlas owns its native threads and otherwise uses every CPU."""
+    import psutil
+    import xatlas
+
+    process = psutil.Process()
+    if sys.platform in ("win32", "linux"):
+        process.cpu_affinity(process.cpu_affinity()[:workers])
+    centers = vertices[faces].mean(1)
+    groups, pending = [], [np.arange(len(faces))]
+    while pending:
+        group = pending.pop()
+        if len(group) <= max_faces:
+            groups.append(group)
+        else:
+            points = centers[group]
+            axis = np.ptp(points, axis=0).argmax()
+            middle = len(group) // 2
+            order = np.argpartition(points[:, axis], middle)
+            pending.extend((group[order[middle:]], group[order[:middle]]))
+    del centers
+
+    def report(completed, packing=False):
+        print(f"UV_PROGRESS {completed} {len(groups) + 1} {int(packing)}", file=sys.stderr, flush=True)
+
+    charts, packing = xatlas.ChartOptions(), xatlas.PackOptions()
+    charts.max_iterations = max_iterations
+    packing.padding, packing.resolution = padding, resolution
+    report(0)
+    mappings, uvs, local_faces = [], [], []
+    for start in range(0, len(groups), workers):
+        batch, used_vertices = groups[start:start + workers], []
+        atlas = xatlas.Atlas()
+        for group in batch:
+            used, local = cell_mesh(vertices, faces, group)
+            atlas.add_mesh(vertices[used], local.astype(np.uint32))
+            used_vertices.append(used)
+        atlas.generate(charts, packing if len(groups) == 1 else xatlas.PackOptions())
+        if atlas.atlas_count != 1:
+            raise ValueError(f"xatlas split the charts into {atlas.atlas_count} atlases; raise the resolution")
+        if len(groups) == 1:
+            mapping, part_faces, part_uvs = atlas[0]
+            report(2, True)
+            return used_vertices[0][mapping].astype(np.uint32), part_faces, part_uvs
+        # Restore common object-space texel density before packing the independently unwrapped regions together.
+        scale = np.array([atlas.width, atlas.height], dtype=np.float32) / atlas.texels_per_unit
+        for index, (group, used) in enumerate(zip(batch, used_vertices)):
+            mapping, part_faces, part_uvs = atlas[index]
+            mappings.append(used[mapping])
+            uvs.append(part_uvs * scale)
+            local_faces.append(part_faces)
+        del atlas
+        report(start + len(batch))
+    report(len(groups), True)
+    atlas = xatlas.Atlas()
+    # Keep the input arrays alive: xatlas identifies UV mesh instances by their input pointers.
+    for part_uvs, part_faces in zip(uvs, local_faces):
+        atlas.add_uv_mesh(part_uvs, part_faces)
+    atlas.generate(charts, packing)
+    if atlas.atlas_count != 1:
+        raise ValueError(f"xatlas split the charts into {atlas.atlas_count} atlases; raise the resolution")
+    out_mappings, out_uvs, out_faces, offset = [], [], np.empty((len(faces), 3), dtype=np.uint32), 0
+    for index, (group, original) in enumerate(zip(groups, mappings)):
+        mapping, indices, packed_uvs = atlas[index]
+        out_mappings.append(original[mapping])
+        out_uvs.append(packed_uvs)
+        out_faces[group] = indices + offset
+        offset += len(mapping)
+    report(len(groups) + 1, True)
+    return np.concatenate(out_mappings).astype(np.uint32), out_faces, np.concatenate(out_uvs)
+
+
 def decimate_cell(points, triangles, target_faces, aggressiveness=7):
     """fast-simplification of one grid cell (points float64 [V, 3], triangles int32 [F, 3]) with its border kept, so that the cells weld
     back; target_faces counts the inner faces: two faces per border edge are added to it, else the kept border would starve the inside."""
@@ -89,7 +162,7 @@ def decimate_cell(points, triangles, target_faces, aggressiveness=7):
     return fast_simplification.simplify(points, triangles, target_count=target, agg=aggressiveness, preserve_border=True)
 
 
-JOBS = {"unwrap": unwrap_arrays, "decimate_cell": decimate_cell}
+JOBS = {"unwrap": unwrap_arrays, "unwrap_bounded": unwrap_bounded, "decimate_cell": decimate_cell}
 
 
 def main(job, arguments):

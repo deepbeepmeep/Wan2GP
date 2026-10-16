@@ -2,6 +2,7 @@ import torch
 from einops import rearrange
 from torch import Tensor
 from shared.attention import pay_attention
+from shared.kernels import ops
 
 
 def attention(qkv_list, pe: Tensor, *, txt_len: int | None = None, NAG: dict | None = None) -> Tensor:
@@ -96,18 +97,7 @@ def rope(pos: Tensor, dim: int, theta: int) -> Tensor:
 
 
 def apply_rope_(q_list, freqs_cis: Tensor) -> tuple[Tensor, Tensor]:
-    xq= q_list[0]
-    xqshape = xq.shape
-    xqdtype= xq.dtype
-    q_list.clear()
-    xq = xq.float().reshape(*xqshape[:-1], -1, 1, 2)
-    xq_out = freqs_cis[..., 0] * xq[..., 0]
-    xq = freqs_cis[..., 1] * xq[..., 1]
-
-    xq_out.add_(xq)
-    # xq_out = freqs_cis[..., 0] * xq_[..., 0] + freqs_cis[..., 1] * xq_[..., 1]
-
-    return xq_out.reshape(*xqshape).to(xqdtype)
+    return ops.matrix_rope(q_list, freqs_cis)
 
 def apply_rope(xq: Tensor, xk: Tensor, freqs_cis: Tensor) -> tuple[Tensor, Tensor]:
     xq_ = xq.float().reshape(*xq.shape[:-1], -1, 1, 2)

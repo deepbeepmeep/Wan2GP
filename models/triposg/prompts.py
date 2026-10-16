@@ -84,7 +84,7 @@ PARTCRAFTER_DEEPY_INFOS = ("Image to a 3D object made of separate part meshes (o
                            "guidance 7. custom_settings: `num_parts` 1-16 (natural pieces of the object, default 4), `mesh_resolution` 256/512, "
                            "`max_faces` (0 keeps all, else total budget). " + _LICENSE_NOTE[:_LICENSE_NOTE.index(" See ")])
 
-DEEPY_PROMPT_INFOS = ("`prompt`: a short asset name such as `red toy robot`; nothing else is read. The reference image decides the result: one "
+DEEPY_PROMPT_INFOS = ("`prompt` (optional): a short asset name such as `red toy robot` for the file name; nothing else is read. The reference image decides the result: one "
                       "centred, uncropped object, plain background, front or three-quarter view, even light.")
 
 ASSET_NAME_INSTRUCTIONS = """You name 3D assets. Look at the image and name the single main object it shows in 2 to 6 words, lower case, for
@@ -149,5 +149,5 @@ GEOSAM2_DEEPY_INFOS = ("3D part segmentation of an existing mesh: `custom_guide`
                        "of a run shows the views at 512 px). custom_settings: `postprocess_pa` 0.01/0.02/0.035 (fragment cleanup, larger = "
                        "fewer parts), `auto_segment` 1 = automatic + prompted parts, 0 = prompted parts only (the rest stays unsplit, one part per separate piece). Apache-2.0.")
 
-GEOSAM2_DEEPY_PROMPT_INFOS = ("`prompt`: asset name only. `alt_prompt`: empty for automatic parts, or a JSON list of points "
+GEOSAM2_DEEPY_PROMPT_INFOS = ("`prompt` (optional): asset name only. `alt_prompt`: empty for automatic parts, or a JSON list of points "
                               "{\"frame_idx\", \"obj_id\", \"point\": [x, y], \"label\"} on one 1024 px rendered view.")

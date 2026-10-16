@@ -7,7 +7,7 @@ import triton.language as tl
 from triton.language.extra import libdevice
 
 
-@triton.jit
+@triton.jit(do_not_specialize=['length', 'channels'], do_not_specialize_on_alignment=['length', 'channels'])
 def _snake_beta_aa(X, Y, ALPHA, BETA, UP, DOWN, length, channels, BLOCK: tl.constexpr):
     row = tl.program_id(0)
     n = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)

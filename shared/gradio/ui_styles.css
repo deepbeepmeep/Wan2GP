@@ -169,6 +169,10 @@ gradio-app {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
 }
+/* Keep a closing grid's transition from painting behind a restored preview. */
+.gallery-container:has(> .preview) > .grid-wrap > .grid-container {
+    visibility: hidden;
+}
 /* The outer wrapper must not scroll when Chrome reveals a focused thumbnail. */
 .block:has(> .gallery-container) {
     overflow: clip;
@@ -518,13 +522,12 @@ h2 {
     max-height: 95vh;
     overflow: hidden;
 }
-#image-modal-container .modal-close-btn {
-    position: absolute;
-    top: calc(10px * var(--wangp-ui-scale));
-    right: calc(10px * var(--wangp-ui-scale));
+#image-modal-container .modal-close-btn,
+#image-modal-container .wangp-image-zoom-controls button {
     width: calc(40px * var(--wangp-ui-scale));
     height: calc(40px * var(--wangp-ui-scale));
     background-color: rgba(0, 0, 0, 0.5);
+    border: none;
     border-radius: 50%;
     color: #fff;
     font-size: calc(1.8rem * var(--wangp-ui-scale));
@@ -538,9 +541,30 @@ h2 {
     transition: background-color 0.2s, transform 0.2s;
     text-shadow: 0 0 5px rgba(0,0,0,0.5);
 }
-#image-modal-container .modal-close-btn:hover {
+#image-modal-container .modal-close-btn {
+    position: absolute;
+    top: calc(10px * var(--wangp-ui-scale));
+    right: calc(10px * var(--wangp-ui-scale));
+}
+#image-modal-container .modal-close-btn:hover,
+#image-modal-container .wangp-image-zoom-controls button:hover {
     background-color: rgba(0, 0, 0, 0.8);
     transform: scale(1.1);
+}
+#image-modal-container .wangp-image-zoom-controls {
+    top: calc(56px * var(--wangp-ui-scale));
+    right: calc(10px * var(--wangp-ui-scale));
+    gap: calc(6px * var(--wangp-ui-scale));
+}
+#image-modal-container .wangp-image-zoom-controls button > div {
+    width: calc(1.8rem * var(--wangp-ui-scale));
+    height: calc(1.8rem * var(--wangp-ui-scale));
+}
+#image-modal-container .modal-image-viewport {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
 }
 #image-modal-container .modal-label {
     position: absolute;
@@ -554,8 +578,10 @@ h2 {
     z-index: 1001;
 }
 #image-modal-container .modal-image {
-    width: 100%;
-    height: 100%;
+    max-width: 95vw;
+    max-height: 95vh;
+    width: auto;
+    height: auto;
     object-fit: contain;
 }
 .progress-container-custom {

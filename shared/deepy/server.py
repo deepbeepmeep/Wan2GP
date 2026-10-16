@@ -73,7 +73,7 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
         page = (WEB / "app.html").read_text(encoding="utf-8").replace("<!-- CHAT -->", shell).replace("<!-- STATS -->", chat.render_stats_html())
         def version_asset(match):
             name = match[1]
-            path = WEB.parents[1] / 'gradio' / name if name in {'form_sync.js', 'progress.css'} else WEB / name
+            path = WEB.parents[1] / 'gradio' / name if name in {'form_sync.js', 'progress.css', 'image_zoom.js', 'image_zoom.css'} else WEB / name
             if name == 'mesh_viewer.js':
                 path = WEB.parents[1] / 'gradio/strip_gallery.py'
             return f'assets/{name}?v={path.stat().st_mtime_ns}'
@@ -87,7 +87,7 @@ def create_app(service, *, token=None, auth=None, voice_language=None, https_por
         if name == 'mesh_viewer.js':
             from shared.gradio.strip_gallery import MeshGallery
             return Response(MeshGallery.get_viewer_javascript('assets/mesh/'), media_type='text/javascript')
-        if name in {'form_sync.js', 'progress.css'}:
+        if name in {'form_sync.js', 'progress.css', 'image_zoom.js', 'image_zoom.css'}:
             return FileResponse(WEB.parents[1] / 'gradio' / name)
         if name == "icon.png":
             return FileResponse(WEB.parents[2] / "favicon.png")

@@ -220,7 +220,6 @@ Only flags listed in `model_def["image_prompt_types_allowed"]` survive settings 
 | `+` | A second control or reference video is used (`video_guide2`). |
 | `*` | A third reference video is used (`video_guide3`), with `+`. |
 | `-` | The guide videos are reference videos (appearance or motion references) rather than control videos, for example H3 Ref2VA `V-U` for one reference video, `V+-U` for two and `V+*-U` for three. H3 Ref2VA `V1-U` takes up to three excerpts from one reference video instead. With sliding windows, every window receives the whole reference video; without `-`, a control video is split so that each window receives its own section. |
-| `R` | Sparse video-to-video: one frame is taken from the control video for each sliding window. |
 | `\|` | Cap the video length at the control video's length (**Capped By: Control Length**). |
 | `G` | Guide/denoise against the control media. Enables `denoising_strength`. |
 | `U` | Keep/use the guide unchanged, identity/raw format, or bypass preprocessing depending on the model choice. |
@@ -297,7 +296,21 @@ Shared option flags can be appended:
 | `K` | Enable "Think" mode for supported prompt enhancer backends. |
 | `1` | Use the model's alternate enhancer instruction set, often a relayed/dialogue prompt mode. |
 
-Examples: `T`, `TI`, `T1`, and `TI1`. Older saved values `I` and `IK` are migrated to `TI` and `TIK`.
+Examples: `T`, `TI`, `T1`, `TI1`, and MOSS `T1` (`T1K` with Think). Older saved values `I` and `IK` are migrated to `TI` and `TIK`.
+
+Enhancer system instructions can insert generation values with double-brace placeholders. For example, `Compose for {{width}}x{{height}} pixels` becomes `Compose for 1536x896 pixels` at that selected resolution. This works with manual and automatic enhancement, local and external enhancers, and each instruction set in a chain. No extra flag is needed: values enter the instructions only where a placeholder requests them. The user's prompt and ordinary JSON braces are unchanged.
+
+| Placeholder | Value |
+| --- | --- |
+| `{{width}}`, `{{height}}`, `{{resolution}}` | Selected canvas dimensions in pixels, or `WIDTHxHEIGHT`. These precede reference-image fitting and postprocessing. Available for images and videos. |
+| `{{aspect_ratio}}` | Selected canvas ratio, such as `12:7`. |
+| `{{half_width}}`, `{{half_height}}` | Half the selected dimensions, useful for layouts with a centered pixel origin. |
+| `{{duration_seconds}}` | Video duration, or the selected positive audio duration. For video windows, each prompt receives its own window duration. Unavailable for still images or automatic audio duration. |
+| `{{fps}}`, `{{frame_count}}` | Video frame rate and number of frames; for video windows, the frame count belongs to that window. |
+
+Templates keep the model's coordinate convention: MOSS uses centered pixels, while models with normalized layouts retain their normalized units. Unknown or unavailable placeholders produce an error rather than guessed values. To include a literal placeholder in system instructions, escape it as `\{{width}}`.
+
+Automatic duration guidance keeps its existing behavior unless the model definition sets `prompt_enhancer_video_duration` to `false`. This is a model declaration, not a generation setting. Explicit `false` disables the generic duration sentence for both whole videos and individual windows; `true` enables it, and omitting the declaration preserves the existing workflow. A template can still request `{{duration_seconds}}` when automatic insertion is disabled. When the selected system instructions already use that placeholder, WanGP omits the generic sentence to avoid duplication. An escaped literal placeholder does not suppress it. Start/end image roles, reference labels, injected-frame positions and timestamps remain available in either case.
 
 ### `multi_prompts_gen_type`
 

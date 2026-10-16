@@ -44,6 +44,10 @@ def normalize_choice(value: str, choices: list[str], default: str = "", require_
     mode = without_thinking(value)
     if mode in choices and (mode or not require_choice):
         return mode
+    # Keep selections saved while resolution context used a mode flag.
+    legacy_mode = mode.replace("R", "")
+    if legacy_mode != mode and legacy_mode in choices and (legacy_mode or not require_choice):
+        return legacy_mode
     if default in choices and (default or not require_choice):
         return default
     return next((choice for choice in choices if choice or not require_choice), "")

@@ -1,0 +1,14 @@
+MOSS-Image inference architecture adapted from OpenMOSS:
+https://github.com/OpenMOSS/MOSS-Image
+https://huggingface.co/OpenMOSS-Team/MOSS-Image-Base
+Base revision: 5f40f07a304541840b6019d2d34d30f966756787
+SFT revision: daf706d2e1c7a6369c17b6d1658671aee6db1ebe
+The released weights and inference code are licensed under Apache-2.0.
+
+The frozen text encoder is Qwen3.5-9B, using WanGP's existing Qwen
+implementation and its preserved upstream license notices. The unused
+vision tower is omitted. Q/gate projection rows are stored in separate
+contiguous groups in the WanGP encoder checkpoint.
+
+The FLUX.2 small VAE decoder reuses WanGP's FLUX autoencoder implementation.
+The unused image encoder is omitted from the prepared decoder checkpoint.

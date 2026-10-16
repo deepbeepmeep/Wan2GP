@@ -10,6 +10,7 @@ import torch
 from PIL import Image
 
 from shared.llm_io import known_token_ids, llm_io_enabled, log_llm_io, media_descriptor
+from shared.prompt_enhancer.templates import render_system_prompt, uses_placeholder
 from shared.utils.cancellation import check_cancelled
 from shared.prompt_enhancer.streaming import ThrottledStreamEmitter
 
@@ -184,9 +185,13 @@ def _split_prompt_enhancer_system_suffix(prompt_enhancer_model, prompt: str) -> 
     return prompt_body.strip(), system_suffix.strip(), False
 
 
-def _merge_prompt_enhancer_system_prompt(prompt_enhancer_model, system_prompt: str, system_suffix: str, replace_system_prompt: bool = False, thinking_enabled: Optional[bool] = None) -> str:
-    system_prompt = str(system_prompt or "").rstrip()
+def _merge_prompt_enhancer_system_prompt(prompt_enhancer_model, system_prompt: str, system_suffix: str, replace_system_prompt: bool = False, thinking_enabled: Optional[bool] = None, duration_instructions="") -> str:
+    system_prompt = str(system_prompt or "")
     system_suffix = str(system_suffix or "").strip()
+    effective_template = system_suffix if replace_system_prompt and system_suffix else system_prompt + "\n" + system_suffix
+    if duration_instructions and not uses_placeholder(effective_template, "duration_seconds"):
+        system_prompt += duration_instructions
+    system_prompt = system_prompt.rstrip()
     if len(system_suffix) == 0:
         merged_prompt = system_prompt
     elif replace_system_prompt:
@@ -236,6 +241,9 @@ def generate_cinematic_prompt(
     image_contexts=None,
     offload_manager=None,
     prompt_durations=None,
+    template_context=None,
+    inject_duration=True,
+    duration_instructions="",
 ) -> List[str]:
     prompts = [prompt] if isinstance(prompt, str) else prompt
     check_cancelled()
@@ -257,6 +265,9 @@ def generate_cinematic_prompt(
             thinking_enabled,
             generation_callbacks=generation_callbacks,
             prompt_durations=prompt_durations,
+            template_context=template_context,
+            inject_duration=inject_duration,
+            duration_instructions=duration_instructions,
         )
     else:
         if prompt_enhancer_instructions is None:
@@ -282,6 +293,9 @@ def generate_cinematic_prompt(
             image_contexts=image_contexts,
             offload_manager=offload_manager,
             prompt_durations=prompt_durations,
+            template_context=template_context,
+            inject_duration=inject_duration,
+            duration_instructions=duration_instructions,
         )
 
     return prompts
@@ -309,13 +323,17 @@ def _generate_t2v_prompt(
     thinking_enabled: Optional[bool],
     generation_callbacks=None,
     prompt_durations=None,
+    template_context=None,
+    inject_duration=True,
+    duration_instructions="",
 ) -> List[str]:
     messages = []
     for index, prompt in enumerate(prompts):
         prompt_body, system_suffix, replace_system_prompt = _split_prompt_enhancer_system_suffix(prompt_enhancer_model, prompt)
-        message_system_prompt = _merge_prompt_enhancer_system_prompt(prompt_enhancer_model, system_prompt, system_suffix, replace_system_prompt, thinking_enabled=thinking_enabled)
-        if prompt_durations is not None and prompt_durations[index] is not None:
-            message_system_prompt += f"\nThis window lasts {prompt_durations[index]:g} seconds. Keep the described action within this duration."
+        message_system_prompt = _merge_prompt_enhancer_system_prompt(prompt_enhancer_model, system_prompt, system_suffix, replace_system_prompt,
+            thinking_enabled=thinking_enabled, duration_instructions=duration_instructions if inject_duration else "")
+        duration = prompt_durations[index] if prompt_durations is not None else None
+        message_system_prompt = render_system_prompt(message_system_prompt, template_context, duration, inject_duration=inject_duration)
         messages.append(
             [
                 {"role": "system", "content": message_system_prompt},
@@ -392,6 +410,9 @@ def _generate_i2v_prompt(
     image_contexts=None,
     offload_manager=None,
     prompt_durations=None,
+    template_context=None,
+    inject_duration=True,
+    duration_instructions="",
 ) -> List[str]:
     if hasattr(image_caption_model, "generate_image_captions"):
         image_captions = image_caption_model.generate_image_captions(first_frames or [], image_contexts=image_contexts, offload_manager=offload_manager, stop_requested=(generation_callbacks or {}).get("stop_requested"), enhancement_progress=(generation_callbacks or {}).get("enhancement_progress"))
@@ -410,12 +431,12 @@ def _generate_i2v_prompt(
     messages = []
     for index, (prompt, image_caption) in enumerate(zip(prompts, image_captions)):
         prompt_body, system_suffix, replace_system_prompt = _split_prompt_enhancer_system_suffix(prompt_enhancer_model, prompt)
-        message_system_prompt = _merge_prompt_enhancer_system_prompt(prompt_enhancer_model, system_prompt, system_suffix, replace_system_prompt, thinking_enabled=thinking_enabled)
+        message_system_prompt = _merge_prompt_enhancer_system_prompt(prompt_enhancer_model, system_prompt, system_suffix, replace_system_prompt,
+            thinking_enabled=thinking_enabled, duration_instructions=duration_instructions if inject_duration else "")
         if image_contexts is not None:
             message_system_prompt += "\n\nThe labeled image descriptions belong only to this generation window. Respect the start and end anchors and the times of injected frames. Reference images guide appearance, not chronological order. Keep these roles distinct and do not invent absent anchors."
         duration = prompt_durations[index] if prompt_durations is not None else image_contexts[index].duration_seconds if image_contexts is not None else None
-        if duration is not None:
-            message_system_prompt += f"\nThis window lasts {duration:g} seconds. Keep the described action within this duration."
+        message_system_prompt = render_system_prompt(message_system_prompt, template_context, duration, inject_duration=inject_duration)
         messages.append(
             [
                 {"role": "system", "content": message_system_prompt},

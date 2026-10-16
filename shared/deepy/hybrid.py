@@ -14,7 +14,7 @@ from shared.deepy.runtime import GenerationRuntime
 from shared.deepy.service import DeepyService
 from shared.utils.gallery_sources import GALLERY_SOURCES, SOURCES, STRIP_SOURCES, VIDEO
 from shared.utils.generation_state import pause_state, set_generation_state
-from shared.gradio.progress import WangpProgress
+from shared.gradio.progress import ProgressUpdates, WangpProgress
 
 
 class SharedState(dict):
@@ -36,13 +36,15 @@ def service_for(state):
 
 
 class HybridService(DeepyService):
-    def __init__(self, deps, state, *, process_queue, finalize_queue, unload, gallery_lock=None, model_label=lambda: ''):
+    def __init__(self, deps, state, *, process_queue, finalize_queue, unload, gallery_lock=None, model_label=lambda: '', task_label=lambda task: ''):
         # Gradio historically initializes these lists on the first UI interaction.
         defaults = GenerationRuntime._build_state(SimpleNamespace(_deps=deps))['gen']
         defaults.pop('in_progress')
         for key, value in defaults.items():
             state['gen'].setdefault(key, value)
         self._host_dirty = threading.Event()
+        self._host_changes = threading.Event()
+        self._generation_updates = ProgressUpdates(self._host_dirty.set)
         self._host_signature = None
         self._gallery_signature = None
         self.gallery_revision = 0
@@ -62,12 +64,16 @@ class HybridService(DeepyService):
         self._finalize_queue = finalize_queue
         self._unload = unload
         self._model_label = model_label
+        self._task_label = task_label
         self._generation_view = None
         self._generation_view_revision = 0
+        self._progress_event = None
+        self._generation_status = state['gen'].get('status')
         super().__init__(deps, state=state, gallery_factory=lambda deps, state: GradioGallery(deps, state, self.host_changed))
+        self._progress_bar = WangpProgress(on_change=self._generation_updates.changed)
         state.service = self
-        state['gen']['state_change_callback'] = self.host_changed
-        self._publish_generation_view()
+        state['gen']['state_change_callback'] = self.generation_state_changed
+        self._publish_generation_view(force=True)
         from shared.deepy.workspace_viewer import WorkspaceViewer
         self.gallery_lock = threading.RLock() if gallery_lock is None else gallery_lock
         self.workspace_viewer = WorkspaceViewer(self)
@@ -86,18 +92,56 @@ class HybridService(DeepyService):
         return deepcopy(snapshot) if snapshot is not None else None
 
     def host_changed(self):
+        self._host_changes.set()
         self._host_dirty.set()
 
-    def _publish_generation_view(self):
-        gen = self._state['gen']
-        pending, paused = pause_state(gen)
-        html = None
-        if not gen.get('status_display') and not gen.get('model_preloading'):
-            progress = WangpProgress()
-            progress.status(gen.get('status') or 'Ready')
-            html = progress.render(active=False, model_name=self._model_label())
-        view = {'html': html, 'pending': pending, 'paused': paused}
+    def generation_state_changed(self):
+        self._host_changes.set()
+        self._generation_updates.changed(immediate=True)
+
+    def _generation_event(self, command, data):
+        # Callbacks only record progress and wake the shared publisher. Rendering
+        # and fan-out never run on the inference/download thread.
         with self._condition:
+            if command == 'exit':
+                self._progress_event = None
+                self._generation_updates.changed(immediate=True)
+                self._generation_aborting = False
+                return
+            if command not in {'progress', 'status', 'download'}:
+                return
+            if self._progress_event is None:
+                self._progress_bar = WangpProgress(on_change=self._generation_updates.changed)
+            self._progress_event = {'type': command, 'data': data}
+            if command == 'progress':
+                self._progress_bar(*data)
+            elif command == 'status':
+                self._generation_status = self._state['gen'].get('status')
+                self._progress_bar.status(data)
+            else:
+                self._progress_bar.set_download(data)
+
+    def _publish_generation_view(self, force=False):
+        gen = self._state['gen']
+        with self._condition:
+            progress = self._progress_bar
+            status = gen.get('status')
+            if status != self._generation_status or progress.position is None:
+                self._generation_status = status
+                progress.status(status or 'Ready')
+            if not self._generation_updates.consume(force=force):
+                return
+            pending, paused = pause_state(gen)
+            active, aborting = bool(gen.get('status_display')), bool(gen.get('abort')) or self._generation_aborting
+            task = gen.get('api_active_queue_task')
+            model_name = self._task_label(task) if active and task is not None else self._model_label()
+            html = None if gen.get('model_preloading') else progress.render(active=active, aborting=aborting, hold_complete=True, model_name=model_name)
+            view = {'html': html, 'pending': pending, 'paused': paused}
+            current = None if self._progress_event is None else {**self._progress_event, 'description': progress.description, 'aborting': aborting, 'html': progress.render(compact=True, aborting=aborting, hold_complete=True)}
+            if current != self._progress:
+                self._progress = current
+                self.publish('progress', current)
+            self._generation_updates.hold(progress.completion_delay if not aborting and (html is not None or current is not None) else 0)
             if view != self._generation_view:
                 self._generation_view = view
                 self._generation_view_revision += 1
@@ -135,14 +179,19 @@ class HybridService(DeepyService):
 
     def _publish_host_changes(self):
         while True:
-            self._host_dirty.wait()
+            self._host_dirty.wait(self._generation_updates.delay())
             self._host_dirty.clear()
             if self._closing:
                 return
             try:
                 with self._mutation_lock:
                     gen = self._state['gen']
-                    self._publish_generation_view()
+                    host_changed = self._host_changes.is_set()
+                    if host_changed:
+                        self._host_changes.clear()
+                    self._publish_generation_view(force=host_changed)
+                    if not host_changed:
+                        continue
                     for source in GALLERY_SOURCES:
                         if gen[source.last_selected_key]:
                             gen[source.selected_key] = len(gen[source.files_key]) - 1

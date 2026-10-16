@@ -294,6 +294,12 @@ _PATCHES = {
         ('S(e,"selected",t[33]?.id===t[6])},m(d,u)', 'S(e,"selected",t[33]?.id===t[6]),e.disabled=!t[33].interactive,m(e,"aria-disabled",e.disabled)},m(d,u)'),
         ('u[0]&320&&S(e,"selected",t[33]?.id===t[6])', 'u[0]&320&&S(e,"selected",t[33]?.id===t[6]),u[0]&256&&(e.disabled=!t[33].interactive,m(e,"aria-disabled",e.disabled))'),
     ],
+    'Image-CnqB5dbD.js': [
+        ('function k(s){', Path(__file__).with_name('image_zoom.js').read_text(encoding='utf-8') + '\nfunction k(s){'),
+        ('x(t,e,o),i||', 'x(t,e,o),window.WanGPImageZoom.mount(e),i||'),
+        ('d(e,"svelte-1pijsyv",!0)},i:m', 'd(e,"svelte-1pijsyv",!0),window.WanGPImageZoom.mount(e)},i:m'),
+        ('d(t){t&&b(e),i=!1', 'd(t){window.WanGPImageZoom.destroy(e);t&&b(e),i=!1'),
+    ],
     'Gallery-D7vc32lN.js': [
         ('function Ve(s){', '''function wangpGalleryGap(event) {
             const container = event.target.closest('.thumbnails, .grid-container');
@@ -339,15 +345,21 @@ _PATCHES = {
         ('_[0]&8454274){b=te(a[16]);', '_[0]&12648706){b=te(a[22]&&a[7]?[]:a[16]);'),
         # Do not animate the strip when the selected thumbnail is already visible.
         ('Q=x-S+X/2-H/2+A.scrollLeft;A&&', 'Q=x-S+X/2-H/2+A.scrollLeft;if(x>=S&&x+X<=S+H)return;A&&'),
-        ('function Re(s){switch(s.code){', 'function Re(s){if(["Escape","ArrowLeft","ArrowRight"].includes(s.code))wangpGalleryUser=true;switch(s.code){'),
+        # Escape exits fullscreen without discarding the selected preview and
+        # exposing the large grid underneath. Preview=False galleries can close.
+        ('function Re(s){switch(s.code){', 'function Re(s){if(s.code==="Escape"&&a){s.preventDefault();if(document.fullscreenElement)document.exitFullscreen().catch(console.error);return;}if(["Escape","ArrowLeft","ArrowRight"].includes(s.code))wangpGalleryUser=true;switch(s.code){'),
         ('const qe=s=>l(1,m=s);', 'const qe=s=>{wangpGalleryUser=true;return l(1,m=s)};'),
         ('Oe=s=>{m===null', 'Oe=s=>{wangpGalleryUser=true;m===null'),
         ('Ge=()=>{l(1,m=null)', 'Ge=()=>{wangpGalleryUser=true;l(1,m=null)'),
         ('n.$$set=s=>{"show_label"', 'n.$$set=s=>{wangpGalleryExplicit||="selected_index"in s&&("value"in s||s.selected_index!==m);if(wangpGalleryUser&&(("selected_index"in s&&s.selected_index!==m)||("value"in s&&!et(r,s.value))))wangpGalleryUser=false;"show_label"'),
         ('K?(l(1,m=a&&r?.length?0:null),l(29,K=!1))', 'K?(!wangpGalleryExplicit&&l(1,m=a&&r?.length?0:null),l(29,K=r==null||r.length===0))'),
+        ('Math.min(m,r.length-1))):l(1,m=null)', 'Math.min(m,r.length-1))):l(1,m=a&&r?.length?0:null)'),
         ('J("change"),l(30,le=r)', 'wangpGalleryChanged=true,l(30,le=r)'),
         ('(l(31,ne=m),m!==null&&(P!=null&&l(1,m=Math.max(0,Math.min(m,P.length-1))),J("select",{index:m,value:P?.[m]})))', '(m!==null&&P!=null&&l(1,m=Math.max(0,Math.min(m,P.length-1))),l(31,ne=m),wangpGalleryUser?(m!==null&&J("select",{index:m,value:P?.[m]})):wangpGalleryChanged=true)'),
         ('l(22,i=m!=null&&P!=null?P[m]:null)},[r,m', 'l(22,i=m!=null&&P!=null?P[m]:null);if(wangpGalleryChanged)J("change");wangpGalleryChanged=wangpGalleryUser=wangpGalleryExplicit=false},[r,m'),
+        # Full-resolution media belongs only to the gallery being enlarged.
+        # Release the listener when a form rebuild destroys this component.
+        ('_t(()=>{document.addEventListener("fullscreenchange",()=>{l(17,j=!!document.fullscreenElement)})})', '_t(()=>{const changed=()=>l(17,j=document.fullscreenElement===V);document.addEventListener("fullscreenchange",changed);return()=>document.removeEventListener("fullscreenchange",changed)})'),
     ],
     'index.js': [
         ('jC.SchedulerSystem = XC;', _EDITOR_SCHEDULER + 'jC.SchedulerSystem = XC;'),

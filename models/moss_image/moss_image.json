@@ -1,0 +1,10 @@
+{
+    "dim": 3072,
+    "ffn_dim": 8192,
+    "freq_dim": 256,
+    "latent_channels": 128,
+    "num_heads": 24,
+    "num_layers": 42,
+    "rope_base": 10000.0,
+    "text_dim": 4096
+}

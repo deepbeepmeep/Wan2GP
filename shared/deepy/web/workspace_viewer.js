@@ -18,12 +18,12 @@
       const button = document.createElement('button'); button.type = 'button'; button.title = button.ariaLabel = 'Explore workspace'; button.innerHTML = svg('search');
       picker.node.append(button); button.onclick = event => {event.stopPropagation(); this.open();};
       this.dialog = document.createElement('dialog'); this.dialog.className = 'wangp-workspace-viewer'; this.dialog.ariaLabel = 'Workspace media viewer';
-      this.dialog.innerHTML = `<header><div class="wv-heading"><div class="wv-workspace-picker"><select data-workspace aria-label="Workspace"></select><button data-create aria-label="Add workspace" title="Add workspace">${svg('create')}</button></div><span data-summary></span></div><div class="wv-header-actions"><button data-retention aria-label="Automatic workspace archiving" title="Automatic workspace archiving">${svg('broom')}</button><button data-close aria-label="Close workspace viewer" title="Close (Esc)">${svg('close')}</button></div></header>
-        <div class="wv-storage"><strong data-storage-label></strong><code data-folder></code><button data-folder-change hidden>Change Folder</button></div>
+      this.dialog.innerHTML = `<header><div class="wv-heading"><div class="wv-workspace-picker"><select data-workspace aria-label="Workspace"></select><button data-create aria-label="Add workspace" title="Add workspace">${svg('create')}</button></div></div><div class="wv-header-actions"><button data-retention aria-label="Automatic workspace archiving" title="Automatic workspace archiving">${svg('broom')}</button><button data-close aria-label="Close workspace viewer" title="Close (Esc)">${svg('close')}</button></div><div class="wv-meta"><span data-summary></span><div class="wv-storage"><strong data-storage-label></strong><code data-folder></code><button data-folder-change hidden>Change Folder</button></div></div></header>
         <div class="wv-toolbar"><div role="tablist" data-sources aria-label="Workspace media"></div><span class="wv-spacer"></span><span data-activity></span><button data-protect aria-label="Protect workspace from automatic archiving" aria-pressed="false">${svg('unlock')}</button><button data-import>${svg('import')}Import</button><button data-refresh>Refresh</button><input data-files type="file" multiple hidden></div>
         <div class="wv-selection"><span data-count></span><button data-page-select>Select page</button><button data-clear>Clear selection</button><div data-actions hidden><button data-action="eject">${svg('eject')}Eject</button><button data-action="delete">${svg('delete')}Delete files</button><button data-action="copy">${svg('copy')}Copy to workspace</button><button data-action="move">${svg('move')}Move to workspace</button><button data-action="archive">${svg('archive')}ZIP</button><button data-action="first" title="Move selected media to the oldest end">${svg('first')}Move to start</button><button data-action="last" title="Move selected media to the newest end">${svg('last')}Move to end</button></div></div>
-        <p class="wv-notice" role="status" hidden></p><div class="wv-content"><section class="wv-browser" aria-label="Workspace media grid"><div class="wv-grid" role="listbox" aria-multiselectable="true" aria-label="Media"></div><div class="wv-empty" hidden>No media in this gallery. Import files to get started.</div><div class="wv-rubber" hidden></div></section><aside><h3>Media details</h3><div class="wv-preview"></div><iframe title="Generation properties" sandbox=""></iframe><button data-extract-settings disabled title="Load the selected media's generation settings and close the workspace manager">Extract Settings</button></aside></div>
-        <footer><span>Oldest → newest · Ctrl/⌘ click or drag on empty space to select · Drag tiles to reorder</span><button data-prev aria-label="Older page">←</button><label>Page <input data-page type="number" min="1" aria-label="Page number"></label><span data-pages></span><button data-next aria-label="Newer page">→</button></footer>`;
+        <p class="wv-notice" role="status" hidden></p><div class="wv-content"><div class="wv-gallery"><section class="wv-browser" aria-label="Workspace media grid"><div class="wv-grid" role="listbox" aria-multiselectable="true" aria-label="Media"></div><div class="wv-empty" hidden>No media in this gallery. Import files to get started.</div><div class="wv-rubber" hidden></div></section>
+        <footer><span>Oldest → newest · Ctrl/⌘ click or drag on empty space to select · Drag tiles to reorder</span><div class="wv-pagination"><button data-prev aria-label="Older page">←</button><label>Page <input data-page type="number" min="1" aria-label="Page number"></label><span data-pages></span><button data-next aria-label="Newer page">→</button></div></footer></div>
+        <aside><h3>Media details</h3><div class="wv-detail-panes"><div class="wv-preview"></div><div class="wv-divider" role="separator" tabindex="0" aria-label="Resize media preview and settings summary" aria-orientation="horizontal" aria-valuemin="10" aria-valuemax="80" aria-valuenow="34" title="Drag to resize · Arrow keys to adjust · Double-click to reset"></div><iframe title="Generation properties" sandbox=""></iframe></div><button data-extract-settings disabled title="Load the selected media's generation settings and close the workspace manager">Extract Settings</button></aside></div>`;
       document.body.append(this.dialog);
       this.grid = this.dialog.querySelector('.wv-grid'); this.browser = this.dialog.querySelector('.wv-browser');
       this.info = this.dialog.querySelector('iframe'); this.preview = this.dialog.querySelector('.wv-preview');
@@ -47,7 +47,7 @@
       this.picker.dialog.addEventListener('close', () => this.invalidate());
       this.dialog.querySelector('[data-protect]').onclick = () => this.protect();
       this.dialog.querySelector('[data-retention]').onclick = () => this.action('retention').catch(error => this.notice(error.message));
-      this.dialog.onclose = () => {this.requestId++; this.detailRequest?.abort(); this.grid.replaceChildren(); this.preview.replaceChildren(); this.modal.close(); clearTimeout(this.refreshTimer); clearTimeout(this.pageHover); cancelAnimationFrame(this.rubberFrame);};
+      this.dialog.onclose = () => {this.requestId++; this.detailRequest?.abort(); this.grid.replaceChildren(); this.clearPreview(); this.modal.close(); clearTimeout(this.refreshTimer); clearTimeout(this.pageHover); cancelAnimationFrame(this.rubberFrame);};
       this.dialog.querySelector('[data-import]').onclick = () => this.dialog.querySelector('[data-files]').click();
       this.dialog.querySelector('[data-files]').onchange = event => this.importFiles([...event.target.files]);
       this.dialog.querySelector('[data-refresh]').onclick = () => this.load(this.state?.page || 0);
@@ -67,7 +67,7 @@
         if (event.key === ' ' || event.key === 'Enter') {const tile = event.target.closest('[data-key]'); if (tile) {event.preventDefault(); this.choose(tile.dataset.key, event);}}
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {event.preventDefault(); this.state.items.forEach(item => this.selected.add(item.key)); this.selectionChanged();}
       };
-      this.installDrag(); this.installRubber();
+      this.installDrag(); this.installRubber(); this.installDivider();
     }
     get selected() {return this.selections[this.source] ??= new Set();}
     // One tab per gallery of the workspace, in the order and with the import filters published by the server.
@@ -77,7 +77,7 @@
       list.dataset.ids = sources.map(source => source.id).join();
       list.replaceChildren(...sources.map(source => {
         const tab = document.createElement('button'); tab.setAttribute('role', 'tab'); tab.dataset.source = source.id; tab.textContent = source.label;
-        tab.onclick = () => {if (this.source !== source.id) {this.source = source.id; this.detailKey = null; this.preview.replaceChildren(); this.info.srcdoc = WanGPMediaView.documentHtml('Select media to view its properties.'); this.load(this.pages[this.source] ?? 0);}};
+        tab.onclick = () => {if (this.source !== source.id) {this.source = source.id; this.detailKey = null; this.clearPreview(); this.info.srcdoc = WanGPMediaView.documentHtml('Select media to view its properties.'); this.load(this.pages[this.source] ?? 0);}};
         return tab;
       }));
       this.dialog.querySelector('[data-files]').accept = sources.map(source => source.accept).join(',');
@@ -111,7 +111,7 @@
       this.dialog.querySelector('[data-storage]').textContent = state.storage_mode === 'dedicated' ? 'Folder Storage' : 'Shared Storage';
       this.dialog.querySelector('[data-storage]').title = state.folder || 'Shared Output Folders';
       this.dialog.querySelector('[data-storage-label]').textContent = state.storage_mode === 'dedicated' ? 'Dedicated folder' : 'Shared references · Files can be in multiple folders';
-      this.dialog.querySelector('[data-folder]').textContent = state.folder || '';
+      this.dialog.querySelector('[data-folder]').textContent = this.dialog.querySelector('[data-folder]').title = state.folder || '';
       this.dialog.querySelector('[data-folder]').hidden = !state.folder;
       this.dialog.querySelector('[data-folder-change]').hidden = !state.folder;
       const date = new Date(state.last_activity * 1000), activity = this.dialog.querySelector('[data-activity]');
@@ -235,14 +235,18 @@
       this.dialog.querySelector('[data-count]').textContent = `${this.selected.size} selected`;
       this.dialog.querySelector('[data-actions]').hidden = !this.selected.size;
       this.dialog.querySelector('[data-clear]').hidden = !this.selected.size;
-      if (!this.selected.size) {this.detailRequest?.abort(); this.detailKey = null; this.preview.replaceChildren(); this.info.srcdoc = WanGPMediaView.documentHtml('Select media to view its properties.');}
+      if (!this.selected.size) {this.detailRequest?.abort(); this.detailKey = null; this.clearPreview(); this.info.srcdoc = WanGPMediaView.documentHtml('Select media to view its properties.');}
+    }
+    clearPreview() {
+      WanGPImageZoom.destroy(this.preview.querySelector('img'));
+      this.preview.replaceChildren();
     }
     async showDetails(key) {
       const item = this.state.items.find(item => item.key === key); if (!item) return;
       const identity = this.workspace + this.source + key; this.detailKey = identity;
       this.detailRequest?.abort();
       const request = this.detailRequest = new AbortController();
-      this.preview.replaceChildren();
+      this.clearPreview();
       if (item.url) {
         let preview = WanGPMediaView.thumbnail(item);
         if (item.kind === 'video' || item.kind === 'audio') {
@@ -251,6 +255,7 @@
           play.append(preview, label); play.onclick = () => this.play(item); preview = play;
         }
         this.preview.append(preview, this.previewActions(item));
+        if (item.kind === 'image') WanGPImageZoom.mount(preview, {viewport: this.preview, source: new URL(item.url, location.href).href});
       }
       this.info.srcdoc = WanGPMediaView.documentHtml('Loading media information…');
       try {const result = await this.transport.request(this.query('workspace_viewer/info', {key}), undefined, request.signal); if (!request.signal.aborted && this.detailKey === identity) this.info.srcdoc = WanGPMediaView.documentHtml(result.html);}
@@ -282,9 +287,12 @@
     }
     loadPreview(item) {
       let media = this.preview.firstElementChild;
+      if (item.kind === 'image') {
+        media.classList.add('wv-media'); media.loading = 'eager'; media.src = item.url;
+        return media;
+      }
       if (!media.classList.contains('wv-media')) {
         const original = WanGPMediaView.media(item); original.className = 'wv-media';
-        if (item.kind === 'image') original.loading = 'eager';
         media.replaceWith(original); media = original;
       }
       return media;
@@ -385,6 +393,34 @@
       }
       this.setBusy(false); this.dialog.querySelector('[data-files]').value = '';
       await this.load(this.state.page); this.notice([...reused, ...failures].join(' · '));
+    }
+    installDivider() {
+      const panes = this.dialog.querySelector('.wv-detail-panes'), divider = panes.querySelector('.wv-divider');
+      const resize = percent => {
+        percent = Math.max(10, Math.min(80, percent));
+        panes.style.setProperty('--wv-preview-height', percent + '%');
+        divider.setAttribute('aria-valuenow', String(Math.round(percent)));
+      };
+      let offset = 0;
+      divider.onpointerdown = event => {
+        if (event.button !== 0) return;
+        event.preventDefault(); divider.focus();
+        offset = event.clientY - this.preview.getBoundingClientRect().bottom;
+        divider.setPointerCapture(event.pointerId); panes.classList.add('wv-resizing');
+      };
+      divider.onpointermove = event => {
+        if (!divider.hasPointerCapture(event.pointerId)) return;
+        const box = panes.getBoundingClientRect(); resize(100 * (event.clientY - box.top - offset) / box.height);
+      };
+      divider.onpointerup = divider.onpointercancel = event => {if (divider.hasPointerCapture(event.pointerId)) divider.releasePointerCapture(event.pointerId);};
+      divider.onlostpointercapture = () => panes.classList.remove('wv-resizing');
+      divider.onkeydown = event => {
+        const current = 100 * this.preview.getBoundingClientRect().height / panes.clientHeight;
+        const next = {ArrowUp: current - 5, ArrowDown: current + 5, Home: 10, End: 80}[event.key];
+        if (next === undefined) return;
+        event.preventDefault(); resize(next);
+      };
+      divider.ondblclick = () => resize(34);
     }
     installDrag() {
       this.grid.ondragstart = event => {

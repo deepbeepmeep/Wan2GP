@@ -24,6 +24,7 @@ class AboutPlugin(WAN2GPPlugin):
         gr.Markdown("- <B>Black Forest Labs</B> for the innovative Flux\\* image generators, including Flux 3 Image Klein\\* and Klein Base\\* (https://github.com/black-forest-labs/flux, https://github.com/black-forest-labs/flux-3-image-klein)")
         gr.Markdown("- <B>Alibaba Qwen Team</B> for their state of the art Qwen Image\\* generators (https://github.com/QwenLM/Qwen-Image)")
         gr.Markdown("- <B>inclusionAI</B> for Ming Image 0.1 Design and Design-Layer (https://github.com/inclusionAI/Ming-Image, https://huggingface.co/inclusionAI/Ming-Image-0.1-Design, https://huggingface.co/inclusionAI/Ming-Image-0.1-Design-Layer)")
+        gr.Markdown("- <B>OpenMOSS Team</B> for MOSS-Image Base and SFT, with text rendering and layout-guided image generation (https://github.com/OpenMOSS/MOSS-Image, https://huggingface.co/OpenMOSS-Team/MOSS-Image-Base, https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT)")
         gr.Markdown("- <B>Krea AI</B> for the Krea 2\\* RAW and Turbo image generators (https://github.com/krea-ai/krea-2, https://huggingface.co/krea/Krea-2-Raw, https://huggingface.co/krea/Krea-2-Turbo, https://www.krea.ai/blog/krea-2-technical-report)")
         gr.Markdown("- <B>Lightricks</B> for their super fast LTX Video\\* models and LTX-2\\* audio-video model (https://github.com/Lightricks/LTX-Video, https://github.com/Lightricks/LTX-2)")
         gr.Markdown("- <B>MiniMax AI</B> for the MiniMax H3\\* native audio-video generation models (https://huggingface.co/MiniMaxAI/MiniMax-H3)")

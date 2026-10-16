@@ -141,7 +141,7 @@ class family_handler:
 
     @staticmethod
     def query_family_infos():
-        return {"sensenova": (1160, "SenseNova")}
+        return {"sensenova": (1170, "SenseNova")}
 
     @staticmethod
     def get_lora_dir(base_model_type):

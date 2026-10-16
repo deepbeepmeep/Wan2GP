@@ -442,6 +442,7 @@
         }
     };
     window.closeImageModal = function() {
+        document.querySelectorAll('#image-modal-container .modal-image').forEach(image => window.WanGPImageZoom.destroy(image));
         const closeButton = document.querySelector('#modal_close_trigger_btn');
         if (closeButton) closeButton.click();
     };

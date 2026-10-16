@@ -15,7 +15,7 @@
     observer.disconnect();
     const legacyInput = WAC.eventSource();
     if (legacyInput?.__wangpAssistantEventValueObserved) delete legacyInput.value;
-    let galleryRevision = -1, settingsRevision = -1, previewRevision = -1, generating = false, generationInstance = null, noticeTimer = null, unauthorized = false;
+    let galleryRevision = -1, settingsRevision = -1, previewRevision = -1, noticeTimer = null, unauthorized = false;
     let restoration = null, restoredId = null;
     const base = marker.dataset.deepyHybrid;
     const openApp = document.createElement('a');
@@ -88,15 +88,8 @@
       galleryPending = false;
       if (galleryDirty) requestGallery();
     };
-    function progress(data) {
-      if (data && !generating) WAC.setBridgeValue('#wangp_main_status_trigger textarea, #wangp_main_status_trigger input', String(Date.now()));
-      generating = !!data;
-    }
     function generationSnapshot(state) {
-      if (generationInstance !== state.instance) generating = false;
-      generationInstance = state.instance;
       window.WanGPGenerationState.receive(state.generation_state, true);
-      progress(state.progress);
     }
     const transport = new DeepyConnection(base, {
       snapshot: state => {generationSnapshot(state); WAC.applyDisplaySettings(state.display_settings); renderWorkspaces(state.workspaces, true); restoring(state.restoration); WAC.consumePayload(state.chat); catalog(state); galleryRevision = settingsRevision = previewRevision = -1; refresh(state.host_view); window.WanGPFormSync.refresh(state.forms);},
@@ -110,7 +103,6 @@
         else if (event.type === 'chat') WAC.consumePayload(event.data);
         else if (event.type === 'host_view') refresh(event.data);
         else if (event.type === 'sessions') catalog(event.data);
-        else if (event.type === 'progress') progress(event.data);
         else if (event.type === 'generation_state') window.WanGPGenerationState.receive(event.data);
         else if (event.type === 'error') showError(event.data);
       },

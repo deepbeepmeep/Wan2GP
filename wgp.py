@@ -129,6 +129,7 @@ import inspect
 from shared.utils import prompt_parser
 from shared.prompt_enhancer import chaining as prompt_enhancer_chaining
 from shared.prompt_enhancer import images as prompt_enhancer_images
+from shared.prompt_enhancer import templates as prompt_enhancer_templates
 from shared.prompt_enhancer import labels as prompt_enhancer_labels
 from shared.prompt_enhancer.progress import EnhancementProgress
 from shared.prompt_enhancer.config import PROMPT_ENHANCER_SPECULATIVE_DECODING_DEFAULT, PROMPT_ENHANCER_SPECULATIVE_DECODING_KEY, normalize_prompt_enhancer_speculative_decoding
@@ -184,7 +185,7 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-WanGP_version = "18.12"
+WanGP_version = "18.17"
 VIDEO_LENGTH_ROUNDING = "ceil"  # how a requested video length is fitted to the model's frame steps: "floor", "ceil" (never shorter than requested) or "nearest"
 set_video_length_rounding(VIDEO_LENGTH_ROUNDING)
 settings_version = 2.80
@@ -2583,6 +2584,7 @@ def update_generation_status(html_content):
 family_handlers = ["models.wan.wan_handler", "models.wan.ovi_handler", "models.wan.df_handler", "models.hyvideo.hunyuan_handler", "models.ltx_video.ltxv_handler", "models.ltx2.ltx2_handler", "models.ltx2.ltx_audio_tts_handler", "models.longcat.longcat_handler", "models.minimax_h3.minimax_h3_handler", "models.flux.flux_handler", "models.qwen.qwen_handler", "models.ming_image.ming_handler", "models.kandinsky5.kandinsky_handler", "models.kandinsky6.kandinsky6_handler",  "models.z_image.z_image_handler", "models.hidream.hidream_handler", "models.ideogram4.ideogram4_handler", "models.krea2.krea2_handler", "models.magi_human.magi_human_handler", "models.sensenova_u1.sensenova_u1_handler", "models.hunyuan3d.hunyuan3d_handler", "models.trellis2.trellis2_handler", "models.triposg.triposg_handler", "models.animate_any_mesh.animate_any_mesh_handler", "models.triposplat.triposplat_handler", "models.worldmirror.worldmirror_handler", "models.recon3d.recon3d_handler",  "models.TTS.ace_step_handler", "models.TTS.chatterbox_handler", "models.TTS.qwen3_handler", "models.TTS.heartmula_handler", "models.TTS.kugelaudio_handler", "models.TTS.index_tts2_handler", "models.TTS.stable_audio3_handler", "models.TTS.omnivoice_handler", "models.TTS.minimax_music3.minimax_music3_handler", "models.TTS.auk.auk_handler", "models.TTS.yue2.yue2_handler"]
 family_handlers.append("models.prism.prism_handler")
 family_handlers.append("models.flux3.flux3_handler")
+family_handlers.append("models.moss_image.moss_image_handler")
 family_handlers.append("models.TTS.fish_audio.fish_audio_handler")
 DEFAULT_LORA_ROOT = "loras" #"models.cosmos3.cosmos3_handler",
 
@@ -6583,13 +6585,16 @@ def process_prompt_enhancer(model_type, model_def, prompt_enhancer, original_pro
         image_start = (enhancer_kwargs or {}).get("control_image")
     prompt_images, image_contexts = prompt_enhancer_images.select_images(prompt_enhancer_mode, image_start, original_image_refs, batch_images, image_contexts)
     prompt_images = [_open_image_input(img) if isinstance(img, str) else img for img in prompt_images]
+    template_context = prompt_enhancer_templates.build_context(enhancer_kwargs, is_image, audio_only)
     video_duration = (enhancer_kwargs or {}).get("video_duration_seconds")
+    inject_duration = model_def.get("prompt_enhancer_video_duration") is not False
+    duration_instructions = ""
     if prompt_durations is None and model_def.get("prompt_enhancer_video_duration", False) and not is_image and not audio_only and video_duration is not None:
         if prompt_enhancer_instructions is None:
             from shared.prompt_enhancer.prompt_enhance_utils import T2V_CINEMATIC_PROMPT, IT2V_CINEMATIC_PROMPT
             prompt_enhancer_instructions = IT2V_CINEMATIC_PROMPT if prompt_images else T2V_CINEMATIC_PROMPT
         duration_text = f"{video_duration:.2f}".rstrip("0").rstrip(".")
-        prompt_enhancer_instructions += f"\n\nThe video duration is {duration_text} seconds. Keep the described action within this duration."
+        duration_instructions = f"\n\nThe video duration is {duration_text} seconds. Keep the described action within this duration."
     has_text_input = any(letter in prompt_enhancer_mode for letter in "TLB")
     if len(original_prompts) == 0 and not has_text_input:
         return None
@@ -6606,6 +6611,9 @@ def process_prompt_enhancer(model_type, model_def, prompt_enhancer, original_pro
                 instructions=prompt_enhancer_instructions or "",
                 max_output_tokens=text_encoder_max_tokens,
                 prompt_durations=prompt_durations,
+                template_context=template_context,
+                inject_duration=inject_duration,
+                duration_instructions=duration_instructions,
                 enhancement_progress=(enhancer_kwargs or {}).get("generation_callbacks", {}).get("enhancement_progress"),
             )
             return prompt_enhancer_images.restore_window_commands(prompts, window_commands)
@@ -6636,6 +6644,9 @@ def process_prompt_enhancer(model_type, model_def, prompt_enhancer, original_pro
             image_contexts=image_contexts,
             offload_manager=enhancer_offloadobj,
             prompt_durations=prompt_durations,
+            template_context=template_context,
+            inject_duration=inject_duration,
+            duration_instructions=duration_instructions,
             thinking_enabled = "K" in prompt_enhancer_mode,
             generation_callbacks=(enhancer_kwargs or {}).get("generation_callbacks"),
         )
@@ -6863,14 +6874,15 @@ def enhance_prompt(state, prompt, alt_prompt, prompt_enhancer, multi_images_gen_
     model_def = get_model_def(get_state_model_type(state))
     audio_only = model_def.get("audio_only", False)
     enhancer_kwargs = {"image_prompt_type": image_prompt_type, "video_prompt_type": video_prompt_type, "audio_prompt_type": audio_prompt_type, "audio_guide": inputs["audio_guide"] if "A" in audio_prompt_type else None, "duration_seconds": inputs["duration_seconds"]}
+    enhancer_kwargs["resolution"] = inputs["resolution"]
     enhancer_kwargs["control_image"] = prompt_enhancer_images.control_image_input(inputs)
     enhancer_kwargs["caption_input_info"] = prompt_enhancer_images.caption_input_info((inputs["image_start"] if "S" in image_prompt_type else None) or continuation_image, inputs["image_end"] if "E" in image_prompt_type else None, original_image_refs, enhancer_kwargs["control_image"], "K" in video_prompt_type)
     if image_contexts is not None:
         enhancer_kwargs["image_contexts"] = image_contexts
-    if model_def.get("prompt_enhancer_video_duration", False) and not is_image and not audio_only:
+    if not is_image and not audio_only:
         frames = min(inputs["video_length"], inputs["sliding_window_size"]) if model_def.get("sliding_window", False) else inputs["video_length"]
         fps = get_computed_fps(inputs["force_fps"], get_base_model_type(model_type), inputs["video_guide"], inputs["video_source"])
-        enhancer_kwargs["video_duration_seconds"] = frames / fps
+        enhancer_kwargs.update(video_duration_seconds=frames / fps, fps=fps, frame_count=frames)
     enhancer_kwargs["generation_callbacks"] = {"stop_requested": lambda: progress.gen["abort"], "enhancement_progress": EnhancementProgress(progress, progress.stream_tokens)}
     enhanced = exec_prompt_enhancer_engine(state, model_type, model_def, prompt_enhancer, original_prompts, image_start, original_image_refs, is_image, audio_only, seed, progress, override_profile, enhancer_kwargs=enhancer_kwargs, alt_prompts=original_alt_prompts if routed else None, alt_prompt_inherits_prompt_paragraphs=alt_prompt_inherits)
 
@@ -7737,11 +7749,13 @@ def generate_media(
         if auto_prompt_enhancer_requested:
             send_cmd("progress", [0, get_latest_status(state, "Enhancing Prompt")])
             enhancer_kwargs = {"image_prompt_type":  image_prompt_type, "video_prompt_type":  video_prompt_type, "audio_prompt_type":  audio_prompt_type}
+            enhancer_kwargs["resolution"] = resolution
+            enhancer_kwargs["duration_seconds"] = duration_seconds
             enhancer_kwargs["control_image"] = video_guide if is_image and "V" in video_prompt_type and not video_guides_shown(model_def, image_mode) else None
             enhancer_kwargs["generation_callbacks"] = {"stop_requested": lambda: gen.get("abort", False), "enhancement_progress": EnhancementProgress(lambda value, desc, total, unit: send_cmd("progress", [value, get_latest_status(state, desc), total, unit]))}
-            if model_def.get("prompt_enhancer_video_duration", False) and not is_image and not audio_only:
+            if not is_image and not audio_only:
                 frames = min(video_length, sliding_window_size) if model_def.get("sliding_window", False) else video_length
-                enhancer_kwargs["video_duration_seconds"] = frames / fps
+                enhancer_kwargs.update(video_duration_seconds=frames / fps, fps=fps, frame_count=frames)
             multi_prompt_output = prompt_enhancer_outputs_multiple_prompts(prompt_enhancer)
             prompts_to_enhance = original_prompts[:1] if multi_prompt_output else original_prompts
             routed = prompt_enhancer_chaining.uses_routing(prompt_enhancer)
@@ -9109,7 +9123,7 @@ def _process_tasks(state):
     while True:
         cmd, data = com_stream.output_queue.next()
         service = service_for(state)
-        if service is not None:
+        if service is not None and cmd not in {"status", "progress"}:
             service.generation_event(cmd, data)
         if cmd == "exit":
             pass
@@ -9146,12 +9160,16 @@ def _process_tasks(state):
             set_generation_state(gen, status=data)
             status_text = str(data or "").strip()
             gen["last_progress_args"] = [0, status_text] if len(status_text) > 0 else None
+            if service is not None:
+                service.generation_event(cmd, data)
         elif cmd == "output":
             gen["preview"] = None
             gen["refresh_tab"] = not gen.get("api_active_queue_task", {}).get("workspace_background")  # agent outputs leave the shown gallery tab alone
             yield time.time(), time.time(), gr.update()
         elif cmd == "progress":
             gen["last_progress_args"] = gen["progress_args"] = data
+            if service is not None:
+                service.generation_event(cmd, data)
         elif cmd == "preview":
             current_model_type = "unknown"
             with lock:
@@ -10104,7 +10122,7 @@ def image_to_ref_image_add(state, input_file_list, choice, target, target_name):
         if target == None:
             target =[]
         target.append( file_list[choice])
-    return target
+    return gr.update(value=target, selected_index=len(target) - 1)
 
 def image_to_ref_image_set(state, input_file_list, choice, target, target_name):
     file_list, file_settings_list = get_file_list(state, input_file_list)
@@ -11490,7 +11508,7 @@ def get_modal_image(image_base64, label):
         <div class="modal-content-wrapper" onclick="event.stopPropagation()">
             <div class="modal-close-btn" onclick="closeImageModal()">×</div>
             <div class="modal-label">{label}</div>
-            <img src="{image_base64}" class="modal-image" alt="{label}">
+            <div class="modal-image-viewport"><img src="{image_base64}" class="modal-image" alt="{label}" onload="window.WanGPImageZoom.mount(this)"></div>
         </div>
     </div>
     """
@@ -12203,7 +12221,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             label= video_prompt_type_video_guide_label , scale = 1, visible= dropdown_selectable and guide_selector_visible , show_label= True,
                         )
                         any_control_video = True
-                        any_control_image = image_outputs and not video_guides_shown(model_def, image_mode_value)
+                        any_control_image = not video_guides_shown(model_def, image_mode_value) and any("V" in choice for choice in guide_preprocessing["selection"])
 
                     # Alternate Control Video Preprocessing / Options
                     if guide_custom_choices is None:
@@ -12222,7 +12240,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             label= video_prompt_type_video_guide_alt_label, show_label= guide_custom_choices.get("show_label", True), scale = guide_custom_choices.get("scale", 1),
                         )
                         any_control_video = True
-                        any_control_image = image_outputs and not video_guides_shown(model_def, image_mode_value)
+                        any_control_image |= not video_guides_shown(model_def, image_mode_value) and any("V" in choice for _, choice in guide_custom_choices["choices"])
                         any_reference_image = any("I" in choice for label, choice in guide_custom_choices["choices"])
 
                     # Custom dropdown box & checkbox
@@ -12282,7 +12300,6 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             show_label= True,
                         )
                         any_control_video = True
-                        any_control_image = image_outputs and not video_guides_shown(model_def, image_mode_value)
 
                     # Image Refs Selection
                     if image_ref_inpaint:
@@ -12354,7 +12371,6 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         magic_mask_ui = MagicMaskUI().render(visible=magic_mask_visible, trigger_mode="editor")
                         magic_mask_uis.append(magic_mask_ui)
                         magic_mask_image_btn = magic_mask_ui.trigger
-                    any_control_image = True
                 else:
                     with gr.Column(elem_classes=["wangp-magic-mask-anchor", "wangp-magic-mask-anchor--image-editor"]):
                         image_mask_guide = gr.ImageEditor(value = None, visible = False, elem_id="img_editor")
@@ -13237,7 +13253,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 if tab_id == 'generate' and default_state is None:
                     global _deepy_hybrid
                     state_dict = SharedState(state_dict)
-                    _deepy_hybrid = HybridService(_deepy_runtime_deps(), state_dict, process_queue=_process_tasks, finalize_queue=_finalize_generation, unload=_unload_model_if_needed, gallery_lock=lock, model_label=get_loaded_model_label)
+                    _deepy_hybrid = HybridService(_deepy_runtime_deps(), state_dict, process_queue=_process_tasks, finalize_queue=_finalize_generation, unload=_unload_model_if_needed, gallery_lock=lock, model_label=get_loaded_model_label, task_label=get_task_progress_label)
                     _deepy_hybrid.configure_workspaces(args.workspaces_dir or server_config.get('workspaces_dir') or os.path.join(wgp_root, 'workspaces'))
                 state = default_state if default_state is not None else gr.State(state_dict)
                 if tab_id == "generate" and header is not None:
@@ -13245,7 +13261,6 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 override_attention.input(fn=refresh_attention_sparsity, inputs=[state, override_attention], outputs=[attention_sparsity], show_progress="hidden")
                 gen_status = WangpProgress.component(visible=True, value=render_idle_generation_status(state_dict))
                 main_bridge_elem_ids = tab_id == 'generate'
-                status_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_status_trigger" if main_bridge_elem_ids else None)
                 load_queue_trigger = gr.Text(interactive= False, visible=False, elem_id="wangp_main_load_queue_trigger" if main_bridge_elem_ids else None)
                 abort_client_id= gr.Text(interactive= False, visible=False, elem_id="wangp_main_abort_client_id" if main_bridge_elem_ids else None)
                 default_files = []
@@ -13486,51 +13501,13 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
             preview_trigger.change(refresh_preview, inputs= [state], outputs= [preview], show_progress="hidden")
             WangpProgress.bind(download_lora_btn.click, download_lora, inputs=[state, lora_url], outputs=[lora_url], component=lora_progress).then(fn=refresh_lora_list, inputs=[state, lset_name,loras_choices], outputs=[lset_name, loras_choices], show_progress="hidden")
-            def refresh_status_async(state):
-                gen = get_gen_info(state)
-                progress = WangpProgress()
-                progress.status("Ready")
-                previous_progress, previous_status, previous_html = None, None, None
-                previous_completion = gen.get("download_progress_completed")
-                while True:
-                    completion = gen.get("download_progress_completed")
-                    if completion is not None and completion is not previous_completion:
-                        progress.set_download(completion)
-                        previous_completion = completion
-                    active = gen.get("status_display", False)
-                    status = gen.get("status", "")
-                    if status and (status != previous_status or not active):
-                        progress.status(status)
-                    progress_args = gen.get("last_progress_args")
-                    if active and progress_args is not None and (progress_args != previous_progress or status != previous_status):
-                        progress(*progress_args)
-                        previous_progress = progress_args
-                    previous_status = status
-                    progress.set_download(gen.get("download_progress"))
-                    aborting = gen.get("abort", False)
-                    task = gen.get("api_active_queue_task")
-                    model_name = get_task_progress_label(task) if active and task is not None else get_loaded_model_label()
-                    html = progress.render(aborting=aborting, active=active, hold_complete=True, model_name=model_name)
-                    completing = not aborting and progress.completion_delay > 0
-                    if html != previous_html:
-                        yield gr.update(value=html, visible=bool(html))
-                        previous_html = html
-                    if not active and not completing:
-                        return
-                    time.sleep(0.1)
-
             def activate_status(state):
                 if state.get("validate_success",0) != 1:
                     return
                 gen = get_gen_info(state)
                 set_generation_state(gen, status_display=True)
-                return time.time()
 
             start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js, trigger_settings_download_js, click_brush_js = get_js()
-
-            # Each page has an active subscription; reapply the newest idle
-            # snapshot after its final response so late completion cannot regress it.
-            status_trigger.change(refresh_status_async, inputs=[state], outputs=[gen_status], show_progress="hidden", concurrency_limit=None).then(fn=None, outputs=[gen_status], js='() => window.WanGPGenerationState.updates()[0]')
 
             if tab_id == 'generate':
                 from shared.deepy.hybrid_ui import bind_gallery_sync
@@ -13549,8 +13526,8 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 show_progress="hidden"
             )
             close_modal_trigger_btn.click(
-                fn=lambda: gr.Column(visible=False),
-                outputs=[modal_container],
+                fn=lambda: (gr.HTML(value=""), gr.Column(visible=False)),
+                outputs=[modal_html_display, modal_container],
                 show_progress="hidden"
             )
             for magic_mask_ui in magic_mask_uis:
@@ -13937,7 +13914,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     outputs= [generate_btn, add_to_queue_btn, current_gen_column, onemorewindow_btn, earlystop_btn]
                 ).then(fn=activate_status,
                     inputs= [state],
-                    outputs= [status_trigger],             
+                    outputs=None,
                 ).then(fn=process_tasks,
                     inputs= [state],
                     outputs= [preview_trigger, output_trigger, refresh_models_trigger], 
@@ -13973,7 +13950,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     outputs=[generate_btn, add_to_queue_btn, current_gen_column, onemorewindow_btn, earlystop_btn]
                 ).then(fn=activate_status,
                     inputs= [state],
-                    outputs= [status_trigger],             
+                    outputs=None,
                 ).then(
                     fn=process_tasks,
                     inputs=[state],
@@ -14222,6 +14199,7 @@ def create_ui():
     with open(css_path, "r", encoding="utf-8") as f:
         css = f.read()
     css += "\n" + WangpProgress.css()
+    css += "\n" + Path(__file__).with_name("shared").joinpath("gradio", "image_zoom.css").read_text(encoding="utf-8")
     css += "\n" + MagicMaskUI.get_css()
     css += "\n" + assistant_chat.get_css()
     css += "\n" + model_infos.get_css()

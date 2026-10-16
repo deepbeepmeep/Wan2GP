@@ -252,6 +252,7 @@
     const viewer = $('#media-viewer');
     if (currentTab === 'chat') mediaScrollState = {sessionId: WAC.chatSessionId, scroll: WAC.captureAutoscrollState()};
     viewer.querySelector('wangp-mesh-viewer')?.remove();
+    WanGPImageZoom.destroy(viewer.querySelector('img'));
     const media = item.kind === '3d' ? WanGPMediaView.mesh(item) : viewer.querySelector(item.kind === 'image' ? 'img' : item.kind);
     for (const node of viewer.querySelectorAll('img, video, audio')) node.hidden = node !== media;
     if (item.kind === 'video') media.poster = item.thumbnail || item.poster || '';
@@ -259,6 +260,7 @@
     media.setAttribute('aria-label', item.name);
     if (item.kind === 'image') media.alt = item.name;
     viewer.showModal();
+    if (item.kind === 'image') WanGPImageZoom.mount(media, {viewport: viewer});
     if (item.kind === '3d') viewer.append(media);
     else if (item.kind !== 'image') media.play().catch(() => {});
   }
@@ -490,6 +492,7 @@
     $('#dismiss-answer').onclick = () => {dismissedAnswer = $('#answer-notice').dataset.answerId; $('#answer-notice').hidden = true;};
     $('#close-media-viewer').onclick = () => $('#media-viewer').close();
     $('#media-viewer').addEventListener('close', () => {
+      WanGPImageZoom.destroy($('#media-viewer img'));
       $('#media-viewer wangp-mesh-viewer')?.remove();
       for (const media of $('#media-viewer').querySelectorAll('img, video, audio')) {
         if (media.tagName !== 'IMG') media.pause();

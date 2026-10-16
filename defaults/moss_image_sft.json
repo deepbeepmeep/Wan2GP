@@ -1,0 +1,21 @@
+{
+    "model": {
+        "name": "MOSS Image 5B SFT",
+        "architecture": "moss_image",
+        "description": "MOSS-Image SFT: curated-data post-training of MOSS-Image Base, using the same text-to-image and layout workflows. 50 steps with CFG.",
+        "URLs": [
+            "https://huggingface.co/DeepBeepMeep/Moss/resolve/main/moss_image_sft_bf16.safetensors",
+            "https://huggingface.co/DeepBeepMeep/Moss/resolve/main/moss_image_sft_int8_convrot.safetensors"
+        ]
+    },
+    "prompt": "A cream travel poster with a flat blue mountain illustration, a large navy title reading \"EXPLORE\" and a smaller subtitle reading \"Find your next trail\". Balanced typography, clean generous margins, fine paper texture.",
+    "negative_prompt": "",
+    "resolution": "1024x1024",
+    "image_mode": 1,
+    "batch_size": 1,
+    "num_inference_steps": 50,
+    "guidance_scale": 3,
+    "flow_shift": 5,
+    "prompt_enhancer": "",
+    "multi_prompts_gen_type": "FG"
+}

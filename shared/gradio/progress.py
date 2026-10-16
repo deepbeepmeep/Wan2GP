@@ -2,9 +2,11 @@
 """WanGP progress values and rendering, shared by Gradio and the web app."""
 
 import inspect
+import json
 import re
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from functools import wraps
@@ -20,6 +22,60 @@ _duration = r"(?:(?:\d+h )?(?:\d+m )?\d+(?:\.\d+)?s|\d+:\d{2}(?::\d{2})?)"
 _timing = re.compile(rf"{_duration}(?: / {_duration})?")
 
 
+class ProgressUpdates:
+    """Coalesce notified changes; wake only for new data or a display deadline."""
+    def __init__(self, wake=None):
+        self.event = threading.Event()
+        self._wake = self.event.set if wake is None else wake
+        self._lock = threading.RLock()
+        self._dirty = self._immediate = False
+        self._published = 0
+        self._deadline = None
+
+    def changed(self, immediate=False):
+        with self._lock:
+            self._dirty = True
+            self._immediate |= immediate
+        self._wake()
+
+    def delay(self):
+        with self._lock:
+            now = time.monotonic()
+            deadlines = []
+            if self._dirty:
+                deadlines.append(now if self._immediate else self._published + 1 / 3)
+            if self._deadline is not None:
+                deadlines.append(self._deadline)
+            return max(0, min(deadlines) - now) if deadlines else None
+
+    def consume(self, force=False):
+        with self._lock:
+            delay = self.delay()
+            if not force and (delay is None or delay > 0):
+                return False
+            self._dirty = self._immediate = False
+            self._deadline = None
+            self._published = time.monotonic()
+            return True
+
+    def hold(self, delay):
+        with self._lock:
+            self._deadline = time.monotonic() + delay if delay > 0 else None
+
+
+def _progress_locked(fn):
+    @wraps(fn)
+    def locked(self, *args, **kwargs):
+        with self._lock:
+            return fn(self, *args, **kwargs)
+    return locked
+
+
+def _phase(description):
+    title, separator, timing = description.rpartition(' | ')
+    return title if separator and _timing.fullmatch(timing) else description
+
+
 def _format_bytes(value):
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if value < 1024 or unit == "TB":
@@ -28,7 +84,9 @@ def _format_bytes(value):
 
 
 class WangpProgress:
-    def __init__(self, track_tqdm=False):
+    def __init__(self, track_tqdm=False, *, on_change=None):
+        self._lock = threading.RLock()
+        self._on_change = on_change
         self.track_tqdm = track_tqdm
         self.description = ""
         self.timing = ""
@@ -43,7 +101,14 @@ class WangpProgress:
         if self.gen["abort"]:
             raise InterruptedError("Operation Stopped")
 
+    def changed(self, immediate=False):
+        if self._on_change is not None:
+            self._on_change(immediate=immediate)
+
+    @_progress_locked
     def __call__(self, progress, desc=None, total=None, unit="steps", _tqdm=None):
+        previous = (self.position, self.description, self.timing)
+        phase = (_phase(self.description), self.position[1:3] if self.position else None)
         self.timing = ""
         if desc is not None:
             self.description = desc
@@ -56,32 +121,48 @@ class WangpProgress:
             self.position = (index, total, unit, None)
         else:
             self.position = (None, total, unit, progress)
+        complete = False
         if self.download is None and self.position is not None:
             index, count, unit, fraction = self.position
-            if fraction == 1 or (count and index == count):
+            complete = fraction == 1 or bool(count and index == count)
+            if complete and previous != (self.position, self.description, self.timing):
                 self._completion = (self.position, None, self.description, None)
+        if previous != (self.position, self.description, self.timing):
+            self.changed(immediate=complete or phase != (_phase(self.description), self.position[1:3] if self.position else None))
 
+    @_progress_locked
     def status(self, description):
+        previous = (self.position, self.description, self.timing)
         self.timing = ""
         self.description = description
         self.position = (None, None, "", None)
+        if previous != (self.position, self.description, self.timing):
+            self.changed(immediate=True)
 
+    @_progress_locked
     def stream_tokens(self, *, token_count, max_tokens, prefill_seconds, tokens_per_second, description="Enhancing Prompt", **kwargs):
         self((token_count, max_tokens), desc=description, unit="tokens")
         self.timing = f"Prefill {prefill_seconds:.2f}s · {tokens_per_second:.1f} tk/s"
+        self.changed()
 
+    @_progress_locked
     def set_download(self, data):
+        previous = self.download
         self.download = data
         if data is not None and data.get("finished_at") is not None and data["finished_at"] != self._download_finished_at:
             self._download_finished_at = data["finished_at"]
             self._completion = (self.position, data, self.description, None)
+        if previous != data:
+            self.changed(immediate=previous is None or data is None or previous['filename'] != data['filename'] or data.get('finished_at') is not None)
 
     @property
+    @_progress_locked
     def completion_delay(self):
         if self._completion is None:
             return 0
         return .2 if self._completion[3] is None else max(0, self._completion[3] - time.monotonic())
 
+    @_progress_locked
     def render(self, *, compact=False, aborting=False, active=True, hold_complete=False, bar_text=None, model_name=""):
         aborting = aborting or self.gen["abort"]
         # A standalone worker may publish its next update while the UI renders.
@@ -233,6 +314,7 @@ class WangpProgress:
                 progress = component._progress_runs.get(request.session_hash)
                 if progress is not None:
                     progress.gen["abort"] = True
+                    progress.changed(immediate=True)
 
             button.click(request_stop, queue=False, show_progress="hidden", api_name=False)
             return component
@@ -248,9 +330,18 @@ class WangpProgress:
         track_tqdm = signature.parameters["progress"].default.track_tqdm
         runs = getattr(component, "_progress_runs", None)
 
+        root = gr.context.Context.root_block
+        if root is not None:
+            reset = gr.Textbox(visible=False)
+            reset.elem_id = f'wangp-progress-reset-{reset._id}'
+            updates = [*({'__type__': 'update', 'visible': True} for _ in hide), {'__type__': 'update', 'value': '', 'visible': False}]
+            reset.input(fn=None, inputs=None, outputs=[*hide, component], js=f'() => {json.dumps(updates)}', queue=False, show_progress='hidden', api_name=False)
+            root.load(fn=None, js=f'() => window.WanGPGenerationState?.registerOperation({json.dumps(reset.elem_id)}, {json.dumps(component.elem_id or f"component-{component._id}")})')
+
         @wraps(fn)
         def run(*args, **kw):
-            progress = cls(track_tqdm=track_tqdm)
+            changes = ProgressUpdates()
+            progress = cls(track_tqdm=track_tqdm, on_change=changes.changed)
             if runs is None:
                 progress.status("Preparing…")
             else:
@@ -271,14 +362,18 @@ class WangpProgress:
                     yield *unchanged, *(gr.update(visible=False) for _ in hide), gr.update(value=progress.render(), visible=True)
                 with ThreadPoolExecutor(max_workers=1, thread_name_prefix="wangp-progress") as worker:
                     future = worker.submit(copy_context().run, work)
+                    future.add_done_callback(lambda _: changes.changed(immediate=True))
                     previous = None
                     while not future.done():
-                        html = progress.render(hold_complete=True)
-                        if html != previous:
-                            yield *unchanged, *keep_hidden, gr.update(value=html, visible=bool(html))
-                            previous = html
-                        # A short bounded wait also delivers completion without another polling delay.
-                        wait([future], timeout=0.1)
+                        changes.event.clear()
+                        if changes.consume():
+                            html = progress.render(hold_complete=True)
+                            changes.hold(0 if progress.gen['abort'] else progress.completion_delay)
+                            if html != previous:
+                                yield *unchanged, *keep_hidden, gr.update(value=html, visible=bool(html))
+                                previous = html
+                        if not future.done():
+                            changes.event.wait(changes.delay())
                     try:
                         result = future.result()
                     except Exception as exc:
@@ -292,8 +387,10 @@ class WangpProgress:
                         raise
                 values = [result] if len(outputs) == 1 else result
                 if progress.completion_delay:
+                    changes.event.clear()
                     yield *values, *keep_hidden, gr.update(value=progress.render(hold_complete=True), visible=True)
-                    time.sleep(progress.completion_delay)
+                    if not progress.gen['abort']:
+                        changes.event.wait(progress.completion_delay)
                 yield *values, *restore, gr.update(value="", visible=False)
             finally:
                 if runs is not None:

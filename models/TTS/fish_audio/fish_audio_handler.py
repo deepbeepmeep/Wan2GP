@@ -6,7 +6,7 @@ from shared.utils import files_locator as fl
 from .help import INFOS, PROMPT_INFOS, DEEPY_INFOS, DEEPY_PROMPT_INFOS, ENHANCER, DIALOGUE_ENHANCER, DEFAULT_PROMPT
 
 ARCHITECTURE = "fish_drama3"
-ASSETS = ["tokenizer.json", "Fish_Drama3_codec_bf16.safetensors"]
+ASSETS = ["tokenizer.json", "Fish_Drama3_codec_bf16.safetensors", "fish_audio_silence_probe.safetensors"]
 # Optional cuts of long scripts at whole lines; each part is prompted with the last parts (text and generated audio) as history.
 DIALOGUE_CUT_LINES = {"id": "dialogue_cut_lines", "label": "Cut Script Every N Lines (0 = One Pass)", "name": "Cut Every N Lines", "type": "int",
                       "default": 0, "min": 0, "max": 50, "inc": 1}
@@ -69,7 +69,7 @@ class family_handler:
         paths = {name: fl.locate_file(str(Path("fish_audio") / name)) for name in ASSETS}
         backbone, codebooks = model_filename
         experts = fl.locate_file(os.path.basename(model_def["preload_URLs"][0]))  # routed experts, in their own format (FP8 or INT4)
-        pipeline = FishAudioPipeline([backbone, experts], codebooks, paths[ASSETS[1]], paths[ASSETS[0]], lm_decoder_engine)
+        pipeline = FishAudioPipeline([backbone, experts], codebooks, paths[ASSETS[1]], paths[ASSETS[0]], paths[ASSETS[2]], lm_decoder_engine)
         if save_quantized:
             from wgp import save_quantized_model
             config = str(Path(__file__).with_name("fish_drama3.json"))

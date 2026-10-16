@@ -5,7 +5,6 @@ import math
 import os
 import time
 from contextlib import ExitStack
-from pathlib import Path
 
 import numpy as np
 import soundfile as sf
@@ -37,11 +36,11 @@ class FishAudioPipeline:
     sample_rate = 44100
     frame_length = 2048
 
-    def __init__(self, backbone_path, codebooks_path, codec_path, tokenizer_path, lm_decoder_engine="legacy"):
+    def __init__(self, backbone_path, codebooks_path, codec_path, tokenizer_path, silence_probe_path, lm_decoder_engine="legacy"):
         self.engine = lm_decoder_engine
         self.config, self.transformer, self.transformer2 = load_transformers(backbone_path, codebooks_path, self.engine)
         self.vae = load_codec(codec_path)
-        self.silence_tables, self.silence_offsets, self.silence_limits, self.silence_probe = self._silence_classifier()
+        self.silence_tables, self.silence_offsets, self.silence_limits, self.silence_probe = self._silence_classifier(silence_probe_path)
         self.tokenizer = Tokenizer.from_file(str(tokenizer_path))
         self._interrupt = self._early_stop = False
         self.transformer.abort_requested = self.transformer2.abort_requested = self._abort_requested
@@ -53,10 +52,10 @@ class FishAudioPipeline:
         self.reference_cache = TextEncoderCache()
         print(f"[Fish Audio] Drama 3 - {self.engine}; Individual CPU/GPU Experts Managed by MMGP")
 
-    def _silence_classifier(self):
+    def _silence_classifier(self, path):
         """The first layer of the silent-frame classifier as tables per codebook entry: the codec latent of a frame is the sum of its codes'
         projected codebook entries, so the layer applied to a frame (for its own slot and as one of the 2 previous frames) is a sum of rows."""
-        probe = load_file(str(Path(__file__).with_name("silence_probe.safetensors")))
+        probe = load_file(str(path), device="cpu")
         hidden = probe["b1"].numel()
         weights = probe["w1"].view(hidden, 3, -1).transpose(0, 1).reshape(3 * hidden, -1)  # rows: the frame, the frame before, the one before
         quantizers = [*self.vae.quantizer.semantic_quantizer.quantizers, *self.vae.quantizer.quantizer.quantizers]

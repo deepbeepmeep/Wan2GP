@@ -183,7 +183,7 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-WanGP_version = "18.10"
+WanGP_version = "18.11"
 VIDEO_LENGTH_ROUNDING = "ceil"  # how a requested video length is fitted to the model's frame steps: "floor", "ceil" (never shorter than requested) or "nearest"
 set_video_length_rounding(VIDEO_LENGTH_ROUNDING)
 settings_version = 2.80

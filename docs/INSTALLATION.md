@@ -62,24 +62,24 @@ For **PyTorch 2.10 / CUDA 13** (NVIDIA R580+ driver):
 
 ```bash
 # Windows
-pip install https://github.com/deepbeepmeep/kernels/releases/download/wgpkernels-v1.1.1/wgpkernels-1.1.1%2Bcu130-py3-none-win_amd64.whl
+pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.1/wgpkernels-1.1.1%2Bcu130-py3-none-win_amd64.whl
 # Linux (glibc 2.34+)
-pip install https://github.com/deepbeepmeep/kernels/releases/download/wgpkernels-v1.1.1/wgpkernels-1.1.1%2Bcu130-py3-none-linux_x86_64.whl
+pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.1/wgpkernels-1.1.1%2Bcu130-py3-none-linux_x86_64.whl
 ```
 
 For **PyTorch 2.7.1 / CUDA 12.8** (NVIDIA R570+ driver):
 
 ```bash
 # Windows
-pip install https://github.com/deepbeepmeep/kernels/releases/download/wgpkernels-v1.1.1/wgpkernels-1.1.1%2Bcu128-py3-none-win_amd64.whl
+pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.1/wgpkernels-1.1.1%2Bcu128-py3-none-win_amd64.whl
 # Linux (glibc 2.34+)
-pip install https://github.com/deepbeepmeep/kernels/releases/download/wgpkernels-v1.1.1/wgpkernels-1.1.1%2Bcu128-py3-none-linux_x86_64.whl
+pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.1/wgpkernels-1.1.1%2Bcu128-py3-none-linux_x86_64.whl
 ```
 
 For **AMD RX 9070 with PyTorch 2.10.0+rocm7.14.0** (Windows, experimental):
 
 ```powershell
-python -m pip install https://github.com/deepbeepmeep/kernels/releases/download/wgpkernels-v1.1.1/wgpkernels-1.1.1%2Brocm714-py3-none-win_amd64.whl
+python -m pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.1/wgpkernels-1.1.1%2Brocm714-py3-none-win_amd64.whl
 ```
 
 ### CUDA Kernels Optimized Ops Precision (When Available)

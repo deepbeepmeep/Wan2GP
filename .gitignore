@@ -1,15 +1,6 @@
 .*
 *.py[cod]
-# *.jpg
-*.jpeg
-# *.png
-*.gif
-*.bmp
-*.mp4
-*.webm
 *.npy
-*.mov
-*.mkv
 *.log
 *.zip
 *.pt
@@ -20,9 +11,6 @@
 # *.txt
 *.backup
 *.pkl
-*.html
-!shared/deepy/web/app.html
-!plugins/motion_designer/assets/motion_designer_iframe_template.html
 *.pdf
 *.whl
 *.exe
@@ -39,9 +27,14 @@ samples/
 *DS_Store
 google/
 finetunes/
+# Keep source web, image and video assets visible; ignore generated media by location.
 outputs/
 outputs2/
 gradio_outputs/
+/mask_outputs/
+/masked_frames.mp4
+/masked_frames2.mp4
+/masks.mp4
 ckpts/
 loras/
 loras_i2v/

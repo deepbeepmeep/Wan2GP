@@ -13270,28 +13270,28 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
 
                     with gr.Tab("Information", id="video_info"):
                         video_info = gr.HTML(visible=True, min_height=100, value=get_default_video_info()) 
-                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as audio_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else []) as audio_buttons_row:
                             video_info_extract_audio_settings_btn = gr.Button("Extract Settings", min_width= 1, size ="sm")
                             video_info_to_audio_guide_btn = gr.Button("To Audio Source", min_width= 1, size ="sm", visible = any_audio_guide)
                             video_info_to_audio_guide2_btn = gr.Button("To Audio Source 2", min_width= 1, size ="sm", visible = any_audio_guide2 )
                             video_info_to_audio_source_btn = gr.Button("To Soundtrack", min_width= 1, size ="sm", visible=audio_processor_api.has_audio_source_soundtrack())
                             video_info_eject_audio_btn = gr.Button("Eject Audio File", min_width= 1, size ="sm")
-                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as deleted_audio_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else []) as deleted_audio_buttons_row:
                             video_info_eject_deleted_audio_btn = gr.Button("Eject Deleted File", min_width= 1, size ="sm")
-                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as video_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else []) as video_buttons_row:
                             video_info_extract_settings_btn = gr.Button("Extract Settings", min_width= 1, size ="sm")
                             video_info_to_video_source_btn = gr.Button("To Video Source", min_width= 1, size ="sm", visible = any_video_source)
                             video_info_to_control_video_btn = gr.Button("To Control Video", min_width= 1, size ="sm", visible = any_control_video )
                             video_info_eject_video_btn = gr.Button("Eject Video", min_width= 1, size ="sm")
-                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as deleted_video_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else []) as deleted_video_buttons_row:
                             video_info_eject_deleted_video_btn = gr.Button("Eject Deleted File", min_width= 1, size ="sm")
-                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as mesh_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else []) as mesh_buttons_row:
                             video_info_extract_mesh_settings_btn = gr.Button("Extract Settings", min_width= 1, size ="sm")
                             video_info_to_mesh_input_btn = gr.Button("To Input Mesh", min_width= 1, size ="sm", visible = any_mesh_input)
                             video_info_eject_mesh_btn = gr.Button("Eject 3D Asset", min_width= 1, size ="sm")
-                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as deleted_mesh_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else []) as deleted_mesh_buttons_row:
                             video_info_eject_deleted_mesh_btn = gr.Button("Eject Deleted File", min_width= 1, size ="sm")
-                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else None) as image_buttons_row:
+                        with gr.Row(**default_visibility_false, elem_classes=["wangp-media-actions"] if floating_generate_button else []) as image_buttons_row:
                             video_info_extract_image_settings_btn = gr.Button("Extract Settings", min_width= 1, size ="sm")
                             video_info_to_start_image_btn = gr.Button("To Start Image", size ="sm", min_width= 1, visible = any_start_image )
                             video_info_to_end_image_btn = gr.Button("To End Image", size ="sm", min_width= 1, visible = any_end_image)
@@ -13307,14 +13307,14 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             PP_late_audio_replace_voice_sample = late_audio_ui["replace_voice_sample"]
                             PP_late_audio_replace_voice_sample2_row = late_audio_ui["replace_voice_sample2_row"]
                             PP_late_audio_replace_voice_sample2 = late_audio_ui["replace_voice_sample2"]
-                        with gr.Row(elem_classes=["wangp-media-actions"] if floating_generate_button else None):
+                        with gr.Row(elem_classes=["wangp-media-actions"] if floating_generate_button else []):
                             video_info_audio_postprocessing_btn = gr.Button("Apply Audio Postprocessing", size="sm", visible=True)
                             video_info_eject_audio2_btn = gr.Button("Eject Audio", size="sm", visible=True)
                     with gr.Tab("Post Processing", id= "post_processing", visible = late_video_postprocessing_visible) as video_postprocessing_tab:
                         with gr.Group(elem_classes= "postprocess"):
                             with gr.Column():
                                 PP_temporal_upsampling, PP_spatial_upsampling, PP_film_grain_intensity, PP_film_grain_saturation, PP_temporal_upsampling_method, PP_temporal_upsampling_multiplier, PP_spatial_upsampling_method, PP_spatial_upsampling_ratio, PP_spatial_upsampler_parameter_state, PP_spatial_upsampler_prompt, PP_spatial_upsampler_reference_images, PP_spatial_upsampler_param, PP_spatial_upsampler_param2, PP_spatial_upsampler_extra, PP_spatial_upsampler_media_outputs, PP_spatial_upsampler_help_target_id = gen_upsampling_dropdowns("", "", 0, 0.5, element_class="postprocess", image_outputs=False, late_postprocessing=True, spatial_parameter_values={})
-                        with gr.Row(elem_classes=["wangp-media-actions"] if floating_generate_button else None):
+                        with gr.Row(elem_classes=["wangp-media-actions"] if floating_generate_button else []):
                             video_info_postprocessing_btn = gr.Button("Apply Postprocessing", size ="sm", visible=True)
                             video_info_eject_video2_btn = gr.Button("Eject Media", size ="sm", visible=True)
                     with gr.Tab("Audio Remuxing", id= "audio_remuxing", visible = late_audio_remuxing_visible) as audio_remuxing_tab:
@@ -13334,7 +13334,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                             PP_replace_voice_sample = late_remux_ui["replace_voice_sample"]
                             PP_replace_voice_sample2_row = late_remux_ui["replace_voice_sample2_row"]
                             PP_replace_voice_sample2 = late_remux_ui["replace_voice_sample2"]
-                        with gr.Row(elem_classes=["wangp-media-actions"] if floating_generate_button else None):
+                        with gr.Row(elem_classes=["wangp-media-actions"] if floating_generate_button else []):
                             video_info_remux_audio_btn = gr.Button("Remux Audio", size ="sm", visible=True)
                             video_info_eject_video3_btn = gr.Button("Eject Video", size ="sm", visible=True)
                     with gr.Tab("Import Media to Galleries", id= "video_add"):

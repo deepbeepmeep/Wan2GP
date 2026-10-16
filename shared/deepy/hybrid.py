@@ -13,6 +13,8 @@ from shared.deepy.drivers import GradioGallery
 from shared.deepy.runtime import GenerationRuntime
 from shared.deepy.service import DeepyService
 from shared.utils.gallery_sources import GALLERY_SOURCES, SOURCES, STRIP_SOURCES, VIDEO
+from shared.utils.generation_state import pause_state, set_generation_state
+from shared.gradio.progress import WangpProgress
 
 
 class SharedState(dict):
@@ -34,7 +36,7 @@ def service_for(state):
 
 
 class HybridService(DeepyService):
-    def __init__(self, deps, state, *, process_queue, finalize_queue, unload, gallery_lock=None):
+    def __init__(self, deps, state, *, process_queue, finalize_queue, unload, gallery_lock=None, model_label=lambda: ''):
         # Gradio historically initializes these lists on the first UI interaction.
         defaults = GenerationRuntime._build_state(SimpleNamespace(_deps=deps))['gen']
         defaults.pop('in_progress')
@@ -59,8 +61,13 @@ class HybridService(DeepyService):
         self._process_queue = process_queue
         self._finalize_queue = finalize_queue
         self._unload = unload
+        self._model_label = model_label
+        self._generation_view = None
+        self._generation_view_revision = 0
         super().__init__(deps, state=state, gallery_factory=lambda deps, state: GradioGallery(deps, state, self.host_changed))
         state.service = self
+        state['gen']['state_change_callback'] = self.host_changed
+        self._publish_generation_view()
         from shared.deepy.workspace_viewer import WorkspaceViewer
         self.gallery_lock = threading.RLock() if gallery_lock is None else gallery_lock
         self.workspace_viewer = WorkspaceViewer(self)
@@ -80,6 +87,25 @@ class HybridService(DeepyService):
 
     def host_changed(self):
         self._host_dirty.set()
+
+    def _publish_generation_view(self):
+        gen = self._state['gen']
+        pending, paused = pause_state(gen)
+        html = None
+        if not gen.get('status_display') and not gen.get('model_preloading'):
+            progress = WangpProgress()
+            progress.status(gen.get('status') or 'Ready')
+            html = progress.render(active=False, model_name=self._model_label())
+        view = {'html': html, 'pending': pending, 'paused': paused}
+        with self._condition:
+            if view != self._generation_view:
+                self._generation_view = view
+                self._generation_view_revision += 1
+                self.publish('generation_state', self.generation_view())
+
+    def generation_view(self):
+        with self._condition:
+            return {'instance': self._instance_id, 'revision': self._generation_view_revision, **self._generation_view}
 
     def select_gallery_view(self, payload):
         with self._mutation_lock:
@@ -116,6 +142,7 @@ class HybridService(DeepyService):
             try:
                 with self._mutation_lock:
                     gen = self._state['gen']
+                    self._publish_generation_view()
                     for source in GALLERY_SOURCES:
                         if gen[source.last_selected_key]:
                             gen[source.selected_key] = len(gen[source.files_key]) - 1
@@ -156,6 +183,7 @@ class HybridService(DeepyService):
         result['hybrid'] = True
         result['host_view'] = {'gallery': self.gallery_revision, 'settings': self.settings_revision, 'preview': self.preview_revision}
         result['forms'] = self.forms.revisions()
+        result['generation_state'] = self.generation_view()
         return result
 
     def command(self, command, data=None):
@@ -199,7 +227,7 @@ class HybridService(DeepyService):
     def _run_generation(self):
         queue = self._state['gen']['queue']
         before = self.gallery.counts()
-        self._state["gen"]["status_display"] = True
+        set_generation_state(self._state['gen'], status_display=True)
         self._state["gen"]["last_progress_args"] = None
         self._generation_event("status", "Preparing generation…")
         try:

@@ -12,6 +12,7 @@ from typing import Any, Sequence
 
 from shared.api import GeneratedArtifact, GenerationError, GenerationResult, PreviewUpdate, SessionJob, WanGPSession
 from shared.tinyvae.media import VideoPreview
+from shared.utils.generation_state import set_generation_state
 
 _NO_YIELDED_RESULT = object()
 _GRADIO_LOG_PATCH_LOCK = threading.Lock()
@@ -336,8 +337,7 @@ class WebUIQueueProbe:
         self._gen["resume"] = False
         self._gen["early_stop"] = False
         self._gen["early_stop_forwarded"] = False
-        self._gen["status"] = ""
-        self._gen["status_display"] = False
+        set_generation_state(self._gen, status="", status_display=False)
         self._gen["last_progress_args"] = None
         self._gen["progress_args"] = None
         self._gen["preview"] = None

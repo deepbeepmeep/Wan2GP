@@ -56,31 +56,38 @@ Comfy Kitchen is installed with `requirements.txt`; its prebuilt CUDA kernels re
 
 ### WGPKernels Installation
 
+The Windows and Linux install scripts include WGPKernels for RTX 30XX, 40XX and 50XX, choosing the wheel for the selected CUDA stack. AMD RDNA4 targets (`gfx1200`, `gfx1201`) receive the experimental ROCm 10 wheel. For an existing installation, choose **Upgrade** in the update script; **Update** only refreshes code and requirements.
+
 WGPKernels are WanGP's own INT8 kernels, with higher precision than the other fast INT8 backends. Install the wheel matching the CUDA version of your PyTorch (NVIDIA RTX 30XX or newer):
 
 For **PyTorch 2.10 / CUDA 13** (NVIDIA R580+ driver):
 
 ```bash
 # Windows
-pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.1/wgpkernels-1.1.1%2Bcu130-py3-none-win_amd64.whl
+pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.2/wgpkernels-1.1.2%2Bcu130-py3-none-win_amd64.whl
 # Linux (glibc 2.34+)
-pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.1/wgpkernels-1.1.1%2Bcu130-py3-none-linux_x86_64.whl
+pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.2/wgpkernels-1.1.2%2Bcu130-py3-none-linux_x86_64.whl
 ```
 
 For **PyTorch 2.7.1 / CUDA 12.8** (NVIDIA R570+ driver):
 
 ```bash
 # Windows
-pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.1/wgpkernels-1.1.1%2Bcu128-py3-none-win_amd64.whl
+pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.2/wgpkernels-1.1.2%2Bcu128-py3-none-win_amd64.whl
 # Linux (glibc 2.34+)
-pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.1/wgpkernels-1.1.1%2Bcu128-py3-none-linux_x86_64.whl
+pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.2/wgpkernels-1.1.2%2Bcu128-py3-none-linux_x86_64.whl
 ```
 
-For **AMD RX 9070 with PyTorch 2.10.0+rocm7.14.0** (Windows, experimental):
+For **AMD RDNA4 (`gfx1200`, `gfx1201`) with PyTorch 2.13.0 / ROCm 10.0** (experimental):
 
-```powershell
-python -m pip install https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.1/wgpkernels-1.1.1%2Brocm714-py3-none-win_amd64.whl
+```bash
+# Windows
+python -m pip install --no-deps https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.2/wgpkernels-1.1.2%2Brocm100-py3-none-win_amd64.whl
+# Linux
+python -m pip install --no-deps https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.2/wgpkernels-1.1.2%2Brocm100-py3-none-linux_x86_64.whl
 ```
+
+The AMD wheel provides INT8 linear kernels. Native AdaLN, PixelNorm + SiLU and Conv3D remain CUDA-only; AMD retains the independent supported backends for those operations. AMD packages pass installation and library-loading checks, but kernel execution on AMD hardware remains unvalidated.
 
 ### CUDA Kernels Optimized Ops Precision (When Available)
 

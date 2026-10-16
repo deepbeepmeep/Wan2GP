@@ -7,7 +7,6 @@ import {
 	RenderTexture,
 	GlProgram,
 	defaultFilterVert,
-	SCALE_MODES,
 	Texture,
 	type ALPHA_MODES,
 	Assets
@@ -205,7 +204,7 @@ export class LayerManager {
 			height,
 			resolution: window.devicePixelRatio,
 			antialias: true,
-			scaleMode: SCALE_MODES.NEAREST
+			scaleMode: "nearest"
 		});
 
 		// Create sprite to display the texture with transparency
@@ -383,7 +382,7 @@ export class LayerManager {
 			height,
 			resolution: window.devicePixelRatio,
 			antialias: true,
-			scaleMode: SCALE_MODES.NEAREST
+			scaleMode: "nearest"
 		});
 
 		const canvas_sprite = new Sprite(draw_texture);
@@ -752,7 +751,7 @@ export class LayerManager {
 		setTimeout(() => {
 			// Attempt to force GC or resource cleanup if needed, though Pixi often handles this
 			Assets.cache.reset(); // Be careful with this, might clear too much
-			this.app.renderer.textureGC.run(); // Force texture garbage collection
+			this.app.renderer.gc.run(); // Force texture garbage collection
 		}, 100);
 	}
 
@@ -1368,7 +1367,7 @@ export class ImageEditor {
 		// Only the display surface is disposable when the editor is hidden.
 		this.app.renderer.clear({ target: this.app.canvas, clearColor: [0, 0, 0, 0] });
 		this.wangp_resize_renderer(1, 1);
-		this.app.renderer.textureGC?.run?.();
+		this.app.renderer.gc.run();
 	}
 
 	private wangp_begin_export(): void {

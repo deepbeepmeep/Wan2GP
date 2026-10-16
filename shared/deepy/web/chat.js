@@ -13,7 +13,6 @@ WAC.streamingRevealFrame = WAC.streamingRevealFrame || 0;
 WAC.init = WAC.init || false;
 WAC.observer = WAC.observer || null;
 WAC.eventNode = WAC.eventNode || null;
-WAC.pollTimer = WAC.pollTimer || null;
 WAC.lastPayloadId = WAC.lastPayloadId || '';
 WAC.lastPayloadText = WAC.lastPayloadText || '';
 WAC.dockBridgeInstalled = WAC.dockBridgeInstalled || false;

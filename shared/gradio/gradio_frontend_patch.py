@@ -18,7 +18,7 @@ _EDITOR_PATH = Path(__file__).parent / 'wangp_image_editor/templates/component/i
 # callbacks, offsets and repeat bookkeeping, but wake at their actual deadlines.
 # The separate pointer ticker must still run whenever hit testing unpauses it.
 _EDITOR_SCHEDULER = """
-JC = class extends JC {
+XC = class extends XC {
     init() {}
     repeat(...args) {
         const id = super.repeat(...args);
@@ -350,7 +350,7 @@ _PATCHES = {
         ('l(22,i=m!=null&&P!=null?P[m]:null)},[r,m', 'l(22,i=m!=null&&P!=null?P[m]:null);if(wangpGalleryChanged)J("change");wangpGalleryChanged=wangpGalleryUser=wangpGalleryExplicit=false},[r,m'),
     ],
     'index.js': [
-        ('QC.SchedulerSystem = JC;', _EDITOR_SCHEDULER + 'QC.SchedulerSystem = JC;'),
+        ('jC.SchedulerSystem = XC;', _EDITOR_SCHEDULER + 'jC.SchedulerSystem = XC;'),
         ('this._pauseUpdate = e;', 'this._pauseUpdate = e; e ? this.removeTickerListener() : this.addTickerListener();'),
         ('this._tickerAdded || !this.domElement ||', 'this._pauseUpdate || this._tickerAdded || !this.domElement ||'),
     ],
@@ -397,6 +397,12 @@ _PATCHES = {
         ('return l.$$set=w=>{' + _NODE_INPUTS, 'return l.$$set=w=>{' + _NODE_SKIP + _NODE_INPUTS),
     ],
     'index-Do3LSwBC.js': [
+        # UI submissions include State slots and private events absent from
+        # /info. Their dependency inputs describe the actual positional payload.
+        # Named API calls retain the public parameter/keyword validation.
+        ('const Ig=(e=[],o)=>{', 'const Ig=(e=[],o,wangpInputCount)=>{'),
+        ('return e.length>t.length&&console.warn("Too many arguments provided for the endpoint."),e;', 'return e.length>(wangpInputCount??t.length)&&console.warn("Too many arguments provided for the endpoint."),e;'),
+        ('P=Ig(o,k)', 'P=Ig(o,k,typeof e==="number"?g.inputs.length:undefined)'),
         ('function Qo(e,o,t,r){', _UPDATE_SCHEDULER + 'function Qo(e,o,t,r){'),
         ('uv(q)', 'wangpScheduleUpdate(q)'),
         ('function lf(e,o={}){', 'function lf(e,o={}){' + _NATIVE_EVENT_STREAM),
@@ -422,6 +428,11 @@ _PATCHES = {
         ('function q(){l.update(k=>{for(let g=0;', 'function q(){l.update(k=>{const wangpDirty=new Set;for(let g=0;'),
         ('f.props[v.prop]=j}return k}),ge=[]', 'f.props[v.prop]=j;' + _MARK_ANCESTORS + 'return k}),ge=[]'),
         ('l.set(h)', 'Object.values(s).forEach(node=>node.__wangp_revision=(node.__wangp_revision||0)+1),l.set(h)'),
+    ],
+    'Index-Cuq53rtW.js': [
+        # This handshake is for a Hugging Face iframe host. A standalone page
+        # has no parent receiver and Chrome reports a target-origin mismatch.
+        ('window.parent.postMessage(b,Te)', 'window.parent!==window&&window.parent.postMessage(b,Te)'),
     ],
 }
 
@@ -520,6 +531,9 @@ def install():
         if patched != source:
             patched = patched.replace('<script type="importmap">', '<script>' + proxy_root_script + '</script><script type="importmap">', 1)
             config = response.context['config']
+            # Gradio advertises this URL even when its route returns 404.
+            if not config.get('pwa'):
+                patched = patched.replace('<link rel="manifest" href="/manifest.json" />', '')
             if not config.get('auth_required'):
                 guard = session_script.replace('__WANGP_UI_SIGNATURE__', json.dumps(config['wangp_ui_signature']))
                 patched = patched.replace('<script type="importmap">', '<script>' + guard + '</script><script type="importmap">', 1)

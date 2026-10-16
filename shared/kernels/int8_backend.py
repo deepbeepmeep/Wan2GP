@@ -22,8 +22,8 @@ def _wgp_installed():
 
 
 CHOICES = [("Disabled: PyTorch (slowest, most precise)", "disabled"), ("Auto (best available)", "auto"),
-           (f"WGPKernels ({'installed' if _wgp_installed() else 'not installed'}, fastest, precise)", "wgpkernels"),
-           ("Triton (fast, less precise)", "triton"), ("Comfy Kitchen Kernels (fast, least precise)", "kitchen")]
+           (f"WGPKernels (recommended,{'installed' if _wgp_installed() else 'not installed'}, second fastest, precise)", "wgpkernels"),
+           ("Triton (fast, less precise)", "triton"), ("Comfy Kitchen Kernels (fastest, least precise)", "kitchen")]
 _LABELS = {"wgpkernels": "WGPKernels", "kitchen": "Comfy Kitchen", "triton": "Triton"}
 _backend = "pytorch"
 revision = 0

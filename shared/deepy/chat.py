@@ -237,7 +237,8 @@ def get_css() -> str:
 
 
 def get_javascript() -> str:
-    return (Path(__file__).parents[1] / 'gradio/form_sync.js').read_text(encoding='utf-8') + '\n' + "\n".join((Path(__file__).with_name("web") / name).read_text(encoding="utf-8") for name in ("transport.js", "gradio_transport.js", "chat.js", "compact_actions.js", "voice.js", "workspaces.js", "gallery_selection.js", "media_view.js", "workspace_viewer.js", "hybrid_transport.js"))
+    shared_scripts = '\n'.join((Path(__file__).parents[1] / 'gradio' / name).read_text(encoding='utf-8') for name in ('form_sync.js', 'generation_state.js'))
+    return shared_scripts + '\n' + "\n".join((Path(__file__).with_name("web") / name).read_text(encoding="utf-8") for name in ("transport.js", "gradio_transport.js", "chat.js", "compact_actions.js", "voice.js", "workspaces.js", "gallery_selection.js", "media_view.js", "workspace_viewer.js", "hybrid_transport.js"))
 
 
 def _touch_chat(session) -> int:

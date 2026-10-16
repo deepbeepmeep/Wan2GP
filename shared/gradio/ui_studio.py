@@ -15,7 +15,7 @@ THEME_HUES = {'default': AZURE, 'emerald': 'emerald', 'amethyst': 'violet', 'ros
 def create_theme(name, **sizes):
     if name == 'gradio':
         return None
-    theme = gr.themes.Soft(font=['Verdana'], primary_hue=THEME_HUES[name], secondary_hue=AZURE if name == 'default' else 'indigo', neutral_hue='slate', **sizes)
+    theme = gr.themes.Soft(font=[gr.themes.Font('Verdana')], primary_hue=THEME_HUES[name], secondary_hue=AZURE if name == 'default' else 'indigo', neutral_hue='slate', **sizes)
     if name == 'default':
         theme.set(background_fill_primary='*neutral_50', slider_color_dark='*primary_400', checkbox_label_background_fill_selected='*primary_600')
     if name != 'default':

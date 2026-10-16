@@ -2,6 +2,7 @@
 import time
 import threading
 import torch
+from shared.utils.generation_state import set_generation_state
 
 gen_lock = threading.Lock()
 _MAIN_PROCESS_RUNNING_KEY = "main_process_running"
@@ -117,12 +118,12 @@ def acquire_main_GPU_ressources(state):
             process_status = gen.get("process_status", None)
             if process_status is None or process_status == "process:main":
                 release_actions = _collect_resident_release_actions_locked(gen, requester_id="main")
-                gen["process_status"] = "process:main"
+                set_generation_state(gen, process_status="process:main")
                 break
             if process_status != waiting_on:
                 process_id = process_status.split(":", 1)[1]
                 process_name = gen[_PROCESS_NAMES_KEY][process_id]
-                gen["status"] = f"Media generation is waiting for {process_name} to release GPU resources..."
+                set_generation_state(gen, status=f"Media generation is waiting for {process_name} to release GPU resources...")
                 waiting_on = process_status
         time.sleep(0.1)
     _run_release_actions(release_actions)
@@ -139,7 +140,7 @@ def try_acquire_GPU_ressources(state, process_id, process_name):
         release_actions = _collect_resident_release_actions_locked(gen, requester_id=process_id)
         gen.setdefault("process_hierarchy", {})[process_id] = None
         gen.setdefault(_PROCESS_NAMES_KEY, {})[process_id] = process_name
-        gen["process_status"] = "process:" + process_id
+        set_generation_state(gen, process_status="process:" + process_id)
     _run_release_actions(release_actions)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -167,23 +168,23 @@ def acquire_GPU_ressources(state, process_id, process_name, gr = None, custom_pa
                 _drop_gpu_resident_locked(gen, process_id)
                 original_process_status = None
                 release_actions = _collect_resident_release_actions_locked(gen, requester_id=process_id)
-                gen["process_status"] = "process:" + process_id
+                set_generation_state(gen, process_status="process:" + process_id)
                 break
             elif process_status == "request:" + process_id and not _main_generation_active_locked(gen):
                 _drop_gpu_resident_locked(gen, process_id)
                 original_process_status = None
                 release_actions = _collect_resident_release_actions_locked(gen, requester_id=process_id)
-                gen["process_status"] = "process:" + process_id
+                set_generation_state(gen, process_status="process:" + process_id)
                 break
             elif process_status == "process:main":
                 if not _main_generation_active_locked(gen):
                     _drop_gpu_resident_locked(gen, process_id)
                     original_process_status = None
                     release_actions = _collect_resident_release_actions_locked(gen, requester_id=process_id)
-                    gen["process_status"] = "process:" + process_id
+                    set_generation_state(gen, process_status="process:" + process_id)
                     break
                 original_process_status = process_status
-                gen["process_status"] = "request:" + process_id
+                set_generation_state(gen, process_status="request:" + process_id)
 
                 gen["pause_msg"] = custom_pause_msg if custom_pause_msg is not None else f"Generation Suspended while using {process_name}" 
                 break
@@ -205,7 +206,7 @@ def acquire_GPU_ressources(state, process_id, process_name, gr = None, custom_pa
                     break
                 if process_status is None or (process_status == "request:" + process_id and not _main_generation_active_locked(gen)):
                     # handle case when main process has finished at some point in between the last check and now
-                    gen["process_status"] = "process:" + process_id
+                    set_generation_state(gen, process_status="process:" + process_id)
                     break
 
             total_wait += wait_time
@@ -240,5 +241,5 @@ def release_GPU_ressources(state, process_id, keep_resident = False, process_nam
         restore_status = process_hierarchy.pop(process_id, None)
         if restore_status == "process:main" and not _main_generation_active_locked(gen):
             restore_status = None
-        gen["process_status"] = restore_status
+        set_generation_state(gen, process_status=restore_status)
         gen.get(_PROCESS_NAMES_KEY, {}).pop(process_id, None)

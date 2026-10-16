@@ -18,7 +18,7 @@
                 "label": "Torch 2.13.0 + ROCm 10.0 (TheRock, AMD)",
                 "cmd": {
                     "win": "\"torch[{device}]==2.13.0+rocm10.0.0\" \"torchvision[{device}]==0.28.0+rocm10.0.0\" torchaudio==2.11.0.2+rocm10.0.0 --index-url https://stable.repo.amd.com/rocm/whl-next/",
-                    "linux": "torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.2"
+                    "linux": "\"torch[{device}]==2.13.0+rocm10.0.0\" \"torchvision[{device}]==0.28.0+rocm10.0.0\" torchaudio==2.11.0.2+rocm10.0.0 --index-url https://stable.repo.amd.com/rocm/whl-next/"
                 }
             },
             "mps": {
@@ -105,6 +105,27 @@
             }
         },
         "kernels": {
+            "wgpkernels": {
+                "label": "WGPKernels 1.1.2 (CUDA 13, RTX 30XX+)",
+                "cmd": {
+                    "win": "--no-deps https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.2/wgpkernels-1.1.2%2Bcu130-py3-none-win_amd64.whl",
+                    "linux": "--no-deps https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.2/wgpkernels-1.1.2%2Bcu130-py3-none-linux_x86_64.whl"
+                }
+            },
+            "wgpkernels_cu128": {
+                "label": "WGPKernels 1.1.2 (CUDA 12.8, RTX 30XX+)",
+                "cmd": {
+                    "win": "--no-deps https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.2/wgpkernels-1.1.2%2Bcu128-py3-none-win_amd64.whl",
+                    "linux": "--no-deps https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.2/wgpkernels-1.1.2%2Bcu128-py3-none-linux_x86_64.whl"
+                }
+            },
+            "wgpkernels_rocm10": {
+                "label": "WGPKernels 1.1.2 (ROCm 10, RDNA4, experimental)",
+                "cmd": {
+                    "win": "--no-deps https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.2/wgpkernels-1.1.2%2Brocm100-py3-none-win_amd64.whl",
+                    "linux": "--no-deps https://github.com/deepbeepmeep/WGPKernels/releases/download/v1.1.2/wgpkernels-1.1.2%2Brocm100-py3-none-linux_x86_64.whl"
+                }
+            },
             "nunchaku": { 
                 "label": "Nunchaku INT4/FP4", 
                 "cmd": {
@@ -145,10 +166,10 @@
     "gpu_profiles": {
         "GTX_10":      { "python": "3.10", "torch": "cu128", "triton": null,     "sage": null,       "sparge": null, "flash": null, "kernels": [] },
         "RTX_20":      { "python": "3.11", "torch": "cu130", "triton": "v33", "sage": "v1", "sparge": null, "flash": null, "kernels": ["nunchaku_cu13", "gguf"] },
-        "RTX_30":      { "python": "3.11", "torch": "cu130", "triton": "v37", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
-        "RTX_40":      { "python": "3.11", "torch": "cu130", "triton": "v37", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13", "gguf"] },
-        "RTX_50":      { "python": "3.11", "torch": "cu130", "triton": "v37", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["nunchaku_cu13","light2xv", "gguf"] },
-        "AMD":         { "python": "3.12", "torch": "rocm10", "triton": "v38", "sage": "v1", "sparge": null, "flash": "v284_rocm", "kernels": [], "attention": "sdpa" },
+        "RTX_30":      { "python": "3.11", "torch": "cu130", "triton": "v37", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["wgpkernels", "nunchaku_cu13", "gguf"] },
+        "RTX_40":      { "python": "3.11", "torch": "cu130", "triton": "v37", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["wgpkernels", "nunchaku_cu13", "gguf"] },
+        "RTX_50":      { "python": "3.11", "torch": "cu130", "triton": "v37", "sage": "v220_cu13", "sparge": "v010_cu13", "flash": "v210", "kernels": ["wgpkernels", "nunchaku_cu13","light2xv", "gguf"] },
+        "AMD":         { "python": "3.12", "torch": "rocm10", "triton": "v38", "sage": "v1", "sparge": null, "flash": "v284_rocm", "kernels": ["wgpkernels"], "attention": "sdpa" },
         "MPS":         { "python": "3.11", "torch": "mps", "triton": null, "sage": null, "sparge": null, "flash": null, "kernels": [], "attention": "sdpa" }
     }
 }

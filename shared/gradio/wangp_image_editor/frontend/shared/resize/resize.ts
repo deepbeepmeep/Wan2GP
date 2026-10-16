@@ -357,7 +357,7 @@ export class ResizeTool implements Tool {
 		// Create a transparent interactive area for the move cursor
 		const move_area = new Graphics()
 			.rect(0, 0, width, height)
-			.fill(0xffffff, 0); // Transparent fill
+			.fill({ color: 0xffffff, alpha: 0 }); // Transparent fill
 
 		move_area.eventMode = "static";
 		move_area.cursor = "move"; // Set cursor to move
@@ -943,7 +943,7 @@ export class ResizeTool implements Tool {
 
 		// Update the move area
 		const move_area = this.resize_ui_container.getChildAt(2) as Graphics;
-		move_area.clear().rect(0, 0, scaled_width, scaled_height).fill(0xffffff, 0);
+		move_area.clear().rect(0, 0, scaled_width, scaled_height).fill({ color: 0xffffff, alpha: 0 });
 
 		// Update handle positions to reflect the resized area
 		this.update_handle_positions(scaled_width, scaled_height);
@@ -962,7 +962,7 @@ export class ResizeTool implements Tool {
 
 		// Update the move area size
 		const move_area = this.resize_ui_container.getChildAt(2) as Graphics;
-		move_area.clear().rect(0, 0, width, height).fill(0xffffff, 0);
+		move_area.clear().rect(0, 0, width, height).fill({ color: 0xffffff, alpha: 0 });
 
 		// First 4 are corners
 		const corners = handles.slice(0, 4);

@@ -134,7 +134,8 @@ WAC.installEventBridge = function () {
   WAC.handleEventNodeMutation();
   WAC.syncDisclosureBridge();
   WAC.syncScrollBridge();
-  if (!WAC.pollTimer) WAC.pollTimer = window.setInterval(() => { WAC.readEventSource(); }, 250);
+  // The value setter and input/change handlers deliver updates immediately.
+  // Re-read on focus below; there is no need to poll the hidden textbox.
   window.addEventListener('focus', () => { WAC.readEventSource(); }, { passive: true });
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) WAC.readEventSource();

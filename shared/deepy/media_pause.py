@@ -5,6 +5,7 @@ import time
 import threading
 
 from shared.utils.process_locks import gen_lock
+from shared.utils.generation_state import pause_state, set_generation_state
 
 
 def postprocessing_pause_checkpoint(gen):
@@ -19,10 +20,7 @@ def postprocessing_pause_checkpoint(gen):
 
 def generation_pause_controls(state, previous):
     import gradio as gr
-    status = state.get('gen', {}).get('process_status', '') or ''
-    pending = status == 'request:pause' or status.startswith('request:deepy_pause_')
-    paused = status == 'process:pause' or status.startswith('process:deepy_pause_')
-    current = (pending, paused)
+    current = pending, paused = pause_state(state.get('gen', {}))
     if current == previous:
         return gr.skip(), gr.skip(), current
     return gr.update(visible=not paused, interactive=not pending), gr.update(visible=paused), current
@@ -64,7 +62,7 @@ class MediaToolPause:
         if self.manual_pause:
             self.gen['resume'] = True
         if self.gen.get('process_status') in (self.request, self.process):
-            self.gen['process_status'] = 'process:main' if self.gen.get('main_process_running') else None
+            set_generation_state(self.gen, process_status='process:main' if self.gen.get('main_process_running') else None)
         self.gen.get('process_names', {}).pop(self.owner, None)
 
     def poll(self):
@@ -103,7 +101,7 @@ class MediaToolPause:
                     if self._owns_active_task():
                         self.gen.setdefault('process_names', {})[self.owner] = 'Deepy Pause'
                         self.gen['pause_msg'] = 'Media Processing Paused - Resume in Deepy'
-                        self.gen['process_status'] = self.request
+                        set_generation_state(self.gen, process_status=self.request)
             if interrupted:
                 self.send_cmd('chat_output', build_status_event('Stopping generation...', kind='stop_pending', session=session))
             if resuming:

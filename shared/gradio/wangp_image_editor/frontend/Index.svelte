@@ -94,6 +94,9 @@
 		stream.__wangp_connection_loss_patched = true;
 		try {
 			stream.addEventListener("error", mark_gradio_connection_lost);
+			// Native EventSource owns its onerror setter. Shadowing it prevents
+			// Gradio from receiving disconnects and reopening its queue stream.
+			return stream;
 		} catch {}
 		let onerror = stream.onerror;
 		try {

@@ -6,8 +6,6 @@
   WAC.readEventSource = () => {};
   WAC.handleEventNodeMutation = () => {};
   WAC.observeEventSourceValue = () => {};
-  clearInterval(WAC.pollTimer);
-  WAC.pollTimer = null;
   let started = false;
   function boot() {
     const marker = document.querySelector('[data-deepy-hybrid]');
@@ -17,7 +15,7 @@
     observer.disconnect();
     const legacyInput = WAC.eventSource();
     if (legacyInput?.__wangpAssistantEventValueObserved) delete legacyInput.value;
-    let galleryRevision = -1, settingsRevision = -1, previewRevision = -1, generating = false, noticeTimer = null, unauthorized = false;
+    let galleryRevision = -1, settingsRevision = -1, previewRevision = -1, generating = false, generationInstance = null, noticeTimer = null, unauthorized = false;
     let restoration = null, restoredId = null;
     const base = marker.dataset.deepyHybrid;
     const openApp = document.createElement('a');
@@ -94,10 +92,16 @@
       if (data && !generating) WAC.setBridgeValue('#wangp_main_status_trigger textarea, #wangp_main_status_trigger input', String(Date.now()));
       generating = !!data;
     }
+    function generationSnapshot(state) {
+      if (generationInstance !== state.instance) generating = false;
+      generationInstance = state.instance;
+      window.WanGPGenerationState.receive(state.generation_state, true);
+      progress(state.progress);
+    }
     const transport = new DeepyConnection(base, {
-      snapshot: state => {WAC.applyDisplaySettings(state.display_settings); renderWorkspaces(state.workspaces, true); restoring(state.restoration); WAC.consumePayload(state.chat); catalog(state); galleryRevision = settingsRevision = previewRevision = -1; refresh(state.host_view); progress(state.progress); window.WanGPFormSync.refresh(state.forms);},
+      snapshot: state => {generationSnapshot(state); WAC.applyDisplaySettings(state.display_settings); renderWorkspaces(state.workspaces, true); restoring(state.restoration); WAC.consumePayload(state.chat); catalog(state); galleryRevision = settingsRevision = previewRevision = -1; refresh(state.host_view); window.WanGPFormSync.refresh(state.forms);},
       event: event => {
-        if (event.type === 'snapshot') {WAC.applyDisplaySettings(event.data.display_settings); renderWorkspaces(event.data.workspaces); restoring(event.data.restoration); WAC.consumePayload(event.data.chat); catalog(event.data); refresh(event.data.host_view); progress(event.data.progress); window.WanGPFormSync.refresh(event.data.forms);}
+        if (event.type === 'snapshot') {generationSnapshot(event.data); WAC.applyDisplaySettings(event.data.display_settings); renderWorkspaces(event.data.workspaces); restoring(event.data.restoration); WAC.consumePayload(event.data.chat); catalog(event.data); refresh(event.data.host_view); window.WanGPFormSync.refresh(event.data.forms);}
         else if (event.type === 'workspaces') {renderWorkspaces(event.data); viewer.invalidate();}
         else if (event.type === 'forms') window.WanGPFormSync.refresh(event.data);
         else if (event.type === 'display_settings') WAC.applyDisplaySettings(event.data);
@@ -107,6 +111,7 @@
         else if (event.type === 'host_view') refresh(event.data);
         else if (event.type === 'sessions') catalog(event.data);
         else if (event.type === 'progress') progress(event.data);
+        else if (event.type === 'generation_state') window.WanGPGenerationState.receive(event.data);
         else if (event.type === 'error') showError(event.data);
       },
       connection: connected => {if (connected) unauthorized = false; notice(connected ? '' : unauthorized ? 'Sign in to the Web app, then return here.' : 'Connection to server lost. Reconnecting…', true);},

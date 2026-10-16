@@ -109,6 +109,7 @@ from shared.utils.gallery_sources import GALLERY_SOURCES, STRIP_SOURCES, VIDEO, 
 from shared.utils.self_refiner import normalize_self_refiner_plan, ensure_refiner_list, add_refiner_rule, remove_refiner_rule
 from shared.deepy import controller as deepy_controller
 from shared.deepy.hybrid import HybridService, SharedState, service_for
+from shared.utils.generation_state import set_generation_state
 from shared.utils.gallery_view import gallery_window
 from shared.gradio.import_files import ImportFiles
 from shared.deepy import filesystem as deepy_filesystem
@@ -183,7 +184,7 @@ AUTOSAVE_ERROR_FILENAME = "error_queue.zip"
 AUTOSAVE_TEMPLATE_PATH = AUTOSAVE_FILENAME
 CONFIG_FILENAME = "wgp_config.json"
 PROMPT_VARS_MAX = 10
-WanGP_version = "18.11"
+WanGP_version = "18.12"
 VIDEO_LENGTH_ROUNDING = "ceil"  # how a requested video length is fitted to the model's frame steps: "floor", "ceil" (never shorter than requested) or "nearest"
 set_video_length_rounding(VIDEO_LENGTH_ROUNDING)
 settings_version = 2.80
@@ -269,6 +270,7 @@ def clear_gen_cache():
         del offload.shared_state["_cache"]
 
 
+_deepy_hybrid = None
 
 def release_model():
     global wan_model, offloadobj, reload_needed
@@ -284,6 +286,8 @@ def release_model():
     gc.collect()
     torch.cuda.empty_cache()
     reload_needed = True
+    if _deepy_hybrid is not None:
+        _deepy_hybrid.host_changed()
     if released is not None:  # the debug reports of a release that freed a model: what it left in RAM and VRAM
         write_vram_debug_report(save_path, f"model_release_{released}")
         write_ram_debug_report(save_path, f"model_release_{released}", census_label=f"after the release of {released}")
@@ -2348,7 +2352,7 @@ def clear_queue_action(state):
             gen["resume"] = True
             gen["abort"] = True
             gen["extra_orders"] = 0
-            gen["status"] = "Processing Request to abort Current Generation"
+            set_generation_state(gen, status="Processing Request to abort Current Generation")
             if wan_model is not None:
                 wan_model._interrupt = True
             aborted_current = True
@@ -4450,7 +4454,7 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
             process_status = gen.get("process_status", None)
             pause_msg = None
             if isinstance(process_status, str) and process_status.startswith("request:"):
-                gen["process_status"] = "process:" + process_status[len("request:"):]
+                set_generation_state(gen, process_status="process:" + process_status[len("request:"):])
                 offloadobj.unload_all()
                 pause_msg = gen.get("pause_msg", "Unknown Pause")
                 in_pause = True
@@ -4462,7 +4466,7 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
                 with gen_lock:
                     process_status = gen.get("process_status", None)
                     if isinstance(process_status, str) and process_status.startswith("request:"):
-                        gen["process_status"] = "process:" + process_status[len("request:"):]
+                        set_generation_state(gen, process_status="process:" + process_status[len("request:"):])
                         continue
                     if process_status == "process:main": break
             force_refresh = True
@@ -4584,26 +4588,35 @@ def build_callback(state, pipe, send_cmd, status, num_inference_steps, preview_m
     callback.tiny_vae = tiny_preview is not None
     return callback
 
+_pause_generation_lock = threading.Lock()
+
+
 def pause_generation(state):
+    # Concurrent pages must not queue a second pause behind the first resume.
+    if not _pause_generation_lock.acquire(blocking=False):
+        return
+    try:
+        _pause_generation(state)
+    finally:
+        _pause_generation_lock.release()
+
+
+def _pause_generation(state):
     gen = get_gen_info(state)
     process_id = "pause"
     GPU_process_running = any_GPU_process_running(state, process_id, ignore_main= True )
     if GPU_process_running:
         gr.Info("Unable to pause, a PlugIn is using the GPU")
-        yield gr.update(), gr.update()
         return
     gen["resume"] = False
-    yield gr.Button(interactive= False), gr.update()
     pause_msg = "Generation on Pause, click Resume to Restart Generation"
     acquire_GPU_ressources(state, process_id , "Pause", gr= gr, custom_pause_msg= pause_msg, custom_wait_msg= "Please wait while the Pause Request is being Processed...")      
     gr.Info(pause_msg)
-    yield gr.Button(visible= False, interactive= True), gr.Button(visible= True)
     while not gen.get("resume", False):
         time.sleep(0.5)
 
     release_GPU_ressources(state, process_id )
     gen["resume"] = False
-    yield gr.Button(visible= True, interactive= True), gr.Button(visible= False)
 
 def resume_generation(state):
     gen = get_gen_info(state)
@@ -4645,7 +4658,7 @@ def abort_generation(state, client_id="", notify = True):
             wan_model._interrupt= True
         gen["abort"] = True            
         msg = "Processing Request to abort Current Generation"
-        gen["status"] = msg
+        set_generation_state(gen, status=msg)
         if service is not None:
             service._generation_aborting = True
             service._generation_event("status", "Aborting generation…")
@@ -4672,7 +4685,7 @@ def early_stop_generation(state):
         gen["early_stop"] = True
         gen["early_stop_forwarded"] = False
     msg = "Early Stop Requested"
-    gen["status"] = msg
+    set_generation_state(gen, status=msg)
     gr.Info(msg)
     return gr.Button(interactive=False)
 
@@ -8971,7 +8984,7 @@ def _process_tasks(state):
     progress = None
 
     if len(queue) == 0:
-        gen["status_display"] =  False
+        set_generation_state(gen, status_display=False)
         return
     # Gallery limits apply only to rendered views. Workspaces retain every output.
     set_main_generation_running(state, True)
@@ -8982,9 +8995,9 @@ def _process_tasks(state):
         with gen_lock:
             process_status = gen.get("process_status", None)
             if isinstance(process_status, str) and process_status.startswith("request:"):
-                gen["process_status"] = "process:" + process_status[len("request:"):]
+                set_generation_state(gen, process_status="process:" + process_status[len("request:"):])
             else:
-                gen["process_status"] = None
+                set_generation_state(gen, process_status=None)
 
     start_time = time.time()
     notification_run = notifications.start_queue(gen, len(queue))
@@ -8993,7 +9006,7 @@ def _process_tasks(state):
     gen_in_progress = True
     gen["in_progress"] = True
     gen["preview"] = None
-    gen["status"] = get_task_status_text(queue[0])
+    set_generation_state(gen, status=get_task_status_text(queue[0]))
     gen["header_text"] = ""    
 
     yield time.time(), time.time(), gr.update()
@@ -9125,12 +9138,12 @@ def _process_tasks(state):
             update_global_queue_ref(queue)
             gen["prompts_max"] = 0
             gen["prompt"] = ""
-            gen["status_display"] =  False
+            set_generation_state(gen, status_display=False)
             notifications.finish_queue(server_config, gen, notification_run, time.time() - start_time)
             release_gen()
             raise gr.Error(data, print_exception= False, duration = 0)
         elif cmd == "status":
-            gen["status"] = data
+            set_generation_state(gen, status=data)
             status_text = str(data or "").strip()
             gen["last_progress_args"] = [0, status_text] if len(status_text) > 0 else None
         elif cmd == "output":
@@ -9176,8 +9189,7 @@ def _process_tasks(state):
         except Exception as e:
             print(f"Error playing notification sound: {e}")
     notifications.finish_queue(server_config, gen, notification_run, end_time - start_time)
-    gen["status"] = status
-    gen["status_display"] =  False
+    set_generation_state(gen, status=status, status_display=False)
     release_gen()
 
 
@@ -11102,7 +11114,7 @@ def preload_model_when_switching(state):
         model_type = get_state_model_type(state) 
         if  model_type !=  transformer_type:
             gen = get_gen_info(state)
-            gen["model_preloading"] = True
+            set_generation_state(gen, model_preloading=True)
             try:
                 release_model()
                 progress = WangpProgress()
@@ -11115,7 +11127,7 @@ def preload_model_when_switching(state):
                 )
                 reload_needed = False
             finally:
-                gen.pop("model_preloading", None)
+                set_generation_state(gen, model_preloading=False)
             yield render_idle_generation_status(state)
         return   
     return gr.Text()
@@ -11884,7 +11896,6 @@ _deepy = deepy_controller.create_controller(
     clear_queue_action=clear_queue_action,
 )
 release_deepy_vram = _deepy.release_vram
-_deepy_hybrid = None
 
 
 def _deepy_runtime_deps():
@@ -13226,7 +13237,7 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                 if tab_id == 'generate' and default_state is None:
                     global _deepy_hybrid
                     state_dict = SharedState(state_dict)
-                    _deepy_hybrid = HybridService(_deepy_runtime_deps(), state_dict, process_queue=_process_tasks, finalize_queue=_finalize_generation, unload=_unload_model_if_needed, gallery_lock=lock)
+                    _deepy_hybrid = HybridService(_deepy_runtime_deps(), state_dict, process_queue=_process_tasks, finalize_queue=_finalize_generation, unload=_unload_model_if_needed, gallery_lock=lock, model_label=get_loaded_model_label)
                     _deepy_hybrid.configure_workspaces(args.workspaces_dir or server_config.get('workspaces_dir') or os.path.join(wgp_root, 'workspaces'))
                 state = default_state if default_state is not None else gr.State(state_dict)
                 if tab_id == "generate" and header is not None:
@@ -13508,26 +13519,18 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                         return
                     time.sleep(0.1)
 
-            def refresh_idle_status(state, previous_html):
-                gen = get_gen_info(state)
-                if gen.get("status_display", False) or gen.get("model_preloading", False):
-                    return gr.update(), None
-                html = render_idle_generation_status(state)
-                return (gr.update() if html == previous_html else gr.update(value=html, visible=True)), html
-
             def activate_status(state):
                 if state.get("validate_success",0) != 1:
                     return
                 gen = get_gen_info(state)
-                gen["status_display"] = True
+                set_generation_state(gen, status_display=True)
                 return time.time()
 
             start_quit_timer_js, cancel_quit_timer_js, trigger_zip_download_js, trigger_settings_download_js, click_brush_js = get_js()
 
-            # Every browser observes the same generation; observers must not queue behind each other.
-            status_trigger.change(refresh_status_async, inputs=[state], outputs=[gen_status], show_progress="hidden", concurrency_limit=None)
-            idle_status_view = gr.State(None)
-            gr.Timer(0.5).tick(refresh_idle_status, inputs=[state, idle_status_view], outputs=[gen_status, idle_status_view], queue=False, show_progress="hidden")
+            # Each page has an active subscription; reapply the newest idle
+            # snapshot after its final response so late completion cannot regress it.
+            status_trigger.change(refresh_status_async, inputs=[state], outputs=[gen_status], show_progress="hidden", concurrency_limit=None).then(fn=None, outputs=[gen_status], js='() => window.WanGPGenerationState.updates()[0]')
 
             if tab_id == 'generate':
                 from shared.deepy.hybrid_ui import bind_gallery_sync
@@ -13566,11 +13569,10 @@ def generate_media_tab(update_form = False, state_dict = None, ui_defaults = Non
                     get_model_def=lambda state_value: get_model_def(get_state_model_type(state_value)),
                     model_def=model_def,
                 )
-            pause_btn.click(pause_generation, [state], [ pause_btn, resume_btn] )
+            pause_btn.click(pause_generation, [state], show_progress="hidden", concurrency_limit=None, trigger_mode="multiple")
             resume_btn.click(resume_generation, [state], queue=False)
-            from shared.deepy.media_pause import generation_pause_controls
-            pause_view = gr.State(None)
-            gr.Timer(0.5).tick(generation_pause_controls, [state, pause_view], [pause_btn, resume_btn, pause_view], queue=False, show_progress="hidden")
+            from shared.deepy.hybrid_ui import bind_generation_state
+            bind_generation_state(tab_id, gen_status, pause_btn, resume_btn)
             abort_btn.click(abort_generation, [state, gr.State("")], [ abort_btn, queue_html], show_progress="hidden" ) #.then(refresh_gallery, inputs = [state, gen_info], outputs = [output, gen_info, queue_html] )
             abort_client_id.change(abort_generation, [state, abort_client_id], [ abort_btn, queue_html], show_progress="hidden" ) #.then(refresh_gallery, inputs = [state, gen_info], outputs = [output, gen_info, queue_html] )
             earlystop_btn.click(early_stop_generation, [state], [ earlystop_btn] )

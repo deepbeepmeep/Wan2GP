@@ -70,6 +70,9 @@
       } catch (error) {
         if (this.closed || this.pollAbort !== abort) return;
         this.pollAbort = null;
+        // A server outage invalidates the fallback connection too. Try the
+        // event stream again when the server returns instead of polling forever.
+        this.polling = false;
         this.handlers.connection?.(false);
         if (error.status !== 401) this.timer = setTimeout(() => this.connect(), 1500);
       }

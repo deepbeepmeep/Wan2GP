@@ -42,6 +42,8 @@ clinfo | findstr gfx
 
 `scripts\install.bat` detects AMD GPUs through `clinfo` and installs a Python 3.12 environment with ROCm PyTorch for the detected target(s), Triton and SageAttention 1. See the Installation section of the main [README](../README.md) for how to use the scripts.
 
+For RDNA4 (`gfx1200`, `gfx1201`), it also installs the experimental WGPKernels INT8 wheel for PyTorch 2.13.0 / ROCm 10.0. See [WGPKernels Installation](INSTALLATION.md#wgpkernels-installation) for manual commands and validation limitations. Other AMD targets keep their existing supported INT8 backends.
+
 Environments created by older versions of the installer or of this guide (the `rocm65` option, or the per-family `rocm.nightlies.amd.com/v2/gfx...` indexes) should be replaced: create a new environment with `install.bat` and make it the active one with `manage.bat`.
 
 ## Manual Installation

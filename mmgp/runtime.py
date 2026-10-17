@@ -8,6 +8,8 @@ import torch
 
 
 _owners = weakref.WeakKeyDictionary()
+_resources = weakref.WeakKeyDictionary()
+_resource_users = {}
 _execution_checkpoint = ContextVar("mmgp_execution_checkpoint", default=None)
 
 
@@ -27,11 +29,50 @@ def checkpoint():
         callback()
 
 
+def register_resource(module, prepare, release):
+    """Tie a shared execution resource to a model's GPU residency.
+
+    prepare(device) runs before its first owner loads, outside graph warmup;
+    release() runs after its last owner unloads and its graphs are destroyed.
+    Register before profiling, with the same callback pair for models sharing the resource. Neither
+    callback may retain the model or allocate resources at registration time.
+    """
+    _resources.setdefault(module, set()).add((prepare, release))
+
+
+def _load_resources(manager, model_id):
+    model = manager.models[model_id]
+    for resource in manager.runtime_resources[model_id]:
+        users = _resource_users.setdefault(resource, weakref.WeakSet())
+        first = not users
+        users.add(model)  # an interrupted preparation is cleaned up by unload_all too
+        if first:
+            from . import allocator
+            with allocator.normal_allocations():
+                resource[0](torch.device("cuda", torch.cuda.current_device()))
+
+
+def _unload_resources(manager, model_ids):
+    for model_id in model_ids:
+        model = manager.models[model_id]
+        for resource in manager.runtime_resources[model_id]:
+            users = _resource_users.get(resource)
+            if users is None:
+                continue
+            users.discard(model)
+            if not users:
+                resource[1]()
+                del _resource_users[resource]
+
+
 def _register(manager, models):
     owners = {model_id: (weakref.ref(manager), model_id) for model_id in models}
+    manager.runtime_resources = {}
     for model_id, model in models.items():
+        resources = manager.runtime_resources[model_id] = set()
         for module in model.modules():
             _owners[module] = owners[model_id]
+            resources.update(_resources.get(module, ()))
     # A separately managed root owns itself even when another model contains it.
     for model_id, model in models.items():
         _owners[model] = owners[model_id]

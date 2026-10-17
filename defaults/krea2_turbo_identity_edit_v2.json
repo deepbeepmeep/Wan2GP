@@ -1,0 +1,17 @@
+{
+    "model": {
+        "name": "Krea 2 Turbo Identity Edit v2",
+        "architecture": "krea2_turbo_edit",
+        "description": "Identity-preserving restaging using Krea 2 Turbo and the full-rank Identity Edit v2 LoRA. Change a person's scene, pose, outfit or lighting while preserving their likeness. Up to two Reference Images can be provided. For recoloring and general edits, use General Edit v2.",
+        "URLs": "krea2_turbo",
+        "loras": ["https://huggingface.co/DeepBeepMeep/krea-2/resolve/main/krea2_identity_edit_v2.safetensors"],
+        "loras_multipliers": [1]
+    },
+    "prompt": "Show the person from the reference image standing full body in a sunlit garden, wearing a white linen shirt and blue jeans. Preserve their face and hairstyle.",
+    "negative_prompt": "",
+    "video_prompt_type": "KI",
+    "model_mode": 0,
+    "batch_size": 1,
+    "num_inference_steps": 8,
+    "guidance_scale": 0
+}

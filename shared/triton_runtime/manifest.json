@@ -1,0 +1,34 @@
+{
+  "format": 1,
+  "binary": "cuda_utils.cp311-win_amd64.pyd",
+  "binary_sha256": "6b07c1ff54bccd57b8eda216ef5fab8b41a3f93701e1c491147d2ad44f85f7f3",
+  "platform": "win_amd64",
+  "python_abi": "cp311",
+  "dependencies": ["python311.dll", "KERNEL32.dll"],
+  "dynamic_dependencies": ["nvcuda.dll"],
+  "authenticode_signed": false,
+  "license": "TRITON_LICENSE.txt",
+  "source_project": "https://github.com/woct0rdho/triton-windows",
+  "built_from": "3.7.1.post27",
+  "compiler": "MSVC",
+  "msvc_toolset": "14.35.32215",
+  "windows_sdk": "10.0.22000.0",
+  "build_options": ["/O2", "/LD", "/MT", "/DNDEBUG", "/std:c11", "/Brepro", "/FImalloc.h", "/Dalloca=_alloca", "/we4013"],
+  "build_source_sha256": "013d297260069ba8ee87b50b9a21f81030e44a369c92428c0302c843cd7d8a43",
+  "source_changes": ["Initialize clusterAttr and clusterSchedulingAttr with {0} instead of {} for MSVC C11."],
+  "driver_python_sha256": "50baa142d85b21f7a97f4f961311093267a9ca9dacf2b79d1c5af212d1113f49",
+  "builds": {
+    "3.7.0.post26": {
+      "wheel": "triton_windows-3.7.0.post26-cp311-cp311-win_amd64.whl",
+      "wheel_url": "https://files.pythonhosted.org/packages/77/0b/bbf56c1996289260472f09e965ecf775ca7146ea2a69cfb5fd9513faab86/triton_windows-3.7.0.post26-cp311-cp311-win_amd64.whl",
+      "wheel_sha256": "38820923a9a1e3eca6f6046e733e6a0a7e771ec3132c2186f334c0edefec650e",
+      "driver_source_sha256": "d219816a966d5d26e97dd925f7de2cc1ec780654ea0fd7a3622ba8a443611f79"
+    },
+    "3.7.1.post27": {
+      "wheel": "triton_windows-3.7.1.post27-cp311-cp311-win_amd64.whl",
+      "wheel_url": "https://files.pythonhosted.org/packages/26/f5/0f5eaf48abc0c9900f600dbdfa8139e678aa7d47dc1da51b0541979e96df/triton_windows-3.7.1.post27-cp311-cp311-win_amd64.whl",
+      "wheel_sha256": "b739bd7d39f919280294d8af172a90aa2f17a4377bfbca2ea30a8afae61d5eaa",
+      "driver_source_sha256": "e10b0ca2dc49c34634a426f60b0dcd7e01bc33bf58b28356e83518f4b13cbee9"
+    }
+  }
+}

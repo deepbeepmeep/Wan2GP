@@ -116,11 +116,15 @@ The Triton library is required for Pytorch compilation and Sage Attention and by
 
 ### Windows RTX 30XX - RTX 50XX
 
-Use the Triton version matching your PyTorch installation. For the recommended **PyTorch 2.10** environment:
+For the recommended **Python 3.11 / PyTorch 2.10** environment, new installations use Triton 3.7:
 
 ```bash
-python -m pip install -U "triton-windows>=3.6,<3.7"
+python -m pip install -U "triton-windows>=3.7.0.post26,<=3.7.1.post27"
 ```
+
+**Existing installations do not need to upgrade.** Triton 3.6 continues to work as before and remains available in the installer's manual selection. Run the command above in your WanGP environment only if you want to upgrade, for example when antivirus software blocks Triton's generated CUDA helper.
+
+WanGP includes a small prebuilt CUDA helper for **3.7.0.post26 and 3.7.1.post27**, enabled automatically on 64-bit Windows with Python 3.11. No separate helper installation, Visual Studio or antivirus exclusion is needed. Triton acceleration remains enabled, including GPU kernel compilation on first use. Other Python/Triton versions keep their existing behavior.
 
 For an existing **PyTorch 2.7 / 2.7.1** environment:
 
@@ -137,6 +141,18 @@ RTX 20XX must use Triton 3.2:
 ```bash
 python -m pip install -U "triton-windows>=3.2,<3.3"
 ```
+
+### Windows AMD / ROCm 10
+
+For **Python 3.12 / PyTorch 2.13.0 / ROCm 10.0.0**, WanGP includes a separate prebuilt HIP helper, automatically enabled with **3.7.0.post26 or 3.7.1.post27**. It uses the installed ROCm runtime and avoids compiling Triton's host helper locally; GPU kernels still compile normally. There is no extra helper installation or Visual Studio requirement.
+
+Upgrading an existing environment is optional. To use one of these releases, run this command in your AMD WanGP environment:
+
+```bash
+python -m pip install -U "triton-windows>=3.7.0.post26,<=3.7.1.post27"
+```
+
+Older Triton versions retain their existing behavior. The prebuilt HIP helper is experimental pending AMD GPU generation and antivirus validation; it does not extend ROCm's supported GPU list. Linux is unchanged.
 
 ### Linux
 
@@ -229,7 +245,9 @@ pip install flash-attn==2.7.2.post1
 
 ## GGUF llama.cpp CUDA Kernels
 
-These kernels accelerate GGUF models with packed MMVQ/MMQ, direct FP16/BF16 activation quantization, CUDA-graph-safe workspaces and quantized KV-cache attention. 
+Version 1.0.26 accelerates GGUF models with packed MMVQ/MMQ, direct FP16/BF16 activation quantization, CUDA-graph-safe workspaces and quantized KV-cache attention.
+
+Packed rows crossing quantization blocks are supported on RTX 20/30/40/50 for Q2_K through Q6_K, Q4_0/Q4_1, Q5_0/Q5_1 and Q8_0. This fixes MiniMax H3 image-reference projections without dense weight materialization or matrix padding. RTX 20 uses NVRTC; RTX 30/40/50 use the installed Triton compiler. First use compiles and tunes the kernels.
 
 Install the wheel matching your Python, PyTorch and CUDA stack. `--no-deps` preserves the installed PyTorch environment.
 
@@ -237,24 +255,24 @@ Install the wheel matching your Python, PyTorch and CUDA stack. `--no-deps` pres
 
 Windows:
 ```bash
-pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch210cu130py311-cp311-cp311-win_amd64.whl
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.26/llamacpp_gguf_cuda-1.0.26%2Btorch210cu130py311-cp311-cp311-win_amd64.whl
 ```
 
 Linux:
 ```bash
-pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch210cu130py311-cp311-cp311-linux_x86_64.whl
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.26/llamacpp_gguf_cuda-1.0.26%2Btorch210cu130py311-cp311-cp311-linux_x86_64.whl
 ```
 
 ### Python 3.10 / PyTorch 2.7.1 / CUDA 12.8
 
 Windows:
 ```bash
-pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch271cu128py310-cp310-cp310-win_amd64.whl
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.26/llamacpp_gguf_cuda-1.0.26%2Btorch271cu128py310-cp310-cp310-win_amd64.whl
 ```
 
 Linux:
 ```bash
-pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch271cu128py310-cp310-cp310-linux_x86_64.whl
+pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.26/llamacpp_gguf_cuda-1.0.26%2Btorch271cu128py310-cp310-cp310-linux_x86_64.whl
 ```
 
 The CUDA 13 builds contain native GPU code for SM75 through the architectures supported by CUDA 13.1. CUDA 12.8 builds additionally contain pre-SM75 code, subject to PyTorch's own support. The release includes the exact architecture lists, source and build instructions. Hardware validation was performed on RTX5090; Linux wheels were built and tested under Ubuntu 22.04 in WSL.
@@ -268,8 +286,10 @@ separate AMD environment:
 
 ```powershell
 python -m pip install --index-url https://repo.amd.com/rocm/whl-multi-arch/ "torch[device-gfx1201]==2.10.0+rocm7.14.0" "rocm[libraries,device-gfx1201]==7.14.0"
-python -m pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch210rocm714py311-cp311-cp311-win_amd64.whl
+python -m pip install --no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.26/llamacpp_gguf_cuda-1.0.26%2Btorch210rocm714py311-cp311-cp311-win_amd64.whl
 ```
+
+The 1.0.26 HIP wheel is a version-only update: its code, binaries and PyTorch/ROCm requirements are identical to the previous wheel. The new CUDA packed-row kernels are not included in it.
 
 The HIP and CUDA wheels use the same package name; select the matching backend.
 The HIP wheel rejects a different PyTorch build at import. It replaces the earlier

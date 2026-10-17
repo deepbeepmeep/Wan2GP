@@ -4003,6 +4003,7 @@ class offload:
         model = self.models[model_id]
         self.active_models.append(model)
         self.active_models_ids.append(model_id)
+        runtime._load_resources(self, model_id)
         blocks = [None, *self.preloaded_blocks_per_model[model_id]]
         entries = [model_id if name is None else model_id + "/" + name for name in blocks] if self.read_ahead is not None else None
         try:
@@ -4063,6 +4064,7 @@ class offload:
         for model_id, graphs in self.cuda_graphs.items():
             if model_id not in keep:
                 graphs.clear()
+        runtime._unload_resources(self, [model_id for model_id in self.active_models_ids if model_id not in keep])
         self.slot_views = {key: views for key, views in self.slot_views.items() if key[0].split("/", 1)[0] in self.block_slots}
         self.active_models_ids = [model_id for model_id in self.active_models_ids if model_id in keep]
         self.active_models = [self.models[model_id] for model_id in self.active_models_ids]

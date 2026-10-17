@@ -1,5 +1,7 @@
 .*
 *.py[cod]
+!/shared/triton_runtime/cuda_utils.cp311-win_amd64.pyd
+!/shared/triton_runtime/hip_utils.cp312-win_amd64.pyd
 *.npy
 *.log
 *.zip

@@ -41,17 +41,24 @@
                     "linux": "-U \"triton>=3.3,<3.4\""
                 }
             },
-            "v37": {
+            "v36": {
                 "label": "Triton 3.6.x (Torch 2.10, RTX 30XX+)",
                 "cmd": {
                     "win": "-U \"triton-windows>=3.6,<3.7\"",
                     "linux": "-U \"triton>=3.6,<3.7\""
                 }
             },
+            "v37": {
+                "label": "Triton 3.7 Windows / 3.6 Linux (Torch 2.10, RTX 30XX+, Recommended)",
+                "cmd": {
+                    "win": "-U \"triton-windows>=3.7.0.post26,<=3.7.1.post27\"",
+                    "linux": "-U \"triton>=3.6,<3.7\""
+                }
+            },
             "v38": {
                 "label": "Triton 3.7.x (Torch 2.13, AMD ROCm)",
                 "cmd": {
-                    "win": "-U \"triton-windows>=3.7,<3.8\""
+                    "win": "-U \"triton-windows>=3.7.0.post26,<=3.7.1.post27\""
                 }
             }
         },
@@ -150,15 +157,15 @@
             "gguf": {
                 "label": "GGUF llama.cpp CUDA Kernels (PyTorch 2.10 / CUDA 13)",
                 "cmd": {
-                    "win": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch210cu130py311-cp311-cp311-win_amd64.whl",
-                    "linux": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch210cu130py311-cp311-cp311-linux_x86_64.whl"
+                    "win": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.26/llamacpp_gguf_cuda-1.0.26%2Btorch210cu130py311-cp311-cp311-win_amd64.whl",
+                    "linux": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.26/llamacpp_gguf_cuda-1.0.26%2Btorch210cu130py311-cp311-cp311-linux_x86_64.whl"
                 }
             },
             "gguf_cu128": {
                 "label": "GGUF llama.cpp CUDA Kernels (PyTorch 2.7.1 / CUDA 12.8)",
                 "cmd": {
-                    "win": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch271cu128py310-cp310-cp310-win_amd64.whl",
-                    "linux": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.25/llamacpp_gguf_cuda-1.0.25%2Btorch271cu128py310-cp310-cp310-linux_x86_64.whl"
+                    "win": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.26/llamacpp_gguf_cuda-1.0.26%2Btorch271cu128py310-cp310-cp310-win_amd64.whl",
+                    "linux": "--no-deps https://github.com/deepbeepmeep/kernels/releases/download/gguf-v1.0.26/llamacpp_gguf_cuda-1.0.26%2Btorch271cu128py310-cp310-cp310-linux_x86_64.whl"
                 }
             }
         }

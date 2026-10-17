@@ -1,0 +1,59 @@
+{
+  "format": 1,
+  "binary": "hip_utils.cp312-win_amd64.pyd",
+  "binary_sha256": "0a40dbb899f60d6f6a756fdcf44b2a7a1ae3fe0fe1dcc1ed000c1f4b265f5601",
+  "platform": "win_amd64",
+  "python_abi": "cp312",
+  "torch_version": "2.13.0+rocm10.0.0",
+  "rocm_version": "10.0.0",
+  "dependencies": [
+    "python312.dll",
+    "KERNEL32.dll"
+  ],
+  "dynamic_dependencies": [
+    "HIP runtime selected by triton.backends.amd.driver"
+  ],
+  "authenticode_signed": false,
+  "license": [
+    "TRITON_LICENSE.txt",
+    "HIP_LICENSE.txt"
+  ],
+  "source_project": "https://github.com/triton-lang/triton-windows",
+  "built_from": "3.7.1.post27",
+  "compiler": "ROCm clang-cl",
+  "msvc_toolset": "14.35.32215",
+  "windows_sdk": "10.0.22000.0",
+  "build_options": [
+    "/O2",
+    "/LD",
+    "/MT",
+    "/DNDEBUG",
+    "/std:c11",
+    "/Brepro",
+    "/FImalloc.h",
+    "/Dalloca=_alloca",
+    "-Werror=implicit-function-declaration"
+  ],
+  "hip_library_sha256": "f46bd28ac9997697cff4529fd826b8f02d1b0bec9792e0e5b96a03f9ab0415eb",
+  "source_changes": [
+    "Resolve and load the HIP runtime at module initialization using Triton's Python resolver and Unicode Windows APIs; reuse an existing runtime handle."
+  ],
+  "builds": {
+    "3.7.0.post26": {
+      "wheel": "triton_windows-3.7.0.post26-cp312-cp312-win_amd64.whl",
+      "wheel_url": "https://files.pythonhosted.org/packages/ec/d1/e6e2eb0d23916788d6b3436b519c351d1eb281b5d3dcbd9c3b4fc67e9f46/triton_windows-3.7.0.post26-cp312-cp312-win_amd64.whl",
+      "wheel_sha256": "7fde7436c1147b9446627747ec291bde6fec9a5063cad38c43bd3fa57d954eca",
+      "driver_source_sha256": "6c2026717d6056192fc3629a95f873be25528be677ced7dd66d86d8c8273a046",
+      "driver_python_sha256": "c696a415db84f71f31db74ba976756a5d023d15bb7dbf0521b1df9b000ad7373"
+    },
+    "3.7.1.post27": {
+      "wheel": "triton_windows-3.7.1.post27-cp312-cp312-win_amd64.whl",
+      "wheel_url": "https://files.pythonhosted.org/packages/76/30/325b420efd0047e119679c646a9a410db216069800ec009fae3da26c69a3/triton_windows-3.7.1.post27-cp312-cp312-win_amd64.whl",
+      "wheel_sha256": "f5406230d7dbf6965bc4051fcad27b81c39ba4a4bfde06f494dd7ff4eb325a9e",
+      "driver_source_sha256": "3b691591e36b0ec28bb842cf52c1a0baab2196b77cf3c691dff1543b28caaadf",
+      "driver_python_sha256": "aa1c7f20cac090deac4598af69f7deda1140db7a4cb07d69ff57cc4e5bc0b564"
+    }
+  },
+  "build_source_sha256": "7895efeca8d40a8ce51ac24e9f4879f1cf71bd9ef72cd296f507431a6f90af8e",
+  "compiler_version": "AMD clang version 23.0.0git (https://github.com/ROCm/llvm-project.git 8f497e0992fb7513f7f78a6f6b6f1056c375e961)"
+}

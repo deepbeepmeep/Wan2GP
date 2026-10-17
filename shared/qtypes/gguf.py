@@ -18,6 +18,7 @@ from optimum.quanto import QModuleMixin, register_qmodule
 from optimum.quanto.tensor.qtensor import QTensor
 from optimum.quanto.tensor.qtype import qtype as _quanto_qtype, qtypes as _quanto_qtypes
 from collections import OrderedDict
+from mmgp import cuda_graphs as _cuda_graphs
 from mmgp.offload import QEmbedding as BaseQEmbedding
 
 
@@ -845,35 +846,29 @@ def _gguf_qtype_name(qtype_obj):
 
 
 _LLAMACPP_SLICE_BYTES = 64 << 20  # scratch of the packed kernels for one slice of rows: q8_1 input and FP32 product
-_PACKED_FLAT_QTYPES = frozenset(("Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K",
-                               "Q4_0", "Q4_1", "Q5_0", "Q5_1", "Q8_0"))
+GGUF_CUDA_CHUNKING = False  # Set True to opt into the new native CUDA row loop.
 
-
-@functools.cache
-def _packed_flat_linear_impl(device_index):
-    # Tensor-core MMA is available on Ampere, Ada and Blackwell. Launch tuning
-    # is per GPU; no Blackwell-specific instruction or weight conversion is used.
-    if torch.version.hip is not None or torch.cuda.get_device_capability(device_index) not in ((8, 6), (8, 9), (12, 0)):
-        return None
-    try:
-        from .gguf_packed import flat_linear
-    except ImportError:
-        return None
-    return flat_linear
+# Switching implementations must select a fresh graph instead of replaying the old one.
+_cuda_graphs.register_key(lambda: GGUF_CUDA_CHUNKING)
 
 
 def _llamacpp_cuda_linear(module, raw, qtype_name, shape, input_tensor, bias, target_dtype):
-    # The packed (MMQ) kernels read a q8_1 copy of their input and write an FP32 product converted afterwards: at the token counts of video
-    # models, several times the size of the output. Slices of rows (whole 128-row tiles) bound that scratch, each converted into the output:
-    # same values, and measured as fast or faster than a single call.
+    # Legacy MMQ needs a Q8 input copy and an FP32 product. Bound that scratch with
+    # 128-row-aligned slices; newer kernels can process the same slices in one GPU loop.
     out_features, in_features = shape
     rows = input_tensor.numel() // in_features
     step = max(128, _LLAMACPP_SLICE_BYTES // (4 * out_features + in_features * 9 // 8) // 128 * 128)
     if rows < 2 * step or module._linear_mode() != "mmq":
         return module.linear(raw, qtype_name, shape, input_tensor, bias, target_dtype)
+    step = -(-rows // (-(-rows // step) * 128)) * 128  # slices of even size
+    native_chunked = getattr(module, "linear_chunked", None) if GGUF_CUDA_CHUNKING else None
+    if callable(native_chunked):
+        out = native_chunked(raw, qtype_name, shape, input_tensor, bias, target_dtype, step)
+        if out is not None:
+            return out
+    # Older wheels and layouts outside the cooperative kernel keep bounded PyTorch slices.
     x = input_tensor.reshape(rows, in_features)
     out = torch.empty((rows, out_features), dtype=target_dtype, device=x.device)
-    step = -(-rows // (-(-rows // step) * 128)) * 128  # slices of even size
     for start in range(0, rows, step):
         out[start:start + step].copy_(module.linear(raw, qtype_name, shape, x[start:start + step], None, torch.float32))
     if bias is not None:
@@ -897,13 +892,11 @@ def _try_llamacpp_cuda_linear(weight_tensor, input_tensor, bias, target_dtype):
     # Restored orig_shape rows can cross GGUF blocks. MMQ requires whole blocks
     # per row; the fused tile decoder addresses the original flattened stream.
     if shape[1] % _quantization_sizes(weight_tensor._tensor_type)[0] and gguf_llamacpp_cuda._linear_mode() == "mmq":
-        if qtype_name in _PACKED_FLAT_QTYPES and target_dtype in (torch.float16, torch.bfloat16, torch.float32):
-            flat_linear = _packed_flat_linear_impl(input_tensor.device.index)
-            if flat_linear is not None:
-                out = flat_linear(input_tensor, raw, list(shape), qtype_name, _maybe_cast_bias(bias, target_dtype), target_dtype)
-                _gguf_log_once(f"packed_flat_linear_{qtype_name}", f"[GGUF] Packed Triton linear active for {qtype_name} rows crossing blocks.")
-                return out
-        return None
+        select_kernel = getattr(gguf_llamacpp_cuda, 'packed_row_kernel', None)
+        flat_linear = None if select_kernel is None else select_kernel(qtype_name, input_tensor.device.index, target_dtype)
+        if flat_linear is None:
+            return None
+        return flat_linear(input_tensor, raw, list(shape), qtype_name, _maybe_cast_bias(bias, target_dtype), target_dtype)
     fast_out = _llamacpp_cuda_linear(gguf_llamacpp_cuda, raw, qtype_name, shape, input_tensor, bias, target_dtype)
     _gguf_log_once(f"llamacpp_cuda_linear_active_{qtype_name}", f"[GGUF][llama.cpp CUDA] linear fast path active for {qtype_name}.")
     return fast_out
@@ -2172,7 +2165,21 @@ def convert_to_quanto(state_dict, default_dtype, verboseLevel=1, detection=None)
     return {"state_dict": state_dict, "quant_map": quant_map}
 
 
+def _prepare_runtime_buffers(device):
+    module = _gguf_cuda_module()
+    if module is not None:
+        module.prepare_runtime_buffers(device)
+
+
+def _release_runtime_buffers():
+    if _GGUF_CUDA_MODULE is not None:
+        _GGUF_CUDA_MODULE.release_runtime_buffers()
+
+
 def apply_pre_quantization(model, state_dict, quantization_map, default_dtype=None, verboseLevel=1):
+    if model is not None and any(info.get("weights") == _GGUF_QTYPE_NAME for info in (quantization_map or {}).values()):
+        from mmgp import runtime
+        runtime.register_resource(model, _prepare_runtime_buffers, _release_runtime_buffers)
     if default_dtype is None or model is None or not quantization_map:
         return quantization_map or {}, []
     _set_default_dtype_from_loader(default_dtype)

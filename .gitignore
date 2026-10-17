@@ -46,6 +46,8 @@ deepy_sessions/
 dlss5/
 /settings/
 /user_skills/
+/envs.json
+/workspaces/
 
 # Local engineering specifications and tests must never be committed.
 /specs/
